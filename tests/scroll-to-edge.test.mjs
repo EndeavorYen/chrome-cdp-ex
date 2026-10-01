@@ -34,22 +34,24 @@ function createDocumentScrollPage({
     innerHeight,
     scrollHeight: scrollMax + innerHeight,
   };
+  const scrollDocumentTo = (top) => {
+    const max = Math.max(0, state.scrollHeight - state.innerHeight);
+    const requested = clampTo == null ? top : clampTo;
+    state.scrollY = Math.max(0, Math.min(max, Math.round(Number(requested) || 0)));
+  };
   const scroller = {
     get scrollHeight() { return state.scrollHeight; },
+    // Element.prototype.scrollTo/scrollBy on the scrolling element scroll the viewport (#486).
+    _nativeScrollTo(options) { scrollDocumentTo(options.top); },
+    _nativeScrollBy(options) { scrollDocumentTo(state.scrollY + (Number(options.top) || 0)); },
   };
   const windowObj = {
     get innerHeight() { return state.innerHeight; },
     get scrollY() { return state.scrollY; },
     get scrollX() { return 0; },
-    scrollTo(xOrOptions, y) {
-      const top = xOrOptions && typeof xOrOptions === 'object' ? xOrOptions.top : y;
-      const max = Math.max(0, state.scrollHeight - state.innerHeight);
-      const requested = clampTo == null ? top : clampTo;
-      state.scrollY = Math.max(0, Math.min(max, Math.round(Number(requested) || 0)));
-    },
-    scrollBy(xOrOptions, y) {
-      const dy = xOrOptions && typeof xOrOptions === 'object' ? xOrOptions.top : y;
-      windowObj.scrollTo(0, state.scrollY + (Number(dy) || 0));
+    scrollTo(_x, y) { scrollDocumentTo(y); },
+    scrollBy(_x, y) {
+      windowObj.scrollTo(0, state.scrollY + (Number(y) || 0));
     },
   };
   const documentObj = {
@@ -59,10 +61,17 @@ function createDocumentScrollPage({
   return { state, window: windowObj, document: documentObj };
 }
 
+// The page's native Element: automation scrolls call Element.prototype.scrollTo/scrollBy (#486),
+// which run the fake node's `_native*` implementation.
+function FakeElement() {}
+FakeElement.prototype.scrollTo = function (...args) { return this._nativeScrollTo(...args); };
+FakeElement.prototype.scrollBy = function (...args) { return this._nativeScrollBy(...args); };
+
 function evaluateOnPage(page, expression) {
   return runInNewContext(expression, {
     window: page.window,
     document: page.document,
+    Element: FakeElement,
     Math,
     JSON,
     Number,
@@ -123,7 +132,8 @@ describe('issue #323 scroll to top/bottom', () => {
     expect(text).toMatch(/at-bottom: yes/);
     const expr = cdp.calls[0].params.expression;
     expect(expr).toContain('chrome-cdp-ex.scroll-edge');
-    expect(expr).toContain('window.scrollTo');
+    expect(expr).toContain('Element.prototype.scrollTo.call((document.scrollingElement || document.documentElement)');
+    expect(expr).not.toContain('window.scrollTo');
     expect(expr).not.toContain('scrollBy');
   });
 
@@ -183,17 +193,17 @@ describe('issue #323 scroll to top/bottom', () => {
     expect(page.state.scrollY).toBeGreaterThanOrEqual(HF_HOME_SCROLL_MAX - 2);
   });
 
-  it('exports Playwright window scrollTo for to top/to bottom and keeps wheel for relative scroll', () => {
+  it('exports Playwright document scrollTo for to top/to bottom and keeps wheel for relative scroll', () => {
     expect(T.playwrightStepFromCommand({
       action: 'scroll',
       command: ['scroll', 'to', 'bottom'],
       replayable: true,
-    }).lines[0]).toMatch(/window\.scrollTo/);
+    }).lines[0]).toMatch(/Element\.prototype\.scrollTo\.call\(scrolling, \{ left: 0, top: docMax/);
     expect(T.playwrightStepFromCommand({
       action: 'scroll',
       command: ['scroll', 'to', 'top'],
       replayable: true,
-    }).lines[0]).toMatch(/window\.scrollTo\(\{ left: 0, top: 0, behavior: 'instant' \}\)/);
+    }).lines[0]).toMatch(/Element\.prototype\.scrollTo\.call\(scrolling, \{ left: 0, top: 0, behavior: 'instant' \}\)/);
     expect(T.playwrightStepFromCommand({
       action: 'scroll',
       command: ['scroll', 'down', '80'],
@@ -346,7 +356,7 @@ function createOverflowElement({
     get scrollHeight() { return state.scrollHeight; },
     get clientHeight() { return state.clientHeight; },
     get clientWidth() { return state.clientWidth; },
-    scrollTo(options) { el.scrollTop = options.top; },
+    _nativeScrollTo(options) { el.scrollTop = options.top; },
     dispatchEvent() { return true; },
     _state: state,
   };
@@ -567,18 +577,18 @@ describe('issue #326 scroll nested overflow to top/bottom', () => {
       action: 'scroll',
       command: ['scroll', 'to', 'bottom'],
       replayable: true,
-    }).lines[0]).toMatch(/window\.scrollTo/);
+    }).lines[0]).toMatch(/Element\.prototype\.scrollTo\.call\(scrolling,/);
     expect(T.playwrightStepFromCommand({
       action: 'scroll',
       command: ['scroll', 'to', 'bottom'],
       replayable: true,
-    }).lines[0]).toMatch(/best\.scrollTo\(\{ top: Math\.max/);
+    }).lines[0]).toMatch(/Element\.prototype\.scrollTo\.call\(best, \{ top: Math\.max/);
     expect(T.playwrightStepFromCommand({
       action: 'scroll',
       command: ['scroll', 'to', 'bottom', '--scroll-container', '#content-container'],
       replayable: true,
     }).lines[0]).toBe(
-      "await page.locator(\"#content-container\").evaluate((el) => { el.scrollTo({ top: Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)), behavior: 'instant' }); });",
+      "await page.locator(\"#content-container\").evaluate((el) => { Element.prototype.scrollTo.call(el, { top: Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)), behavior: 'instant' }); });",
     );
   });
 });
