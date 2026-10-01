@@ -16,13 +16,13 @@ import { MCP_TOOLS, listMcpResources, resolveMcpResource } from '../skills/chrom
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 describe('generated CLI and MCP command surfaces', () => {
-  it('renders all 81 help rows from catalog data while default help is the survivor card', () => {
+  it('renders all 82 help rows from catalog data while default help is the survivor card', () => {
     expect(typeof cdpTest.renderCliHelp).toBe('function');
     expect(typeof cdpTest.renderCardHelp).toBe('function');
     expect(cdpTest.renderCliHelp(COMMAND_SURFACE)).not.toBe(cdpTest.helpStr());
     expect(cdpTest.renderCardHelp(COMMAND_SURFACE)).toBe(cdpTest.helpStr());
-    expect(cdpTest.CLI_HELP_TEMPLATE.match(/\{\{command:[a-z0-9-]+}}/g)).toHaveLength(81);
-    expect(cdpTest.CLI_HELP_LAYOUT).toHaveLength(81);
+    expect(cdpTest.CLI_HELP_TEMPLATE.match(/\{\{command:[a-z0-9-]+}}/g)).toHaveLength(82);
+    expect(cdpTest.CLI_HELP_LAYOUT).toHaveLength(82);
     expect(cdpTest.helpStr()).not.toMatch(/\bjsclick\s+</);
     expect(cdpTest.helpStr()).not.toMatch(/\beval64\s+</);
   });
@@ -40,7 +40,7 @@ describe('generated CLI and MCP command surfaces', () => {
     expect(rendered).not.toContain('Show this command reference (same as --help)');
   });
 
-  it('uses catalog help order and the exact 81-command authority', () => {
+  it('uses catalog help order and the exact 82-command authority', () => {
     const reordered = structuredClone(COMMAND_SURFACE.commands);
     const help = reordered.find(command => command.name === 'help');
     const list = reordered.find(command => command.name === 'list');
@@ -53,9 +53,9 @@ describe('generated CLI and MCP command surfaces', () => {
       ...structuredClone(expanded[0]),
       name: 'extra-command',
       aliases: [],
-      help: { synopsis: 'extra-command', summary: 'Extra.', section: 'discovery', order: 81 },
+      help: { synopsis: 'extra-command', summary: 'Extra.', section: 'discovery', order: 82 },
     });
-    expect(() => cdpTest.renderCliHelp(defineCommandSurface(expanded))).toThrow(/exactly 81/i);
+    expect(() => cdpTest.renderCliHelp(defineCommandSurface(expanded))).toThrow(/exactly 82/i);
   });
 
   it('fails closed on missing, duplicate, unknown, or reordered help markers', () => {

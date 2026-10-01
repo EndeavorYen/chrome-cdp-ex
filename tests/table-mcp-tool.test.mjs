@@ -33,11 +33,11 @@ function semantics(command) {
 }
 
 describe('first-class MCP table tool', () => {
-  it('owns one table tool on the 26-tool, three-resource surface', () => {
-    expect(COMMAND_SURFACE.commands).toHaveLength(81);
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(26);
+  it('owns one table tool on the 27-tool, three-resource surface', () => {
+    expect(COMMAND_SURFACE.commands).toHaveLength(82);
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(27);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
-    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(26);
+    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(27);
     expect(COMMAND_SURFACE.resolve('table')).toMatchObject({
       mcp: { exposure: 'tool-and-run-command', toolName: 'table', mapper: 'table' },
       aliases: [],

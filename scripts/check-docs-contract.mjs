@@ -448,7 +448,7 @@ export function checkDefaultHelpContract(help) {
     failures.push('Default cdp help must not advertise eval64 as a product name');
   }
   if (text.includes('tab-group') && text.includes('broadcast') && text.includes('checkpoint')) {
-    failures.push('Default cdp help must list survivors, not the 81-command catalog');
+    failures.push('Default cdp help must list survivors, not the full command catalog');
   }
   return failures;
 }

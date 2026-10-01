@@ -36,7 +36,7 @@ describe('Killer Path docs contract', () => {
     const script = fileURLToPath(new URL('../scripts/check-docs-contract.mjs', import.meta.url));
     const child = spawnSync(process.execPath, [script], { cwd: tmpdir(), encoding: 'utf8' });
     expect(child.status, child.stderr).toBe(0);
-    expect(child.stdout).toContain('Docs contract OK: 20 survivor commands on the card (81 catalog)');
+    expect(child.stdout).toContain('Docs contract OK: 20 survivor commands on the card (82 catalog)');
   });
 
   it('accepts the documented first-run golden path', () => {

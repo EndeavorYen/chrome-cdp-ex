@@ -343,6 +343,14 @@ export function buildMcpToolCommand(name, args = {}) {
       command.push(requireString(args, 'selector'), args.text);
       return optionalFormatJson(command);
     }
+    case 'drag': {
+      requireConfirm(args, 'drag');
+      const command = ['drag', requireString(args, 'target'), requireString(args, 'from'), requireString(args, 'to')];
+      if (args.steps != null) command.push('--steps', String(args.steps));
+      if (args.mode === 'html5' || args.mode === 'pointer') command.push(`--${args.mode}`);
+      else if (args.mode != null && args.mode !== 'auto') throw new Error('mode must be auto, html5, or pointer');
+      return optionalFormatJson(command);
+    }
     case 'viewport': {
       const command = ['viewport', requireString(args, 'target')];
       if (args.size) {
