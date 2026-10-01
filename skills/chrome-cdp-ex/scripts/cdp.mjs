@@ -713,6 +713,7 @@ function validateDaemonProtocolRequest(input) {
 // line gets `{ ok: false, error, id: null }` and the connection is closed.
 const MAX_DAEMON_REQUEST_LINE_BYTES = 16 * 1024 * 1024;
 const DAEMON_REQUEST_DECODER = new TextDecoder('utf-8', { fatal: true });
+function ignoreLateConnectionError() {}
 
 function createDaemonRequestConnection(conn, {
   handleRequest,
@@ -749,6 +750,7 @@ function createDaemonRequestConnection(conn, {
   let disconnected = false;
   let poisoned = false;
   let disconnectNotified = false;
+  let errorSinkInstalled = false;
 
   const canWrite = () => !disconnected && conn.destroyed !== true && conn.writable !== false;
   const writePayload = (payload, callback = () => {}) => {
@@ -880,7 +882,17 @@ function createDaemonRequestConnection(conn, {
       terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
       return;
     }
-    for (const entry of [...active.values()]) disposeRequest(entry, { abort: error, clean: true });
+    let cleanupFailure = null;
+    for (const entry of [...active.values()]) {
+      cleanupFailure ||= disposeRequest(entry, { abort: error, clean: true });
+    }
+    if (cleanupFailure) {
+      terminateForFatal(cleanupFailure);
+      return;
+    }
+    // The peer may already be gone (it wrote the bad line and closed), so this
+    // reply can fail with EPIPE/ECONNRESET; the sink must be in place first.
+    installErrorSink();
     let payload = null;
     try { payload = responsePayload({ ok: false, error: error.message }, id); } catch {}
     if (payload && canWrite()) {
@@ -1102,7 +1114,17 @@ function createDaemonRequestConnection(conn, {
       dispatchFrame(frameBytes);
     }
   };
+  // A socket can still emit 'error' after this lifecycle lets go of it: a reply
+  // or end() write that fails with EPIPE/ECONNRESET because the peer already
+  // closed. An 'error' event with no listener throws and would crash the whole
+  // daemon, so a no-op sink replaces onError instead of leaving nothing.
+  function installErrorSink() {
+    if (errorSinkInstalled) return;
+    errorSinkInstalled = true;
+    conn.on('error', ignoreLateConnectionError);
+  }
   function removeConnectionListeners() {
+    installErrorSink();
     conn.off('data', onData);
     conn.off('end', onEnd);
     conn.off('close', onClose);

@@ -81,7 +81,9 @@
   `mock --body`, silently sent damaged text to the page. The daemon now buffers raw bytes and decodes
   only complete newline-terminated frames, as the client already did; a frame that is not valid UTF-8 is
   rejected instead of rewritten. A request line is capped at 16 MiB: an over-cap line gets a
-  `{ ok: false, error, id: null }` reply and its connection is closed, while the daemon keeps serving
+  `{ ok: false, error, id: null }` reply and its connection is closed, while the daemon keeps serving.
+  A socket error that arrives after the daemon has let go of a connection (an EPIPE on that reply when
+  the client already closed) is now ignored instead of crashing the daemon
   ([#457](https://github.com/EndeavorYen/chrome-cdp-ex/issues/457)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)

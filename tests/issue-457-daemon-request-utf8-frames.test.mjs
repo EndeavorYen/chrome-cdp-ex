@@ -175,7 +175,63 @@ describe('#457 daemon request line size cap', () => {
     expect(onFatal).not.toHaveBeenCalled();
     expect(handleRequest).not.toHaveBeenCalled();
     expect(lifecycle.activeRequestCount()).toBe(0);
-    for (const name of ['data', 'end', 'close', 'error']) expect(conn.listenerCount(name)).toBe(0);
+    for (const name of ['data', 'end', 'close']) expect(conn.listenerCount(name)).toBe(0);
+    // A sink stays on 'error' so a late EPIPE/ECONNRESET from the closing socket is not unhandled.
+    expect(conn.listenerCount('error')).toBe(1);
+  });
+
+  it.each([
+    ['an over-cap line', conn => conn.emit('data', Buffer.alloc(T.MAX_DAEMON_REQUEST_LINE_BYTES + 1, 0x61))],
+    ['a duplicate request id', conn => {
+      conn.emit('data', Buffer.concat([
+        frameBytes({ id: 1, cmd: 'status', args: [] }),
+        frameBytes({ id: 1, cmd: 'status', args: [] }),
+      ]));
+    }],
+  ])('swallows a socket error that arrives after %s closed the connection', async (_label, trigger) => {
+    const conn = connection();
+    const onFatal = vi.fn();
+    const onDisconnect = vi.fn();
+    listen(conn, () => new Promise(() => {}), { onFatal, onDisconnect });
+    trigger(conn);
+    await drain();
+    expect(conn.end).toHaveBeenCalledOnce();
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    expect(() => conn.emit('error', epipe)).not.toThrow();
+    expect(onFatal).not.toHaveBeenCalled();
+    expect(onDisconnect).toHaveBeenCalledOnce();
+  });
+
+  it('swallows a socket error that arrives after the peer ended the connection', async () => {
+    const conn = connection();
+    const onDisconnect = vi.fn();
+    listen(conn, () => new Promise(() => {}), { onDisconnect });
+    conn.emit('data', frameBytes({ id: 1, cmd: 'status', args: [] }));
+    await drain();
+    conn.emit('end');
+    expect(onDisconnect).toHaveBeenCalledOnce();
+    expect(() => conn.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))).not.toThrow();
+    expect(onDisconnect).toHaveBeenCalledOnce();
+  });
+
+  it('treats a request cleanup failure on an over-cap connection as fatal, like any other disconnect', async () => {
+    const cleanupError = new Error('rollback failed');
+    const conn = connection();
+    const onFatal = vi.fn();
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: () => new Promise(() => {}),
+      cleanup: () => { throw cleanupError; },
+      onFatal,
+      now: () => 0,
+    });
+    conn.emit('data', frameBytes({ id: 1, cmd: 'status', args: [] }));
+    await drain();
+    conn.emit('data', Buffer.alloc(T.MAX_DAEMON_REQUEST_LINE_BYTES + 1, 0x61));
+    await drain();
+    expect(onFatal).toHaveBeenCalledExactlyOnceWith(cleanupError);
+    expect(conn.destroy).toHaveBeenCalled();
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(0);
   });
 
   it('accepts a line of exactly the cap', async () => {
@@ -250,9 +306,50 @@ describe('#457 over a real socket', () => {
       const conn = await connectToDaemon(endpoint, { timeoutMs: 2000 });
       const response = await requestDaemon(conn, { cmd: 'fill', args: ['#q', text] });
       expect(response.ok).toBe(true);
-      expect(received.includes('�')).toBe(false);
+      expect(received.includes('\uFFFD')).toBe(false);
       expect(received === text).toBe(true);
       expect(Buffer.byteLength(text, 'utf8')).toBeGreaterThanOrEqual(420 * 1024);
+    } finally {
+      server.close();
+    }
+  });
+
+  // On a Unix socket the whole line is still readable after the client closes, so the
+  // daemon's end(reply) hits EPIPE; before the error sink this crashed the process.
+  // A Windows named pipe does not surface that late EPIPE, so there it is a survival check.
+  it('survives a client that destroys its socket right after writing an over-cap line', async () => {
+    const handleRequest = vi.fn(async () => ({ ok: true, result: 'healthy' }));
+    const onFatal = vi.fn();
+    const disconnects = [];
+    const server = net.createServer(conn => {
+      T.createDaemonRequestConnection(conn, {
+        handleRequest,
+        cleanup: () => {},
+        onFatal,
+        onDisconnect: error => disconnects.push(error.message),
+      });
+    });
+    const endpoint = process.platform === 'win32'
+      ? daemonEndpointForPlatform(`457-epipe-${process.pid}-${Date.now()}`, { platform: 'win32' })
+      : join(mkdtempSync(join(tmpdir(), 'cdp-457-')), 'd.sock');
+    await new Promise(resolveListen => server.listen(endpoint, resolveListen));
+    const oversized = Buffer.alloc(T.MAX_DAEMON_REQUEST_LINE_BYTES + 1, 0x61);
+    try {
+      for (let round = 0; round < 4; round += 1) {
+        const client = await connectToDaemon(endpoint, { timeoutMs: 2000 });
+        client.on('error', () => {});
+        const closed = new Promise(resolveClose => client.once('close', resolveClose));
+        client.write(oversized, () => client.destroy());
+        await closed;
+      }
+      // Give the daemon side time to hit EPIPE/ECONNRESET on its reply write.
+      await new Promise(resolveTick => setTimeout(resolveTick, 200));
+      const conn = await connectToDaemon(endpoint, { timeoutMs: 2000 });
+      const response = await requestDaemon(conn, { cmd: 'status', args: [] });
+      expect(response).toMatchObject({ ok: true, result: 'healthy' });
+      expect(handleRequest).toHaveBeenCalledOnce();
+      expect(onFatal).not.toHaveBeenCalled();
+      expect(disconnects.filter(message => /exceeded/.test(message)).length).toBeGreaterThan(0);
     } finally {
       server.close();
     }
