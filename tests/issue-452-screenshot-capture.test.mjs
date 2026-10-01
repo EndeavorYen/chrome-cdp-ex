@@ -133,6 +133,18 @@ describe('#452 screenshot sanity check judges only what the DOM predicts', () =>
     installFakePage({ body, root, hit: () => host, stack: () => [host, body, root] });
     expect((await runSanity()).retry).toBe(false);
   });
+
+  it('reads a dark shadow host behind a transparent shadow child (not re-appended after <html>)', async () => {
+    const root = element('HTML');
+    const body = element('BODY', { backgroundColor: LIGHT, parent: root });
+    const host = element('MY-APP', { backgroundColor: 'rgb(10, 10, 12)', parent: body });
+    const child = element('DIV');
+    host.shadowRoot = { elementsFromPoint: () => [child, host, body, root] };
+    installFakePage({ body, root, hit: () => host, stack: () => [host, body, root] });
+    const sanity = await runSanity();
+    expect(sanity.retry).toBe(false);
+    expect(sanity.lightRatio).toBe(0);
+  });
 });
 
 describe('#452 responsive-audit keeps the requested viewport label', () => {

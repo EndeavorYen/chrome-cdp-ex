@@ -37,7 +37,8 @@ export function screenshotHealthScript(pngBase64, { clip = null } = {}) {
     const rootStyle = document.documentElement ? getComputedStyle(document.documentElement) : null;
     const pageTone = opaqueTone(bodyStyle) || opaqueTone(rootStyle) || 'unknown';
     const MEDIA = /^(canvas|video|img|picture|iframe|frame|embed|object|svg)$/i;
-    // Paint stack at a point, topmost first; an open shadow root's stack replaces its host.
+    // Paint stack at a point, topmost first. An open shadow root's own list already places
+    // its host (and the host's ancestors) in paint order, so it is used as returned.
     const stackAt = (root, x, y, depth) => {
       const list = typeof root.elementsFromPoint === 'function'
         ? root.elementsFromPoint(x, y)
@@ -46,7 +47,7 @@ export function screenshotHealthScript(pngBase64, { clip = null } = {}) {
       for (const node of list) {
         if (depth < 4 && node.shadowRoot && node.shadowRoot !== root) {
           for (const inner of stackAt(node.shadowRoot, x, y, depth + 1)) {
-            if (inner !== node && !out.includes(inner)) out.push(inner);
+            if (!out.includes(inner)) out.push(inner);
           }
         }
         if (!out.includes(node)) out.push(node);
