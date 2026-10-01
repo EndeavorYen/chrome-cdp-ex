@@ -55,6 +55,17 @@
     `CDP_BACKGROUND=1`, as before, and its next-command hint no longer prepends `CDP_BACKGROUND=1`.
     `npm run smoke:live` launches its browser with `--disable-features=CalculateNativeWinOcclusion`, as
     `spawn-debug-browser` does.
+* `console`, `status` and action receipts print source-mapped frames for console errors, warnings and
+  uncaught exceptions: `src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)` instead of an opaque
+  bundle position. The daemon now keeps up to three frames per entry (it kept only the first, printed
+  its 0-based line, dropped the column, and printed nothing for line 0, which is every frame of a
+  minified one-line bundle). `console` prints the two caller frames as `at …` lines, and JSON entries
+  carry them as `stack`. A new zero-dependency `scripts/lib/source-maps.mjs` decodes Source Map v3
+  (VLQ, `sources`/`sourceRoot`). Maps are found through the script's `//# sourceMappingURL=` comment
+  (inline `data:`, or loaded with `Network.loadNetworkResource` and the page's cookies; the Debugger
+  domain is never enabled), resolved only when output is printed, capped at 5 MB and 1.5 s, and cached
+  per tab daemon until the next top-level navigation. Any failure prints the generated frame unchanged
+  ([#470](https://github.com/EndeavorYen/chrome-cdp-ex/issues/470)).
 
 ### Bug Fixes
 

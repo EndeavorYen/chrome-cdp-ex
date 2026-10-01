@@ -420,6 +420,8 @@ Multi-statement async eval returns a simple final expression, so
 
 The daemon buffers console output, exceptions, and action evidence in the background from the moment it starts. Use these commands to query the buffer or summarize the session.
 
+Console errors, warnings, and exceptions are source-mapped in `console`, `status`, and action receipts: `src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)`. `console` adds up to two caller frames as `at …` lines (`stack` in JSON). The map is read from the script's `//# sourceMappingURL=` (inline `data:` or loaded with the page's cookies; 5 MB cap, 1.5 s wait). No map, or a slow one, leaves the generated frame unchanged.
+
 ```bash
 scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)

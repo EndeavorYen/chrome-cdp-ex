@@ -36,6 +36,8 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Fetch.disable': 'page-mutation',
   'Fetch.enable': 'page-mutation',
   'Fetch.fulfillRequest': 'page-mutation',
+  'IO.close': 'session-control',
+  'IO.read': 'observation',
   'Input.dispatchKeyEvent': 'page-mutation',
   'Input.dispatchMouseEvent': 'page-mutation',
   'Input.insertText': 'page-mutation',
@@ -43,6 +45,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Network.emulateNetworkConditions': 'page-mutation',
   'Network.enable': 'session-control',
   'Network.getCookies': 'sensitive-observation',
+  'Network.loadNetworkResource': 'observation',
   'Network.setCookie': 'sensitive-mutation',
   'Page.addScriptToEvaluateOnNewDocument': 'page-mutation',
   'Page.captureScreenshot': 'observation',
@@ -51,6 +54,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Page.getFrameTree': 'observation',
   'Page.getLayoutMetrics': 'observation',
   'Page.getNavigationHistory': 'observation',
+  'Page.getResourceContent': 'observation',
   'Page.handleJavaScriptDialog': 'page-mutation',
   'Page.navigate': 'page-mutation',
   'Page.navigateToHistoryEntry': 'page-mutation',
@@ -407,9 +411,10 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    // #488 added captureHiddenTabFrame → Page.captureScreenshot and revealHiddenTab → Target.activateTarget.
-    expect(inventory).toHaveLength(149);
-    expect(digest).toBe('sha256:bbb3ed60afbf1826b0230d7b817a529700207644bd13c819443ed0ffaaa5262d');
+    // #488 added captureHiddenTabFrame → Page.captureScreenshot and revealHiddenTab → Target.activateTarget;
+    // #470 added the source-map loaders (Page.getResourceContent, Network.loadNetworkResource, IO.read/close).
+    expect(inventory).toHaveLength(154);
+    expect(digest).toBe('sha256:54d32ad7ea165fb2afdf0431143f4a7b9ab40ddde3261a34113b9b81f39d9b33');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

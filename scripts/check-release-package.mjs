@@ -68,6 +68,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/lib/runtime-dir.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs',
+  'package/skills/chrome-cdp-ex/scripts/lib/source-maps.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs',
 ];
