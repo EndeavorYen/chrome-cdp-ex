@@ -250,6 +250,19 @@
   (`chrome-cdp-ex.daemon-crash.v1`), and the client's error names the cause:
   `Connection closed before response: the daemon for this tab crashed (…)`.
   The same repro now passes 16 of 16, and a click takes about 0.8 s instead of 2.5–3.4 s.
+* `scroll`, `scroll to top|bottom`, `scanshot` and the `table --collect` container scroll no longer
+  follow a page's CSS `scroll-behavior: smooth`. Their page scripts used `window.scrollTo(x, y)`,
+  `window.scrollBy(x, y)` and `scrollTop =` writes, which animate on such a page, so the `scroll`
+  receipt's `Position:` showed the start of the animation, `scroll to bottom` could report
+  "Did not reach document bottom", and `scanshot` captured segments mid-scroll. They now call
+  `Element.prototype.scrollTo`/`scrollBy` with `behavior: 'instant'` on the document's scrolling
+  element (or the overflow container), not `window.scrollTo`/`scrollBy`. That also keeps them working on
+  pages that wrap the window methods with a fixed `(x, y)` signature, which would turn an options
+  object into `(0, 0)`. The table collector uses its isolated world's own `Element.prototype.scrollTo`,
+  and the Playwright export of `scroll to top|bottom` uses the same calls. `scanshot` now reads the
+  position back after each segment scroll. A segment that did not land within 2px is marked
+  `(landed at y=…, expected y=…)`, and a `Warning:` line points to `fullshot`
+  ([#486](https://github.com/EndeavorYen/chrome-cdp-ex/issues/486)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 
