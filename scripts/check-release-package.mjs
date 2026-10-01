@@ -2,7 +2,7 @@
 
 import { spawnSync } from 'child_process';
 import { statSync } from 'fs';
-import { basename, posix, resolve } from 'path';
+import { basename, dirname, posix, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 export const REQUIRED_RELEASE_ENTRIES = [
@@ -45,6 +45,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs',
+  'package/skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs',
@@ -107,8 +108,18 @@ export function validatePackageInventory(entries, fixture, packageVersion) {
   return errors;
 }
 
+// Give tar a bare file name and run it in the archive's directory. GNU tar (first
+// on PATH under Git for Windows) reads `C:\dir\x.tgz` as `host:path` and tries a
+// remote host named `C`. `--force-local` fixes that only for GNU tar; bsdtar
+// (macOS, Windows System32) rejects the flag. A relative name works for both.
+function tarArchive(tarballPath) {
+  const absolute = resolve(tarballPath);
+  return { file: basename(absolute), cwd: dirname(absolute) };
+}
+
 export function listTarEntries(tarballPath) {
-  const listed = spawnSync('tar', ['-tzf', tarballPath], { encoding: 'utf8' });
+  const archive = tarArchive(tarballPath);
+  const listed = spawnSync('tar', ['-tzf', archive.file], { cwd: archive.cwd, encoding: 'utf8' });
   if (listed.status !== 0) {
     const detail = listed.stderr.trim() || `tar exited with status ${listed.status}`;
     return { entries: [], error: detail };
@@ -120,7 +131,8 @@ export function listTarEntries(tarballPath) {
 }
 
 function extractTarText(tarballPath, entry) {
-  const extracted = spawnSync('tar', ['-xOzf', tarballPath, entry], { encoding: 'utf8' });
+  const archive = tarArchive(tarballPath);
+  const extracted = spawnSync('tar', ['-xOzf', archive.file, entry], { cwd: archive.cwd, encoding: 'utf8' });
   if (extracted.status !== 0) {
     const detail = extracted.stderr.trim() || `tar exited with status ${extracted.status}`;
     return { text: '', error: detail };

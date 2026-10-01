@@ -5,14 +5,18 @@ import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inven
 import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import {
   fixture,
+  INVENTORY_BUILD_TIMEOUT,
+  MULTI_BUILD_TIMEOUT,
   packageVersion,
   rootDir,
   scriptPath,
   source,
+  yieldToEventLoop,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
-describe('Runtime v3 final dispatch characterization', { timeout: 90_000 }, () => {
-  it('freezes the exact 81-command daemon/CLI ownership graph and deletion allowlist', () => {
+describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUILD_TIMEOUT }, () => {
+  it('freezes the exact 81-command daemon/CLI ownership graph and deletion allowlist', async () => {
+    await yieldToEventLoop();
     expect(buildRuntimeDispatchInventory(source)).toEqual(fixture);
     expect(fixture).toMatchObject({
       schema: 'chrome-cdp-ex.runtime-dispatch.v1',
@@ -69,7 +73,7 @@ describe('Runtime v3 final dispatch characterization', { timeout: 90_000 }, () =
         needsTarget: command.needsTarget,
       });
     }
-  }, 60_000);
+  }, INVENTORY_BUILD_TIMEOUT);
 
   it('covers every target command once by canonical owner and every alias by the same branch', () => {
     const daemonGroups = fixture.daemonGroups.filter(group => group.commands.length === 1
@@ -88,31 +92,38 @@ describe('Runtime v3 final dispatch characterization', { timeout: 90_000 }, () =
     }
   });
 
-  it('fails closed on route and execution cardinality drift', () => {
+  it('fails closed on route and execution cardinality drift', async () => {
+    await yieldToEventLoop();
     expect(buildRuntimeDispatchInventory(source.replace(
       'if (!sameStringArray(builderNames, expectedNames)) {',
       'if (false && !sameStringArray(builderNames, expectedNames)) {',
     ))).not.toEqual(fixture);
+    await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "case 'meta': {",
       "case 'meta': case 'summary': {",
     ))).toThrow(/protocol route mixed/);
+    await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "if (cmd === '_daemon')",
       "if (cmd === 'planted-direct') return finish(0);\n  if (cmd === '_daemon')",
     ))).toThrow(/direct CLI routes/);
+    await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'run: step => handleCommand({ cmd: step.cmd, args: step.args || [] })',
       'run: step => globalThis.handleCommand({ cmd: step.cmd, args: step.args || [] })',
     ))).toThrow(/recursive daemon routes|workflow capability repeat/);
+    await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const route = await executeDaemonApplicationRoute({',
       'const route = await fakeLegacyRoute({',
     ))).toThrow(/application ownership|general application dispatch/);
+    await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const runOne = command => runWithBatchLookahead(session, command.nextCommand, () => handleCommand({',
       "await handleCommand({ cmd: 'summary', args: [] });\n      const runOne = command => runWithBatchLookahead(session, command.nextCommand, () => handleCommand({",
     ))).toThrow(/workflow capability batch must call handleCommand exactly once/);
+    await yieldToEventLoop();
     try {
       expect(buildRuntimeDispatchInventory(source.replace(
         "case 'stop': return { ok: true, result: '', stopAfter: true };",
@@ -121,17 +132,20 @@ describe('Runtime v3 final dispatch characterization', { timeout: 90_000 }, () =
     } catch (error) {
       expect(error.message).toMatch(/duplicate daemon route labels: report/);
     }
+    await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,',
       'planted: capabilities => createDaemonActionHandlers(capabilities).loadall,',
     ))).toThrow(/exactly cover.*68 target commands/);
+    await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const applicationRoute = applicationDispatcher.route(cmd);',
       "await executeDaemonApplicationRoute({ cmd: 'html', args, targetBound: true }, applicationDispatcher);\n      const applicationRoute = applicationDispatcher.route(cmd);",
     ))).toThrow(/exactly one general application dispatch/);
-  }, 90_000);
+  }, MULTI_BUILD_TIMEOUT);
 
-  it('keeps check mode read-only and rejects stale fixture/source drift', () => {
+  it('keeps check mode read-only and rejects stale fixture/source drift', async () => {
+    await yieldToEventLoop();
     const result = spawnSync(process.execPath, [scriptPath, '--check'], {
       cwd: rootDir,
       encoding: 'utf8',

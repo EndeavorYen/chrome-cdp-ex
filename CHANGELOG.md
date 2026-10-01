@@ -110,6 +110,17 @@
     event loop, after a new daemon answers its first request: a tab's set goes once it is older than
     7 days and not among the 20 newest. Tabs with a running daemon and the daemon's own tab are kept,
     and files Windows holds open are skipped. A log past 5 MB is rotated to `.log.1`.
+* Windows toolchain ([#463](https://github.com/EndeavorYen/chrome-cdp-ex/issues/463)).
+  `check-release-package.mjs` now hands `tar` a relative archive name and sets `cwd` to the archive's
+  folder. GNU tar, which Git for Windows puts first on PATH, read `C:\…\x.tgz` as `host:path`; bsdtar
+  works the same as before. `spawn-debug-browser`, `doctor` and `npm run smoke:live` now share one
+  browser lookup. It also finds per-user Chrome, Edge and Brave installs under `%LOCALAPPDATA%` and
+  follows `%ProgramFiles%` / `%ProgramFiles(x86)%`. The smoke used to know only macOS and Linux paths.
+  Test fixes: the fill-receipt shell test feeds its script on stdin, because MSYS `sh -c` dropped
+  backslashes. The AST-inventory tests yield to the event loop between builds. A file of back-to-back
+  synchronous builds had starved the vitest worker past its 60 s RPC timeout (`Timeout calling
+  "onTaskUpdate"`). Those tests also get explicit budgets sized for a 2-worker hosted runner. CI gains
+  a `test-windows` job on `windows-latest`.
 
 * Attaching to a running browser on Linux now records its profile, exe and launch flags even when no
   remembered profile is behind that port, e.g. a browser chrome-cdp-ex did not spawn, or one attached

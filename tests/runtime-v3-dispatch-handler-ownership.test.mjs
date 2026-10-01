@@ -2,6 +2,7 @@ import { describe, it } from 'vitest';
 
 import {
   expectInventoryDrift,
+  INVENTORY_BUILD_TIMEOUT,
   source,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
@@ -43,5 +44,5 @@ describe('Runtime v3 handler ownership characterization', () => {
       '  loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,\n',
       '',
     ),
-  ])('detects handler ownership mutation %#', expectInventoryDrift, 15_000);
+  ])('detects handler ownership mutation %#', expectInventoryDrift, INVENTORY_BUILD_TIMEOUT);
 });

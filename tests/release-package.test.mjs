@@ -56,6 +56,7 @@ const requiredEntries = [
   'skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs',
   'skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs',
   'skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs',
+  'skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs',
   'skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs',
   'skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs',
   'skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs',
@@ -102,13 +103,16 @@ beforeAll(() => {
     writeFileSync(path, entry);
   }
   incompleteTarball = join(tempRoot, 'incomplete.tgz');
-  const archived = spawnSync('tar', ['-czf', incompleteTarball, '-C', fixtureRoot, 'package'], {
+  // Relative paths with cwd: GNU tar (Git for Windows) reads an absolute
+  // `C:\...` archive path as `host:path`, and bsdtar rejects `--force-local`.
+  const archived = spawnSync('tar', ['-czf', 'incomplete.tgz', '-C', 'incomplete', 'package'], {
+    cwd: tempRoot,
     encoding: 'utf8',
-    shell: process.platform === 'win32',
   });
   expect(archived.status, archived.stderr).toBe(0);
   expect(readFileSync(incompleteTarball).length).toBeGreaterThan(0);
-});
+  // A real npm pack plus tar; the 10 s default hook budget is too tight on a loaded hosted runner.
+}, 120_000);
 
 afterAll(() => {
   rmSync(tempRoot, { recursive: true, force: true });
