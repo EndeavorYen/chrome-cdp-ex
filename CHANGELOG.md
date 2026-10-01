@@ -12,6 +12,17 @@
   gets a reply, even for an unknown method. `setup --verify` and `benchmark:mcp` now send and read
   newline-delimited JSON, so they catch a framing regression
   ([#454](https://github.com/EndeavorYen/chrome-cdp-ex/issues/454)).
+### Bug Fixes
+
+* Target commands no longer spawn `git rev-parse` for the daemon freshness check. A new
+  `scripts/lib/git-head.mjs` reads `.git` directly (`HEAD`, symbolic refs, loose refs, `packed-refs`,
+  worktree/submodule `gitdir:` files and `commondir`), so the MCP server's event loop no longer stalls
+  on a synchronous spawn. It is not memoised: the in-process MCP server outlives a checkout, and a
+  frozen commit would mark every newly started daemon stale. `gitCommit` keeps its 12-character shape,
+  and a checkout with no `.git` (tarball install) or an unreadable ref store (unborn branch, reftable)
+  still yields `null`. On one Windows machine `collectDaemonMetadata()` went from about 28-36 ms to
+  about 2-4 ms for the first call in a process and under 1 ms after that
+  ([#461](https://github.com/EndeavorYen/chrome-cdp-ex/issues/461)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 

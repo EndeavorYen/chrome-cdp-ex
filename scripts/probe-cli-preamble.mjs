@@ -7,7 +7,7 @@
 //          Logs "<ms since process time origin>  <event>" lines (net connect/write/data/close, fetch, WebSocket,
 //          setTimeout >= 5 ms, cpuUsage, exit) to TRACE_OUT. The same file does both jobs.
 // It never edits cdp.mjs. Named-import bindings of child_process are not wrapped, so spawnSync is not logged;
-// the git spawn shows up as the gap between a pipe connect and its `meta` write.
+// daemon metadata collection (a git spawn before #461) shows up as the gap between a pipe connect and its `meta` write.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
