@@ -76,6 +76,21 @@
   and replayable); compounds such as `session_id`, `access_token` and `card_number` still do. `type`
   no longer treats its typed text as a field name. `#search`, `#pinned-note` and `[name=q]` stay
   readable ([#485](https://github.com/EndeavorYen/chrome-cdp-ex/issues/485)).
+* `reload` and `nav` no longer report success when a dismissed `beforeunload` prompt cancelled them.
+  With dialog handling set to dismiss, Chrome answers a cancelled `Page.reload` with `{}` and no new
+  main-frame document. The old document still reads `complete`, so `reload` printed `Page reloaded` /
+  `Outcome: changed`. A cancelled `Page.navigate` returns `net::ERR_ABORTED`, which `nav` printed as
+  `Kind: unknown`. Both now fail (exit 1, `dispatch.ok=false`) with `Kind: navigation-cancelled` when a
+  `beforeunload` was dismissed during the command and no main-frame `frameNavigated` followed. Next is
+  `cdp dialog <target> accept`, with a line saying that discards the page's unsaved changes and naming
+  the retry command, plus `cdp status <target>` as the way to keep them. A cancelled reload keeps refs
+  and console/network buffers, because the page did not change. A slow `beforeunload` handler opens
+  its prompt after Chrome has already answered `Page.reload`, or after the tab shows the pending URL
+  to `nav`'s URL poll. In dismiss mode, `reload` therefore waits up to 3 s for either the new document
+  or the prompt, and `nav` waits up to 3 s for `Page.navigate`'s own answer and re-checks the evidence
+  after a successful dispatch. Accept mode never waits. An `ERR_ABORTED` without that evidence keeps
+  its old classification
+  ([#490](https://github.com/EndeavorYen/chrome-cdp-ex/issues/490)).
 * The stdio MCP server speaks MCP stdio framing. It used to wrap every reply in LSP-style
   `Content-Length` headers, which a line-reading MCP client (the official SDKs) cannot parse. Replies
   are now one JSON line each. A client that sends `Content-Length` headers still gets header-framed
