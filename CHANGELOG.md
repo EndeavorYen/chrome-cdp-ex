@@ -119,6 +119,14 @@
   (`/proc/net/tcp{,6}` → `/proc/<pid>/fd`). The scan runs only when nothing else identified the
   profile and took 8–17 ms over about 850 processes; it records nothing when unsure and stays off for
   remote hosts and non-Linux platforms ([#478](https://github.com/EndeavorYen/chrome-cdp-ex/issues/478)).
+* An action after `perceive -i` no longer says `Outcome: no-change` when its only effect was text in a
+  non-interactive node, such as a status `<p>` going from `smooth:not-clicked` to `smooth:clicked`.
+  The settle diff reuses the last perceive's shape, and the `-i` shape drops that text, so both sides
+  of the diff were blind to it. The `-i` tree still prints controls only, but each `-i` perceive now
+  keeps the visible StaticText it hid as diff-only lines, and the action settle, `perceive
+  --since-action` and `perceive -i --diff` compare them. Refs and the printed tree are unchanged, and a
+  click that changes nothing is still `no-change`
+  ([#487](https://github.com/EndeavorYen/chrome-cdp-ex/issues/487)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 

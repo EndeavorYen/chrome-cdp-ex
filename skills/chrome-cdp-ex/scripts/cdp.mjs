@@ -6171,6 +6171,29 @@ function noBaselineActionDiffText() {
   return 'No changes detected.';
 }
 
+// `perceive -i` prints controls only, so two -i trees cannot show a click whose
+// only effect is page text such as a status <p> (#487). The diff source of a
+// perceive is its printed output plus the StaticText the -i filter hid; action
+// settle, --since-action and --diff compare diff sources, not printed trees.
+function perceiveDiffSourceText(output, hiddenTextLines = []) {
+  if (!output || !hiddenTextLines?.length) return output;
+  return `${output}\n${hiddenTextLines.join('\n')}`;
+}
+
+function rememberPerceiveDiffSource(store, output, hiddenTextLines = []) {
+  store.diffSource = hiddenTextLines?.length
+    ? { output, text: perceiveDiffSourceText(output, hiddenTextLines) }
+    : null;
+}
+
+// Paths that overwrite `store.output` without a tree (cards, pdf-viewer, hover
+// discard) leave a stale diffSource behind; it only applies to its own output.
+function perceiveStoreDiffSource(store) {
+  const output = store?.output ?? null;
+  if (output && store.diffSource?.output === output) return store.diffSource.text;
+  return output;
+}
+
 function isPdfViewerPerceiveOutput(output) {
   return String(output || '').includes('chrome-cdp-ex.pdf-viewer.v1');
 }
@@ -12860,6 +12883,7 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   }
 
   const treeLines = [];
+  const hiddenTextLines = [];
   const contentBodyLines = new Set();
   const visited = new Set();
   let chromeLinesEmitted = 0;
@@ -12966,6 +12990,12 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
     // --interactive mode: only show interactive elements and their immediate structural parents
     if (interactiveOnly && !isInteractive && !ENRICHED_ROLES.has(role)) {
+      // Keep the page text this filter hides as diff-only lines (#487), so a
+      // settle / --since-action / --diff in this shape still sees a status <p>
+      // change. Same visibility rule the default shape prints text with.
+      if (role === 'StaticText' && shouldShowAxNode(node, true, parentNode)) {
+        hiddenTextLines.push(formatAxNode(node, depth));
+      }
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
         visit(child, depth, node, tableAncestorId, region);
       }
@@ -13105,7 +13135,7 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     outLines.push(`Body truncated. Next: cdp text ${target} --auto`);
   }
 
-  return { treeLines: outLines, refNodeIds };
+  return { treeLines: outLines, refNodeIds, hiddenTextLines: interactiveOnly ? hiddenTextLines : [] };
 }
 
 // Browser-side script for perceiveStr — extracted for readability and testability.
@@ -13538,7 +13568,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     targetPrefix: opts.targetPrefix || '<target>',
   });
   let treeLines = builtTree.treeLines;
-  const { refNodeIds } = builtTree;
+  const { refNodeIds, hiddenTextLines } = builtTree;
   if (frame) storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
 
   // === Batch-resolve @ref bounding rects (parallel, non-scrolling) ===
@@ -13673,8 +13703,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   const markPerceived = () => {
     lastPerceiveStore.output = output;
+    rememberPerceiveDiffSource(lastPerceiveStore, output, hiddenTextLines);
     lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
-    if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
+    if (frame) rememberFramePerceiveOutput(refState, frame.ref, perceiveStoreDiffSource(lastPerceiveStore));
     // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
     if (refState && typeof refState === 'object') {
       refState.generation = (refState.generation || 0) + 1;
@@ -13688,14 +13719,14 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     if (!diffBaseline) {
       return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
     }
-    return formatPerceiveDiffOutput(diffBaseline, output, { mode: 'since-action' });
+    return formatPerceiveDiffOutput(diffBaseline, perceiveStoreDiffSource(lastPerceiveStore), { mode: 'since-action' });
   }
 
   // Diff mode: compare with previous perceive output.
   if (diffMode && lastPerceiveStore.output) {
-    const previousOutput = lastPerceiveStore.output;
+    const previousOutput = perceiveStoreDiffSource(lastPerceiveStore);
     markPerceived();
-    return formatPerceiveDiffOutput(previousOutput, output);
+    return formatPerceiveDiffOutput(previousOutput, perceiveStoreDiffSource(lastPerceiveStore));
   }
 
   markPerceived();
@@ -13755,8 +13786,8 @@ async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPer
 
 async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
   const mode = opts.sinceAction ? 'since-action' : 'diff';
-  const baseline = opts.sinceAction ? opts.diffBaseline : lastPerceiveStore.output;
-  const currentOutput = await perceiveStr(
+  const baseline = opts.sinceAction ? opts.diffBaseline : perceiveStoreDiffSource(lastPerceiveStore);
+  const printedOutput = await perceiveStr(
     cdp,
     sid,
     consoleBuf,
@@ -13766,6 +13797,7 @@ async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, las
     { ...opts, sinceAction: false, diff: false, diffBaseline: null },
     refState
   );
+  const currentOutput = perceiveStoreDiffSource(lastPerceiveStore) ?? printedOutput;
   if (!baseline) {
     const header = parsePerceiveHeader(currentOutput);
     const target = opts.targetPrefix || '<target>';
@@ -23712,7 +23744,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const actionTarget = target && typeof target === 'object'
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
-    const baselineFromTarget = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
+    const baselineFromTarget = baselineOutputForActionTarget(refState, perceiveStoreDiffSource(lastPerceiveStore), actionTarget);
     let settleBaseline = actionSettleBaseline(
       baselineFromTarget,
       lastPerceiveStore.snapshotOpts || null,
@@ -23750,7 +23782,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         refState,
       );
       settleBaseline = {
-        output: before,
+        output: perceiveStoreDiffSource(lastPerceiveStore) ?? before,
         opts: perceiveSnapshotOpts(topLevelOpts),
       };
     }
@@ -28649,7 +28681,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
-  rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
+  rememberFramePerceiveOutput, baselineOutputForActionTarget, perceiveStoreDiffSource, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, assertNotPdfViewerPage, pageInfoModel,
   extractPdfPageText, loadPdfBytesForText,
