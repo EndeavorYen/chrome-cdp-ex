@@ -83,6 +83,22 @@
   old line started a different profile. Records written before this fix have no flags, so the first
   relaunch from one gets only the `--headless=new` fallback
   ([#426](https://github.com/EndeavorYen/chrome-cdp-ex/issues/426)).
+* A failed action now always prints an `Error:` line with the original message before `Kind:` and `Next:`.
+  Since #375 the text failure block was only `Kind: <kind>` / `Next: <command>`, so an unclassified failure
+  such as `click <t> "text=套用設定"` printed `Kind: unknown` and a `perceive` command, which read like a
+  receipt; the message was only in `--format json`. The same applied to `nav` with a rejected URL and a short
+  `scroll to bottom`. A named-control miss (`Named control not found` / `not unique`) is now `Kind: selector`,
+  names the input, and points at the exact visible text or an `@ref`; a CSS miss on a bare word such as
+  `click <t> Save` says it was read as a tag selector and suggests `text=Save`. `click` / `jsclick` also
+  accept Playwright-style `text=Save`, `text="Save"` and `text='Save'` as aliases for the visible-text form,
+  using the same exact, whitespace-normalised match (not Playwright's substring match)
+  ([#427](https://github.com/EndeavorYen/chrome-cdp-ex/issues/427)).
+* One-line action receipts no longer fall back to `Next: cdp list` when the target is known. An in-page
+  action now suggests `perceive <target> --since-action`, `nav` or a click that navigated the tab suggests
+  `perceive <target> -C -d 8`, and `list` remains only when the receipt has no target. `click` / `jsclick`
+  receipts add `Outcome: changed` or `Outcome: no-change` when the settle-diff or a followed navigation
+  observed it; an unobserved named click prints no outcome word
+  ([#430](https://github.com/EndeavorYen/chrome-cdp-ex/issues/430)).
 * A target command with `CDP_PORT` set now takes its page list from a running daemon on that same
   endpoint instead of opening a new browser connection three times: `list_raw` requests now carry `args`,
   which the daemon had rejected. A daemon now reports its `cdpEndpoint` in `meta`; a daemon on another

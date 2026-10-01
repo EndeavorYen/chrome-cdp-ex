@@ -1698,9 +1698,9 @@ describe('ActionResult', () => {
       onActionResult: (result) => { captured = result; },
     });
 
-    expect(text).toBe('Clicked @4. Next: cdp list');
+    expect(text).toBe('Clicked @4. Outcome: changed. Next: cdp list');
     expect(text).not.toMatch(/click: dispatched/);
-    expect(text).not.toMatch(/Outcome:/);
+    expect(text).not.toMatch(/^Outcome:/m);
     expect(text).not.toMatch(/Receipt:/);
     expect(text).not.toMatch(/Verdict:/);
     expect(text).not.toMatch(/button disabled/);
@@ -2464,7 +2464,7 @@ describe('ActionResult', () => {
       new Error('Element not found: #save'),
       { action: 'click', target: { targetId: 'abc123', input: '#save' } }
     );
-    expect(text).toBe('Kind: selector\nNext: cdp perceive abc123 -C -d 8');
+    expect(text).toBe('Error: Element not found: #save\nKind: selector\nNext: cdp perceive abc123 -C -d 8');
     expect(text).not.toContain('Original:');
     expect(text).not.toContain('Reason:');
   });
@@ -4305,7 +4305,7 @@ describe('Perceive diff baseline', () => {
     expect(genericChanged.outcome.status).toBe('changed');
     expect(genericChanged.receipt.recoveryHint).toBe('Continue from the observed action evidence.');
     expect(T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked Save' }))
-      .toBe('Clicked Save. Next: cdp list');
+      .toBe('Clicked Save. Outcome: changed. Next: cdp perceive ABC123 --since-action');
   });
 
   it('#303 leftover-ax-scroll +++ Added does not reprint signed-commit / time GMT selector chrome', () => {
@@ -5005,7 +5005,7 @@ describe('Perceive diff baseline', () => {
     });
     expect(genericChanged.outcome.status).toBe('changed');
     const clickOut = T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked Save' });
-    expect(clickOut).toBe('Clicked Save. Next: cdp list');
+    expect(clickOut).toBe('Clicked Save. Outcome: changed. Next: cdp perceive ABC123 --since-action');
     expect(clickOut).not.toMatch(/^Outcome:/m);
     expect(clickOut).not.toMatch(/^Receipt:/m);
     expect(clickOut).not.toMatch(/^Verdict:/m);

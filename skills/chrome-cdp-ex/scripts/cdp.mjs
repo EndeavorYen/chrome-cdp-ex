@@ -67,6 +67,7 @@ import {
   classifyActionFailure,
   formatActionFailure,
   formatFillValueLine,
+  formatActionFailureLines,
   isClassifiedActionFailureText,
   actionFailurePage,
   isExpectedClipboardNoChange,
@@ -6755,7 +6756,29 @@ function isHandoffNextCommand(command) {
   return false;
 }
 
-function defaultMutatingNextCommand(result = {}) {
+function actionNavigatedSameTarget(result = {}, dispatchText = '') {
+  const action = String(result.action || '').toLowerCase();
+  if (action === 'nav' || action === 'navigate') return true;
+  if (result.effects?.navigation?.changed === true) return true;
+  return /(?:^|\n)URL: \S/.test(String(dispatchText || result.target?.dispatchText || ''));
+}
+
+// #430: when no diagnosis or recovery names a concrete next step, the receipt used to
+// fall back to `cdp list`, which re-enumerates tabs and never helps after an in-page
+// action. With a known target, look at that page instead: `perceive --since-action`
+// shows what the action changed; after a same-tab navigation the old page is gone, so
+// a fresh golden-path perceive is the useful view. `list` stays only when the receipt
+// has no target to point at.
+function defaultMutatingFallbackNextCommand(result = {}, { dispatchText = '' } = {}) {
+  const targetId = result.target?.targetId;
+  if (!targetId) return 'cdp list';
+  const prefix = targetPrefixForDisplay(targetId);
+  return actionNavigatedSameTarget(result, dispatchText)
+    ? `cdp perceive ${prefix} -C -d 8`
+    : `cdp perceive ${prefix} --since-action`;
+}
+
+function defaultMutatingNextCommand(result = {}, { dispatchText = '' } = {}) {
   const candidates = [
     result.effects?.failure?.nextCommand,
     result.effects?.diagnosis?.nextCommand,
@@ -6764,15 +6787,30 @@ function defaultMutatingNextCommand(result = {}) {
     result.verdict?.primaryNextStep,
   ].filter(Boolean);
   const next = candidates.find(command => !isHandoffNextCommand(command));
-  return next || 'cdp list';
+  return next || defaultMutatingFallbackNextCommand(result, { dispatchText });
 }
 
 function formatFailedDispatchText(result = {}) {
-  const kind = result.effects?.failure?.kind
-    || result.effects?.diagnosis?.kind
-    || 'unknown';
-  const valueLine = formatFillValueLine(result.effects?.failure || {});
-  return [`Kind: ${kind}`, ...(valueLine ? [valueLine] : []), `Next: ${defaultMutatingNextCommand(result)}`].join('\n');
+  const failure = result.effects?.failure || {};
+  const diagnosis = result.effects?.diagnosis || {};
+  return formatActionFailureLines({
+    message: result.dispatch?.error || failure.originalMessage || '',
+    reason: failure.reason || diagnosis.reason || result.outcome?.reason || '',
+    kind: failure.kind || diagnosis.kind || 'unknown',
+    detailLines: [formatFillValueLine(failure)],
+    nextCommand: defaultMutatingNextCommand(result),
+  });
+}
+
+const CLICK_OUTCOME_WORD_ACTIONS = new Set(['click', 'jsclick']);
+
+// #430: a one-word outcome on click receipts, only from evidence the click path already
+// collected (settle-diff AX change or a followed navigation). Unobserved named clicks
+// (report-only, outcome `dispatched`) print no word rather than a guess.
+function clickOutcomeWord(result = {}) {
+  if (!CLICK_OUTCOME_WORD_ACTIONS.has(String(result.action || '').toLowerCase())) return '';
+  const status = result.outcome?.status;
+  return status === 'changed' || status === 'no-change' ? status : '';
 }
 
 function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}) {
@@ -6781,10 +6819,11 @@ function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}
   }
   const outcome = String(dispatchText || '').trim()
     || (result.outcome?.status ? String(result.outcome.status) : `${result.action}: dispatched`);
-  const next = defaultMutatingNextCommand(result);
+  const next = defaultMutatingNextCommand(result, { dispatchText });
   const one = outcome.replace(/\.+$/, '');
   if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return one;
-  return `${one}. Next: ${next}`;
+  const word = clickOutcomeWord(result);
+  return word ? `${one}. Outcome: ${word}. Next: ${next}` : `${one}. Next: ${next}`;
 }
 
 function formatActionText(result, { compact = false, full = false, dispatchText = '' } = {}) {
@@ -9340,7 +9379,7 @@ function playwrightStepFromCommand(action = {}) {
     case 'jsclick': {
       const selector = args[0] === '--js' || args[0] === '-j' ? args[1] : args[0];
       if (isNamedClickQuery(selector)) {
-        return finish([`await page.getByRole('link', { name: ${JSON.stringify(selector)} }).click();`]);
+        return finish([`await page.getByRole('link', { name: ${JSON.stringify(namedClickQueryName(selector))} }).click();`]);
       }
       if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
       return finish([`await page.locator(${JSON.stringify(selector)}).click();`]);
@@ -13252,11 +13291,56 @@ function isLikelyCssSelector(value) {
   return next === '#' || next === '.' || next === '[' || next === '*' || next === ':' || /^[A-Za-z]/.test(next || '');
 }
 
+// #427: Playwright-style `text=Save`, `text="Save"`, and `text='Save'` are aliases for the
+// named form `click <target> "Save"`: the same exact, whitespace-normalised match against a
+// button or link's aria-label or visible text. Unquoted `text=` is not Playwright's
+// case-insensitive substring match. `text=` also forces a name lookup for a single word
+// that would otherwise parse as a CSS tag selector (`text=Save` vs `Save`).
+const TEXT_SELECTOR_PREFIX_RE = /^text=/i;
+
+function textSelectorName(value) {
+  const selector = String(value || '').trim();
+  if (!TEXT_SELECTOR_PREFIX_RE.test(selector)) return null;
+  const raw = selector.replace(TEXT_SELECTOR_PREFIX_RE, '').trim();
+  const quoted = raw.match(/^(["'])([\s\S]*)\1$/);
+  return (quoted ? quoted[2] : raw).replace(/\s+/g, ' ').trim();
+}
+
+function namedClickQueryName(value) {
+  const fromText = textSelectorName(value);
+  return fromText == null ? String(value || '').replace(/\s+/g, ' ').trim() : fromText;
+}
+
 function isNamedClickQuery(value) {
   const selector = String(value || '').trim();
   if (!selector) return false;
+  if (TEXT_SELECTOR_PREFIX_RE.test(selector)) return true;
   if (isRef(selector) || isCursorRef(selector)) return false;
   return !isLikelyCssSelector(selector);
+}
+
+// #427: a CSS miss says what to try instead. A bare word (`Save`) parses as a tag selector,
+// so point at the text= form that forces a visible-text lookup.
+function cssClickMissMessage(selector, error) {
+  const text = String(error || '');
+  if (!text.startsWith('Element not found')) return text;
+  const bareWord = /^[A-Za-z][\w-]*$/.test(String(selector || '').trim());
+  return bareWord
+    ? `${text}. "${selector}" was read as a CSS tag selector; for a button or link with that visible text use "text=${selector}", or an @ref from perceive.`
+    : `${text}. No element matches this CSS selector; pass the control's visible text or an @ref from perceive.`;
+}
+
+function namedClickMissMessage(input, error) {
+  const text = String(error || '');
+  const name = namedClickQueryName(input);
+  const from = textSelectorName(input) == null ? '' : ` (from ${String(input).trim()})`;
+  if (text.startsWith('Named control not found')) {
+    return `Named control not found: ${JSON.stringify(name)}${from}. No button or link has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.`;
+  }
+  if (text.startsWith('Named control is not unique')) {
+    return `Named control is not unique and none are in the viewport: ${JSON.stringify(name)}${from}. Pick one by @ref from perceive.`;
+  }
+  return text;
 }
 
 function clickFeedbackPolicy(selector, maybeName) {
@@ -13339,10 +13423,14 @@ function namedInViewportClickExpression(name) {
   })()`;
 }
 
-async function namedInViewportJsClickStr(cdp, sid, name) {
+async function namedInViewportJsClickStr(cdp, sid, input) {
+  const name = namedClickQueryName(input);
+  if (!name) {
+    throw new Error(`${String(input).trim()} has no visible text to match. Pass the button or link text, e.g. click <target> "text=Save", or an @ref from perceive.`);
+  }
   const result = await evalStr(cdp, sid, namedInViewportClickExpression(name));
   const parsed = JSON.parse(result);
-  if (!parsed.ok) throw new Error(parsed.error);
+  if (!parsed.ok) throw new Error(namedClickMissMessage(input, parsed.error));
   const href = await confirmClickFollowedHref(cdp, sid, parsed);
   const line = `JS-clicked <${parsed.tag || '?'}> "${parsed.text || ''}"`;
   const scrollLine = parsed.scrolled
@@ -13523,7 +13611,7 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
-  if (!r.ok) throw new Error(r.error);
+  if (!r.ok) throw new Error(cssClickMissMessage(selector, r.error));
   await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
   await confirmClickFollowedHref(cdp, sid, r);
   return `Clicked <${r.tag}> "${r.text}"`;
@@ -24445,6 +24533,7 @@ Usage: cdp <command> [args]
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
                                     name: accessible name; one-step jsclick, skinny URL receipt
+                                    text=Name / text="Name": same exact visible-name match (not Playwright substring)
 {{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
                                     name: accessible name; scrollIntoView if off-screen, no perceive dump
@@ -27184,7 +27273,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonRequestStorage, sleep,
   dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent,
   parseClickEventProbeOutput, clickProbeSawPageEvent,
-  isNamedClickQuery, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
+  isNamedClickQuery, namedClickQueryName, textSelectorName, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
   namedClickActionTarget, namedInViewportClickExpression, NAMED_IN_VIEWPORT_CLICK_OUTCOME,
   isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
   waitForHoverDomChange, hoverRecaptureShowsChange, discardHoverIdleBaseline,

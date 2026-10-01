@@ -227,7 +227,7 @@ describe('issue #323 scroll to top/bottom', () => {
       dispatch: () => T.scrollStr(cdp, 'sid', 'to', 'bottom'),
       feedbackPolicy: T.scrollFeedbackPolicy('to', 'bottom'),
       observe: async () => leftoverGoldenPathDump(),
-    })).rejects.toThrow(/^Kind: unknown\nNext: /);
+    })).rejects.toThrow(/^Error: Did not reach document bottom\. scrollY: \d+ \/ \d+ max \(at-bottom: no\)\nKind: unknown\nNext: /);
   });
 
   it('fails when scrollTo clamps short of the top', async () => {

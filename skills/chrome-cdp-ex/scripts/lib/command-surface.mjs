@@ -506,7 +506,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
       required: ['target', 'selector', 'confirm'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('CSS selector, @ref, @c ref, or accessible name.'),
+        selector: stringSchema('CSS selector, @ref, @c ref, accessible name, or text=<exact visible text>.'),
         js: booleanSchema('Use HTMLElement.click() fallback instead of CDP mouse events.'),
         qa: booleanSchema('Return a compact QA summary instead of full action evidence.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
@@ -972,7 +972,7 @@ function surfaceDigest(value) {
 }
 
 export const COMMAND_SURFACE_IDENTITY = '1fb42487586b870e23bd4559d120126d7db47393e742c067384fa2e1e0ffd914';
-export const MCP_SURFACE_IDENTITY = 'f8b46d0138186f60b9aaf3cb10947546a7514ee6c62a047da74425503407eed1';
+export const MCP_SURFACE_IDENTITY = 'bcf0203cb10103540d26dd6a35b12e6da1d2dd9c85722697d420baf6b20568ab';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }
