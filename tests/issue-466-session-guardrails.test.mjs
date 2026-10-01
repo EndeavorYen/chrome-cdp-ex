@@ -500,7 +500,7 @@ describe('#466 review: a listed command also denies the commands that do its job
     expect(policyPreflightMessage(deny('cookieset'), 'restore', ['--file', 'x.json'])).toContain('blocks "restore"');
     expect(policyPreflightMessage(deny('fill'), 'type', ['hi'])).toContain('blocks "type"');
     expect(policyPreflightMessage(deny('closetab'), 'evalraw', ['Network.setCookie', '{}']))
-      .toContain('blocks "evalraw" (CDP_DENY_ACTIONS lists "closetab")');
+      .toContain('blocks "evalraw" (any CDP_DENY_ACTIONS list denies raw CDP)');
     expect(policyPreflightMessage(deny('upload'), 'eval', ['1'])).toBeNull();
   });
 

@@ -341,7 +341,11 @@ function stepSuffix(step) {
 }
 
 export function deniedActionMessage(name, { step = null, because = null } = {}) {
-  const listed = because && because !== name.split(' ')[0] ? ` (CDP_DENY_ACTIONS lists "${because}")` : '';
+  const head = name.split(' ')[0];
+  // evalraw is denied by any deny-list (raw CDP can do every command's job), not by one entry.
+  const listed = head === RAW_CDP_COMMAND
+    ? ' (any CDP_DENY_ACTIONS list denies raw CDP)'
+    : because && because !== head ? ` (CDP_DENY_ACTIONS lists "${because}")` : '';
   return `${POLICY_PREFIX}CDP_DENY_ACTIONS blocks "${name}"${listed}${stepSuffix(step)}; ${step ? 'no step ran' : 'it did not run'}.`;
 }
 
