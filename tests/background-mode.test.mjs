@@ -13,9 +13,10 @@ function fakeCdp(responses = {}) {
 const methodsOf = cdp => cdp.send.mock.calls.map(call => call[0]);
 
 describe('isBackgroundMode', () => {
-  it('is off unless CDP_BACKGROUND is a truthy word', () => {
-    expect(T.isBackgroundMode({})).toBe(false);
-    expect(T.isBackgroundMode({ CDP_BACKGROUND: '' })).toBe(false);
+  // #488: on by default; only an explicit off word turns it off.
+  it('is on unless CDP_BACKGROUND is an off word', () => {
+    expect(T.isBackgroundMode({})).toBe(true);
+    expect(T.isBackgroundMode({ CDP_BACKGROUND: '' })).toBe(true);
     expect(T.isBackgroundMode({ CDP_BACKGROUND: '0' })).toBe(false);
     expect(T.isBackgroundMode({ CDP_BACKGROUND: 'false' })).toBe(false);
     for (const value of ['1', 'true', 'YES', 'on']) {
@@ -81,8 +82,8 @@ describe('open target creation (createOpenTarget)', () => {
   });
 
   it('parses open --background and falls back to the env', () => {
-    expect(T.parseOpenArgs(['https://example.test/'], {}).background).toBe(false);
-    expect(T.parseOpenArgs(['https://example.test/', '--background'], {}).background).toBe(true);
+    expect(T.parseOpenArgs(['https://example.test/'], { CDP_BACKGROUND: '0' }).background).toBe(false);
+    expect(T.parseOpenArgs(['https://example.test/', '--background'], { CDP_BACKGROUND: '0' }).background).toBe(true);
     expect(T.parseOpenArgs(['https://example.test/'], { CDP_BACKGROUND: '1' }).background).toBe(true);
   });
 });
@@ -99,7 +100,8 @@ describe('spawn-debug-browser --background', () => {
 
   it('adds the anti-throttling flags only in background mode', () => {
     const off = plan([]);
-    for (const flag of THROTTLE_FLAGS) expect(off.args).not.toContain(flag);
+    // #488: the occluded-windows flag alone is a spawn default; the throttling flags are not.
+    for (const flag of THROTTLE_FLAGS.slice(1)) expect(off.args).not.toContain(flag);
     expect(off.background).toBe(false);
     const on = plan(['--background']);
     for (const flag of THROTTLE_FLAGS) expect(on.args).toContain(flag);
@@ -135,7 +137,7 @@ describe('spawn-debug-browser --background', () => {
     const base = { port: 9341, profileDir: '/tmp/p', browser: 'chrome', host: '127.0.0.1' };
     const target = { targetId: 'PAGE1ABCDEF', url: 'about:blank' };
     expect(T.buildSpawnDebugBrowserModel({ ...base, background: true, headless: false }, { ok: true }, { target }).nextCommand)
-      .toBe('CDP_PORT=9341 CDP_BACKGROUND=1 cdp open <url>');
+      .toBe('CDP_PORT=9341 cdp open <url>');
     expect(T.buildSpawnDebugBrowserModel({ ...base, background: false }, { ok: true }, { target }).nextCommand)
       .toMatch(/^CDP_PORT=9341 cdp perceive PAGE1ABC/);
   });
@@ -152,9 +154,9 @@ describe('spawn-debug-browser --background', () => {
 });
 
 describe('open --background reaches the tab daemon', () => {
-  it('exports CDP_BACKGROUND=1 to the spawned daemon only in background mode', () => {
+  it('exports the chosen mode to the spawned daemon without changing the caller env', () => {
     const env = { PATH: '/bin' };
-    expect(T.backgroundDaemonEnv(false, env)).toBe(env);
+    expect(T.backgroundDaemonEnv(false, env)).toEqual({ PATH: '/bin', CDP_BACKGROUND: '0' });
     expect(T.backgroundDaemonEnv(true, env)).toEqual({ PATH: '/bin', CDP_BACKGROUND: '1' });
     expect(env).toEqual({ PATH: '/bin' });
   });

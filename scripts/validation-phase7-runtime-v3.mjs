@@ -29,7 +29,7 @@ const EXPECTED_FAILURE_PROOF = Object.freeze({
     commands: 81,
     application: 68,
     adapters: 13,
-    daemonGroups: 5,
+    daemonGroups: 6,
     deletions: 0,
   }),
 });

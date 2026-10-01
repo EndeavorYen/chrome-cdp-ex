@@ -224,16 +224,31 @@ const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_CDP_PROBE_PORT = '9224';
 const DEFAULT_DEBUG_PORT = 9222;
 const DEFAULT_SPAWN_READY_TIMEOUT_MS = 20000;
-// #415 background mode: opt-in via CDP_BACKGROUND=1 (or --background on open / spawn-debug-browser).
-// When on, no command sends Target.activateTarget or Page.bringToFront, and new tabs open in the background.
+// #415 background mode, the default since #488: no command sends Target.activateTarget or
+// Page.bringToFront, and new tabs open in their own unfocused window. CDP_BACKGROUND=0 (also false/no/off),
+// CDP_FOREGROUND=1 or `open --foreground` restore the old focusing behaviour.
 const BACKGROUND_THROTTLE_FLAGS = Object.freeze([
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
   '--disable-background-timer-throttling',
 ]);
+// Keeps a window that other windows cover rendering. spawn-debug-browser passes it by default (#488).
+const OCCLUDED_WINDOWS_FLAG = BACKGROUND_THROTTLE_FLAGS[0];
+const TRUTHY_ENV_WORD = /^(1|true|yes|on)$/i;
+const FALSY_ENV_WORD = /^(0|false|no|off)$/i;
+
+// The mode the environment asks for: true (background), false (foreground) or null (nothing explicit).
+// An opt-out wins over CDP_BACKGROUND=1, so a foreground request is never ignored.
+function explicitBackgroundChoice(env = process.env) {
+  if (TRUTHY_ENV_WORD.test(String(env?.CDP_FOREGROUND ?? '').trim())) return false;
+  const value = String(env?.CDP_BACKGROUND ?? '').trim();
+  if (FALSY_ENV_WORD.test(value)) return false;
+  if (TRUTHY_ENV_WORD.test(value)) return true;
+  return null;
+}
 
 function isBackgroundMode(env = process.env) {
-  return /^(1|true|yes|on)$/i.test(String(env?.CDP_BACKGROUND ?? '').trim());
+  return explicitBackgroundChoice(env) !== false;
 }
 const SPAWN_ALIVE_WAIT_CAP_MS = 60000;
 const TABLE_COLLECTION_DEADLINES = Object.freeze({
@@ -1575,11 +1590,11 @@ function listDaemonRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, re
   }
 }
 
-// Per-tab mode record (#441). `open --background` turns background mode on for the tab it creates.
-// The daemon record goes away when its daemon exits, so the mode lives in its own small file: a daemon
-// restarted later for that tab (idle exit, crash) reads it and skips Target.activateTarget without
-// CDP_BACKGROUND. `closetab` removes it; only the newest TAB_MODE_RECORDS_MAX are kept, so records of
-// tabs closed another way do not pile up.
+// Per-tab mode record (#441). An explicit choice on `open` (--background / --foreground, or the
+// environment) is kept for the tab it creates. The daemon record goes away when its daemon exits, so the
+// mode lives in its own small file: a daemon restarted later for that tab (idle exit, crash) reads it and
+// keeps that tab's mode when the restarting call does not choose one (#488). `closetab` removes it; only
+// the newest TAB_MODE_RECORDS_MAX are kept, so records of tabs closed another way do not pile up.
 const TAB_MODE_SCHEMA = 'chrome-cdp-ex.tab-mode.v1';
 const TAB_MODE_SUFFIX = '.mode.json';
 const TAB_MODE_RECORDS_MAX = 64;
@@ -1617,13 +1632,13 @@ function listTabModeRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, r
   }
 }
 
-function writeTabBackgroundMode(targetId, { runtimeDir = RUNTIME_DIR, writer = writeFileSync, remover = unlinkSync, now = Date.now } = {}) {
+function writeTabBackgroundMode(targetId, { background = true, runtimeDir = RUNTIME_DIR, writer = writeFileSync, remover = unlinkSync, now = Date.now } = {}) {
   try {
     mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
     writer(tabModePath(targetId, runtimeDir), JSON.stringify({
       schema: TAB_MODE_SCHEMA,
       targetId: String(targetId),
-      background: true,
+      background: background === true,
       setAt: new Date(now()).toISOString(),
     }), { mode: 0o600 });
   } catch {
@@ -1639,23 +1654,30 @@ function writeTabBackgroundMode(targetId, { runtimeDir = RUNTIME_DIR, writer = w
   return true;
 }
 
-function readTabBackgroundMode(targetId, { runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+// The recorded mode of a tab: true (background), false (foreground) or null (no record for it).
+function readTabMode(targetId, { runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
   try {
     const record = parseTabModeRecord(reader(tabModePath(targetId, runtimeDir), 'utf8'));
-    return Boolean(record && record.targetId === String(targetId) && record.background);
+    return record && record.targetId === String(targetId) ? record.background : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function readTabBackgroundMode(targetId, options = {}) {
+  return readTabMode(targetId, options) === true;
 }
 
 function removeTabMode(targetId, { runtimeDir = RUNTIME_DIR, remover = unlinkSync } = {}) {
   try { remover(tabModePath(targetId, runtimeDir)); } catch {}
 }
 
-// Background mode for a starting tab daemon: CDP_BACKGROUND, or the mode `open --background` recorded
-// for this tab (#441).
+// Background mode for a starting tab daemon (#441, #488): an explicit choice in the environment of the
+// call that starts it, else the mode recorded for this tab by `open`, else the default (background).
 function daemonBackgroundMode(targetId, { env = process.env, runtimeDir = RUNTIME_DIR, reader } = {}) {
-  return isBackgroundMode(env) || readTabBackgroundMode(targetId, { runtimeDir, ...(reader ? { reader } : {}) });
+  return explicitBackgroundChoice(env)
+    ?? readTabMode(targetId, { runtimeDir, ...(reader ? { reader } : {}) })
+    ?? true;
 }
 
 function emptyAliasStore() {
@@ -2087,7 +2109,8 @@ function relaunchFlagsFor(entry, display) {
 
 // The same flags as spawn-debug-browser options, or null when one of them has no option there.
 // The full anti-throttling set is what `--background` adds, so it maps back to `--background`, which
-// also minimizes the window again (#438); a partial set has no option and keeps the raw line.
+// also minimizes the window again (#438). --disable-backgrounding-occluded-windows alone is a spawn default
+// (#488) and needs no option; any other partial set has no option and keeps the raw line.
 function spawnOptionsForLaunchFlags(flags) {
   const options = [];
   const throttle = new Set();
@@ -2102,7 +2125,8 @@ function spawnOptionsForLaunchFlags(flags) {
     else return null;
   }
   if (throttle.size === BACKGROUND_THROTTLE_FLAGS.length) options.push('--background');
-  else if (throttle.size) return null;
+  // --disable-backgrounding-occluded-windows alone is what spawn-debug-browser passes by default (#488).
+  else if (throttle.size && !(throttle.size === 1 && throttle.has(OCCLUDED_WINDOWS_FLAG))) return null;
   return options;
 }
 
@@ -4784,11 +4808,56 @@ async function waitForScreenshotPaint(cdp, sid) {
   }
 }
 
+// #488: in background mode nothing brings a tab forward, so a capture can meet a hidden document (a
+// background tab, or any tab of a minimized window). Chrome sometimes renders a frame for it (live
+// checks: 0.2-2.8 s) and sometimes never does, so tier 1 would wait out SCREENSHOT_TIMEOUT. The other
+// tiers are wrong there: fromSurface:false copies whatever the window shows, which is another tab. A
+// hidden document therefore gets one bounded plain capture and then a hidden-tab error. The daemon turns
+// this on when it runs in background mode; in foreground mode it attached with Target.activateTarget.
+const HIDDEN_TAB_CAPTURE_TIMEOUT_MS = 3000;
+const HIDDEN_TAB_ERROR_CODE = 'hidden_tab';
+// Commands whose hidden-tab failure can be rerun whole: they only capture.
+const HIDDEN_TAB_RERUN_COMMANDS = new Set(['shot', 'elshot', 'scanshot', 'fullshot', 'diff-shot']);
+let _backgroundCaptureGuard = false;
+function setBackgroundCaptureGuard(on) { _backgroundCaptureGuard = on === true; }
+
+function hiddenTabCaptureError(cause = null) {
+  const error = new Error(
+    `Tab is hidden (document.visibilityState=hidden): Chrome rendered no frame for it within ${HIDDEN_TAB_CAPTURE_TIMEOUT_MS} ms. `
+    + 'Chrome may render no frames for a background tab or a tab in a minimized window, and background mode (the default) does not bring tabs to the front; CDP_BACKGROUND=0 does.',
+  );
+  error.code = HIDDEN_TAB_ERROR_CODE;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function isHiddenTabCaptureError(err) {
+  return err?.code === HIDDEN_TAB_ERROR_CODE || /tab is hidden \(document\.visibilitystate=hidden\)/i.test(String(err?.message || ''));
+}
+
+async function captureHiddenTabFrame(cdp, sid, params, hooks, inspectFrame) {
+  const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
+    ? Math.min(hooks.timeoutMs, HIDDEN_TAB_CAPTURE_TIMEOUT_MS)
+    : HIDDEN_TAB_CAPTURE_TIMEOUT_MS;
+  let result;
+  try {
+    result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
+  } catch (err) {
+    if (String(err?.message || '').startsWith('Timeout:')) throw hiddenTabCaptureError(err);
+    throw err;
+  }
+  const captured = { data: result.data, fallback: false, method: 'captureScreenshot', tier: 1, hiddenTab: true };
+  return { ...captured, retryCount: 0, sanity: await inspectFrame(captured) };
+}
+
 // Returns capture data plus bounded method/retry diagnostics.
 // `params` is passed to Page.captureScreenshot (format, clip, etc.).
 async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {}) {
   const inspectFrame = hooks.inspectFrame
     || (frame => inspectScreenshotFrame(cdp, sid, frame.data, { clip: params.clip || null }));
+  if (_backgroundCaptureGuard && await probePageVisibility(cdp, sid) === 'hidden') {
+    return captureHiddenTabFrame(cdp, sid, params, hooks, inspectFrame);
+  }
   const waitForPaint = hooks.waitForPaint || (() => waitForScreenshotPaint(cdp, sid));
   const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
     ? hooks.timeoutMs
@@ -8550,7 +8619,8 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
       } catch (e) {
         entry.error = e.message || String(e);
         errors.push(`${size}: ${entry.error}`);
-        if (isScreenshotTimeoutError(e)) screenshotTimedOut = true;
+        // A hidden tab stays hidden for the next size too (#488).
+        if (isScreenshotTimeoutError(e) || isHiddenTabCaptureError(e)) screenshotTimedOut = true;
       }
       viewports.push(entry);
     }
@@ -8702,7 +8772,7 @@ async function qaPageStr({
         screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
       } catch (error) {
         errors.push(`${kind} screenshot: ${error.message}`);
-        if (isScreenshotTimeoutError(error)) screenshotTimedOut = true;
+        if (isScreenshotTimeoutError(error) || isHiddenTabCaptureError(error)) screenshotTimedOut = true;
       }
     }
     let perception = null;
@@ -20728,7 +20798,10 @@ const REPEAT_CAP = 50;
 // same daemon dispatcher and cannot recurse back into repeat. `batch` stays
 // blocked because its parallel/JSON modes are awkward to compose linearly,
 // and `repeat`/`stop` are blocked to avoid recursion and IPC corruption.
-const REPEAT_BLOCKED = new Set(['repeat', 'batch', 'stop']);
+// `_activate` is the daemon's internal foreground request (#488): only the CLI sends it, never a
+// composite step, because it switches the user's active tab.
+const REPEAT_BLOCKED = new Set(['repeat', 'batch', 'stop', '_activate']);
+const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow', '_activate']);
 
 function parsePageConditionArgs(args = []) {
   const flags = new Map([
@@ -20875,6 +20948,7 @@ function parseFlowSteps(input) {
       }
       return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
     }
+    if (head === FOREGROUND_ACTIVATE_COMMAND) throw new Error(`flow: "${head}" is internal and not allowed as a step`);
     return { kind: 'command', cmd: head, args: parts.slice(1) };
   });
 }
@@ -21066,7 +21140,7 @@ async function flowStr({ run, settle, assertCondition }, input, { format = 'text
 }
 
 // --- Replay: execute record-actions artifacts ---
-const REPLAY_BLOCKED = new Set(['replay', 'record-actions', 'recordactions', 'batch', 'flow', 'repeat', 'stop']);
+const REPLAY_BLOCKED = new Set(['replay', 'record-actions', 'recordactions', 'batch', 'flow', 'repeat', 'stop', '_activate']);
 
 function parseReplayArgs(args, { reader = readFileSync } = {}) {
   const fopts = parseFormatArgs((args || []).filter(a => a !== undefined && a !== null), ['text', 'json']);
@@ -22721,8 +22795,8 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--headless'], arg: null, text: 'Run headless; `--headless=MODE` passes MODE (default new).' },
   { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
   { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
-  { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion (see Notes).' },
-  { flags: ['--background'], arg: null, text: 'Background mode (also CDP_BACKGROUND=1): add anti-throttling flags and minimize the new window once CDP answers (see Notes).' },
+  { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion or --disable-backgrounding-occluded-windows (see Notes).' },
+  { flags: ['--background'], arg: null, text: 'Also CDP_BACKGROUND=1: add anti-throttling flags and minimize the new window once CDP answers (see Notes).' },
   { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
   { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
   { flags: ['--help', '-h'], arg: null, text: 'Print this help without launching anything.' },
@@ -22731,8 +22805,8 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
 const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
-  'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
-  'Background mode (--background or CDP_BACKGROUND=1) adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Run later commands with CDP_BACKGROUND=1 so they do not activate the tab (tabs from `open --background` keep the mode on their own).',
+  'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion and --disable-backgrounding-occluded-windows. Without them, a debug window that another window fully covers can turn hidden (document.visibilityState=hidden): Chrome then drops Input.* events, so click/press fail with no-input-events, and captures may get no frame. Covered windows keep rendering instead. Use --allow-occlusion to keep the browser default.',
+  'Later commands run in background mode by default: they do not activate tabs. --background (or CDP_BACKGROUND=1) also adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Without it the launched window is left as it is.',
   'Unknown flags print this help and launch nothing.',
 ]);
 
@@ -22757,7 +22831,9 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     noSandbox: false,
     disableGpu: false,
     allowOcclusion: false,
-    background: isBackgroundMode(env),
+    // Only an explicit request (#488): the default background mode must not minimize a window or
+    // change how the browser schedules every other tab.
+    background: explicitBackgroundChoice(env) === true,
     waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
     format: fopts.format,
   };
@@ -22887,9 +22963,10 @@ function pickSpawnedTarget(pages = [], url = null) {
 function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = null, attached = false } = {}) {
   const targetId = target?.targetId || null;
   const targetPrefix = targetId ? String(targetId).slice(0, getDisplayPrefixLength([targetId])) : null;
-  // A background spawn minimizes its first window, whose tabs are hidden: send agents to a fresh `open` tab.
+  // A background spawn minimizes its first window, whose tabs are hidden: send agents to a fresh `open`
+  // tab, which opens in its own unfocused window by default (#488).
   const nextCommand = plan.background && !plan.headless && !attached
-    ? `CDP_PORT=${plan.port} CDP_BACKGROUND=1 cdp open <url>`
+    ? `CDP_PORT=${plan.port} cdp open <url>`
     : attached || !targetPrefix
       ? `CDP_PORT=${plan.port} cdp list`
       : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
@@ -22969,7 +23046,10 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
   if (!opts.allowOcclusion) args.push('--disable-features=CalculateNativeWinOcclusion');
+  // #488: nothing raises the window in background mode, so a covered window keeps rendering (macOS and
+  // other occlusion trackers too). Background tabs stay throttled; --background adds the rest.
   if (opts.background) args.push(...BACKGROUND_THROTTLE_FLAGS);
+  else if (!opts.allowOcclusion) args.push(OCCLUDED_WINDOWS_FLAG);
   if (opts.url) args.push(opts.url);
   return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile), background: Boolean(opts.background), headless: Boolean(opts.headless) };
 }
@@ -23722,6 +23802,43 @@ async function attachDaemonTarget(cdp, targetId, { background = false } = {}) {
   return res.sessionId;
 }
 
+// A call that opts out of background mode (CDP_BACKGROUND=0 / CDP_FOREGROUND=1) may reach a daemon that
+// is already running in background mode, which never sees that call's environment. The CLI then sends
+// this request first: a hidden tab is activated and given up to REVEAL_POLL_TIMEOUT_MS to report visible;
+// a visible tab is left alone, so the window is not raised again on every command (#488).
+const FOREGROUND_ACTIVATE_COMMAND = '_activate';
+const REVEAL_POLL_TIMEOUT_MS = 300;
+
+function foregroundActivationRequest(env = process.env) {
+  return explicitBackgroundChoice(env) === false ? { cmd: FOREGROUND_ACTIVATE_COMMAND, args: [] } : null;
+}
+
+async function revealHiddenTab(cdp, sid, targetId, {
+  state = null,
+  timeoutMs = REVEAL_POLL_TIMEOUT_MS,
+  pollMs = 50,
+  sleep: wait = sleep,
+  now = Date.now,
+} = {}) {
+  const before = await probePageVisibility(cdp, sid);
+  if (before === 'visible') {
+    if (state) state.activationIneffective = false;
+    return { activated: false, visibility: before };
+  }
+  await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000);
+  // An activation that did not make the tab visible (a window covered by other windows: Windows does
+  // not let Chrome raise itself) will not do better on the next call, so later calls skip the wait.
+  if (state?.activationIneffective) return { activated: true, visibility: before, polled: false };
+  const deadline = now() + timeoutMs;
+  let visibility = await probePageVisibility(cdp, sid);
+  while (visibility !== 'visible' && now() < deadline) {
+    await wait(pollMs);
+    visibility = await probePageVisibility(cdp, sid);
+  }
+  if (state) state.activationIneffective = visibility !== 'visible';
+  return { activated: true, visibility, polled: true };
+}
+
 async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
   installDaemonCrashRecorder(targetId);
   resetScreenshotTier();
@@ -23745,8 +23862,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   let sessionId;
+  const background = daemonBackgroundMode(targetId);
+  setBackgroundCaptureGuard(background);
   try {
-    sessionId = await attachDaemonTarget(cdp, targetId, { background: daemonBackgroundMode(targetId) });
+    sessionId = await attachDaemonTarget(cdp, targetId, { background });
     rememberSessionTarget(sessionId, targetId);
   } catch (e) {
     process.stderr.write(`Daemon: attach failed: ${e.message}\n`);
@@ -23755,6 +23874,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   const session = createSessionState({ targetId, sessionId });
+  // Whether the last `_activate` left the tab hidden (#488).
+  const revealState = { activationIneffective: false };
   const tableArtifactStore = createTableArtifactStore({
     runtimeDir: RUNTIME_DIR,
     targetId,
@@ -23868,7 +23989,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   // Action feedback: wait for DOM to settle, then return structured evidence.
-  const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
   async function observeActionDiffForTarget(target = {}, baselineOutput = null, baselineOpts = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
@@ -24787,6 +24907,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         case 'list_raw': {
           const pages = await getPages(cdp);
           result = JSON.stringify(pages);
+          break;
+        }
+        case '_activate': { // FOREGROUND_ACTIVATE_COMMAND (#488)
+          result = JSON.stringify(await revealHiddenTab(cdp, sessionId, targetId, { state: revealState }));
           break;
         }
         case 'stop': return { ok: true, result: '', stopAfter: true };
@@ -26935,6 +27059,23 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       commands,
     };
   }
+  if (isHiddenTabCaptureError(err) || isHiddenTabCaptureError({ message })) {
+    // #488: CDP_BACKGROUND=0 on this one call activates the tab before the command runs. Only a capture
+    // command is rerun whole: a flow/repeat/replay/batch may already have clicked or typed, so its
+    // recovery names the capture alone and never replays the earlier steps.
+    const captureCommand = HIDDEN_TAB_RERUN_COMMANDS.has(COMMAND_SURFACE.resolve(cmd)?.name || cmd);
+    const rerun = captureCommand
+      ? ['cdp', cmd, target, ...(args || []).map(recoveryCommandArg).filter(Boolean)]
+      : ['cdp', 'shot', target];
+    return {
+      kind: 'hidden-tab',
+      strategy: 'activate-tab',
+      run: `CDP_BACKGROUND=0 ${rerun.join(' ')}`,
+      reason: captureCommand
+        ? 'The tab is hidden and Chrome rendered no frame for it in time. CDP_BACKGROUND=0 on this call activates the tab first (a background tab, or a minimized window); a window covered by other windows is not raised by Chrome, so uncover it yourself.'
+        : 'A capture step met a hidden tab. Earlier steps already ran: do not rerun the whole command. Take the capture alone with this command (it activates the tab first), then run only the steps that did not run.',
+    };
+  }
   // #452: say which capture pipeline failed instead of `Kind: unknown`.
   if (
     err?.code === 'screenshot_capture_failed'
@@ -27386,7 +27527,7 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         ? `cdp jsclick ${targetPrefix} ${recoveryCommandArg(selector)}`
         : 'cdp help click',
       reason: lower.includes('visibilitystate is hidden')
-        ? 'The tab is hidden (window covered or minimised): Input.* events are dropped. Use jsclick, or bring the window to the front. Do not treat dispatch.ok as success.'
+        ? 'The tab is hidden (window covered or minimised): Input.* events are dropped. Use jsclick, or bring the window to the front. For a background tab, CDP_BACKGROUND=0 on the command activates it first; that does not raise a window other windows cover. Do not treat dispatch.ok as success.'
         : 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
     };
   }
@@ -27570,10 +27711,12 @@ function parseOpenArgs(args = [], env = process.env) {
   let reuseUrl = false;
   let perceive = false;
   let background = isBackgroundMode(env);
+  let backgroundExplicit = explicitBackgroundChoice(env) !== null;
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
-    if (token === '--background') {
-      background = true;
+    if (token === '--background' || token === '--foreground') {
+      background = token === '--background';
+      backgroundExplicit = true;
     } else if (token === '--attach-timeout-ms') {
       attachTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --attach-timeout-ms');
     } else if (String(token).startsWith('--attach-timeout-ms=')) {
@@ -27608,16 +27751,20 @@ function parseOpenArgs(args = [], env = process.env) {
     reuseUrl,
     perceive,
     background,
+    backgroundExplicit,
   };
 }
 
-// `open --background` must reach the tab daemon it spawns, or the daemon's first attach activates the tab.
+// The mode `open` chose must reach the tab daemon it spawns, or the daemon's first attach could decide
+// differently (`open --background` under CDP_FOREGROUND=1, or `open --foreground`).
 function backgroundDaemonEnv(background, env = process.env) {
-  return background ? { ...env, CDP_BACKGROUND: '1' } : env;
+  const daemonEnv = { ...env, CDP_BACKGROUND: background ? '1' : '0' };
+  delete daemonEnv.CDP_FOREGROUND;
+  return daemonEnv;
 }
 
 // Background mode opens the tab in its own new window, created without focus: a background tab in an
-// existing window is document.visibilityState=hidden and Page.captureScreenshot stalls there (#415).
+// existing window is document.visibilityState=hidden, and Page.captureScreenshot can stall there (#415).
 async function createOpenTarget(cdp, { background = false } = {}) {
   const params = background ? { url: 'about:blank', newWindow: true, background: true } : { url: 'about:blank' };
   const { targetId } = await cdpDomains(cdp).Target.createTarget( params);
@@ -27941,6 +28088,7 @@ export async function executeCdpCli(command, { runMain = main, hostProcess = pro
 function emitTargetCommandResponse(response, {
   cmd,
   targetPrefix,
+  args = [],
   format = 'text',
   targetResolution = null,
   console = globalThis.console,
@@ -27968,7 +28116,8 @@ function emitTargetCommandResponse(response, {
     return;
   }
   if (response?.ok === false) {
-    console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format }));
+    // The arguments let a recovery rerun the same command (#488 hidden-tab).
+    console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format, args }));
     process.exitCode = 1;
   }
 }
@@ -28253,8 +28402,9 @@ async function main(options = {}) {
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
-    // The mode belongs to this tab, so a daemon restarted later without CDP_BACKGROUND keeps it (#441).
-    if (opts.background) writeTabBackgroundMode(targetId);
+    // An explicit mode belongs to this tab, so a daemon restarted later by a call that does not choose
+    // one keeps it (#441, #488). The default needs no record.
+    if (opts.backgroundExplicit) writeTabBackgroundMode(targetId, { background: opts.background });
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
       detached: true,
       stdio: 'ignore',
@@ -28646,6 +28796,13 @@ async function main(options = {}) {
     if (!checkArgs[0]) exitCliError('URL required', { cmd, targetPrefix, format: cliErrorFormat });
   }
 
+  // An explicit foreground choice on this call brings a hidden tab forward first, even when its daemon
+  // already runs in background mode (#488). Best effort: the command itself reports what it meets.
+  const activation = foregroundActivationRequest();
+  if (activation) {
+    try { await runtimeSupervisor.execute(runtimeHandle, activation); } catch {}
+  }
+
   let response;
   try {
     response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs });
@@ -28661,6 +28818,7 @@ async function main(options = {}) {
   emitTargetCommandResponse(response, {
     cmd,
     targetPrefix,
+    args: cmdArgs,
     format: cliErrorFormat,
     targetResolution,
     console,
@@ -28879,8 +29037,10 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
-  isBackgroundMode, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
-  tabModePath, writeTabBackgroundMode, readTabBackgroundMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
+  isBackgroundMode, explicitBackgroundChoice, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
+  foregroundActivationRequest, revealHiddenTab, REVEAL_POLL_TIMEOUT_MS, setBackgroundCaptureGuard, hiddenTabCaptureError,
+  isHiddenTabCaptureError, HIDDEN_TAB_CAPTURE_TIMEOUT_MS, BATCH_BLOCKED, REPEAT_BLOCKED, REPLAY_BLOCKED,
+  tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,

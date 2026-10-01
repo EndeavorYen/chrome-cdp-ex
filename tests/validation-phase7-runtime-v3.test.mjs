@@ -31,7 +31,7 @@ function proof(overrides = {}) {
       applicationExecutions: 1,
       deniedExecutions: 0,
       signalCodes: [130, 143],
-      inventory: { commands: 81, application: 68, adapters: 13, daemonGroups: 5, deletions: 0 },
+      inventory: { commands: 81, application: 68, adapters: 13, daemonGroups: 6, deletions: 0 },
     },
     ...overrides,
   };
