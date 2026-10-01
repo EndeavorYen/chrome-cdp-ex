@@ -442,10 +442,10 @@ export async function captureClickDownload({
     try {
       path = await saveDownloadedFile(folder, filename, source, { fs });
     } catch (error) {
-      // The raw <guid> file has no usable name and would sit in the folder unnoticed: remove it.
-      await (fs.removeFile || rm)(source, { force: true }).catch(() => {});
-      effects.download = { state: 'save-failed', filename, ...base };
-      throw clickDownloadError('save-failed', `could not save "${filename}" in ${folder} (${error?.code || error?.message}); the downloaded data was removed`, { code: error?.code || null });
+      // Keep the downloaded bytes: a brief lock (antivirus, indexer) must not cost the user the
+      // file. The error names the raw <guid> file so it can be renamed by hand.
+      effects.download = { state: 'save-failed', filename, rawPath: source, ...base };
+      throw clickDownloadError('save-failed', `could not save "${filename}" in ${folder} (${error?.code || error?.message}); the downloaded data is kept unnamed at ${source}`, { code: error?.code || null });
     }
     const { bytes, sha256 } = await hashFile(path);
     const savedAs = basename(path);

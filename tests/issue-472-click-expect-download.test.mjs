@@ -321,7 +321,7 @@ describe('#472 review: only this tab\'s download, names that fit, saves that fai
     expect(effects.download).toMatchObject({ state: 'completed', filename: 'download.csv' });
   });
 
-  it('a rename that fails is download-save-failed and leaves no <guid> or reserved file behind', async () => {
+  it('a rename that fails is download-save-failed, keeps the downloaded bytes and leaves no reserved file', async () => {
     const dir = tempDir();
     const fake = fakeBrowser();
     const effects = {};
@@ -332,8 +332,11 @@ describe('#472 review: only this tab\'s download, names that fit, saves that fai
     }).catch(e => e);
     expect(error.download).toMatchObject({ kind: 'save-failed', code: 'EACCES' });
     expect(error.message).toMatch(/could not save "report\.csv"/);
-    expect(readdirSync(dir)).toEqual([]);
-    expect(effects.download).toMatchObject({ state: 'save-failed', behavior: { restored: true } });
+    // The raw <guid> file is kept (a brief lock must not cost the user the data) and named in the error.
+    const left = readdirSync(dir);
+    expect(left).toHaveLength(1);
+    expect(error.message).toContain(`the downloaded data is kept unnamed at ${join(dir, left[0])}`);
+    expect(effects.download).toMatchObject({ state: 'save-failed', rawPath: join(dir, left[0]), behavior: { restored: true } });
     expect(T.classifyActionFailure(error, { action: 'click', target: { targetId: 'T1', input: '#x' } }))
       .toMatchObject({ kind: 'download-save-failed', dispatched: true });
   });
