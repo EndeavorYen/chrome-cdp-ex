@@ -45,6 +45,19 @@
 
 ### Bug fixes
 
+* `click` no longer reports `Clicked <BUTTON> "…"` when another element covers the button. The mouse
+  path for a CSS selector or `@ref` sent the real mouse event to the element centre without checking
+  what was on top there, so a fixed sidebar, sticky header, toast, or dialog got the click and the
+  button's handler never ran. The scroll-settle evaluation that finds the centre now hit-tests it in the
+  same call (no extra round trip): `elementFromPoint`, walking open shadow roots, in the target's own
+  document. The target, something inside it, an ancestor, or a `<label>` whose `control` is the target
+  counts as a hit. Otherwise nothing is sent and the click exits 1 with `Error: click point (549, 219)
+  of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation> "load:1" (inside position:fixed
+  <ASIDE.sidebar>)…`, `Kind: covered` (`dispatched: false`), and Next `click <target> <sel> --js`, or
+  `dismiss-modal` when the cover is a dialog. A fully visible target that is covered is scrolled to the
+  viewport centre once and re-tested before failing, which clears a sticky header over the top of the
+  viewport. Named clicks were already JS clicks and are unchanged
+  ([#436](https://github.com/EndeavorYen/chrome-cdp-ex/issues/436)).
 * `npm run smoke:live` runs again end to end (96 steps). Its assertions had drifted from the compact
   `doctor`, compact `report` and exit-1-on-failed-action receipts. It now pins `--window-size=1280,900`:
   in headless Chromium's default 800 px window, the page's fixed sidebar covered the buttons. It adds

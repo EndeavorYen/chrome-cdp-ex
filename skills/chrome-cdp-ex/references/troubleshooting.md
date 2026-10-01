@@ -87,6 +87,14 @@ cdp eval <target> "document.visibilityState"
 
 The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
 
+## Click fails with `Kind: covered`
+
+The mouse `click` hit-tests the target's centre first. `covered` means another element is on top there, so a real
+click would land on it; nothing was sent (`dispatched: false`). The `Error:` line names the covering element and its
+fixed/sticky container. If it is a dialog, close it (`cdp dismiss-modal <target>`) and click again. If it is page layout
+such as a fixed sidebar or sticky header (common in narrow headless windows), use `cdp click <target> <sel> --js`, or
+widen the window with `cdp viewport`. `cdp overlay <target> <sel>` shows what covers the target.
+
 ## Electron screenshot fallbacks
 
 For Electron apps, launch with a remote debugging port and run commands with `CDP_PORT=<port>`:
