@@ -6441,6 +6441,15 @@ function noBaselineActionDiffText() {
   return 'No changes detected.';
 }
 
+// The settle result of an action that had no baseline. When the first-action
+// snapshot failed (#504) nothing was compared, so the DOM observation is null
+// (Outcome: dispatched) rather than a no-change the page never showed.
+function noBaselineActionDiff(afterOutput, { captureFailed = false } = {}) {
+  if (isPdfViewerPerceiveOutput(afterOutput)) return pdfViewerSettleDiffText();
+  if (captureFailed) return null;
+  return noBaselineActionDiffText();
+}
+
 // `perceive -i` prints controls only, so two -i trees cannot show a click whose
 // only effect is page text such as a status <p> (#487). The diff source of a
 // perceive is its printed output plus the StaticText the -i filter hid; action
@@ -6665,7 +6674,14 @@ async function resolveActionSettleBaseline({
   let baselineFromTarget = baselineOutputForActionTarget(refState, perceiveStoreDiffSource(lastPerceiveStore), actionTarget);
   let baselineSnapshotOpts = lastPerceiveStore.snapshotOpts || null;
   if (shouldCaptureFirstActionBaseline(lastPerceiveStore, actionTarget, feedbackPolicy, observe)) {
-    const first = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+    let first;
+    try {
+      first = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+    } catch {
+      // A failed snapshot must not fail the action: dispatch it without a
+      // baseline, and let the receipt say the DOM change was not observed.
+      return { output: null, opts: null, captureFailed: true };
+    }
     baselineFromTarget = first.output;
     baselineSnapshotOpts = first.snapshotOpts;
   }
@@ -24339,7 +24355,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   // Action feedback: wait for DOM to settle, then return structured evidence.
-  async function observeActionDiffForTarget(target = {}, baselineOutput = null, baselineOpts = null) {
+  async function observeActionDiffForTarget(target = {}, baselineOutput = null, baselineOpts = null, { captureFailed = false } = {}) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
     if (!baselineOutput) {
@@ -24355,8 +24371,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }),
         refState,
       );
-      if (isPdfViewerPerceiveOutput(after)) return pdfViewerSettleDiffText();
-      return noBaselineActionDiffText();
+      return noBaselineActionDiff(after, { captureFailed });
     }
     const snapshot = actionSettleObserveOpts(targetId, target, baselineOutput, baselineOpts);
     return perceiveStr(
@@ -24406,7 +24421,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const baselineOpts = settleBaseline.opts;
     const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf, dialogBuf });
     const actionStartedAt = Date.now();
-    const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts));
+    const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts, {
+      captureFailed: settleBaseline.captureFailed === true,
+    }));
     let postActionPageHealth = null;
     const watchNavigation = action === 'click' || action === 'jsclick' || action === 'clickxy';
     let beforePage = actionTarget.page || { title: '', url: '', contentType: '' };
@@ -29463,7 +29480,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   uniqueVisibleControlCapSwapSamples,
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
-  actionDomDiffShowsChange, noBaselineActionDiffText,
+  actionDomDiffShowsChange, noBaselineActionDiffText, noBaselineActionDiff,
   shouldCaptureFirstActionBaseline, captureFirstActionBaseline, resolveActionSettleBaseline,
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
   parseFormControlStateSnapshot, snapshotFormControlState,

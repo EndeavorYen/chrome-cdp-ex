@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -43,12 +44,13 @@ function axNodes(state) {
   ];
 }
 
-function createPage() {
+function createPage({ axError = null } = {}) {
   const state = { status: 'Idle' };
   const calls = [];
   const cdp = {
     send(method, params = {}) {
       calls.push({ method, params });
+      if (axError && method === 'Accessibility.getFullAXTree') return Promise.reject(axError);
       if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: pageMeta() } });
       if (method === 'Accessibility.getFullAXTree') return Promise.resolve({ nodes: axNodes(state) });
       if (method === 'DOM.resolveNode') return Promise.resolve({ object: { objectId: 'obj' } });
@@ -218,5 +220,59 @@ describe('#504 the first action of a fresh daemon has a settle baseline', () => 
     const baseline = await resolveBaseline(cdp, session, target, { action: 'scroll' });
     expect(baseline.output).toContain('[StaticText] Idle');
     expect(target.expectedOutcome).toBe('leftover-ax-scroll-no-change');
+  });
+
+  it('a snapshot that throws does not fail the action; the receipt says nothing was observed', async () => {
+    const { cdp } = createPage({ axError: new Error('Accessibility.getFullAXTree timed out') });
+    const session = freshSession();
+    const target = cssTarget();
+    const baseline = await resolveBaseline(cdp, session, target);
+    expect(baseline).toEqual({ output: null, opts: null, captureFailed: true });
+    expect(session.refMap.size).toBe(0);
+    expect(session.refState).toEqual({ generation: 0, invalidationReason: 'daemon-start' });
+    expect(session.store).toEqual({ output: null, model: null, snapshotOpts: null, cards: null });
+
+    // The settle step still perceives the after state (the next action's
+    // baseline) but has nothing to compare it with.
+    const domDiff = T.noBaselineActionDiff('Page: I504', { captureFailed: true });
+    expect(domDiff).toBeNull();
+    const receipt = receiptFor(domDiff, target);
+    expect(receipt.outcome.status).toBe('dispatched');
+    expect(receipt.outcome.reason).toMatch(/no DOM observation was captured/i);
+    expect(receipt.outcome.status).not.toBe('no-change');
+  });
+
+  it('keeps the earlier no-baseline results when no snapshot was attempted', () => {
+    expect(T.noBaselineActionDiff('Page: I504')).toBe(T.noBaselineActionDiffText());
+    const pdf = 'chrome-cdp-ex.pdf-viewer.v1 stub';
+    expect(T.noBaselineActionDiff(pdf)).toBe(T.pdfViewerSettleDiffText());
+    expect(T.noBaselineActionDiff(pdf, { captureFailed: true })).toBe(T.pdfViewerSettleDiffText());
+  });
+});
+
+describe('#504 daemon wiring', () => {
+  // The helper defaults (settle-diff, no observer) would make report-only and
+  // custom-observer actions pay for the snapshot if the call site dropped them.
+  const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+  const start = src.indexOf('  async function actionFeedback(');
+  const end = src.indexOf('    session.lastAction = {', start);
+  const body = src.slice(start, end);
+
+  it('actionFeedback passes its own feedbackPolicy and observe to resolveActionSettleBaseline', () => {
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    expect(body).toMatch(/^ {2}async function actionFeedback\(action, actionDispatch, target = \{\}, feedbackPolicy = 'settle-diff', observe = null,/);
+    const call = body.match(/await resolveActionSettleBaseline\(\{([\s\S]*?)\}\);/);
+    expect(call).not.toBeNull();
+    const keys = call[1].split(',').map(part => part.trim()).filter(Boolean);
+    expect(keys).toContain('feedbackPolicy');
+    expect(keys).toContain('observe');
+    expect(keys).toContain('lastPerceiveStore');
+    expect(keys).toContain('actionTarget');
+  });
+
+  it('a failed snapshot reaches the settle step', () => {
+    expect(body).toMatch(/observeActionDiffForTarget\(actionTarget, baselineOutput, baselineOpts, \{\s*captureFailed: settleBaseline\.captureFailed === true,\s*\}\)/);
+    expect(src).toMatch(/async function observeActionDiffForTarget\([^)]*\{ captureFailed = false \}[\s\S]{0,900}return noBaselineActionDiff\(after, \{ captureFailed \}\);/);
   });
 });

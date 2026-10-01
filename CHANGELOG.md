@@ -319,8 +319,10 @@
   it ran, and the settle step only read the page after the action and printed `No changes detected.`.
   Such an action now captures a default AX snapshot before it dispatches, the same shape a later
   action compares against. The snapshot does not assign refs, so a leftover `@ref` from the previous
-  daemon still fails as stale. Report-only actions (`click text=…`, edge scrolls), `nav`/`reload`/
-  `back`/`forward`, `@ref` targets and the idle-hover discard (#291) do not take it
+  daemon still fails as stale. If the snapshot itself fails, the action still runs and its receipt says
+  `Outcome: dispatched` (no DOM observation) instead of claiming `no-change`. Report-only actions
+  (`click text=…`, edge scrolls), `nav`/`reload`/`back`/`forward`, `@ref` targets and the
+  idle-hover discard (#291) do not take it
   ([#504](https://github.com/EndeavorYen/chrome-cdp-ex/issues/504)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
