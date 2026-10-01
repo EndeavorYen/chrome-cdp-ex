@@ -4,6 +4,15 @@
 
 ### Features
 
+* `fill <target> <sel|@ref> ""` clears a field. It uses the native value setter `fill --react` already
+  uses and fires `input` plus `change`, so React/Vue controlled inputs see the clear (the pre-clear
+  `el.value = ''` that ordinary fill runs updates React's value tracker, so it is skipped for a clear).
+  MCP `fill` with `text: ""` clears too; a missing CLI text argument or MCP `text` is still an error
+  (MCP used to send a missing `text` as `""`). The receipt is truthful: `Cleared <INPUT> (was "Ada")`, or
+  `(value unchanged: already empty)`, an expected no-change with `Verdict: continue`. Every fill now
+  names the previous value (`Filled <INPUT> with "Carl" (was "Bob")`, `previousValue` in
+  `chrome-cdp-ex.fill.v1`; password values are `<redacted>`). An argument change, not a new verb, so the
+  frozen 81-command surface is unchanged ([#429](https://github.com/EndeavorYen/chrome-cdp-ex/issues/429)).
 * Background mode: `CDP_BACKGROUND=1`, or `--background` on `open` and `spawn-debug-browser`, drives the
   agent browser without stealing focus. Tab daemons and the `open` navigate fallback no longer send
   `Target.activateTarget`, `open` creates the tab in a new unfocused window (`newWindow: true, background:
@@ -40,6 +49,17 @@
   when the run exits. Before, tests wrote fixture endpoint records (macOS profiles, Edge on 9222) into the
   developer's real `cdp-last-endpoint.json`, and later real `doctor` / `list` runs trusted them. That is how
   `doctor` came to suggest Edge on 9222 in [#425](https://github.com/EndeavorYen/chrome-cdp-ex/issues/425).
+* `fill` no longer reports `Kind: fill-no-change` when the value did change. It compares the control's
+  real value before and after: `<input type=number value="0.5">` given `abc` ends up `""`, which is now
+  `Kind: fill-value-mismatch` with `Value: "0.5" → "" (requested "abc"; <input type=number> rejected the
+  text)` and, in JSON, `outcome.changed: true` plus `effects.failure.value` / `pageChanged`. It still exits 1,
+  because the requested text was not applied. `fill-no-change` is kept for a value that really did not
+  change. The `Next: cdp eval <prefix> "document.querySelector("#amp")?.value"` line nested unescaped
+  double quotes; it is now `"document.querySelector('#amp')?.value"`, and a selector containing quotes
+  gets a single-quoted shell argument. An `@ref` is no longer passed to `querySelector` as CSS: fill
+  resolves it to a selector for the live node (`#id` or an `nth-of-type` path), or suggests `perceive`
+  for frame and shadow-DOM refs. The `html`, `styles`, and `text` eval fallbacks had the same quoting
+  bug and use the same helper ([#428](https://github.com/EndeavorYen/chrome-cdp-ex/issues/428)).
 * With `CDP_PORT` unset and no `DevToolsActivePort`, discovery now also probes the port of the last
   endpoint chrome-cdp-ex reached (`cdp-last-endpoint.json`), after 9222 and 9224, and attaches when it
   answers `/json/version`; a leftover isolated `chrome-cdp-ex-*` profile there is named with

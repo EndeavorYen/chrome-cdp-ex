@@ -32,7 +32,45 @@ export function isPdfViewerActionTarget(target = {}) {
 }
 
 export function pdfViewerActionNextCommand(target = {}) {
-  return `cdp eval ${actionTargetCommandPrefix(target)} "document.contentType"`;
+  return evalCommand(actionTargetCommandPrefix(target), 'document.contentType');
+}
+
+// Characters that change meaning inside a double-quoted POSIX shell word (or trigger history
+// expansion in an interactive bash), plus line breaks.
+const DOUBLE_QUOTED_SHELL_UNSAFE_RE = /["$`\\!\r\n]/;
+
+// `cdp eval <prefix> <expression>` as one pasteable shell command. The common case keeps the
+// familiar "..." form; anything a double-quoted word would reinterpret goes in single quotes.
+export function evalCommand(prefix, expression) {
+  const expr = String(expression ?? '');
+  if (!DOUBLE_QUOTED_SHELL_UNSAFE_RE.test(expr)) return `cdp eval ${prefix} "${expr}"`;
+  return `cdp eval ${prefix} '${expr.replace(/'/g, `'\\''`)}'`;
+}
+
+// A single-quoted JavaScript string literal for any selector text.
+export function jsSingleQuotedString(value) {
+  const escaped = String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return `'${escaped}'`;
+}
+
+export function isActionRef(value) {
+  return /^@(?:f\d+:)?\d+$/.test(String(value || '').trim());
+}
+
+// `cdp eval <prefix> "document.querySelector('<selector>')<accessor>"`, shell-safe for any CSS
+// selector. `wrap` names a function to call on the element (getComputedStyle). Returns null for an
+// @ref: refs are not CSS, so callers must resolve the ref or point at perceive instead.
+export function querySelectorEvalCommand(prefix, selector, accessor = '', { wrap = '' } = {}) {
+  const sel = String(selector ?? '');
+  if (!sel || isActionRef(sel)) return null;
+  const query = `document.querySelector(${jsSingleQuotedString(sel)})`;
+  return evalCommand(prefix, wrap ? `${wrap}(${query})${accessor}` : `${query}${accessor}`);
 }
 
 function applyPdfViewerActionRecovery(failure, target = {}) {
@@ -44,6 +82,90 @@ function applyPdfViewerActionRecovery(failure, target = {}) {
     hints: [
       'Chrome is rendering a PDF plugin, not an HTML document. Do not retry perceive/text as a next-probe.',
       `Confirm the plugin with \`${nextCommand}\`.`,
+    ],
+  };
+}
+
+// Input types whose value the browser sanitizes: text it cannot parse becomes "".
+const SANITIZED_FILL_INPUT_TYPES = new Set(['number', 'date', 'time', 'datetime-local', 'month', 'week', 'color', 'range']);
+
+function fillFailureValue(err) {
+  const raw = err?.fillValue;
+  if (!raw || typeof raw !== 'object') return null;
+  const str = v => (v == null ? null : String(v));
+  return {
+    before: str(raw.before),
+    after: str(raw.after),
+    requested: str(raw.requested),
+    inputType: raw.inputType ? String(raw.inputType) : null,
+    changed: typeof raw.changed === 'boolean' ? raw.changed : null,
+    ...(raw.redacted ? { redacted: true } : {}),
+    ...(raw.selector ? { selector: String(raw.selector) } : {}),
+  };
+}
+
+function quotedFillValue(value, redacted = false) {
+  if (value == null) return '(unknown)';
+  return redacted && value === '<redacted>' ? value : JSON.stringify(value);
+}
+
+export function formatFillValueTransition(value = {}) {
+  return `${quotedFillValue(value.before, value.redacted)} → ${quotedFillValue(value.after, value.redacted)}`;
+}
+
+function fillValueMismatchNote(value = {}) {
+  const type = String(value.inputType || '').toLowerCase();
+  if (SANITIZED_FILL_INPUT_TYPES.has(type)) {
+    return value.after === ''
+      ? `<input type=${type}> rejected the text`
+      : `<input type=${type}> sanitized the text`;
+  }
+  return 'the page or input rewrote the text';
+}
+
+// One receipt line: what the control held before and after fill, and what was asked for.
+export function formatFillValueLine(failure = {}) {
+  const value = failure.value;
+  if (!value) return null;
+  const note = failure.kind === 'fill-value-mismatch' ? fillValueMismatchNote(value) : 'value did not change';
+  return `Value: ${formatFillValueTransition(value)} (requested ${quotedFillValue(value.requested, value.redacted)}; ${note})`;
+}
+
+// fill reached the control but the live value is not the requested text. `err.fillValue` (set by
+// fillStr) carries the real before/after values, so the receipt says whether the page changed.
+function classifyFillValueFailure(err, { base, target, input, perceiveCommand }) {
+  const prefix = actionTargetCommandPrefix(target);
+  const value = fillFailureValue(err);
+  // An @ref is not CSS: inspect through the selector fill resolved for it, else re-perceive.
+  const inspectSelector = isActionRef(input) ? value?.selector || '' : input;
+  const inspect = inspectSelector
+    ? querySelectorEvalCommand(prefix, inspectSelector, '?.value') || 'cdp help fill'
+    : (isActionRef(input) ? perceiveCommand : 'cdp help fill');
+  if (value && value.changed === true) {
+    return {
+      ...base,
+      kind: 'fill-value-mismatch',
+      reason: 'fill changed the control, but not to the requested text: the input type rejected it or the page rewrote it.',
+      pageChanged: true,
+      value,
+      nextCommand: inspect,
+      hints: [
+        `The control value changed ${formatFillValueTransition(value)}; the page was mutated even though the requested text was not applied.`,
+        `${fillValueMismatchNote(value).replace(/^the /, 'The ')}.`,
+        `Confirm the live value with \`${inspect}\`, then fill text the control accepts.`,
+      ],
+    };
+  }
+  return {
+    ...base,
+    kind: 'fill-no-change',
+    reason: 'The control value did not change after fill. A framework may own the value.',
+    ...(value ? { value } : {}),
+    nextCommand: inspect,
+    hints: [
+      'Do not claim Filled when the live node value did not change.',
+      `Inspect the live value with \`${inspect}\`.`,
+      'Retry with `fill --react` only if the control is a native input that still needs a setter.',
     ],
   };
 }
@@ -72,6 +194,11 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     nextCommand: perceiveCommand,
     hints: [`Refresh page perception with \`${perceiveCommand}\`, then choose the next action from fresh refs.`],
   };
+
+  if (action === 'fill' && err?.fillValue && typeof err.fillValue === 'object') {
+    // Structured fill state wins over message matching: the requested text is part of the message.
+    return classifyFillValueFailure(err, { base, target, input, perceiveCommand });
+  }
 
   if (lower.includes('unknown ref') || lower.includes('refs were cleared') || lower.includes('refs were invalidated')) {
     return {
@@ -280,21 +407,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
       || lower.includes('live value is still empty')
     )
   ) {
-    const prefix = actionTargetCommandPrefix(target);
-    const inspect = input
-      ? `cdp eval ${prefix} "document.querySelector(${JSON.stringify(input)})?.value"`
-      : `cdp help fill`;
-    return {
-      ...base,
-      kind: 'fill-no-change',
-      reason: 'The fillable control is still empty after fill. A framework may own the value.',
-      nextCommand: inspect,
-      hints: [
-        'Do not claim Filled when the live node value is still empty.',
-        `Inspect the live value with \`${inspect}\`.`,
-        'Retry with `fill --react` only if the control is a native input that still needs a setter.',
-      ],
-    };
+    return classifyFillValueFailure(err, { base, target, input, perceiveCommand });
   }
 
   if (
@@ -456,7 +569,8 @@ export function formatActionFailure(err, context = {}) {
   const message = actionFailureMessage(err);
   if (isClassifiedActionFailureText(message)) return message;
   const failure = classifyActionFailure(err, context);
-  return [`Kind: ${failure.kind}`, `Next: ${failure.nextCommand}`].join('\n');
+  const valueLine = formatFillValueLine(failure);
+  return [`Kind: ${failure.kind}`, ...(valueLine ? [valueLine] : []), `Next: ${failure.nextCommand}`].join('\n');
 }
 
 export function recoveryCommandArg(value) {
@@ -550,8 +664,13 @@ export function isExpectedLeftoverAxScrollNoChange(target = {}) {
   return target?.expectedOutcome === 'leftover-ax-scroll-no-change';
 }
 
+export function isExpectedFillValueNoChange(target = {}) {
+  return target?.expectedOutcome === 'fill-value-unchanged';
+}
+
 export function isExpectedNoChange(target = {}, extraText = '', action = null) {
   if (isExpectedClipboardNoChange(target, extraText)) return true;
+  if (isExpectedFillValueNoChange(target)) return true;
   if (target?.expectedOutcome === 'no-modal') return true;
   if (isExpectedPdfViewerNoChange(target, extraText)) return true;
   if (isExpectedCardsWindowNoChange(target, extraText)) return true;
@@ -565,6 +684,9 @@ export function expectedNoChangeReason(target = {}, action = null, extraText = '
   }
   if (target?.expectedOutcome === 'no-modal') {
     return 'No visible modal/dialog was present; nothing was dismissed.';
+  }
+  if (isExpectedFillValueNoChange(target)) {
+    return 'The control already held the requested value; fill left it unchanged.';
   }
   if (isExpectedPdfViewerNoChange(target, extraText)) {
     return 'Settle shape was pdf-viewer.v1 (empty AX); continue without overlay/perceive recovery.';
@@ -712,7 +834,9 @@ export function buildNoChangeOutcomeRecommendation({
       ? 'Clipboard action dispatched; no visible AX change is expected.'
       : targetInfo?.expectedOutcome === 'no-modal'
         ? 'No visible modal/dialog; continue without overlay recovery.'
-        : 'Key press dispatched; no visible AX change is expected for a no-op key.';
+        : isExpectedFillValueNoChange(targetInfo)
+          ? 'The control already held the requested value; continue without overlay recovery.'
+          : 'Key press dispatched; no visible AX change is expected for a no-op key.';
     return {
       source,
       actionIndex,

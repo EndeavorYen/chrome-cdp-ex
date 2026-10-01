@@ -278,7 +278,9 @@ export function buildMcpToolCommand(name, args = {}) {
       requireConfirm(args, 'fill');
       const command = ['fill', requireString(args, 'target')];
       if (args.react) command.push('--react');
-      command.push(requireString(args, 'selector'), String(args.text ?? ''));
+      // text: "" clears the field; a missing text is an error, never a silent clear.
+      if (typeof args.text !== 'string') throw new Error('text is required (pass "" to clear the field)');
+      command.push(requireString(args, 'selector'), args.text);
       return optionalFormatJson(command);
     }
     case 'viewport': {

@@ -14,7 +14,7 @@ Prefer `$SKILL_DIR/bin/chrome-cdp` for an installed skill, repo-root `./bin/chro
 1. **Doctor or list:** `bin/chrome-cdp doctor` then `bin/chrome-cdp list`. Doctor checks Node, install path, daemon state, CDP reachability, and debugging permission.
 2. **List / open / nav:** `list` picks the tab you already have. `open <url>` if none. `nav <target> <url>` to change URL. Isolated `spawn-debug-browser` is fallback only — ask first.
 3. **Perceive:** `bin/chrome-cdp perceive <target> -C -d 8` for structure and `@ref`s. For "what does this page say", `text --auto`.
-4. **Act:** `click`, `fill`, `press`, `select`, `scroll`, or `dismiss-modal` with a fresh `@ref` or stable selector. `click --js` is a JS-click flag, not a separate command. `eval --b64` is a base64 flag, not a separate command. `inject` / `cascade` / `waitfor` / `elshot` / `shot` as needed.
+4. **Act:** `click`, `fill`, `press`, `select`, `scroll`, or `dismiss-modal` with a fresh `@ref` or stable selector. `fill <target> <sel|@ref> ""` clears a field. `click --js` is a JS-click flag, not a separate command. `eval --b64` is a base64 flag, not a separate command. `inject` / `cascade` / `waitfor` / `elshot` / `shot` as needed.
 5. **Evidence:** read the one-line action receipt (URL, outcome, next). Then `stop` when done.
 
 ## Chrome 136 / daily profile

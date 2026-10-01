@@ -629,7 +629,8 @@ describe('issues #82-#87 contracts', () => {
       { selectors: ['#promptBlock'], root: 'body' },
     );
     expect(err).toContain('within root "body"');
-    expect(err).toContain('document.querySelector("#promptBlock")');
+    // #428: the selector is a single-quoted JS string inside the double-quoted shell argument.
+    expect(err).toContain(`cdp eval <target> "document.querySelector('#promptBlock')?.textContent"`);
     expect(err).toContain('text --root');
     // Explicit selectors default to document-wide search (matches eval querySelector).
     const script = T.textPageScript({ selectors: ['#promptBlock'] });
