@@ -54,6 +54,7 @@ import {
   policyRequestFields,
   readSessionPolicy,
   snapshotPolicyWire,
+  urlFlagValue,
   wrapContentBoundary,
 } from './lib/session-policy.mjs';
 import {
@@ -9863,6 +9864,64 @@ function nextSessionActionSequence(session) {
   return session.actionSeq;
 }
 
+function currentSessionActionSequence(session) {
+  return Number.isInteger(session.actionSeq) ? session.actionSeq : (session.actionLog?.length || 0);
+}
+
+// #466: an action that took the tab to a disallowed origin failed after its receipt was logged.
+// Its log entries say so, so `report` does not recommend continuing on that page, and the evidence
+// sample (content from that page) is dropped.
+function markSessionActionsPolicyFailed(session, sinceSequence, message) {
+  if (!Number.isInteger(sinceSequence)) return 0;
+  const nextCommand = `cdp back ${targetPrefixForDisplay(session.targetId)}`;
+  const reason = 'The action navigated the tab to an origin CDP_ALLOWED_ORIGINS does not allow; the navigation already happened.';
+  let marked = 0;
+  for (const entry of session.actionLog || []) {
+    if (!(Number(entry?.sequence) > sinceSequence)) continue;
+    entry.failure = { kind: 'policy', reason, message };
+    if (entry.receipt && typeof entry.receipt === 'object') {
+      const isPageSample = line => /^(DOM|Effect) sample:/i.test(String(line || ''));
+      entry.receipt = {
+        ...entry.receipt,
+        outcome: 'failed',
+        observedDelta: Array.isArray(entry.receipt.observedDelta)
+          ? entry.receipt.observedDelta.filter(line => !isPageSample(line))
+          : entry.receipt.observedDelta,
+        observedDeltaDetails: Array.isArray(entry.receipt.observedDeltaDetails)
+          ? entry.receipt.observedDeltaDetails.map(detail => (detail?.type === 'dom' ? { type: 'dom', status: detail.status } : detail))
+          : entry.receipt.observedDeltaDetails,
+      };
+    }
+    entry.diagnosis = {
+      schema: 'chrome-cdp-ex.action-diagnosis.v1',
+      status: 'blocked',
+      kind: 'policy',
+      confidence: 'high',
+      source: 'policy',
+      reason,
+      nextCommand,
+      recovery: buildActionRecoveryPlan({ kind: 'policy', status: 'blocked', nextCommand }, { targetId: targetPrefixForDisplay(session.targetId) }),
+      signals: {},
+    };
+    entry.outcome = { ...(entry.outcome || {}), status: 'failed', reason };
+    entry.verdict = {
+      ...(entry.verdict || {}),
+      status: 'blocked',
+      source: 'diagnosis',
+      canContinue: false,
+      needsRecovery: true,
+      primaryNextStep: nextCommand,
+      nextSteps: [nextCommand],
+      reason,
+    };
+    entry.effectSample = null;
+    entry.nextHint = nextCommand;
+    marked += 1;
+    appendSessionEventLog(session, { kind: 'action-policy-failure', ts: Date.now(), sequence: entry.sequence, eventId: entry.eventId || null, message });
+  }
+  return marked;
+}
+
 function sessionActionEventId(session, sequence) {
   const target = targetPrefixForDisplay(session.targetId || 'target');
   return `act_${target}_${String(sequence).padStart(6, '0')}`;
@@ -9937,6 +9996,7 @@ function appendSessionScreenshot(session, { kind = 'shot', path = null, note = '
 }
 
 function reportActionStatus(entry = {}) {
+  if (entry.failure?.kind === 'policy') return 'failed';
   return entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not-confirmed');
 }
 
@@ -10286,7 +10346,7 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
     for (const [offset, entry] of timelineWindow.entries.entries()) {
       const i = (timelineWindow.startIndex || 1) + offset;
       const label = entry.target?.label || entry.target?.input || '';
-      const settleStatus = entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not confirmed');
+      const settleStatus = reportActionStatus(entry).replace('not-confirmed', 'not confirmed');
       const settleDuration = Number.isFinite(entry.settle?.durationMs) ? ` in ${entry.settle.durationMs}ms` : '';
       const sourceTarget = actionTargetCommandId(entry.target || {}) || session.targetId;
       lines.push(`${i}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
@@ -26143,13 +26203,17 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // Handle a command
-  async function readContentBoundary() {
-    let url = '';
+  async function readTargetUrl() {
     try {
       const info = await cdp.send('Target.getTargetInfo', { targetId }, undefined, STATUS_PAGE_INFO_TIMEOUT);
-      url = info?.targetInfo?.url || '';
-    } catch {}
-    return { nonce: contentBoundaryNonce, origin: originLabel(url) };
+      return info?.targetInfo?.url || '';
+    } catch {
+      return '';
+    }
+  }
+
+  async function readContentBoundary() {
+    return { nonce: contentBoundaryNonce, origin: originLabel(await readTargetUrl()) };
   }
 
   async function handleCommand({ cmd, args, policy }, execution = undefined, { outermost = false, guarded = false } = {}) {
@@ -26172,6 +26236,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         navigationLog: mainFrameNavigationLog,
         compositeSteps: policyCompositeSteps,
         readContentBoundary: outermost ? readContentBoundary : null,
+        readCurrentUrl: outermost ? readTargetUrl : null,
+        actionMark: () => currentSessionActionSequence(session),
+        onViolation: ({ sinceAction, error }) => markSessionActionsPolicyFailed(session, sinceAction, error),
       });
     }
     try {
@@ -29582,7 +29649,7 @@ async function main(options = {}) {
     console.error(formatCliError(e, { cmd, format: detectCliErrorFormat(args) }));
     return finish(1);
   }
-  const deniedCommand = deniedCommandMessage(sessionPolicy, cmd);
+  const deniedCommand = deniedCommandMessage(sessionPolicy, cmd, args);
   if (deniedCommand) {
     const deniedTarget = NEEDS_TARGET.has(cmd) && args[0] && !String(args[0]).startsWith('-') ? args[0] : '';
     console.error(formatCliError(deniedCommand, {
@@ -29964,6 +30031,9 @@ async function main(options = {}) {
   // spawn-debug-browser / spawn — launch isolated debug profile (no target)
   if (cmd === 'spawn-debug-browser' || cmd === 'spawn') {
     try {
+      // #466: the start page is a navigation too.
+      const spawnBlocked = navigationBlockedMessage(sessionPolicy, urlFlagValue(args), 'spawn-debug-browser');
+      if (spawnBlocked) throw new Error(spawnBlocked);
       const out = await spawnDebugBrowserStr(args);
       console.log(out);
       return finish(0);
@@ -30268,7 +30338,7 @@ async function main(options = {}) {
 
   let response;
   try {
-    response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs, ...policyRequestFields(sessionPolicy, cmd) });
+    response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs, ...policyRequestFields(sessionPolicy, cmd, { args: cmdArgs }) });
   } catch (error) {
     console.error(formatCliError(error, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat, args: cmdArgs }));
     return finish(1);
@@ -30583,5 +30653,5 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
   runTableCollectionLifecycle, createDaemonRequestConnection, MAX_DAEMON_REQUEST_LINE_BYTES,
   createDaemonShutdown, enforceDaemonTableCollectionGate,
-  policyCompositeSteps,
+  policyCompositeSteps, markSessionActionsPolicyFailed, currentSessionActionSequence,
 } : undefined;

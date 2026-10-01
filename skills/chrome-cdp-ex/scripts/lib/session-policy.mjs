@@ -20,14 +20,43 @@ export const POLICY_ENV_VARS = Object.freeze({
 
 // Commands whose output is page-derived text and gets wrapped under CDP_CONTENT_BOUNDARIES=1.
 export const CONTENT_BOUNDARY_COMMANDS = Object.freeze(['perceive', 'text', 'console', 'table', 'netlog']);
+// These print a full perceive of the page they land on, so they are wrapped too.
+const CONTENT_BOUNDARY_PERCEIVE_ACTIONS = Object.freeze(['back', 'forward']);
 
-// Steps inside these commands are checked before the first step runs.
-export const POLICY_COMPOSITE_COMMANDS = Object.freeze(['batch', 'flow', 'repeat', 'replay']);
+// Steps inside these commands are checked before the first step runs. `record --action <cmd>`
+// runs one action itself, so it counts as a wrapper too.
+export const POLICY_COMPOSITE_COMMANDS = Object.freeze(['batch', 'flow', 'repeat', 'replay', 'record']);
+
+// Commands that still run while the tab is on a disallowed origin: the ways back to an allowed
+// one (nav is checked against the allowlist itself), and closing or unblocking the tab.
+export const POLICY_ESCAPE_COMMANDS = Object.freeze(['nav', 'back', 'forward', 'closetab', 'dialog']);
+
+// CDP_DENY_ACTIONS lists commands, but several commands do the same job. Listing one also denies
+// the others that do its job. A page script (eval/eval64/call, inject --js) can still click, fill
+// or navigate through the DOM, so deny those too when the goal is to stop a whole kind of action.
+const DENY_EQUIVALENTS = Object.freeze({
+  eval: ['eval64', 'call'],
+  eval64: ['eval', 'call'],
+  call: ['eval', 'eval64'],
+  click: ['jsclick', 'clickxy', 'verify-click', 'loadall'],
+  fill: ['type'],
+  cookieset: ['restore'],
+});
+// Commands denied only with these flags: they run a page script or click with them.
+const DENY_FLAG_EQUIVALENTS = Object.freeze([
+  { cmd: 'inject', flags: ['--js', '--js-file'], when: ['eval', 'eval64', 'call'] },
+  { cmd: 'qa', flags: ['--click'], when: ['click'] },
+  { cmd: 'table', flags: ['--load-more'], when: ['click'] },
+]);
+// Raw CDP can do what every other command does, so any deny-list also denies evalraw.
+const RAW_CDP_COMMAND = 'evalraw';
+// Schemes with no origin of their own: an allowlist entry for them would allow every such URL.
+const OPAQUE_SCHEMES = new Set(['data:', 'javascript:', 'about:', 'blob:', 'view-source:', 'filesystem:', 'chrome-error:']);
 
 const POLICY_PREFIX = 'policy: ';
 const POLICY_CONFIG_PREFIX = 'policy config: ';
 const MAX_POLICY_ENTRIES = 64;
-const MAX_URL_DISPLAY_CHARS = 200;
+const MAX_ORIGIN_DISPLAY_CHARS = 100;
 const MAX_COMPOSITE_DEPTH = 3;
 const POLICY_WIRE_KEYS = new Set(['denyActions', 'allowedOrigins', 'contentBoundary']);
 const CONTENT_BOUNDARY_NONCE_RE = /^[0-9a-f]{16}$/;
@@ -61,13 +90,17 @@ function badOrigin(text) {
 }
 
 // `https://app.example.com`, `http://localhost:3000`, `https://*.example.com` (subdomains only,
-// not example.com itself), `file://` (any file: URL). No path, query or fragment.
+// not example.com itself), `file://` (any file: URL, local or on a server). No path, query or
+// fragment, and no scheme without an origin (`data:`, `blob:`, `about:`, ...).
 export function parseOriginPattern(raw) {
   const text = String(raw ?? '').trim();
   const match = /^([a-z][a-z0-9+.-]*):\/\/(\*\.)?(.*)$/i.exec(text);
   if (!match) throw badOrigin(text);
   const [, scheme, wildcard, rest] = match;
   if (wildcard && !rest) throw badOrigin(text);
+  if (OPAQUE_SCHEMES.has(`${scheme.toLowerCase()}:`)) {
+    throw policyConfigError(`CDP_ALLOWED_ORIGINS entry "${text}" names ${scheme.toLowerCase()}: URLs, which have no origin to allow.`);
+  }
   let parsed;
   try {
     parsed = new URL(`${scheme}://${rest}`);
@@ -76,7 +109,8 @@ export function parseOriginPattern(raw) {
   }
   const hasPath = parsed.pathname && parsed.pathname !== '/';
   if (hasPath || parsed.search || parsed.hash || parsed.username || parsed.password
-    || parsed.hostname.includes('*') || (wildcard && !parsed.hostname)) {
+    || parsed.hostname.includes('*') || (wildcard && !parsed.hostname)
+    || (parsed.protocol === 'file:' && (parsed.hostname || wildcard))) {
     throw badOrigin(text);
   }
   return Object.freeze({
@@ -96,12 +130,34 @@ function resolveDenyAction(name, surface) {
   return command.name;
 }
 
+// `listed` is what the variable names; `denied` maps every denied command to the listed name that
+// denies it; `flagDenials` are the commands denied only with certain flags.
+function expandDenyList(listed) {
+  if (!listed?.length) return null;
+  const denied = {};
+  const deny = (name, because) => { if (!Object.hasOwn(denied, name)) denied[name] = because; };
+  for (const name of listed) deny(name, name);
+  for (const name of listed) for (const sibling of DENY_EQUIVALENTS[name] || []) deny(sibling, name);
+  deny(RAW_CDP_COMMAND, listed[0]);
+  const flagDenials = DENY_FLAG_EQUIVALENTS
+    .map(rule => ({ ...rule, because: listed.find(name => rule.when.includes(name)) }))
+    .filter(rule => rule.because && !Object.hasOwn(denied, rule.cmd))
+    .map(rule => Object.freeze({ cmd: rule.cmd, flags: Object.freeze([...rule.flags]), because: rule.because }));
+  return Object.freeze({
+    listed: Object.freeze([...listed]),
+    denied: Object.freeze(denied),
+    flagDenials: Object.freeze(flagDenials),
+  });
+}
+
 function freezePolicy({ contentBoundaries = false, allowedOrigins = null, denyActions = null }) {
   if (!contentBoundaries && !allowedOrigins && !denyActions) return null;
+  const listed = denyActions ? [...new Set(denyActions)] : null;
   return Object.freeze({
     contentBoundaries: Boolean(contentBoundaries),
     allowedOrigins: allowedOrigins ? Object.freeze(allowedOrigins) : null,
-    denyActions: denyActions ? Object.freeze([...new Set(denyActions)]) : null,
+    denyActions: listed ? Object.freeze(listed) : null,
+    deny: expandDenyList(listed),
   });
 }
 
@@ -122,17 +178,21 @@ export function canonicalPolicyCommand(cmd, surface = COMMAND_SURFACE) {
   return surface.resolve(String(cmd || ''))?.name || String(cmd || '');
 }
 
+export function wantsContentBoundary(cmd, args = []) {
+  const name = canonicalPolicyCommand(cmd);
+  return CONTENT_BOUNDARY_COMMANDS.includes(name)
+    || CONTENT_BOUNDARY_PERCEIVE_ACTIONS.includes(name)
+    || (name === 'nav' && args.map(String).includes('--perceive'));
+}
+
 // The `policy` field of a daemon request. `{}` (no field at all) when no policy is set, so the
 // request line is byte-identical to the one sent without guardrails.
-export function policyRequestFields(policy, cmd, { contentBoundary = true } = {}) {
+export function policyRequestFields(policy, cmd, { contentBoundary = true, args = [] } = {}) {
   if (!policy) return {};
   const wire = {};
   if (policy.denyActions) wire.denyActions = [...policy.denyActions];
   if (policy.allowedOrigins) wire.allowedOrigins = policy.allowedOrigins.map(pattern => pattern.source);
-  if (contentBoundary && policy.contentBoundaries
-    && CONTENT_BOUNDARY_COMMANDS.includes(canonicalPolicyCommand(cmd))) {
-    wire.contentBoundary = true;
-  }
+  if (contentBoundary && policy.contentBoundaries && wantsContentBoundary(cmd, args)) wire.contentBoundary = true;
   return Object.keys(wire).length ? { policy: wire } : {};
 }
 
@@ -162,6 +222,7 @@ export function parsePolicyWire(input, { surface = COMMAND_SURFACE } = {}) {
   });
   return Object.freeze({
     denyActions: policy?.denyActions || null,
+    deny: policy?.deny || null,
     allowedOrigins: policy?.allowedOrigins || null,
     contentBoundary: input.contentBoundary === true,
   });
@@ -193,13 +254,23 @@ export function isPolicyNeutralUrl(url) {
   return !text || /^about:(blank|srcdoc)([?#].*)?$/i.test(text) || /^chrome-error:/i.test(text);
 }
 
-export function originMatches(url, patterns = []) {
+// A blob: URL belongs to the origin that made it (`blob:https://app.example.com/<uuid>`).
+function originUrl(url) {
   const parsed = parseUrl(url);
+  if (parsed?.protocol === 'blob:' && parsed.origin && parsed.origin !== 'null') return parseUrl(parsed.origin);
+  return parsed;
+}
+
+export function originMatches(url, patterns = []) {
+  const parsed = originUrl(url);
   if (!parsed) return false;
   const hostname = parsed.hostname.toLowerCase();
-  return patterns.some(pattern => parsed.protocol === pattern.protocol
-    && parsed.port === pattern.port
-    && (pattern.wildcard ? hostname.endsWith(`.${pattern.hostname}`) : hostname === pattern.hostname));
+  return patterns.some(pattern => {
+    if (parsed.protocol !== pattern.protocol) return false;
+    if (pattern.protocol === 'file:') return true;
+    return parsed.port === pattern.port
+      && (pattern.wildcard ? hostname.endsWith(`.${pattern.hostname}`) : hostname === pattern.hostname);
+  });
 }
 
 export function navigationAllowed(url, patterns) {
@@ -207,25 +278,21 @@ export function navigationAllowed(url, patterns) {
   return isPolicyNeutralUrl(url) || originMatches(url, patterns);
 }
 
-// A short label for where page content came from: `https://app.example.com`, `file://`,
-// `about:blank`, or `unknown`.
-export function originLabel(url) {
-  const parsed = parseUrl(url);
-  if (!parsed) return 'unknown';
-  if (parsed.origin && parsed.origin !== 'null') return parsed.origin;
-  if (parsed.protocol === 'file:') return 'file://';
-  if (parsed.protocol === 'about:') return `about:${parsed.pathname}`;
-  return parsed.protocol || 'unknown';
+function boundedOrigin(text) {
+  const printable = String(text || '').replace(/[^\x21-\x7e]/g, '');
+  if (!printable) return 'unknown';
+  return printable.length > MAX_ORIGIN_DISPLAY_CHARS ? `${printable.slice(0, MAX_ORIGIN_DISPLAY_CHARS - 1)}…` : printable;
 }
 
-// Origin and path only: a query or fragment can carry a token.
-export function displayPolicyUrl(url) {
-  const parsed = parseUrl(url);
-  const text = parsed
-    ? (parsed.origin && parsed.origin !== 'null' ? `${parsed.origin}${parsed.pathname}` : `${parsed.protocol}${parsed.pathname}`)
-    : String(url ?? '').split(/[?#]/)[0];
-  const oneLine = text.replace(/\s+/g, '');
-  return oneLine.length > MAX_URL_DISPLAY_CHARS ? `${oneLine.slice(0, MAX_URL_DISPLAY_CHARS - 1)}…` : oneLine;
+// A short label for where page content came from: `https://app.example.com`, `file://`,
+// `about:blank`, or `unknown`. Never a path or query: those are page-controlled text.
+export function originLabel(url) {
+  const parsed = originUrl(url);
+  if (!parsed) return 'unknown';
+  if (parsed.origin && parsed.origin !== 'null') return boundedOrigin(parsed.origin);
+  if (parsed.protocol === 'file:') return 'file://';
+  if (parsed.protocol === 'about:') return boundedOrigin(`about:${parsed.pathname}`);
+  return boundedOrigin(parsed.protocol);
 }
 
 // Every token of `nav <target> ...` (target removed) that parses as a URL. A flag value such as
@@ -241,62 +308,110 @@ export function navigationUrlsFromArgs(args = []) {
   return urls;
 }
 
+// The URL of a `--url <u>` / `-u <u>` / `--url=<u>` flag (spawn-debug-browser), or null.
+export function urlFlagValue(args = []) {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = String(args[index] ?? '');
+    if (token === '--url' || token === '-u') return args[index + 1] == null ? null : String(args[index + 1]);
+    if (token.startsWith('--url=')) return token.slice('--url='.length);
+  }
+  return null;
+}
+
+// `record ... --action <cmd> <args...> [--until <what>] [<ms>]` runs <cmd> itself.
+export function recordActionSteps(args = []) {
+  const index = args.findIndex(arg => String(arg) === '--action');
+  if (index === -1) return [];
+  const cmd = args[index + 1];
+  if (!cmd) return null;
+  const rest = args.slice(index + 2).map(String);
+  const actionArgs = [];
+  for (let j = 0; j < rest.length; j += 1) {
+    if (rest[j] === '--until') { j += 1; continue; }
+    if (/^\d+$/.test(rest[j]) && j === rest.length - 1) continue;
+    actionArgs.push(rest[j]);
+  }
+  return [{ cmd: String(cmd), args: actionArgs }];
+}
+
 // --- messages -------------------------------------------------------------------------------
 
 function stepSuffix(step) {
   return step ? ` (step ${step.index} of ${step.of})` : '';
 }
 
-export function deniedActionMessage(name, { step = null } = {}) {
-  return `${POLICY_PREFIX}CDP_DENY_ACTIONS blocks "${name}"${stepSuffix(step)}; ${step ? 'no step ran' : 'it did not run'}.`;
+export function deniedActionMessage(name, { step = null, because = null } = {}) {
+  const listed = because && because !== name.split(' ')[0] ? ` (CDP_DENY_ACTIONS lists "${because}")` : '';
+  return `${POLICY_PREFIX}CDP_DENY_ACTIONS blocks "${name}"${listed}${stepSuffix(step)}; ${step ? 'no step ran' : 'it did not run'}.`;
 }
 
 export function deniedNavigationMessage({ cmd, url, step = null }) {
-  return `${POLICY_PREFIX}CDP_ALLOWED_ORIGINS does not allow ${originLabel(url)} (${cmd} ${displayPolicyUrl(url)})${stepSuffix(step)}; `
+  return `${POLICY_PREFIX}CDP_ALLOWED_ORIGINS does not allow ${originLabel(url)} (${cmd})${stepSuffix(step)}; `
     + `the tab was not navigated${step ? ' and no step ran' : ''}.`;
 }
 
 export function navigationViolationMessage({ cmd, url }) {
-  return `${POLICY_PREFIX}CDP_ALLOWED_ORIGINS does not allow ${originLabel(url)}, but "${cmd}" already navigated the tab to ${displayPolicyUrl(url)}. `
+  return `${POLICY_PREFIX}"${cmd}" already navigated the tab to ${originLabel(url)}, which CDP_ALLOWED_ORIGINS does not allow. `
     + 'The navigation already happened: the tab is on that page now. The command output is withheld because it may hold content from that page.';
 }
 
 export function skippedAfterViolationMessage({ cmd, url }) {
-  return `${POLICY_PREFIX}"${cmd}" did not run: an earlier step already navigated the tab to ${displayPolicyUrl(url)}, `
-    + `which CDP_ALLOWED_ORIGINS does not allow (${originLabel(url)}).`;
+  return `${POLICY_PREFIX}"${cmd}" did not run: an earlier step already navigated the tab to ${originLabel(url)}, `
+    + 'which CDP_ALLOWED_ORIGINS does not allow.';
+}
+
+export function disallowedPageMessage({ cmd, url }) {
+  return `${POLICY_PREFIX}"${cmd}" did not run: the tab is on ${originLabel(url)}, which CDP_ALLOWED_ORIGINS does not allow `
+    + '(it got there between commands, or before this one). Go back or nav to an allowed origin first.';
 }
 
 // --- checks ---------------------------------------------------------------------------------
 
-export function deniedCommandMessage(policy, cmd, { surface = COMMAND_SURFACE } = {}) {
-  if (!policy?.denyActions) return null;
-  const command = surface.resolve(String(cmd || ''));
-  if (!command || !policy.denyActions.includes(command.name)) return null;
-  return deniedActionMessage(command.name);
+function hasFlag(args, flags) {
+  return args.some(arg => flags.some(flag => String(arg) === flag || String(arg).startsWith(`${flag}=`)));
+}
+
+// The deny-list message for one command and its arguments, or null.
+export function deniedCommandMessage(policy, cmd, args = [], { step = null, surface = COMMAND_SURFACE } = {}) {
+  const deny = policy?.deny;
+  if (!deny) return null;
+  const name = surface.resolve(String(cmd || ''))?.name;
+  if (!name) return null;
+  if (Object.hasOwn(deny.denied, name)) return deniedActionMessage(name, { step, because: deny.denied[name] });
+  const rule = deny.flagDenials.find(entry => entry.cmd === name && hasFlag(args, entry.flags));
+  if (rule) {
+    const flag = rule.flags.find(entry => hasFlag(args, [entry]));
+    return deniedActionMessage(`${name} ${flag}`, { step, because: rule.because });
+  }
+  return null;
 }
 
 export function navigationBlockedMessage(policy, url, cmd) {
-  if (!policy?.allowedOrigins) return null;
+  if (!policy?.allowedOrigins || url == null) return null;
   // An unparseable URL is the command's own usage error, not a policy decision.
   if (!parseUrl(url)) return null;
   return navigationAllowed(url, policy.allowedOrigins) ? null : deniedNavigationMessage({ cmd, url });
 }
 
 // Checks one command before it touches the page: the deny-list, a `nav` URL, and, for
-// batch/flow/repeat/replay, every step they would run. `compositeSteps(cmd, args)` returns the
-// steps as `[{ cmd, args }]`, or null when the arguments do not parse (the command then reports
-// its own error).
+// batch/flow/repeat/replay/record, every step they would run. `compositeSteps(cmd, args)` returns
+// the steps as `[{ cmd, args }]`, or null when the arguments do not parse (the command then
+// reports its own error). `record --action` is read here, so every caller checks it.
 export function policyPreflightMessage(policy, cmd, args = [], { compositeSteps = null, step = null, depth = 0 } = {}) {
   if (!policy) return null;
   const name = canonicalPolicyCommand(cmd);
-  if (policy.denyActions?.includes(name)) return deniedActionMessage(name, { step });
+  const denied = deniedCommandMessage(policy, name, args, { step });
+  if (denied) return denied;
   if (name === 'nav' && policy.allowedOrigins) {
     const url = navigationUrlsFromArgs(args).find(entry => !navigationAllowed(entry, policy.allowedOrigins));
     if (url !== undefined) return deniedNavigationMessage({ cmd: 'nav', url, step });
   }
-  if (typeof compositeSteps === 'function' && POLICY_COMPOSITE_COMMANDS.includes(name) && depth < MAX_COMPOSITE_DEPTH) {
+  if (POLICY_COMPOSITE_COMMANDS.includes(name) && depth < MAX_COMPOSITE_DEPTH) {
     let steps = null;
-    try { steps = compositeSteps(name, args); } catch { steps = null; }
+    try {
+      steps = name === 'record' ? recordActionSteps(args)
+        : typeof compositeSteps === 'function' ? compositeSteps(name, args) : null;
+    } catch { steps = null; }
     if (!Array.isArray(steps)) return null;
     for (let index = 0; index < steps.length; index += 1) {
       const message = policyPreflightMessage(policy, steps[index]?.cmd, steps[index]?.args || [], {
@@ -312,7 +427,9 @@ export function policyPreflightMessage(policy, cmd, args = [], { compositeSteps 
 
 // --- daemon guard ---------------------------------------------------------------------------
 
-// Main-frame URLs the tab committed, numbered, so a command can ask which ones happened while it ran.
+// Main-frame URLs the tab committed, numbered, so a command can ask which ones happened while it
+// ran. It is per tab, not per request: with two commands running on one tab at once, a
+// navigation either one causes fails both.
 export function createMainFrameNavigationLog({ max = 64 } = {}) {
   let seq = 0;
   const entries = [];
@@ -338,6 +455,9 @@ export function createRequestPolicyState(wire) {
   return { policy: parsePolicyWire(wire), violation: null };
 }
 
+// `readCurrentUrl` (outermost request only) returns the tab's main-frame URL, so a command does
+// not run on a page that reached a disallowed origin between commands. `actionMark` and
+// `onViolation` let the daemon mark the session-log entries of a command that failed after the fact.
 export async function guardDaemonCommand({
   state,
   cmd,
@@ -346,6 +466,9 @@ export async function guardDaemonCommand({
   navigationLog = null,
   compositeSteps = null,
   readContentBoundary = null,
+  readCurrentUrl = null,
+  actionMark = null,
+  onViolation = null,
 }) {
   if (!state) return execute();
   const name = canonicalPolicyCommand(cmd);
@@ -355,13 +478,23 @@ export async function guardDaemonCommand({
   const blocked = policyPreflightMessage(state.policy, name, args, { compositeSteps });
   if (blocked) return { ok: false, error: blocked };
   const patterns = state.policy.allowedOrigins;
+  if (patterns && typeof readCurrentUrl === 'function' && !POLICY_ESCAPE_COMMANDS.includes(name)) {
+    let current = '';
+    try { current = String(await readCurrentUrl() || ''); } catch { current = ''; }
+    if (!navigationAllowed(current, patterns)) return { ok: false, error: disallowedPageMessage({ cmd: name, url: current }) };
+  }
   const mark = patterns && navigationLog ? navigationLog.mark() : 0;
+  const actionsBefore = patterns && typeof actionMark === 'function' ? actionMark() : null;
   const response = await execute();
   if (patterns && navigationLog) {
     const url = navigationLog.since(mark).find(entry => !navigationAllowed(entry, patterns));
     if (url !== undefined) {
       state.violation ||= { url };
-      return { ok: false, error: navigationViolationMessage({ cmd: name, url }) };
+      const error = navigationViolationMessage({ cmd: name, url });
+      if (typeof onViolation === 'function') {
+        try { onViolation({ sinceAction: actionsBefore, error }); } catch {}
+      }
+      return { ok: false, error };
     }
   }
   if (state.policy.contentBoundary && typeof readContentBoundary === 'function' && response?.ok === true) {
@@ -384,7 +517,7 @@ export function isContentBoundary(value) {
 
 function boundaryOrigin(origin) {
   const text = String(origin || 'unknown').replace(/\s+/g, '');
-  return text.slice(0, MAX_URL_DISPLAY_CHARS) || 'unknown';
+  return text.slice(0, MAX_ORIGIN_DISPLAY_CHARS) || 'unknown';
 }
 
 export function contentBoundaryMarkers(boundary) {
@@ -431,7 +564,7 @@ export function classifyPolicyMessage(message) {
   const text = String(message);
   return {
     rule: text.includes('CDP_DENY_ACTIONS') ? 'deny-actions' : 'allowed-origins',
-    navigated: /already navigated the tab/.test(text),
+    navigated: /already navigated the tab|did not run: the tab is on /.test(text),
   };
 }
 

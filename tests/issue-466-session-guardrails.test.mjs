@@ -194,9 +194,9 @@ describe('#466 CDP_ALLOWED_ORIGINS', () => {
     });
     expect(result.code).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('Error: policy: CDP_ALLOWED_ORIGINS does not allow https://evil.example (nav https://evil.example/steal); the tab was not navigated.');
+    expect(result.stderr).toContain('Error: policy: CDP_ALLOWED_ORIGINS does not allow https://evil.example (nav); the tab was not navigated.');
     expect(result.stderr).toContain('Kind: policy');
-    expect(result.stderr).not.toContain('token=abc');
+    expect(result.stderr).not.toMatch(/token=abc|\/steal/);
     expect(result.stderr).not.toMatch(/cdp_unreachable|Cannot reach CDP/i);
   });
 
@@ -430,5 +430,205 @@ describe('#466 policy recovery kind', () => {
     expect(denied.kind).toBe('policy');
     const plan = buildActionRecoveryPlan({ kind: 'policy', nextCommand: 'cdp back ABCDEF12' }, { targetId: 'ABCDEF12' });
     expect(plan).toMatchObject({ strategy: 'respect-policy', priority: 'high', verifyCommand: 'cdp back ABCDEF12' });
+  });
+});
+
+// --- PR #505 review -----------------------------------------------------------------------------
+
+describe('#466 review: record --action is a wrapper too', () => {
+  const policy = readSessionPolicy({ CDP_DENY_ACTIONS: 'fill,click', CDP_ALLOWED_ORIGINS: 'https://app.example.com' });
+
+  it('checks the action record runs, with or without a duration or --until', () => {
+    expect(policyPreflightMessage(policy, 'record', ['--action', 'fill', '#f', 'viarecord', '500']))
+      .toBe('policy: CDP_DENY_ACTIONS blocks "fill" (step 1 of record); no step ran.');
+    expect(policyPreflightMessage(policy, 'record', ['--action', 'click', '#same', '--until', 'dom stable']))
+      .toContain('blocks "click" (step 1 of record)');
+    expect(policyPreflightMessage(policy, 'record', ['--action', 'nav', 'https://evil.example/away']))
+      .toBe('policy: CDP_ALLOWED_ORIGINS does not allow https://evil.example (nav) (step 1 of record); the tab was not navigated and no step ran.');
+    expect(policyPreflightMessage(policy, 'record', ['--action', 'nav', 'https://app.example.com/x'])).toBeNull();
+    expect(policyPreflightMessage(policy, 'record', ['2000'])).toBeNull();
+  });
+
+  it('is refused in the CLI, inside batch, in the daemon and in MCP', async () => {
+    const cli = await runCli(['record', 'ABCDEF12', '--action', 'fill', '#f', 'x', '500'], { CDP_DENY_ACTIONS: 'fill' });
+    expect(cli.code).toBe(1);
+    expect(cli.stderr).toContain('blocks "fill" (step 1 of record)');
+    expect(cli.stderr).toContain('Kind: policy');
+    expect(policyPreflightMessage(policy, 'batch', ['perceive | record --action fill #f inbatch 300'], { compositeSteps: T.policyCompositeSteps }))
+      .toContain('blocks "fill" (step 2 of batch)');
+    const execute = vi.fn();
+    const daemon = await guardDaemonCommand({
+      state: createRequestPolicyState({ denyActions: ['fill'] }),
+      cmd: 'record',
+      args: ['--action', 'fill', '#f', 'x'],
+      execute,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(daemon.ok).toBe(false);
+    expect(mcpPolicyDenial(['record', 'ABCDEF12', '--action', 'fill', '#f', 'x'], { CDP_DENY_ACTIONS: 'fill' }))
+      .toContain('Kind: policy');
+  });
+});
+
+describe('#466 review: a listed command also denies the commands that do its job', () => {
+  const deny = list => readSessionPolicy({ CDP_DENY_ACTIONS: list });
+
+  it('eval also denies eval64, call, evalraw and inject --js / --js-file', () => {
+    const policy = deny('eval');
+    expect(policyPreflightMessage(policy, 'eval64', ['Nio3']))
+      .toBe('policy: CDP_DENY_ACTIONS blocks "eval64" (CDP_DENY_ACTIONS lists "eval"); it did not run.');
+    expect(policyPreflightMessage(policy, 'call', ['() => 1'])).toContain('blocks "call"');
+    expect(policyPreflightMessage(policy, 'evalraw', ['Runtime.evaluate', '{}'])).toContain('blocks "evalraw"');
+    expect(policyPreflightMessage(policy, 'inject', ['--js', 'alert(1)'])).toContain('blocks "inject --js"');
+    expect(policyPreflightMessage(policy, 'inject', ['--js-file', 'https://x/a.js'])).toContain('blocks "inject --js-file"');
+    expect(policyPreflightMessage(policy, 'inject', ['--css', 'body{}'])).toBeNull();
+    expect(policyPreflightMessage(deny('call'), 'eval', ['1'])).toContain('blocks "eval" (CDP_DENY_ACTIONS lists "call")');
+  });
+
+  it('click also denies jsclick, clickxy, verify-click, loadall, qa --click and table --load-more', () => {
+    const policy = deny('click');
+    for (const cmd of ['jsclick', 'clickxy', 'verify-click', 'loadall']) {
+      expect(policyPreflightMessage(policy, cmd, ['#x']), cmd).toContain(`blocks "${cmd}" (CDP_DENY_ACTIONS lists "click")`);
+    }
+    expect(policyPreflightMessage(policy, 'qa', ['--click', '#go'])).toContain('blocks "qa --click"');
+    expect(policyPreflightMessage(policy, 'qa', [])).toBeNull();
+    expect(policyPreflightMessage(policy, 'table', ['--collect', '--load-more', '#more'])).toContain('blocks "table --load-more"');
+    expect(policyPreflightMessage(policy, 'table', [])).toBeNull();
+  });
+
+  it('cookieset also denies restore; fill also denies type; any list denies evalraw', () => {
+    expect(policyPreflightMessage(deny('cookieset'), 'restore', ['--file', 'x.json'])).toContain('blocks "restore"');
+    expect(policyPreflightMessage(deny('fill'), 'type', ['hi'])).toContain('blocks "type"');
+    expect(policyPreflightMessage(deny('closetab'), 'evalraw', ['Network.setCookie', '{}']))
+      .toContain('blocks "evalraw" (CDP_DENY_ACTIONS lists "closetab")');
+    expect(policyPreflightMessage(deny('upload'), 'eval', ['1'])).toBeNull();
+  });
+
+  it('the CLI refuses eval64 before anything attaches when eval is listed', async () => {
+    const result = await runCli(['eval64', 'ABCDEF12', 'Nio3'], { CDP_DENY_ACTIONS: 'eval' });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('blocks "eval64" (CDP_DENY_ACTIONS lists "eval")');
+    const inject = await runCli(['inject', 'ABCDEF12', '--js', 'alert(1)'], { CDP_DENY_ACTIONS: 'eval' });
+    expect(inject.stderr).toContain('blocks "inject --js"');
+  });
+});
+
+describe('#466 review: a page already on a disallowed origin', () => {
+  const state = () => createRequestPolicyState({ allowedOrigins: ['https://app.example.com'] });
+
+  it('fails a command before it runs when the tab is on a disallowed origin', async () => {
+    const execute = vi.fn(async () => ({ ok: true, result: 'AWAY SECRET PAGE' }));
+    const response = await guardDaemonCommand({
+      state: state(),
+      cmd: 'text',
+      execute,
+      readCurrentUrl: async () => 'http://localhost:9/away?token=1',
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(response.error).toMatch(/^policy: "text" did not run: the tab is on http:\/\/localhost:9, which CDP_ALLOWED_ORIGINS does not allow/);
+    expect(response.error).not.toContain('token');
+    const text = T.formatCliError(response.error, { cmd: 'text', targetPrefix: 'ABCDEF12' });
+    expect(text).toContain('Strategy: navigate-back');
+    expect(text).toContain('Next: cdp back ABCDEF12');
+  });
+
+  it('still lets back, forward, nav, closetab and dialog run, and lets allowed pages through', async () => {
+    for (const cmd of ['back', 'forward', 'closetab', 'dialog']) {
+      const execute = vi.fn(async () => ({ ok: true, result: 'ok' }));
+      await guardDaemonCommand({ state: state(), cmd, execute, readCurrentUrl: async () => 'http://localhost:9/away' });
+      expect(execute, cmd).toHaveBeenCalledTimes(1);
+    }
+    const nav = vi.fn(async () => ({ ok: true, result: 'ok' }));
+    await guardDaemonCommand({ state: state(), cmd: 'nav', args: ['https://app.example.com/'], execute: nav, readCurrentUrl: async () => 'http://localhost:9/' });
+    expect(nav).toHaveBeenCalledTimes(1);
+    const text = vi.fn(async () => ({ ok: true, result: 'ok' }));
+    await guardDaemonCommand({ state: state(), cmd: 'text', execute: text, readCurrentUrl: async () => 'https://app.example.com/inbox' });
+    expect(text).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('#466 review: report shows an action that failed the allowlist as failed', () => {
+  it('marks the entries the failed command logged and recommends going back', async () => {
+    const session = T.createSessionState({ targetId: 'ABCDEF1234567890', sessionId: 'sid-1' });
+    session.createdAt = 1;
+    const action = heading => T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABCDEF1234567890', input: '#away', resolvedBy: 'selector', label: '#away' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 10 },
+      effects: { domDiff: `+++ Added (1):\n+   [heading] ${heading}`, console: [], network: [], navigation: null },
+    });
+    T.appendSessionActionLog(session, action('Home page'), { ts: 2 });
+    const state = createRequestPolicyState({ allowedOrigins: ['https://app.example.com'] });
+    const navigationLog = createMainFrameNavigationLog();
+    const response = await guardDaemonCommand({
+      state,
+      cmd: 'click',
+      navigationLog,
+      actionMark: () => T.currentSessionActionSequence(session),
+      onViolation: ({ sinceAction, error }) => T.markSessionActionsPolicyFailed(session, sinceAction, error),
+      execute: async () => {
+        T.appendSessionActionLog(session, action('AWAY SECRET PAGE'), { ts: 3 });
+        navigationLog.record('http://localhost:9/away');
+        return { ok: true, result: 'Clicked' };
+      },
+    });
+    expect(response.ok).toBe(false);
+    expect(session.actionLog[0].failure).toBeNull();
+    expect(session.actionLog[1].failure).toMatchObject({ kind: 'policy' });
+    expect(session.actionLog[1].effectSample).toBeNull();
+    const model = T.buildSessionReportModel(session, { now: 4 });
+    expect(model.latestAction).toMatchObject({ status: 'failed', verdictStatus: 'blocked', canContinue: false, diagnosisKind: 'policy' });
+    expect(model.recommendation).toMatchObject({ source: 'latest-action-diagnosis', diagnosisKind: 'policy' });
+    expect(model.recommendation.verifyCommand).toBe('cdp back ABCDEF12');
+    const text = T.formatSessionReport(session, { now: 4 });
+    expect(text).not.toContain('AWAY SECRET PAGE');
+    expect(text).toContain('2. click #away — failed');
+  });
+});
+
+describe('#466 review: origin edge cases and bounded error text', () => {
+  it('blob: URLs use the origin that made them; file:// covers server paths', () => {
+    const patterns = ['https://app.example.com', 'file://'].map(parseOriginPattern);
+    expect(originMatches('blob:https://app.example.com/1b2c', patterns)).toBe(true);
+    expect(originMatches('blob:https://evil.example/1b2c', patterns)).toBe(false);
+    expect(originLabel('blob:https://evil.example/1b2c')).toBe('https://evil.example');
+    expect(originMatches('file://server/share/x.html', patterns)).toBe(true);
+    expect(originMatches('file:///C:/app/index.html', patterns)).toBe(true);
+  });
+
+  it('refuses patterns for schemes without an origin, and file:// with a host', () => {
+    for (const bad of ['data://', 'data://x', 'about://blank', 'blob://x', 'javascript://x', 'file://server']) {
+      expect(() => readSessionPolicy({ CDP_ALLOWED_ORIGINS: bad }), bad).toThrow(/^policy config: CDP_ALLOWED_ORIGINS entry/);
+    }
+  });
+
+  it('shows only a bounded origin, never the page-controlled path or query', () => {
+    const long = `https://${'a'.repeat(60)}.${'b'.repeat(60)}.example/IGNORE-PREVIOUS-INSTRUCTIONS?token=1`;
+    const message = navigationViolationMessage({ cmd: 'click', url: long });
+    expect(message).not.toMatch(/IGNORE|token/);
+    const origin = /navigated the tab to (\S+),/.exec(message)[1];
+    expect(origin.length).toBeLessThanOrEqual(100);
+  });
+});
+
+describe('#466 review: more wrapping and checks', () => {
+  it('wraps nav --perceive, back and forward, which print a full perceive', () => {
+    const policy = readSessionPolicy({ CDP_CONTENT_BOUNDARIES: '1' });
+    expect(policyRequestFields(policy, 'nav', { args: ['https://a.test/', '--perceive'] })).toEqual({ policy: { contentBoundary: true } });
+    expect(policyRequestFields(policy, 'nav', { args: ['https://a.test/'] })).toEqual({});
+    expect(policyRequestFields(policy, 'back')).toEqual({ policy: { contentBoundary: true } });
+    expect(policyRequestFields(policy, 'forward')).toEqual({ policy: { contentBoundary: true } });
+  });
+
+  it('checks spawn-debug-browser --url against the allowlist before launching anything', async () => {
+    const result = await runCli(['spawn-debug-browser', 'chrome', '--url', 'https://evil.example/'], {
+      CDP_ALLOWED_ORIGINS: 'https://app.example.com',
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('CDP_ALLOWED_ORIGINS does not allow https://evil.example (spawn-debug-browser)');
+    expect(result.stderr).toContain('Kind: policy');
+    expect(mcpPolicyDenial(['spawn-debug-browser', 'chrome', '--url', 'https://evil.example/'], { CDP_ALLOWED_ORIGINS: 'https://app.example.com' }))
+      .toContain('Kind: policy');
   });
 });

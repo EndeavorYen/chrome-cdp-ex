@@ -16,6 +16,7 @@ import {
   navigationBlockedMessage,
   policyPreflightMessage,
   readSessionPolicy,
+  urlFlagValue,
 } from './session-policy.mjs';
 
 export {
@@ -690,8 +691,11 @@ export function mcpPolicyDenial(command, env = process.env) {
   if (!policy) return null;
   const record = COMMAND_SURFACE.resolve(String(name || ''));
   const targetPrefix = record?.needsTarget ? String(rest[0] || '') : '';
-  const message = deniedCommandMessage(policy, name)
+  const message = deniedCommandMessage(policy, name, rest)
     || (record?.name === 'open' ? navigationBlockedMessage(policy, rest[0], 'open') : null)
+    || (record?.name === 'spawn-debug-browser'
+      ? navigationBlockedMessage(policy, urlFlagValue(rest), 'spawn-debug-browser')
+      : null)
     || (record?.needsTarget ? policyPreflightMessage(policy, name, rest.slice(1)) : null);
   return message ? formatPolicyFailureText(message, { targetPrefix }) : null;
 }

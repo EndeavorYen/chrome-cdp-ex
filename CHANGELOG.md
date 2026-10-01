@@ -118,15 +118,27 @@
   ([#466](https://github.com/EndeavorYen/chrome-cdp-ex/issues/466)):
   * `CDP_CONTENT_BOUNDARIES=1` wraps the output of `perceive`, `text`, `console`, `table` and `netlog`
     in `--- PAGE CONTENT (untrusted) nonce=<16 hex> origin=<origin> ---` … `--- END PAGE CONTENT nonce=<same> ---`.
+* Opt-in guardrails for the live session, all off by default: without them, daemon requests and
+  command output are unchanged, and the help card only gains one line naming the variables.
+  Defense-in-depth for agents, not a security boundary; `scripts/session.mjs`, `scripts/download.mjs`
+  and other CDP clients bypass them ([#466](https://github.com/EndeavorYen/chrome-cdp-ex/issues/466)):
+  * `CDP_CONTENT_BOUNDARIES=1` wraps the output of `perceive`, `text`, `console`, `table`, `netlog`,
+    `back`, `forward` and `nav`/`open --perceive` in
+    `--- PAGE CONTENT (untrusted) nonce=<16 hex> origin=<origin> ---` … `--- END PAGE CONTENT nonce=<same> ---`.
     The nonce is random per tab daemon (`crypto.randomBytes`) and never reaches the page. JSON output
     gets a `contentBoundary: { nonce, origin }` field instead of markers.
-  * `CDP_ALLOWED_ORIGINS=https://app.example.com,https://*.example.org` refuses `nav` and `open` to any
-    other origin before navigating. A command that navigates the tab anyway (a click, key press,
-    redirect or script) fails after the fact, says the navigation already happened, withholds its output,
-    and points at `cdp back <target>`. Later steps of the same `batch`/`flow`/`repeat`/`replay` do not run.
-  * `CDP_DENY_ACTIONS=eval,cookieset,upload` refuses those commands before anything attaches, including as
-    steps of `batch`, `flow`, `repeat`, `replay` and `broadcast`, and in the MCP server. An unknown name is a
-    startup usage error.
+  * `CDP_ALLOWED_ORIGINS=https://app.example.com,https://*.example.org` refuses `nav`, `open` and
+    `spawn-debug-browser --url` to any other origin before navigating, and refuses to run commands
+    (except `nav`, `back`, `forward`, `closetab`, `dialog`) while the tab is on another origin. A command
+    that navigates the tab anyway (click, key press, redirect, script) fails after the fact, says the
+    navigation already happened, withholds its output, shows as failed in `report`, and points at
+    `cdp back <target>`. Later steps of the same `batch`/`flow`/`repeat`/`replay` do not run. Errors name
+    only the origin.
+  * `CDP_DENY_ACTIONS=eval,cookieset,upload` refuses those commands before anything attaches, together
+    with the commands that do the same job (`eval`/`eval64`/`call` and `inject --js`; `click` with
+    `jsclick`/`clickxy`/`verify-click`/`loadall`; any list denies `evalraw`), including as steps of
+    `batch`, `flow`, `repeat`, `replay`, `broadcast` and `record --action`, and in the MCP server. An
+    unknown name is a startup usage error.
   * Refusals print `Kind: policy`; the recovery registry has a `policy` kind (`respect-policy`, or
     `navigate-back` after a disallowed navigation).
 
