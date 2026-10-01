@@ -21,7 +21,6 @@
   still yields `null`. On one Windows machine `collectDaemonMetadata()` went from about 28-36 ms to
   about 2-4 ms for the first call in a process and under 1 ms after that
   ([#461](https://github.com/EndeavorYen/chrome-cdp-ex/issues/461)).
-### Bug Fixes
 
 * `shot`, `elshot`, `responsive-audit` and `annotshot` capture an Electron page with a live WebGL
   canvas whenever a plain `Page.captureScreenshot` works
@@ -97,6 +96,15 @@
   action too. Only dialogs answered while an action runs are listed; the rest stay in `dialog`
   history. The accept/dismiss behaviour itself is unchanged
   ([#460](https://github.com/EndeavorYen/chrome-cdp-ex/issues/460)).
+
+* Attaching to a running browser on Linux now records its profile, exe and launch flags even when no
+  remembered profile is behind that port, e.g. a browser chrome-cdp-ex did not spawn, or one attached
+  after `cdp-last-endpoint.json` was deleted. Before, the record kept only the port, so a later
+  relaunch hint fell back to "Profile is unknown". The main browser process (no `--type=`) whose
+  command line asks for that port is confirmed through the listening socket's inode
+  (`/proc/net/tcp{,6}` → `/proc/<pid>/fd`). The scan runs only when nothing else identified the
+  profile and took 8–17 ms over about 850 processes; it records nothing when unsure and stays off for
+  remote hosts and non-Linux platforms ([#478](https://github.com/EndeavorYen/chrome-cdp-ex/issues/478)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 
