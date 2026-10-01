@@ -1155,7 +1155,9 @@ event sequences that pass through `:active`/`:hover`/focus rings — but `jsclic
 is the right escape hatch when you can prove the mouse path is the blocker. A
 fail-closed mouse click reports `Kind: no-input-events` with Next
 `cdp jsclick <target> <sel>` (selector included). Do not treat `dispatch.ok` as
-success, and do not auto-jsclick inside mouse `click` `@ref` / CSS.
+success, and do not auto-jsclick inside mouse `click` `@ref` / CSS. A same-tab link that
+navigates before the probe is read back replaces the probe's document; a vanished probe plus a
+main-frame navigation during the click counts as a landed click, not `no-input-events`.
 
 Before the mouse `click` `@ref` / CSS path dispatches, it hit-tests the click point (the
 element centre after the scroll settles, walking open shadow roots; frame-local for `@fN:M`).

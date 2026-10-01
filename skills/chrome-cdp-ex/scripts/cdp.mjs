@@ -13238,7 +13238,11 @@ function clickEventProbeInstallOnViewSource() {
     const handler = function(event) { seen.push(event.type); };
     for (const type of types) view.addEventListener(type, handler, true);
     view[key] = { types: types, handler: handler, seen: seen };
-    return { cdpClickProbe: true, ok: true, installed: true, scope: scope || 'target-document' };
+    let top = false;
+    let href = '';
+    try { top = view.top === view; } catch (err) { top = false; }
+    try { href = String(view.location.href || ''); } catch (err) { href = ''; }
+    return { cdpClickProbe: true, ok: true, installed: true, scope: scope || 'target-document', top: top, href: href };
   }`;
 }
 
@@ -13408,6 +13412,8 @@ async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0 
         installed: Boolean(parsed?.ok && parsed?.installed),
         scope: parsed?.scope || 'target-document',
         opaqueFrame: parsed?.opaqueFrame === true,
+        top: parsed?.top === true,
+        href: typeof parsed?.href === 'string' ? parsed.href : '',
         objectId,
         x,
         y,
@@ -13419,6 +13425,8 @@ async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0 
       installed: Boolean(parsed?.ok && parsed?.installed),
       scope: parsed?.scope || 'top',
       opaqueFrame: parsed?.opaqueFrame === true,
+      top: parsed?.top === true,
+      href: typeof parsed?.href === 'string' ? parsed.href : '',
       objectId: null,
       x,
       y,
@@ -13465,21 +13473,55 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     y,
   });
   const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
-  const moved = dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
-  const pressed = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
-  await sleep(50);
-  const released = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
-  await Promise.all([moved, pressed, released]);
-  const framed = probeTarget.framed === true;
-  if (probe.opaqueFrame && framed) return;
-  if (!probe.installed) {
-    if (framed) return;
+  const navigation = watchMainFrameNavigation(cdp, sid);
+  try {
+    const moved = dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
+    const pressed = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
+    await sleep(50);
+    const released = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
+    await Promise.all([moved, pressed, released]);
+    const framed = probeTarget.framed === true;
+    if (probe.opaqueFrame && framed) return;
+    if (!probe.installed) {
+      if (framed) return;
+      throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
+    }
+    if (probe.scope === 'top' && framed) return;
+    const readout = await readClickEventProbe(cdp, sid, probe);
+    if (readout?.ok && clickProbeSawPageEvent(readout.seen)) return;
+    if (!readout?.ok && await clickProbeWipedByNavigation(cdp, sid, probe, navigation.seen)) return;
     throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
+  } finally {
+    navigation.stop();
   }
-  if (probe.scope === 'top' && framed) return;
-  const readout = await readClickEventProbe(cdp, sid, probe);
-  if (readout?.ok && clickProbeSawPageEvent(readout.seen)) return;
-  throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
+}
+
+// #447: a same-tab <a href> to a fast page can commit before the probe is read
+// back. The read then runs in the new document, where the probe no longer
+// exists, which looked exactly like "zero page events". Record main-frame
+// commits for this tab's session while the click is dispatched; this costs no
+// CDP round trip.
+function watchMainFrameNavigation(cdp, sid) {
+  const seen = { navigated: false };
+  if (typeof cdp?.onEvent !== 'function') return { seen, stop() {} };
+  const off = cdp.onEvent('Page.frameNavigated', (params, msg) => {
+    if (!params?.frame || params.frame.parentId) return;
+    if (sid && msg?.sessionId && msg.sessionId !== sid) return;
+    seen.navigated = true;
+  });
+  return { seen, stop() { if (typeof off === 'function') off(); } };
+}
+
+// Only a probe that vanished counts: a probe that survived with zero events
+// means the document was not replaced, so the mouse events really were lost.
+// Proof of a navigation is a main-frame Page.frameNavigated during dispatch or,
+// for a probe installed in the top document, a changed location.href (covers
+// an event that has not been delivered yet). Runs only on the failure path.
+async function clickProbeWipedByNavigation(cdp, sid, probe = {}, seen = {}) {
+  if (seen.navigated) return true;
+  if (!probe.top || !probe.href) return false;
+  const current = await evalPageHref(cdp, sid);
+  return Boolean(current) && current !== probe.href;
 }
 
 function isNavigatingHref(href, pageHref = '') {
