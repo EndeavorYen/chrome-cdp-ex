@@ -391,7 +391,7 @@ scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny 
 - **`shot`** — viewport only. Use when you need the currently visible area as pixels.
 - If `[file]` is omitted, `shot` saves under the session screenshot directory and `report <target>` lists it as an attachment.
 - **`diff-shot`** — first call captures a viewport baseline; later calls save current + diff PNG artifacts and changed-pixel ratio. Screenshot timeouts fail closed (no fake 0% match) with a short capture budget. Use only when structured `perceive`/`cascade` evidence is not enough; it is pixel diff, not semantic diagnosis.
-- **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page.
+- **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page. A segment the page did not let it scroll to is marked `(landed at y=…, expected y=…)` with a `Warning:` line; use `fullshot` there.
 - **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption.
 - Screenshot captures report method/retry metadata. A light page with an anomalous near-black frame gets one alternate-surface retry; a legitimately dark page does not.
 

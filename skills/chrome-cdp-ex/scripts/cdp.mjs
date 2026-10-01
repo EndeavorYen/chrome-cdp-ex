@@ -10508,15 +10508,15 @@ function playwrightStepFromCommand(action = {}) {
         }
         if (container) {
           const topExpr = edge === 'top'
-            ? 'el.scrollTop = 0'
-            : 'el.scrollTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0))';
+            ? "Element.prototype.scrollTo.call(el, { top: 0, behavior: 'instant' })"
+            : "Element.prototype.scrollTo.call(el, { top: Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)), behavior: 'instant' })";
           return finish([
             `await page.locator(${JSON.stringify(container)}).evaluate((el) => { ${topExpr}; });`,
           ]);
         }
         const dest = edge === 'top' ? '0' : 'edge';
         return finish([
-          `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { window.scrollTo(0, ${edge === 'top' ? '0' : 'docMax'}); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) best.scrollTop = ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}; });`,
+          `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { Element.prototype.scrollTo.call(scrolling, { left: 0, top: ${edge === 'top' ? '0' : 'docMax'}, behavior: 'instant' }); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) Element.prototype.scrollTo.call(best, { top: ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}, behavior: 'instant' }); });`,
         ]);
       }
       const direction = args[0] || '';
@@ -15446,6 +15446,21 @@ async function pressStr(cdp, sid, keyName, opts = {}) {
 
 const DOCUMENT_SCROLL_EDGE_TOLERANCE_PX = 2;
 
+// Automation scrolls (#486) call Element.prototype.scrollTo/scrollBy on the document's scrolling
+// element instead of window.scrollTo/scrollBy: pages wrap the window methods with a positional
+// (x, y) signature, which turns an options object into (0, 0). Scrolling the scrolling element
+// scrolls the viewport. behavior 'instant' overrides CSS `scroll-behavior: smooth`, so a position
+// read right after the call is final.
+const DOCUMENT_SCROLLER_JS = '(document.scrollingElement || document.documentElement)';
+
+function documentScrollToJs(topExpr) {
+  return `Element.prototype.scrollTo.call(${DOCUMENT_SCROLLER_JS}, { left: 0, top: ${topExpr}, behavior: 'instant' })`;
+}
+
+function documentScrollByJs(dx, dy) {
+  return `Element.prototype.scrollBy.call(${DOCUMENT_SCROLLER_JS}, { left: ${dx}, top: ${dy}, behavior: 'instant' })`;
+}
+
 function parseScrollEdge(direction, amount) {
   const first = String(direction || '').trim().toLowerCase();
   if (first !== 'to') return null;
@@ -15499,6 +15514,7 @@ function scrollEdgeLogicSource() {
   const tolerance = DOCUMENT_SCROLL_EDGE_TOLERANCE_PX;
   return `
     const tolerance = ${tolerance};
+    const nativeScrollTo = Element.prototype.scrollTo;
     const measureDocument = function() {
       const el = document.scrollingElement || document.documentElement;
       const scrollY = Math.round(window.scrollY);
@@ -15568,7 +15584,7 @@ function scrollEdgeLogicSource() {
     };
     const applyEdge = function(el, dest) {
       const max = Math.max(0, (Number(el.scrollHeight) || 0) - (Number(el.clientHeight) || 0));
-      el.scrollTop = dest === 'top' ? 0 : max;
+      nativeScrollTo.call(el, { top: dest === 'top' ? 0 : max, behavior: 'instant' });
       if (typeof Event === 'function' && typeof el.dispatchEvent === 'function') {
         try { el.dispatchEvent(new Event('scroll')); } catch {}
       }
@@ -15612,7 +15628,7 @@ function scrollEdgeLogicSource() {
       }
       const doc = measureDocument();
       if (doc.scrollMax > tolerance) {
-        window.scrollTo(0, dest === 'top' ? 0 : doc.scrollMax);
+        ${documentScrollToJs("dest === 'top' ? 0 : doc.scrollMax")};
         return Object.assign({ ok: true }, measureDocument());
       }
       const overflow = primaryOverflow();
@@ -15699,7 +15715,7 @@ async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
   } else {
     throw new Error('Direction required: down, up, left, right, x,y, or to top/to bottom');
   }
-  const result = await evalStr(cdp, sid, `(window.scrollBy(${dx}, ${dy}), JSON.stringify({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }))`);
+  const result = await evalStr(cdp, sid, `(${documentScrollByJs(dx, dy)}, JSON.stringify({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }))`);
   const pos = JSON.parse(result);
   return `Scrolled by (${dx}, ${dy}). Position: (${pos.x}, ${pos.y})`;
 }
@@ -16760,13 +16776,24 @@ async function scanshotStr(cdp, sid, targetId) {
   const prefix = (targetId || 'unknown').slice(0, 8);
 
   let usedFallback = false;
+  const offTarget = new Map();
   // One tier state for all segments: a tier that timed out is not retried per segment.
   const tierState = createScreenshotTierState();
   for (let i = 0; i < segments.length; i++) {
     const y = segments[i];
     // Scroll to segment
-    await evalStr(cdp, sid, `window.scrollTo(0, ${y})`);
+    await evalStr(cdp, sid, documentScrollToJs(y));
     await sleep(150); // let rendering settle
+    // Read back where the page actually is: a page that overrides or animates scrolling would
+    // otherwise yield images of the wrong slice that look like a successful capture.
+    const landed = JSON.parse(await evalStr(cdp, sid, `JSON.stringify({
+      y: Math.round(window.scrollY),
+      max: Math.max(0, Math.round((Number(${DOCUMENT_SCROLLER_JS}.scrollHeight) || 0) - window.innerHeight)),
+    })`));
+    const expectedY = Math.min(y, Number(landed.max) || 0);
+    if (Math.abs(Number(landed.y) - expectedY) > DOCUMENT_SCROLL_EDGE_TOLERANCE_PX) {
+      offTarget.set(i, { landedY: landed.y, expectedY });
+    }
 
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' }, { tierState });
     if (fallback) usedFallback = true;
@@ -16776,12 +16803,16 @@ async function scanshotStr(cdp, sid, targetId) {
   }
 
   // Restore original scroll position
-  await evalStr(cdp, sid, `window.scrollTo(0, ${originalY})`);
+  await evalStr(cdp, sid, documentScrollToJs(originalY));
 
   const lines = [`Captured ${files.length} segment(s) of ${vw}x${vh} viewport (page height: ${scrollH}px)`];
   if (usedFallback) lines.push('(screenshot fallback — Page.captureScreenshot timed out)');
   for (let i = 0; i < files.length; i++) {
-    lines.push(`  [${i + 1}/${files.length}] ${files[i]}`);
+    const miss = offTarget.get(i);
+    lines.push(`  [${i + 1}/${files.length}] ${files[i]}${miss ? ` (landed at y=${miss.landedY}, expected y=${miss.expectedY})` : ''}`);
+  }
+  if (offTarget.size) {
+    lines.push(`Warning: ${offTarget.size} of ${files.length} segment(s) did not land on their scroll offset (±${DOCUMENT_SCROLL_EDGE_TOLERANCE_PX}px), so those images do not show the expected slice. The page may override or animate scrolling; use fullshot for a single full-page capture.`);
   }
   lines.push(`Use the Read tool to view each segment image.`);
   return lines.join('\n');
@@ -19097,6 +19128,7 @@ function buildTableCollectorBootstrapExpression() {
     const getBoundingClientRect = getOwnPropertyDescriptor(elementProto, 'getBoundingClientRect').value;
     const queryDocument = getOwnPropertyDescriptor(documentProto, 'querySelector').value;
     const queryAllDocument = getOwnPropertyDescriptor(documentProto, 'querySelectorAll').value;
+    const elementScrollTo = getOwnPropertyDescriptor(elementProto, 'scrollTo').value;
     const apply = (fn, receiver, args) => reflectApply(fn, receiver, args);
     const nodeIds = new WM();
     let nextId = 1;
@@ -19170,6 +19202,9 @@ function buildTableCollectorBootstrapExpression() {
       }
       return rows;
     };
+    // Instant, so the sample read right after lands on the final offset even when the
+    // container has CSS scroll-behavior: smooth (a raw scrollTop write would animate).
+    const scrollContainerTo = (container, top) => apply(elementScrollTo, container, [{ top: top, behavior: 'instant' }]);
     const rememberScroll = container => {
       if (savedScroll) return;
       savedScroll = { container: container, top: container.scrollTop };
@@ -19238,7 +19273,7 @@ function buildTableCollectorBootstrapExpression() {
         const container = query(scrollSelector);
         if (!container) return J.stringify({ ok: false, error: 'scroll-container not found' });
         rememberScroll(container);
-        container.scrollTop = top;
+        scrollContainerTo(container, top);
         if (typeof EventCtor === 'function') {
           const dispatch = container.dispatchEvent;
           if (typeof dispatch === 'function') apply(dispatch, container, [new EventCtor('scroll')]);
@@ -19247,7 +19282,7 @@ function buildTableCollectorBootstrapExpression() {
       },
       restore() {
         if (savedScroll) {
-          savedScroll.container.scrollTop = savedScroll.top;
+          scrollContainerTo(savedScroll.container, savedScroll.top);
           if (typeof EventCtor === 'function') {
             const dispatch = savedScroll.container.dispatchEvent;
             if (typeof dispatch === 'function') apply(dispatch, savedScroll.container, [new EventCtor('scroll')]);
@@ -28955,7 +28990,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   captureViewportSize, restoreViewportSize,
   qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
   diffShotScreenshotCaptureOptions,
-  FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr,
+  FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr, scanshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
   HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, HOVER_REVEAL_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
@@ -29034,7 +29069,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   actionDomDiffShowsChange, noBaselineActionDiffText,
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
   parseFormControlStateSnapshot, snapshotFormControlState,
-  sampleRootFrameTables, tableObservationStr, tableCollectionStr,
+  sampleRootFrameTables, tableObservationStr, tableCollectionStr, buildTableCollectorBootstrapExpression,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
   isBackgroundMode, explicitBackgroundChoice, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,

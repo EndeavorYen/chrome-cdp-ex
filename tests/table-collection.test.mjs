@@ -107,6 +107,8 @@ class Element extends Node {
   hasAttribute(name) { return Object.hasOwn(this._attrs, name); }
   setAttribute(name, value) { this._attrs[name] = String(value); }
   getBoundingClientRect() { return { ...this._rect }; }
+  // The collector scrolls with Element.prototype.scrollTo({ top, behavior: 'instant' }) (#486).
+  scrollTo(options) { this.scrollTop = options.top; }
   querySelector(selector) { return findElement(this, selector); }
   querySelectorAll(selector) { return findAllElements(this, selector); }
   dispatchEvent(event) {
