@@ -45,7 +45,7 @@
 
 ### Bug fixes
 
-* `npm run smoke:live` runs again end to end (92 steps). Its assertions had drifted from the compact
+* `npm run smoke:live` runs again end to end (96 steps). Its assertions had drifted from the compact
   `doctor`, compact `report` and exit-1-on-failed-action receipts. It now pins `--window-size=1280,900`:
   in headless Chromium's default 800 px window, the page's fixed sidebar covered the buttons. It adds
   `--headless=new` on Linux without a display, and keeps endpoint records in a throwaway runtime dir. It
