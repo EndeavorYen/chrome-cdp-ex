@@ -4243,18 +4243,46 @@ async function emulateStr(cdp, sid, session, args = [], { targetPrefix = null } 
 // Tier 2: Page.captureScreenshot with fromSurface:false (view-based capture)
 // Tier 3: Page.startScreencast single-frame grab (different rendering pipeline)
 //
-// Once a tier fails for a session, it is skipped on subsequent calls to avoid
-// repeated 30s timeouts (critical for scanshot which captures multiple segments).
-// State is per-module (one daemon = one tab session, so this is correct).
-let _screenshotTier = 1; // start at tier 1; advances on failure
-function resetScreenshotTier() { _screenshotTier = 1; }
-function getScreenshotTier() { return _screenshotTier; }
+// Every command starts at tier 1, the same call a raw CDP client makes (#452). A
+// multi-capture command (scanshot) passes one `hooks.tierState` to all its captures so
+// a tier that timed out is skipped for the rest of that command only. A tier
+// remembered for the daemon's whole life let one transient timeout route every later
+// capture to fromSurface:false, which Electron on Windows cannot serve (PrintWindow).
+// `getScreenshotTier` reports the tier the last default capture reached.
+let _lastScreenshotTier = 1;
+function resetScreenshotTier() { _lastScreenshotTier = 1; }
+function getScreenshotTier() { return _lastScreenshotTier; }
+function createScreenshotTierState() { return { tier: 1 }; }
 
-// Viewport captures share a session tier so scanshot can skip a known-dead
-// compositor path. Clip / captureBeyondViewport timeouts are a different Chrome
-// code path and must not poison later `shot` / `elshot` viewport captures.
+// Clip / captureBeyondViewport timeouts are a different Chrome code path and must
+// not make a multi-capture command skip its viewport tiers.
 function screenshotCaptureUsesSessionTier(params = {}) {
   return params.captureBeyondViewport !== true && params.clip == null;
+}
+
+// Chrome's generic capture failure (e.g. a native window snapshot that fails) is worth
+// trying the next pipeline for; other protocol errors (target closed) are not.
+function isScreenshotCaptureFailure(err) {
+  return /unable to capture screenshot/i.test(String(err?.message || ''));
+}
+
+const SCREENSHOT_TIER_LABELS = Object.freeze({
+  1: 'Page.captureScreenshot',
+  2: 'Page.captureScreenshot fromSurface:false',
+  3: 'Page.startScreencast frame',
+});
+
+function screenshotFailureError(attempts) {
+  const allTimedOut = attempts.length > 0 && attempts.every(a => a.timedOut);
+  const detail = attempts
+    .map(a => `tier ${a.tier} ${SCREENSHOT_TIER_LABELS[a.tier]}: ${a.message}`)
+    .join('; ');
+  const error = new Error(
+    `Screenshot failed: ${allTimedOut ? 'all methods timed out' : 'no capture method succeeded'} (${detail}).`,
+  );
+  error.code = 'screenshot_capture_failed';
+  error.screenshotAttempts = attempts;
+  return error;
 }
 
 async function screencastFallback(cdp, sid, timeoutMs = SCREENSHOT_TIMEOUT) {
@@ -4271,9 +4299,9 @@ async function screencastFallback(cdp, sid, timeoutMs = SCREENSHOT_TIMEOUT) {
   }
 }
 
-async function inspectScreenshotFrame(cdp, sid, data) {
+async function inspectScreenshotFrame(cdp, sid, data, { clip = null, documentCoords = false } = {}) {
   try {
-    return JSON.parse(await evalStr(cdp, sid, screenshotHealthScript(data), false, { timeoutMs: 2000 }));
+    return JSON.parse(await evalStr(cdp, sid, screenshotHealthScript(data, { clip, documentCoords }), false, { timeoutMs: 2000 }));
   } catch (error) {
     return unavailableScreenshotSanity(error?.message || 'inspection-unavailable');
   }
@@ -4290,41 +4318,49 @@ async function waitForScreenshotPaint(cdp, sid) {
 // Returns capture data plus bounded method/retry diagnostics.
 // `params` is passed to Page.captureScreenshot (format, clip, etc.).
 async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {}) {
-  const inspectFrame = hooks.inspectFrame || (frame => inspectScreenshotFrame(cdp, sid, frame.data));
+  const inspectFrame = hooks.inspectFrame
+    || (frame => inspectScreenshotFrame(cdp, sid, frame.data, {
+      clip: params.clip || null,
+      documentCoords: params.captureBeyondViewport === true,
+    }));
   const waitForPaint = hooks.waitForPaint || (() => waitForScreenshotPaint(cdp, sid));
   const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
     ? hooks.timeoutMs
     : SCREENSHOT_TIMEOUT;
   const skipSanityRetry = hooks.skipSanityRetry === true;
-  const useSessionTier = screenshotCaptureUsesSessionTier(params);
-  let localTier = useSessionTier ? _screenshotTier : 1;
-  const advanceTier = (next) => {
-    localTier = next;
-    if (useSessionTier) _screenshotTier = next;
+  const viewportCapture = screenshotCaptureUsesSessionTier(params);
+  const tierState = viewportCapture && hooks.tierState ? hooks.tierState : null;
+  const noteTier = tier => { if (viewportCapture && !tierState) _lastScreenshotTier = tier; };
+  const attempts = [];
+  // A timeout skips that tier for the rest of a multi-capture command; a capture
+  // failure only moves this capture on to the next pipeline.
+  const recordFailure = (tier, err) => {
+    const timedOut = String(err?.message || '').startsWith('Timeout:');
+    if (!timedOut && !isScreenshotCaptureFailure(err)) throw err;
+    if (timedOut && hooks.failFastOnTimeout === true) throw err;
+    attempts.push({ tier, timedOut, message: String(err?.message || err).slice(0, 200) });
+    if (timedOut && tierState && tierState.tier <= tier) tierState.tier = tier + 1;
   };
+  const startTier = tierState ? tierState.tier : 1;
   let captured;
   // Tier 1: standard captureScreenshot
-  if (localTier <= 1) {
+  if (startTier <= 1) {
     try {
       const result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
-      captured = { data: result.data, fallback: false, method: 'captureScreenshot' };
+      captured = { data: result.data, fallback: false, method: 'captureScreenshot', tier: 1 };
     } catch (err) {
-      if (!err.message?.startsWith('Timeout:')) throw err;
-      if (hooks.failFastOnTimeout === true) throw err;
-      advanceTier(2);
+      recordFailure(1, err);
     }
   }
 
   // Tier 2: captureScreenshot with fromSurface:false (captures from view, not compositor)
-  if (!captured && localTier <= 2) {
+  if (!captured && startTier <= 2) {
     try {
       const result = await cdpDomains(cdp).Page.captureScreenshot(
         { ...params, fromSurface: false }, sid, timeoutMs);
-      captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false' };
+      captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false', tier: 2 };
     } catch (err) {
-      if (!err.message?.startsWith('Timeout:')) throw err;
-      if (hooks.failFastOnTimeout === true) throw err;
-      advanceTier(3);
+      recordFailure(2, err);
     }
   }
 
@@ -4332,14 +4368,15 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   if (!captured) {
     try {
       const data = await screencastFallback(cdp, sid, timeoutMs);
-      captured = { data, fallback: true, method: 'screencast' };
-    } catch {
-      throw new Error(
-        'Screenshot failed: all methods timed out (Page.captureScreenshot, fromSurface:false, screencast).\n' +
-        'This Electron app may not support CDP screenshots. Use `perceive` for structural analysis instead.'
-      );
+      captured = { data, fallback: true, method: 'screencast', tier: 3 };
+    } catch (err) {
+      attempts.push({ tier: 3, timedOut: /timeout|timed out/i.test(String(err?.message || '')), message: String(err?.message || err).slice(0, 200) });
+      noteTier(3);
+      throw screenshotFailureError(attempts);
     }
   }
+  noteTier(captured.tier);
+  if (attempts.length) captured.attempts = attempts;
 
   const firstFrameSanity = await inspectFrame(captured);
   if (skipSanityRetry || !firstFrameSanity?.retry || captured.method !== 'captureScreenshot') {
@@ -4383,10 +4420,12 @@ function parseShotArgs(args) {
 }
 
 function formatScreenshotCaptureDiagnostics(capture = {}) {
-  const { fallback, method, retryCount = 0, sanity, firstFrameSanity } = capture;
+  const { fallback, method, retryCount = 0, sanity, firstFrameSanity, attempts = [] } = capture;
   const lines = [];
   if (fallback && retryCount === 0) {
-    lines.push('(screenshot fallback — Page.captureScreenshot timed out)');
+    lines.push(attempts.length
+      ? `(screenshot fallback method=${method}: ${attempts.map(a => `tier ${a.tier} ${a.message}`).join('; ')})`
+      : '(screenshot fallback — Page.captureScreenshot timed out)');
   }
   if (retryCount) {
     const reason = firstFrameSanity?.reason || sanity?.reason || 'unknown';
@@ -7783,6 +7822,7 @@ function buildResponsiveAuditModel({
     else if (blank || pageHealth.status === 'indeterminate' || entry.overflowX || hasResponsiveFindings(findings) || Number(consoleHealth.errors || 0) > 0) status = 'warn';
     return {
       viewport: entry.viewport,
+      layoutViewport: entry.layoutViewport || null,
       status,
       url: entry.url || page.url || '',
       title: entry.title || page.title || '',
@@ -7835,6 +7875,7 @@ function formatResponsiveAuditReport(model) {
   ];
   for (const vp of model.viewports || []) {
     lines.push(`- ${vp.viewport}: ${vp.status}` +
+      `${vp.layoutViewport && vp.layoutViewport !== vp.viewport ? ` layout=${vp.layoutViewport}` : ''}` +
       `${vp.overflowX ? ' overflow-x' : ''}` +
       `${vp.blank ? ' blank' : ''}` +
       `${vp.findings?.clippedControls?.length || vp.findings?.overlaps?.length ? ` clipped=${vp.findings.clippedControls.length} overlap=${vp.findings.overlaps.length}` : ''}` +
@@ -7875,8 +7916,11 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
         }
         await viewportStr(cdp, sid, size);
         const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript({ maxControls: opts.maxControls }));
-        const metrics = JSON.parse(metricsRaw);
+        // The page reports its layout viewport (a mobile size without <meta viewport> lays
+        // out at 980px); keep the requested size as the entry's label (#452).
+        const { viewport: layoutViewport, ...metrics } = JSON.parse(metricsRaw);
         Object.assign(entry, metrics);
+        if (layoutViewport) entry.layoutViewport = layoutViewport;
         const shotDir = opts.outDir || session.screenshotDir || null;
         if (opts.outDir) {
           try { mkdirSync(opts.outDir, { recursive: true }); } catch {}
@@ -15739,13 +15783,15 @@ async function scanshotStr(cdp, sid, targetId) {
   const prefix = (targetId || 'unknown').slice(0, 8);
 
   let usedFallback = false;
+  // One tier state for all segments: a tier that timed out is not retried per segment.
+  const tierState = createScreenshotTierState();
   for (let i = 0; i < segments.length; i++) {
     const y = segments[i];
     // Scroll to segment
     await evalStr(cdp, sid, `window.scrollTo(0, ${y})`);
     await sleep(150); // let rendering settle
 
-    const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' });
+    const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' }, { tierState });
     if (fallback) usedFallback = true;
     const out = resolve(RUNTIME_DIR, `scanshot-${prefix}-${i + 1}.png`);
     writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
@@ -26047,6 +26093,20 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       commands,
     };
   }
+  // #452: say which capture pipeline failed instead of `Kind: unknown`.
+  if (
+    err?.code === 'screenshot_capture_failed'
+    || lower.includes('screenshot failed:')
+    || lower.includes('unable to capture screenshot')
+    || lower.includes('screenshot alternate capture')
+  ) {
+    return {
+      kind: 'screenshot-capture',
+      strategy: 'perceive-instead',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'Chrome returned no usable frame from the capture pipelines named in the error; the page structure is still readable.',
+    };
+  }
   // Discovery already asked doctor's recommendation for this same CDP check (#425): use it as is.
   if (err?.cdpRecovery?.kind) return { ...err.cdpRecovery };
   if (
@@ -27992,7 +28052,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   dismissModalStr, dismissModalScript,
   // Screenshot
   captureScreenshot, screencastFallback,
-  resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
+  resetScreenshotTier, getScreenshotTier, createScreenshotTierState, SCREENSHOT_TIMEOUT,
   // Constants
   ENRICHED_ROLES, INTERACTIVE_ROLES, CONTENT_REF_ROLES,
   isSkipLinkAxNode, isSkipLinkName, isLicenseBlobUrl,

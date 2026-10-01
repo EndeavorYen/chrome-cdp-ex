@@ -104,7 +104,7 @@ CDP_PORT=9222 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 CDP_PORT=9222 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
 ```
 
-Some Electron builds time out on `Page.captureScreenshot`. The tool automatically falls back through `fromSurface:false` and a single-frame screencast grab, samples near-black frames, retries once when a light page was captured as black, and remembers the winning method for the session. If all screenshot paths fail, use `perceive`; it does not depend on screenshot support.
+Some Electron builds time out on `Page.captureScreenshot`, and on Windows some refuse `fromSurface:false` (`Unable to capture screenshot`; the app logs `Failed to print window`). The tool falls back through `fromSurface:false` and a single-frame screencast grab, and retries once when a region the DOM paints light was captured as black (canvas, video, and image regions are not judged). Each command starts again at the plain `Page.captureScreenshot`. If all screenshot paths fail, the error lists each tier with its CDP error (`Kind: screenshot-capture`); use `perceive`, which does not depend on screenshot support.
 
 ## Stale-ref and stale-daemon recovery
 

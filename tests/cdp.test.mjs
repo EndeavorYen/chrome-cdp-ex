@@ -20,7 +20,7 @@ const {
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr, formatScreenshotCaptureDiagnostics,
-  resetScreenshotTier, getScreenshotTier,
+  resetScreenshotTier, getScreenshotTier, createScreenshotTierState,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
@@ -11161,9 +11161,9 @@ describe('captureScreenshot', () => {
     expect(passedParams.format).toBe('png');
   });
 
-  // --- Tier caching ---
+  // --- Tier caching (command-scoped, #452) ---
 
-  it('should skip Tier 1 on second call after Tier 1 timeout (caching)', async () => {
+  it('skips Tier 1 for the rest of a command after a Tier 1 timeout when the command shares a tier state', async () => {
     let tier1Calls = 0;
     const cdp = createMockCDP({
       'Page.captureScreenshot': (params) => {
@@ -11172,19 +11172,18 @@ describe('captureScreenshot', () => {
         throw new Error('Timeout: Page.captureScreenshot');
       },
     });
+    const tierState = createScreenshotTierState();
 
-    // First call: tries Tier 1, fails, falls to Tier 2
-    await captureScreenshot(cdp, 'sid1', { format: 'png' });
+    await captureScreenshot(cdp, 'sid1', { format: 'png' }, { tierState });
     expect(tier1Calls).toBe(1);
 
-    // Second call: should skip Tier 1 entirely
     tier1Calls = 0;
-    await captureScreenshot(cdp, 'sid1', { format: 'png' });
-    expect(tier1Calls).toBe(0); // Tier 1 was NOT attempted
-    expect(getScreenshotTier()).toBe(2);
+    await captureScreenshot(cdp, 'sid1', { format: 'png' }, { tierState });
+    expect(tier1Calls).toBe(0); // Tier 1 was NOT attempted within the same command
+    expect(tierState.tier).toBe(2);
   });
 
-  it('should skip Tier 1 and 2 on second call after both timeout (caching)', async () => {
+  it('skips Tier 1 and 2 for the rest of a command after both time out', async () => {
     let cdpCalls = 0;
     const cdp = createMockCDP({
       'Page.captureScreenshot': () => {
@@ -11193,16 +11192,88 @@ describe('captureScreenshot', () => {
       },
       'event:Page.screencastFrame': () => ({ data: 'tier3-ok', sessionId: 1 }),
     });
+    const tierState = createScreenshotTierState();
 
-    // First call: tries Tier 1, 2, then falls to Tier 3
-    await captureScreenshot(cdp, 'sid1', { format: 'png' });
+    await captureScreenshot(cdp, 'sid1', { format: 'png' }, { tierState });
     expect(cdpCalls).toBe(2); // Tier 1 + Tier 2
 
-    // Second call: should skip directly to Tier 3
     cdpCalls = 0;
-    await captureScreenshot(cdp, 'sid1', { format: 'png' });
-    expect(cdpCalls).toBe(0); // no captureScreenshot calls at all
-    expect(getScreenshotTier()).toBe(3);
+    await captureScreenshot(cdp, 'sid1', { format: 'png' }, { tierState });
+    expect(cdpCalls).toBe(0); // straight to Tier 3
+    expect(tierState.tier).toBe(3);
+  });
+
+  it('#452: a later capture starts at plain Page.captureScreenshot even after an earlier Tier 1 timeout', async () => {
+    // A target where fromSurface:false fails (Electron on Windows: PrintWindow) but the
+    // plain call works once the transient stall is over.
+    let stalled = true;
+    const tier1Params = [];
+    const cdp = createMockCDP({
+      'Page.captureScreenshot': (params) => {
+        if (params.fromSurface === false) throw new Error('Unable to capture screenshot');
+        tier1Params.push(params);
+        if (stalled) throw new Error('Timeout: Page.captureScreenshot');
+        return { data: 'plain-ok' };
+      },
+      'event:Page.screencastFrame': () => ({ data: 'screencast-ok', sessionId: 3 }),
+    });
+
+    const first = await captureScreenshot(cdp, 'sid1', { format: 'png' });
+    expect(first.method).toBe('screencast');
+    expect(first.attempts.map(a => a.tier)).toEqual([1, 2]);
+
+    stalled = false;
+    const second = await captureScreenshot(cdp, 'sid1', { format: 'png' });
+    expect(second.data).toBe('plain-ok');
+    expect(second.method).toBe('captureScreenshot');
+    expect(second.fallback).toBe(false);
+    expect(tier1Params.at(-1)).toEqual({ format: 'png' });
+  });
+
+  it('#452: moves on when fromSurface:false is refused instead of throwing the raw CDP error', async () => {
+    const cdp = createMockCDP({
+      'Page.captureScreenshot': (params) => {
+        if (params.fromSurface === false) throw new Error('Unable to capture screenshot');
+        throw new Error('Timeout: Page.captureScreenshot');
+      },
+      'event:Page.screencastFrame': () => ({ data: 'screencast-ok', sessionId: 5 }),
+    });
+    const result = await captureScreenshot(cdp, 'sid1', { format: 'png' });
+    expect(result.data).toBe('screencast-ok');
+    expect(result.attempts).toEqual([
+      { tier: 1, timedOut: true, message: 'Timeout: Page.captureScreenshot' },
+      { tier: 2, timedOut: false, message: 'Unable to capture screenshot' },
+    ]);
+  });
+
+  it('#452: a total failure names every tier and its CDP error', async () => {
+    const cdp = createMockCDP({
+      'Page.captureScreenshot': () => { throw new Error('Unable to capture screenshot'); },
+    });
+    const error = await captureScreenshot(cdp, 'sid1', { format: 'png' }, { timeoutMs: 50 }).catch(e => e);
+    expect(error.code).toBe('screenshot_capture_failed');
+    expect(error.message).toMatch(/^Screenshot failed: no capture method succeeded \(/);
+    expect(error.message).toContain('tier 1 Page.captureScreenshot: Unable to capture screenshot');
+    expect(error.message).toContain('tier 2 Page.captureScreenshot fromSurface:false: Unable to capture screenshot');
+    expect(error.message).toContain('tier 3 Page.startScreencast frame:');
+    const text = formatCliError(error, { cmd: 'shot', targetPrefix: 'ABCD1234' });
+    expect(text).toContain('Kind: screenshot-capture');
+    expect(text).toContain('Next: cdp perceive ABCD1234 -C -d 8');
+  });
+
+  it('#452: a bare CDP capture error from the daemon is classified, not unknown', () => {
+    const text = formatCliError(new Error('Unable to capture screenshot'), { cmd: 'shot', targetPrefix: 'ABCD1234' });
+    expect(text).toContain('Kind: screenshot-capture');
+    expect(text).not.toContain('Kind: unknown');
+  });
+
+  it('reports which tier failed in the fallback diagnostic line', () => {
+    const line = formatScreenshotCaptureDiagnostics({
+      fallback: true,
+      method: 'screencast',
+      attempts: [{ tier: 2, timedOut: false, message: 'Unable to capture screenshot' }],
+    });
+    expect(line).toBe('(screenshot fallback method=screencast: tier 2 Unable to capture screenshot)');
   });
 });
 
