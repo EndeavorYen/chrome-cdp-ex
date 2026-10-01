@@ -19,7 +19,7 @@ const tableSamplerPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/tabl
 const commandApplicationPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/command-application.mjs');
 const packageVersion = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
 const fixturePath = resolve(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`);
-const PROTOCOL_COMMANDS = new Set(['list', 'list_raw', 'meta', 'stop']);
+const PROTOCOL_COMMANDS = new Set(['list', 'list_raw', 'meta', 'stop', '_activate']);
 const TABLE_POLICY_HELPERS = Object.freeze([
   'authorizeDaemonApplicationCommand',
   'daemonRequestMayHaveSideEffects',
@@ -1724,7 +1724,7 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
     retainedAuthorities: [
       'command-surface catalog and projections',
       'command-application authorization/result/evidence contracts',
-      'daemon protocol meta/list/list_raw/stop controls',
+      'daemon protocol meta/list/list_raw/_activate/stop controls',
       'daemon state, event buffers, parsers, renderers, and browser operations',
       'BrowserSupervisor and per-tab daemon topology',
       'CLI targetless adapters and target-resolution adapter',

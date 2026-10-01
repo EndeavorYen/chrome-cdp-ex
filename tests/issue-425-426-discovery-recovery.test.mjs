@@ -374,7 +374,8 @@ describe('#426 relaunch-same-profile replays the launch flags', () => {
         rememberLastCdpEndpoint: record => remembered.push(record),
       },
     );
-    expect(remembered[0].launchFlags).toEqual(['--remote-debugging-address=127.0.0.1', '--headless=new', '--no-sandbox']);
+    // #488: --disable-backgrounding-occluded-windows is a spawn default (it maps back to no option).
+    expect(remembered[0].launchFlags).toEqual(['--remote-debugging-address=127.0.0.1', '--headless=new', '--no-sandbox', '--disable-backgrounding-occluded-windows']);
   });
 
   it('attaching to a live profile records the flags from its process command line', async () => {

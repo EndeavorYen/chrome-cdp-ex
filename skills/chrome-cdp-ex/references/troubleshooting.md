@@ -83,7 +83,7 @@ If `click`/`clickxy` fails with `Kind: no-input-events`, or `press Enter` silent
 cdp eval <target> "document.visibilityState"
 ```
 
-`hidden` means the browser window is covered by another window or minimised (Windows occlusion tracking); Chrome then drops `Input.*` events. `Page.bringToFront` does not change this. Options: bring the window to the front, use `cdp jsclick` (page-side `element.click()`), or relaunch the debug browser with `spawn-debug-browser`, which passes `--disable-features=CalculateNativeWinOcclusion` by default (`--allow-occlusion` opts out).
+`hidden` means the tab is a background tab, or its browser window is covered by another window or minimised (Windows occlusion tracking); Chrome then drops `Input.*` events. Neither `Page.bringToFront` nor `Target.activateTarget` uncovers a covered window (Windows does not let Chrome raise itself). Background mode, the default, never brings a tab forward. Options: bring the window to the front yourself; for a background tab, rerun with `CDP_BACKGROUND=0` (activates the tab before the command); use `cdp jsclick` (page-side `element.click()`); or launch the browser with `--disable-backgrounding-occluded-windows` (see `docs/daily-browser-cdp.md`), which keeps covered windows rendering. `spawn-debug-browser` passes that flag and `--disable-features=CalculateNativeWinOcclusion` by default (`--allow-occlusion` opts out).
 
 The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
 

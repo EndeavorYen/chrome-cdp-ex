@@ -27,6 +27,34 @@
 
   The runtime directory is now resolved in one place, `scripts/lib/runtime-dir.mjs`, which the CLI and
   the MCP server share.
+* **Behaviour change: background mode is the default**
+  ([#488](https://github.com/EndeavorYen/chrome-cdp-ex/issues/488)). Tab daemons no longer send
+  `Target.activateTarget` when they attach, and `open` creates its tab in a new unfocused window, so the
+  agent stops raising the browser over the user's work. `CDP_BACKGROUND=0` (also `false`, `no`, `off`)
+  or `CDP_FOREGROUND=1` restores the old behaviour, and `open --foreground` does it for one tab. A call
+  with the opt-out also activates a hidden tab before its command (waiting at most 300 ms), even when
+  the tab's daemon already runs in background mode; an explicit choice on `open` is kept for that tab
+  across daemon restarts (#441). The internal `_activate` request behind this is refused as a `batch`,
+  `flow`, `repeat` or `replay` step.
+  * A capture on a hidden tab (a background tab, or a minimized window) no longer waits out the 30 s
+    screenshot timeout and then falls back to `fromSurface:false`, which copies what the window shows,
+    which is another tab. In background mode `shot`, `elshot`, `scanshot`, `fullshot`, `annotshot`,
+    `diff-shot` and the `responsive-audit` / `qa` screenshots read `document.visibilityState` first. A
+    hidden tab gets one plain capture limited to 3 s, because Chrome renders frames for some hidden tabs
+    and not for others, so such a capture may fail. Without a frame the command fails with
+    `Kind: hidden-tab`. `Next:` reruns a capture command as `CDP_BACKGROUND=0 cdp <command> <target>`;
+    after `flow`, `repeat`, `replay` or `batch` it names the capture alone (`CDP_BACKGROUND=0 cdp shot
+    <target>`) and never replays steps that already ran. Visible tabs are unchanged.
+  * The `no-input-events` hint for a hidden tab names `CDP_BACKGROUND=0` for a background tab. Neither
+    mode raises a window that other windows cover (Windows does not let Chrome bring itself forward), so
+    covered windows behave as before. `docs/daily-browser-cdp.md` now launches the daily browser with
+    `--disable-backgrounding-occluded-windows`, which keeps a covered window rendering at some CPU cost.
+  * `spawn-debug-browser` passes `--disable-backgrounding-occluded-windows` by default
+    (`--allow-occlusion` drops it); relaunch hints treat that flag alone as the spawn default, not as
+    `--background`. The throttling flags and minimizing still need an explicit `--background` or
+    `CDP_BACKGROUND=1`, as before, and its next-command hint no longer prepends `CDP_BACKGROUND=1`.
+    `npm run smoke:live` launches its browser with `--disable-features=CalculateNativeWinOcclusion`, as
+    `spawn-debug-browser` does.
 
 ### Bug Fixes
 

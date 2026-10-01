@@ -407,8 +407,9 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    expect(inventory).toHaveLength(147);
-    expect(digest).toBe('sha256:da6824f424bb8bbcbf406807f5a30d6d3619de6e64754164346e4fd9656d5142');
+    // #488 added captureHiddenTabFrame → Page.captureScreenshot and revealHiddenTab → Target.activateTarget.
+    expect(inventory).toHaveLength(149);
+    expect(digest).toBe('sha256:bbb3ed60afbf1826b0230d7b817a529700207644bd13c819443ed0ffaaa5262d');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
@@ -654,6 +655,8 @@ describe('Phase 6 direct CDP characterization', () => {
         createCdp: () => navigationCdp,
         getWsUrlFn: async () => 'ws://127.0.0.1/devtools/browser/fixture',
         waitForOpenTargetUrlFn: async () => ({ ok: false, href: null }),
+        // Foreground mode keeps the activating navigate fallback; background is the default since #488.
+        background: false,
       },
     )).resolves.toMatchObject({ attempted: true, ok: true, method: 'Page.navigate' });
     expect(navigationCdp.send.mock.calls).toEqual([

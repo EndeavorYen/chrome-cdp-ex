@@ -349,7 +349,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
         : 'The realistic mouse click completed without delivering page mouse or click events.',
       nextCommand: jsClick,
       hints: [
-        ...(hidden ? ['The tab is hidden: Input.* events are dropped while hidden. Bring the browser window to the front, or use a JS click instead of retrying the mouse path.'] : []),
+        ...(hidden ? [`The tab is hidden: Input.* events are dropped while hidden. Bring the browser window to the front, or use a JS click instead of retrying the mouse path. For a background tab, \`CDP_BACKGROUND=0 cdp click ${targetId} ${input ? recoveryCommandArg(input) : '<selector>'}\` activates it first; that does not raise a window other windows cover.`] : []),
         `Retry with \`${jsClick}\` or \`cdp click ${targetId} ${input || '<selector>'} --js\`.`,
         'Do not treat dispatch.ok as success when the live handler or form control did not change.',
       ],

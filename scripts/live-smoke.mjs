@@ -87,6 +87,10 @@ browser = spawn(browserPath, [
   // The page's fixed .sidebar covers the main column's buttons below about 1100 px (headless
   // defaults to 800x600), so real mouse clicks would land on the sidebar.
   '--window-size=1280,900',
+  // Background mode is the default (#488), so no command raises this window. Like
+  // spawn-debug-browser, keep Windows from marking it hidden while other windows cover it; a hidden
+  // tab drops Input.* events and the click steps would fail with no-input-events.
+  '--disable-features=CalculateNativeWinOcclusion',
   // A headed browser aborts at once on Linux without a display.
   ...(process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY ? ['--headless=new'] : []),
   // Opt-in for hosts whose kernel blocks Chromium's sandbox (Ubuntu AppArmor userns rules).
