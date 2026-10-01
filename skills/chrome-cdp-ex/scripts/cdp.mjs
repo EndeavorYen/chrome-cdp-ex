@@ -78,6 +78,7 @@ import {
   isTimeoutError,
   looksLikeClipboardControl,
   querySelectorEvalCommand,
+  recoveryCommandArg,
   recoveryCommandsFromDiagnosis,
   uniqueNextStepCommands,
 } from './lib/action-recovery.mjs';
@@ -118,6 +119,7 @@ import {
 import {
   connectToDaemon,
   daemonEndpointForPlatform,
+  daemonEndpointTooLongError,
   ipcTimeoutForRequest,
   requestDaemon,
 } from './lib/daemon-transport.mjs';
@@ -23779,6 +23781,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     shutdown(1);
   });
 
+  const tooLong = daemonEndpointTooLongError(sp);
+  if (tooLong) {
+    process.stderr.write(`Daemon server listen failed: ${tooLong.message}\n`);
+    shutdown(1);
+    return;
+  }
   if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
   ensureRuntimeDir();
   // Only the daemon that won the listen race owns the record.
@@ -23802,6 +23810,9 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
     platform,
     runtimeDir: opts.runtimeDir || RUNTIME_DIR,
   });
+  // #444: a daemon could not listen on a truncated path; fail before spawning one.
+  const tooLong = daemonEndpointTooLongError(sp, { platform });
+  if (tooLong) throw tooLong;
   const connect = opts.connect || connectToSocket;
   const unlink = opts.unlink || unlinkSync;
   const spawnProcess = opts.spawnProcess || spawn;
@@ -25726,6 +25737,16 @@ function jsclickSelectorFromCliError(message, { cmd = '', args = [], err = null 
 function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null, args = [] } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
+  if (err?.code === 'daemon_socket_path_too_long' || lower.includes('over the 107-byte unix socket limit') || lower.includes('over the 103-byte unix socket limit')) {
+    // #444: rerun the same command with a runtime dir short enough for a Unix socket path.
+    const rerun = ['cdp', cmd || 'list', ...(targetPrefix ? [targetPrefix] : []), ...(args || []).map(recoveryCommandArg).filter(Boolean)];
+    return {
+      kind: 'runtime-dir',
+      strategy: 'shorten-runtime-dir',
+      run: `XDG_RUNTIME_DIR=/tmp/cdp-rt ${rerun.join(' ')}`,
+      reason: 'The per-tab daemon socket path is longer than the OS allows; a shorter XDG_RUNTIME_DIR keeps each tab on its own socket.',
+    };
+  }
   if (lower.includes('emfile') || lower.includes('too many open files')) {
     const recovery = fdLimitRecovery({ platform });
     const commands = recovery.commands || [];
@@ -26172,7 +26193,7 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       kind: 'no-input-events',
       strategy: 'use-jsclick',
       run: (targetPrefix && selector)
-        ? `cdp jsclick ${targetPrefix} ${selector}`
+        ? `cdp jsclick ${targetPrefix} ${recoveryCommandArg(selector)}`
         : 'cdp help click',
       reason: lower.includes('visibilitystate is hidden')
         ? 'The tab is hidden (window covered or minimised): Input.* events are dropped. Use jsclick, or bring the window to the front. Do not treat dispatch.ok as success.'

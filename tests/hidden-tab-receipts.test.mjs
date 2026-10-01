@@ -17,7 +17,7 @@ describe('hidden-tab receipts (#402)', () => {
         kind: 'no-input-events',
         visibility: 'hidden',
         dispatched: false,
-        nextCommand: 'cdp jsclick ABC123 #send',
+        nextCommand: 'cdp jsclick ABC123 "#send"',
       });
       expect(failure.hints.join(' ')).toMatch(/hidden/);
       expect(failure.hints.join(' ')).toMatch(/Input\.\* events are dropped/);
@@ -25,7 +25,7 @@ describe('hidden-tab receipts (#402)', () => {
 
     it('keeps no-input-events on a visible or unknown tab but never claims hidden', () => {
       const failure = classifyActionFailure(new Error(NO_EVENTS), { action: 'click', target: TARGET });
-      expect(failure).toMatchObject({ kind: 'no-input-events', dispatched: false, nextCommand: 'cdp jsclick ABC123 #send' });
+      expect(failure).toMatchObject({ kind: 'no-input-events', dispatched: false, nextCommand: 'cdp jsclick ABC123 "#send"' });
       expect(failure.visibility).not.toBe('hidden');
     });
 

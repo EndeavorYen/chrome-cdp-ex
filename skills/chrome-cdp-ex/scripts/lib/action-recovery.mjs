@@ -261,7 +261,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     lower.includes('hit test') ||
     lower.includes('not clickable at point')
   ) {
-    const jsClick = input ? `cdp jsclick ${targetId} ${input}` : null;
+    const jsClick = input ? `cdp jsclick ${targetId} ${recoveryCommandArg(input)}` : null;
     return {
       ...base,
       kind: 'overlay',
@@ -333,7 +333,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     lower.includes('received no mousedown/click events')
     || (lower.includes('mouse path failed closed') && lower.includes('jsclick'))
   ) {
-    const jsClick = input ? `cdp jsclick ${targetId} ${input}` : 'cdp help click';
+    const jsClick = input ? `cdp jsclick ${targetId} ${recoveryCommandArg(input)}` : 'cdp help click';
     // #402: a hidden tab (window covered or minimised) drops Input.* events; the page saw nothing,
     // so a JS click is safe to try and the mouse path will keep failing until the window is visible.
     const hidden = lower.includes('visibilitystate is hidden');
@@ -374,7 +374,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     lower.includes('did not navigate')
     || (lower.includes('try jsclick') && lower.includes('<a href'))
   ) {
-    const jsClick = input ? `cdp jsclick ${targetId} ${input}` : 'cdp help click';
+    const jsClick = input ? `cdp jsclick ${targetId} ${recoveryCommandArg(input)}` : 'cdp help click';
     return {
       ...base,
       kind: 'no-navigation',
@@ -651,13 +651,16 @@ export function formatActionFailure(err, context = {}) {
   });
 }
 
+// One shell word for a selector/ref in a pasteable recovery command (#445). Refs and plain words stay
+// bare; a leading `#` (a comment in sh) or any space/quote gets "..." when that is safe; anything a
+// double-quoted word would expand ($, `, \\, !) goes in single quotes.
 export function recoveryCommandArg(value) {
   const text = String(value || '').trim();
   if (!text) return '';
   if (/^@[a-z0-9:]+$/i.test(text)) return text;
-  if (text.startsWith('#')) return JSON.stringify(text);
-  if (/^[^\s"'`\\$]+$/.test(text)) return text;
-  return JSON.stringify(text);
+  if (/^[^\s"'`\\$!#;&|<>()*?[\]{}~]+$/.test(text)) return text;
+  if (!/["$`\\!\r\n]/.test(text)) return `"${text}"`;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
 function recoveryCommand(command, reason) {

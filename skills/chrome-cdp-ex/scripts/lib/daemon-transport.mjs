@@ -63,6 +63,25 @@ function validateDaemonResponse(response, request) {
   return response;
 }
 
+// sun_path holds 108 bytes on Linux and 104 on macOS/BSD, including the trailing NUL. libuv
+// silently truncates a longer path on both listen and connect, so two tabs' sockets can collapse
+// into one (#444). Windows named pipes have no such limit.
+const UNIX_SOCKET_PATH_MAX_BYTES = { linux: 107, default: 103 };
+
+export function daemonEndpointTooLongError(endpoint, { platform = process.platform } = {}) {
+  if (platform === 'win32') return null;
+  const max = UNIX_SOCKET_PATH_MAX_BYTES[platform] ?? UNIX_SOCKET_PATH_MAX_BYTES.default;
+  const bytes = Buffer.byteLength(String(endpoint || ''));
+  if (bytes <= max) return null;
+  const err = new Error(
+    `Daemon socket path is ${bytes} bytes, over the ${max}-byte Unix socket limit: ${endpoint}. `
+    + 'The OS would truncate it and tabs could share one socket. Set a shorter XDG_RUNTIME_DIR '
+    + '(e.g. XDG_RUNTIME_DIR=/tmp/cdp-rt) and retry.'
+  );
+  err.code = 'daemon_socket_path_too_long';
+  return err;
+}
+
 export function daemonEndpointForPlatform(targetId, {
   platform = process.platform,
   runtimeDir,
@@ -74,7 +93,10 @@ export function daemonEndpointForPlatform(targetId, {
 export function connectToDaemon(endpoint, {
   connect = path => net.connect(path),
   timeoutMs = DEFAULT_CONNECT_TIMEOUT,
+  platform = process.platform,
 } = {}) {
+  const tooLong = daemonEndpointTooLongError(endpoint, { platform });
+  if (tooLong) return Promise.reject(tooLong);
   return new Promise((resolveConnection, reject) => {
     let settled = false;
     const conn = connect(endpoint);
