@@ -70,6 +70,6 @@ When attach, perceive, or act code changes and a supported browser exists, also 
 npm run smoke:live
 ```
 
-`npm run smoke:live` skips if no supported browser is installed. Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Those scripts may remain in `scripts/` and `validation/` as optional historical harnesses.
+`npm run smoke:live` skips if no supported browser is installed, or if its port (`CDP_SMOKE_PORT`, default 9333) already has a CDP endpoint. On hosts with only a Playwright Chromium, run it with `CDP_SMOKE_BROWSER=<chrome path>`; add `CDP_SMOKE_NO_SANDBOX=1` where the kernel blocks Chromium's sandbox (Ubuntu AppArmor). Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Those scripts may remain in `scripts/` and `validation/` as optional historical harnesses.
 
 This repository publishes via GitHub Releases, not the npm registry.

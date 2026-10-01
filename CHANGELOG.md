@@ -45,6 +45,13 @@
 
 ### Bug fixes
 
+* `npm run smoke:live` runs again end to end (96 steps). Its assertions had drifted from the compact
+  `doctor`, compact `report` and exit-1-on-failed-action receipts. It now pins `--window-size=1280,900`:
+  in headless Chromium's default 800 px window, the page's fixed sidebar covered the buttons. It adds
+  `--headless=new` on Linux without a display, and keeps endpoint records in a throwaway runtime dir. It
+  skips instead of driving a browser that already listens on its port. `CDP_SMOKE_BROWSER`,
+  `CDP_SMOKE_NO_SANDBOX` and `CDP_SMOKE_START_TIMEOUT_MS` let it run on hosts with only a Playwright
+  Chromium build.
 * The test suite now runs with a throwaway `XDG_RUNTIME_DIR` (`LOCALAPPDATA` on Windows) that is removed
   when the run exits. Before, tests wrote fixture endpoint records (macOS profiles, Edge on 9222) into the
   developer's real `cdp-last-endpoint.json`, and later real `doctor` / `list` runs trusted them. That is how
