@@ -134,3 +134,7 @@ Use `--allow-stale-daemon` only for an intentional long-running daemon and only 
 ## Focused search poisons perceive
 
 If a search/typeahead is focused, `perceive` may dump suggestions instead of the article. Blur first (`press Escape`) or `perceive -s main`. Use `--keep-typeahead` only when inspecting the dropdown.
+
+## Daemon crashed mid-command
+
+`Connection closed before response: the daemon for this tab crashed (…)` names the uncaught error that ended the tab daemon; the record is `cdp-<target>.crash.json` in the runtime dir. Re-run `perceive <target>` to start a fresh daemon, and include that line when reporting the bug.

@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 process.env.NODE_ENV = 'test';
 
@@ -35,7 +35,9 @@ function refClickCdp({ settle, fallbackRect = null, mouse = () => Promise.resolv
 }
 
 const unhandled = [];
-process.on('unhandledRejection', reason => unhandled.push(reason));
+const recordUnhandled = reason => unhandled.push(reason);
+beforeAll(() => { process.on('unhandledRejection', recordUnhandled); });
+afterAll(() => { process.off('unhandledRejection', recordUnhandled); });
 afterEach(() => { unhandled.length = 0; });
 
 describe('#464 a slow scroll settle no longer turns into a NaN click point', () => {
@@ -47,6 +49,24 @@ describe('#464 a slow scroll settle no longer turns into a NaN click point', () 
     const rect = await T.resolveRef(cdp, 'sid', new Map([[15, 99]]), '@15', {}, { hitTest: true });
     expect(rect).toMatchObject({ x: 40, y: 300, w: 120, h: 32, tag: 'BUTTON', connected: true, settled: false });
     expect(Number.isFinite(rect.x + rect.w / 2)).toBe(true);
+  });
+
+  it('hit-tests the fallback point so a covered target still fails as covered', async () => {
+    const hit = { covered: true, x: 100, y: 316, by: '<DIV.toast>', byPosition: 'fixed' };
+    const cdp = refClickCdp({
+      settle: () => Promise.reject(new Error('Timeout: Runtime.callFunctionOn')),
+      fallbackRect: { x: 40, y: 300, w: 120, h: 32, tag: 'BUTTON', text: 'Smooth target' },
+    });
+    const send = cdp.send.bind(cdp);
+    cdp.send = (method, params = {}) => (method === 'Runtime.callFunctionOn'
+      && String(params.functionDeclaration || '').includes('return clickPointHit(this, { x: box.x')
+      ? Promise.resolve({ result: { value: hit } })
+      : send(method, params));
+    const rect = await T.resolveRef(cdp, 'sid', new Map([[15, 99]]), '@15', {}, { hitTest: true });
+    expect(rect.hit).toEqual(hit);
+    const err = await T.clickStr(cdp, 'sid', '@15', new Map([[15, 99]]), {}).catch(e => e);
+    expect(err.message).toMatch(/is covered by (position:fixed )?<DIV\.toast>/);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
   });
 
   it('keeps the page settle budget inside the CDP timeout and scrolls instantly', () => {
@@ -106,6 +126,10 @@ describe('#464 a crashed daemon says why', () => {
     const record = JSON.parse(readFileSync(T.daemonCrashReportPath('ABCDEF', dir), 'utf8'));
     expect(record).toMatchObject({ schema: 'chrome-cdp-ex.daemon-crash.v1', ts: 5000, pid: 42, kind: 'unhandledRejection' });
     expect(record.stack.length).toBeLessThanOrEqual(2000);
+    const secret = T.recordDaemonCrash('ABCDEF', 'uncaughtException', new Error('fetch failed for ?token=hunter2-secret'),
+      { runtimeDir: dir, now: () => 5001, pid: 42 });
+    expect(JSON.stringify(secret)).not.toContain('hunter2-secret');
+    T.recordDaemonCrash('ABCDEF', 'unhandledRejection', error, { runtimeDir: dir, now: () => 5000, pid: 42 });
     expect(T.readDaemonCrashReport('ABCDEF', { runtimeDir: dir, sinceMs: 4000 }))
       .toBe('unhandledRejection: params.x: must contain JSON-compatible data');
     expect(T.readDaemonCrashReport('ABCDEF', { runtimeDir: dir, sinceMs: 6000 })).toBeNull();

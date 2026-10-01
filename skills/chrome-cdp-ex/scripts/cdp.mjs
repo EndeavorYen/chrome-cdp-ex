@@ -1433,12 +1433,12 @@ function recordDaemonCrash(targetId, kind, error, { runtimeDir = RUNTIME_DIR, wr
     ts: now(),
     pid,
     kind,
-    message: String(error?.message || error || 'unknown error').slice(0, 300),
-    stack: String(error?.stack || '').slice(0, 2000),
+    // Bounded first, then redacted: an error message can quote page data.
+    message: redactSensitiveString(String(error?.message || error || 'unknown error').slice(0, 300)),
+    stack: redactSensitiveString(String(error?.stack || '').slice(0, 2000)),
   };
   try {
-    writer(daemonCrashReportPath(targetId, runtimeDir), `${JSON.stringify(payload)}
-`, { mode: 0o600 });
+    writer(daemonCrashReportPath(targetId, runtimeDir), `${JSON.stringify(payload)}\n`, { mode: 0o600 });
   } catch {}
   return payload;
 }
@@ -1456,8 +1456,7 @@ function readDaemonCrashReport(targetId, { sinceMs = 0, runtimeDir = RUNTIME_DIR
 function installDaemonCrashRecorder(targetId, { processRef = process, record = recordDaemonCrash } = {}) {
   const fail = kind => error => {
     record(targetId, kind, error);
-    try { processRef.stderr.write(`Daemon ${kind}: ${error?.stack || error}
-`); } catch {}
+    try { processRef.stderr.write(`Daemon ${kind}: ${error?.stack || error}\n`); } catch {}
     processRef.exit(1);
   };
   processRef.on('uncaughtException', fail('uncaughtException'));
@@ -11057,7 +11056,21 @@ async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = false } =
       // resolveRefRectNoScroll returns { rect, objectId }; callers of resolveRef read the
       // rect fields directly, so unwrap it (#464: x/y were undefined → NaN click point).
       const { rect } = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, { objectId });
-      return { ...rect, connected: true, settled: false };
+      const value = { ...rect, connected: true, settled: false };
+      if (hitTest) {
+        // No settle happened, so check the point now: a covered target still fails as
+        // covered instead of clicking whatever sits there.
+        const probe = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, {
+          objectId,
+          functionDeclaration: `function() {
+            ${clickPointHitFunctionSource()}
+            const box = this.getBoundingClientRect();
+            return clickPointHit(this, { x: box.x, y: box.y, w: box.width, h: box.height });
+          }`,
+        });
+        value.hit = probe && typeof probe === 'object' ? probe : null;
+      }
+      return value;
     }
     throw error;
   }
@@ -28000,7 +28013,7 @@ async function main(options = {}) {
             env: aliasEnv(alias),
             ...runtimeIdentity,
           });
-          const resp = await sendCommand(conn, { cmd: opts.command, args: opts.commandArgs });
+          const resp = await sendCommand(conn, { cmd: opts.command, args: opts.commandArgs }, { targetId });
           try { conn.end(); } catch {}
           if (resp.ok) {
             entry.ok = true;
@@ -28173,7 +28186,7 @@ async function main(options = {}) {
         console.log(formatOpenReadyMessage(targetId, url));
         try {
           const conn = await connectToSocket(sp);
-          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
+          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] }, { targetId });
           conn.end();
           if (resp.ok && resp.result) console.log('---\n' + resp.result);
         } catch (e) {
