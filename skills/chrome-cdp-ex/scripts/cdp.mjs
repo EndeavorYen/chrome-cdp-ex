@@ -130,6 +130,7 @@ import {
 } from './lib/target-binding.mjs';
 import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
 import { resolveGitHead } from './lib/git-head.mjs';
+import { resolveRuntimeDir } from './lib/runtime-dir.mjs';
 import { createLocatorPlan } from './lib/browser-resources.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './lib/browser-paths.mjs';
 import {
@@ -212,11 +213,7 @@ function pathApiForRoot(root, platform = process.platform) {
   if (/^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\')) return win32Path;
   return pathApiForPlatform(platform);
 }
-const RUNTIME_DIR = IS_WINDOWS
-  ? resolve(process.env.LOCALAPPDATA || resolve(homedir(), 'AppData', 'Local'), 'cdp')
-  : process.env.XDG_RUNTIME_DIR
-    ? resolve(process.env.XDG_RUNTIME_DIR, 'cdp')
-    : resolve(homedir(), '.cache', 'cdp');
+const RUNTIME_DIR = resolveRuntimeDir();
 const PAGES_CACHE = resolve(RUNTIME_DIR, 'pages.json');
 const ALIASES_CACHE = resolve(RUNTIME_DIR, 'aliases.json');
 const LAST_CDP_ENDPOINT_FILE = 'cdp-last-endpoint.json';

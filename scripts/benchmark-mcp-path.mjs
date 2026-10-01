@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { spawn, spawnSync } from 'child_process';
+import { isDeepStrictEqual } from 'util';
 
 import { estimateTokenCount } from './benchmark-killer-path.mjs';
 import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
@@ -133,13 +134,15 @@ function createMcpClient(env) {
   };
 }
 
-async function protocolStep({ client, steps, method, params = {}, name = method, timeout = 20000 }) {
+async function protocolStep({ client, steps, method, params = {}, name = method, timeout = 20000, check = null }) {
   const startedAt = Date.now();
   let stdout = '';
   let stderr = '';
   let status = 0;
   try {
-    stdout = JSON.stringify(await client.request(method, params, timeout));
+    const response = await client.request(method, params, timeout);
+    stdout = JSON.stringify(response);
+    check?.(response);
   } catch (error) {
     status = 1;
     stderr = error.message || String(error);
@@ -169,6 +172,11 @@ async function toolStep({ client, steps, tool, args = {}, command, name = tool, 
     const result = await client.request('tools/call', { name: tool, arguments: args }, timeout);
     stdout = contentText(result);
     status = result.isError ? 1 : 0;
+    // Versioned JSON output must also arrive as the same structuredContent object (#465).
+    const model = status === 0 ? parseJsonOutput(stdout) : null;
+    if (typeof model?.schema === 'string' && !isDeepStrictEqual(result.structuredContent, model)) {
+      throw new Error(`${tool} returned ${model.schema} JSON without matching structuredContent`);
+    }
   } catch (error) {
     status = 1;
     stderr = error.message || String(error);
@@ -696,8 +704,29 @@ export async function runMcpBenchmark(opts = {}) {
 
     startedAt = Date.now();
     client = createMcpClient(env);
-    await protocolStep({ client, steps, method: 'initialize', params: {}, name: 'initialize' });
-    await protocolStep({ client, steps, method: 'tools/list', params: {}, name: 'tools-list' });
+    await protocolStep({
+      client,
+      steps,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'benchmark-mcp', version: '0.0.0' } },
+      name: 'initialize',
+      check: result => {
+        if (result?.protocolVersion !== '2025-06-18') throw new Error(`initialize did not echo 2025-06-18: ${result?.protocolVersion}`);
+      },
+    });
+    await protocolStep({
+      client,
+      steps,
+      method: 'tools/list',
+      params: {},
+      name: 'tools-list',
+      check: result => {
+        const missing = (result?.tools || []).filter(tool => typeof tool.annotations?.readOnlyHint !== 'boolean');
+        if (!result?.tools?.length || missing.length) {
+          throw new Error(`tools/list is missing annotations: ${missing.map(tool => tool.name).join(', ') || 'no tools'}`);
+        }
+      },
+    });
 
     const open = await toolStep({
       client,

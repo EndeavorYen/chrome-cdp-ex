@@ -1,4 +1,5 @@
-import { readFileSync } from 'fs';
+import { lstatSync, readFileSync } from 'fs';
+import { isAbsolute, relative, resolve } from 'path';
 import { isProxy } from 'node:util/types';
 import {
   COMMAND_SURFACE,
@@ -16,7 +17,9 @@ export {
   MCP_TOOL_DEFINITIONS,
 };
 
-export const MCP_PROTOCOL_VERSION = '2024-11-05';
+/** Newest first; `initialize` echoes a listed client version, else answers with the newest. */
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(['2025-06-18', '2025-03-26', '2024-11-05']);
+export const MCP_PROTOCOL_VERSION = MCP_SUPPORTED_PROTOCOL_VERSIONS[0];
 export const MCP_SERVER_VERSION = JSON.parse(
   readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'),
 ).version;
@@ -110,6 +113,56 @@ export const MCP_RUN_COMMAND_MUTATING = Object.freeze(new Set(
     return command && ALWAYS_CONFIRM_AUTHORIZATION.has(command.authorization);
   }),
 ));
+
+// Tool annotations are hints a host may use to auto-approve calls, so they are derived from the
+// command authorization catalog instead of being written per tool. Only `standard` commands (never
+// gated by confirm) are advertised as read-only. `sensitive-read` commands do not change the page,
+// but they are gated by confirm, so they are not read-only either. Every other authorization can
+// act on the page, and a page action can reach any origin, so it is destructive and open-world.
+const NON_MUTATING_ANNOTATIONS = Object.freeze({
+  standard: Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }),
+  'sensitive-read': Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }),
+});
+const MUTATING_ANNOTATIONS = Object.freeze({
+  readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true,
+});
+const TITLE_ACRONYMS = Object.freeze({ qa: 'QA' });
+
+function annotationHintsFor(command) {
+  return Object.hasOwn(NON_MUTATING_ANNOTATIONS, command.authorization)
+    ? NON_MUTATING_ANNOTATIONS[command.authorization]
+    : MUTATING_ANNOTATIONS;
+}
+
+function toolTitle(name) {
+  const text = name.split('_').map(word => TITLE_ACRONYMS[word] || word).join(' ');
+  return text[0].toUpperCase() + text.slice(1);
+}
+
+function toolAnnotations(toolName) {
+  let hints;
+  if (toolName !== 'run_command') {
+    const owner = COMMAND_SURFACE.commands.find(command => command.mcp.toolName === toolName);
+    if (!owner) throw new Error(`mcp.tools.${toolName}: has no owning command`);
+    hints = annotationHintsFor(owner);
+  } else {
+    // run_command can run any allowlisted command, so it carries the widest hints of that list.
+    const all = MCP_RUN_COMMAND_ALLOWLIST.map(spelling => annotationHintsFor(COMMAND_SURFACE.resolve(spelling)));
+    hints = {
+      readOnlyHint: all.every(entry => entry.readOnlyHint),
+      destructiveHint: all.some(entry => entry.destructiveHint),
+      idempotentHint: all.every(entry => entry.idempotentHint),
+      openWorldHint: all.some(entry => entry.openWorldHint),
+    };
+  }
+  return Object.freeze({ title: toolTitle(toolName), ...hints });
+}
+
+/** The `tools/list` answer: the reviewed tool catalog plus catalog-derived annotations. */
+export const MCP_TOOLS = Object.freeze(MCP_TOOL_DEFINITIONS.map(tool => Object.freeze({
+  ...tool,
+  annotations: toolAnnotations(tool.name),
+})));
 
 function tabGroupRequiresConfirm(args) {
   const normalized = [];
@@ -425,9 +478,119 @@ export function buildMcpToolCommand(name, args = {}) {
   }
 }
 
-export function createMcpInitializeResult() {
+/** Largest image block a tool result inlines, measured as base64 text (about 768 KB of PNG). */
+export const MCP_IMAGE_MAX_BASE64_BYTES = 1024 * 1024;
+// Commands whose first stdout line is the path of the single PNG they just wrote.
+const MCP_IMAGE_COMMANDS = new Set(['shot', 'elshot', 'fullshot']);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+// Tolerance for filesystems that store modification times coarsely.
+const IMAGE_MTIME_SLACK_MS = 2000;
+
+// A tab daemon writes `shot` into the tab's session directory inside the runtime directory.
+const SESSION_SCREENSHOT_DIR = /^cdp-[A-Za-z0-9_.-]+-screenshots$/;
+
+function imageNote(reason, path) {
+  return { type: 'text', text: `Image not attached: ${reason}. Open ${path} to view it.` };
+}
+
+// True for a file directly in the runtime directory (elshot, fullshot, daemon-less shot) or
+// directly in a real (not linked) `cdp-<target>-screenshots` directory inside it (daemon shot).
+function isRuntimeOutputPath(runtimeDir, path, fs) {
+  const root = resolve(runtimeDir);
+  const rel = relative(root, resolve(path));
+  if (!rel || isAbsolute(rel)) return false;
+  const parts = rel.split(/[\\/]/);
+  if (parts.some(part => !part || part === '..')) return false;
+  if (parts.length === 1) return true;
+  if (parts.length !== 2 || !SESSION_SCREENSHOT_DIR.test(parts[0])) return false;
+  try {
+    return fs.lstatSync(resolve(root, parts[0])).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The image block for a screenshot command's output file, a text note saying why it was left
+ * out, or null when the command is not a screenshot command that succeeded. Only a fresh PNG
+ * the CLI wrote into its runtime directory is ever read.
+ */
+export function mcpImageContent(command, result, {
+  runtimeDir,
+  startedAtMs,
+  maxBase64Bytes = MCP_IMAGE_MAX_BASE64_BYTES,
+  fs = { lstatSync, readFileSync },
+} = {}) {
+  const owner = COMMAND_SURFACE.resolve(command?.[0]);
+  if (!owner || !MCP_IMAGE_COMMANDS.has(owner.name) || result.code !== 0) return null;
+  const path = result.stdout.split(/\r?\n/, 1)[0].trim();
+  if (!path || !isAbsolute(path) || !path.toLowerCase().endsWith('.png')) return null;
+  if (!isRuntimeOutputPath(runtimeDir, path, fs)) {
+    return imageNote('the file is outside the chrome-cdp-ex runtime directory', path);
+  }
+  let stat;
+  try {
+    stat = fs.lstatSync(path);
+  } catch {
+    return imageNote('the file could not be read', path);
+  }
+  if (!stat.isFile()) return imageNote('the path is not a regular file', path);
+  if (!Number.isFinite(startedAtMs) || stat.mtimeMs < startedAtMs - IMAGE_MTIME_SLACK_MS) {
+    return imageNote('the file was not written by this call', path);
+  }
+  const encodedBytes = Math.ceil(stat.size / 3) * 4;
+  if (encodedBytes > maxBase64Bytes) {
+    return imageNote(`the PNG is ${stat.size} bytes, over the ${maxBase64Bytes}-byte base64 inline cap`, path);
+  }
+  let bytes;
+  try {
+    bytes = fs.readFileSync(path);
+  } catch {
+    return imageNote('the file could not be read', path);
+  }
+  if (bytes.length !== stat.size || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    return imageNote('the file is not the PNG the command reported', path);
+  }
+  return { type: 'image', data: bytes.toString('base64'), mimeType: 'image/png' };
+}
+
+// A command's versioned JSON output (an object with a string `schema`) becomes structuredContent.
+function structuredOutput(stdout) {
+  const text = stdout.trim();
+  if (!text.startsWith('{')) return null;
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value) && typeof value.schema === 'string'
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Maps a CLI result to a `tools/call` result: the text, plus image and structured views. */
+export function createMcpToolResult(command, result, imageOptions = {}) {
+  const text = result.code === 0
+    ? result.stdout
+    : [result.stderr, result.stdout].filter(Boolean).join('\n');
+  const content = [{ type: 'text', text }];
+  const image = imageOptions.runtimeDir ? mcpImageContent(command, result, imageOptions) : null;
+  if (image) content.push(image);
+  const structuredContent = structuredOutput(result.stdout);
   return {
-    protocolVersion: MCP_PROTOCOL_VERSION,
+    content,
+    ...(structuredContent ? { structuredContent } : {}),
+    isError: result.code !== 0,
+  };
+}
+
+export function negotiateMcpProtocolVersion(requested) {
+  return MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : MCP_PROTOCOL_VERSION;
+}
+
+export function createMcpInitializeResult(params = {}) {
+  return {
+    protocolVersion: negotiateMcpProtocolVersion(params?.protocolVersion),
     serverInfo: {
       name: 'chrome-cdp-ex',
       version: MCP_SERVER_VERSION,

@@ -12,6 +12,7 @@ import {
   MCP_RESOURCE_TEMPLATES,
   MCP_RUN_COMMAND_ALLOWLIST,
   MCP_TOOL_DEFINITIONS,
+  MCP_TOOLS,
   buildMcpResourceCommand,
   buildMcpToolCommand,
 } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
@@ -120,7 +121,9 @@ describe('Phase 6 command-surface characterization', () => {
   it('freezes every MCP tool, resource, allowlist entry, valid mapping, and invalid boundary', () => {
     expect(createHash('sha256').update(JSON.stringify(MCP_SURFACE)).digest('hex'))
       .toBe(MCP_SURFACE_IDENTITY);
-    expect(canonicalizeContract(MCP_TOOL_DEFINITIONS)).toEqual(contract.mcp.tools);
+    // The fixture freezes the served tools/list entries: catalog definitions plus derived annotations (#465).
+    expect(canonicalizeContract(MCP_TOOLS)).toEqual(contract.mcp.tools);
+    expect(MCP_TOOLS.map(({ annotations: _annotations, ...tool }) => tool)).toEqual(MCP_TOOL_DEFINITIONS);
     expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name))
       .toEqual(contract.mcp.tools.map(tool => tool.name));
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);

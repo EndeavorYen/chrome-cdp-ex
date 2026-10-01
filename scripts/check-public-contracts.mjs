@@ -17,7 +17,9 @@ import {
   MCP_RUN_COMMAND_ALLOWLIST,
   MCP_RUN_COMMAND_MUTATING,
   MCP_SERVER_VERSION,
+  MCP_SUPPORTED_PROTOCOL_VERSIONS,
   MCP_TOOL_DEFINITIONS,
+  MCP_TOOLS,
   argsRequireConfirm,
   buildMcpResourceCommand,
   buildMcpToolCommand,
@@ -327,8 +329,9 @@ function mcpProjection(commands) {
   }));
   return {
     protocolVersion: MCP_PROTOCOL_VERSION,
+    supportedProtocolVersions: MCP_SUPPORTED_PROTOCOL_VERSIONS,
     serverVersion: MCP_SERVER_VERSION,
-    tools: MCP_TOOL_DEFINITIONS,
+    tools: MCP_TOOLS,
     runCommandAllowlist: [...MCP_RUN_COMMAND_ALLOWLIST].sort(),
     runCommandMutating: [...MCP_RUN_COMMAND_MUTATING].sort(),
     resourceTemplates: MCP_RESOURCE_TEMPLATES,

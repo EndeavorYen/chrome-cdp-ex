@@ -328,6 +328,7 @@ describe('hard action dispatch exit contract (#143)', () => {
       id: 143,
       result: {
         content: [{ type: 'text', text: FAILED_ACTION_JSON }],
+        structuredContent: JSON.parse(FAILED_ACTION_JSON),
         isError: true,
       },
     }]);
@@ -1030,6 +1031,7 @@ describe('detached ref propagation contract (#148)', () => {
       id: 148,
       result: {
         content: [{ type: 'text', text: fixture.output }],
+        structuredContent: JSON.parse(fixture.output),
         isError: true,
       },
     }]);

@@ -546,7 +546,7 @@ describe('current open issue contracts', () => {
 
     child.kill();
     expect(responses.map(response => response.id)).toEqual([1, 2]);
-    expect(responses[0].result.protocolVersion).toBe('2024-11-05');
+    expect(responses[0].result.protocolVersion).toBe('2025-06-18');
     expect(responses[1].result.tools.map(tool => tool.name)).toContain('qa_page');
   });
 });
