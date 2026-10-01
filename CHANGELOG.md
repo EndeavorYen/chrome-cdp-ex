@@ -16,9 +16,12 @@
     `idempotentHint`, `openWorldHint`), derived from the command catalog. The first three come from
     the command's authorization. `openWorldHint` is true for every command that talks to the browser,
     page readers included.
-  * `initialize` echoes the client's `protocolVersion` when it is `2025-06-18` or `2024-11-05`, and
-    otherwise answers with `2025-06-18`. It used to always answer `2024-11-05`. `2025-03-26` is not
-    echoed, because it requires JSON-RPC batch support.
+  * `initialize` echoes the client's `protocolVersion` when it is `2025-06-18` or `2024-11-05`. It used
+    to always answer `2024-11-05`. For any other dated version it answers with the newest supported
+    version that is not newer than the request, and the oldest one if the request is older than both.
+    So `2025-03-26` gets `2024-11-05`, which 2025-03-26-era SDKs accept. `2025-03-26` itself is not
+    echoed, because it requires JSON-RPC batch support. A newer, unknown or missing version gets
+    `2025-06-18`.
   * `benchmark:mcp` checks the version echo, the annotations and the `structuredContent` parity. It
     reports image and `structuredContent` sizes next to its text-only token budgets.
 

@@ -18,9 +18,9 @@ export {
 };
 
 /**
- * Newest first; `initialize` echoes a listed client version, else answers with the newest.
- * 2025-03-26 is left out on purpose: it requires accepting JSON-RPC batches, which this server
- * rejects (2025-06-18 removed batching again), so a 2025-03-26 client is offered 2025-06-18.
+ * Newest first. 2025-03-26 is left out on purpose: it requires accepting JSON-RPC batches, which
+ * this server rejects (2025-06-18 removed batching again). See negotiateMcpProtocolVersion for
+ * what a 2025-03-26 client is offered instead.
  */
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(['2025-06-18', '2024-11-05']);
 export const MCP_PROTOCOL_VERSION = MCP_SUPPORTED_PROTOCOL_VERSIONS[0];
@@ -635,8 +635,16 @@ export function createMcpToolResult(command, result, imageOptions = {}) {
   };
 }
 
+// A supported request is echoed. Otherwise the answer is the newest supported version that is not
+// newer than the request, because a client only accepts versions it knows, and an older SDK knows
+// older ones. A request for 2025-03-26 gets 2024-11-05, which those SDKs accept.
+// A request older than every supported version gets the oldest one. A newer, unknown or malformed
+// request gets the newest. Versions are YYYY-MM-DD, so string order is date order.
 export function negotiateMcpProtocolVersion(requested) {
-  return MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : MCP_PROTOCOL_VERSION;
+  if (MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(requested)) return requested;
+  if (typeof requested !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(requested)) return MCP_PROTOCOL_VERSION;
+  return MCP_SUPPORTED_PROTOCOL_VERSIONS.find(version => version <= requested)
+    ?? MCP_SUPPORTED_PROTOCOL_VERSIONS.at(-1);
 }
 
 export function createMcpInitializeResult(params = {}) {

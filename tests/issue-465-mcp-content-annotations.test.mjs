@@ -69,11 +69,28 @@ describe('#465 initialize negotiates protocolVersion', () => {
       const reply = await server.request('initialize', { protocolVersion: version, capabilities: {} });
       expect(reply.result.protocolVersion).toBe(version);
     }
-    // 2025-03-26 requires JSON-RPC batch support, which this server does not have.
-    for (const params of [{ protocolVersion: '2025-03-26' }, { protocolVersion: '2099-01-01' }, { protocolVersion: 7 }, {}, undefined]) {
+    for (const params of [{ protocolVersion: '2099-01-01' }, { protocolVersion: 7 }, { protocolVersion: 'latest' }, {}, undefined]) {
       const reply = await server.request('initialize', params);
       expect(reply.result.protocolVersion).toBe('2025-06-18');
       expect(reply.result.serverInfo.name).toBe('chrome-cdp-ex');
+    }
+  });
+
+  it('answers an unsupported dated request with the newest supported version not newer than it', async () => {
+    const server = harness(async () => ({ code: 0, stdout: '', stderr: '' }));
+    // 2025-03-26 is unsupported (it requires JSON-RPC batches). Its SDKs, such as
+    // @modelcontextprotocol/sdk 1.11.0, accept only 2025-03-26, 2024-11-05 and 2024-10-07, so the
+    // answer must not be 2025-06-18.
+    for (const [requested, answered] of [
+      ['2025-03-26', '2024-11-05'],
+      ['2025-06-18', '2025-06-18'],
+      ['2025-11-25', '2025-06-18'],
+      ['2099-01-01', '2025-06-18'],
+      ['2024-10-07', '2024-11-05'],
+      ['2023-01-01', '2024-11-05'],
+    ]) {
+      const reply = await server.request('initialize', { protocolVersion: requested, capabilities: {} });
+      expect(reply.result.protocolVersion, requested).toBe(answered);
     }
   });
 });
