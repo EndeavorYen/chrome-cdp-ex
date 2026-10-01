@@ -5024,11 +5024,12 @@ async function navStr(cdp, sid, url, opts = {}) {
 
 async function netStr(cdp, sid) {
   const raw = await evalStr(cdp, sid, `JSON.stringify(performance.getEntriesByType('resource').map(e => ({
-    name: e.name.substring(0, 120), type: e.initiatorType,
+    name: e.name.substring(0, 4096), type: e.initiatorType,
     duration: Math.round(e.duration), size: e.transferSize
   })))`);
+  // Redact before cutting to 120 chars so a cut never exposes a secret value (#455).
   return JSON.parse(raw).map(e =>
-    `${String(e.duration).padStart(5)}ms  ${String(e.size || '?').padStart(8)}B  ${e.type.padEnd(8)}  ${e.name}`
+    `${String(e.duration).padStart(5)}ms  ${String(e.size || '?').padStart(8)}B  ${e.type.padEnd(8)}  ${redactUrl(e.name).substring(0, 120)}`
   ).join('\n');
 }
 
@@ -16438,6 +16439,13 @@ async function checkpointModel(cdp, sid, { now = Date.now(), unsafeFullCapture =
   };
 }
 
+// The session log keeps where a checkpoint was taken, never its secrets (#455).
+function checkpointSessionEvent(output = '') {
+  const text = String(output || '');
+  const url = text.includes('URL: ') ? text.split('URL: ')[1]?.split('\n')[0] : undefined;
+  return { kind: 'checkpoint', url: url == null ? undefined : redactUrl(url) };
+}
+
 async function checkpointStr(cdp, sid, { format = 'text', now = Date.now(), unsafeFullCapture = false } = {}) {
   const model = await checkpointModel(cdp, sid, { now, unsafeFullCapture });
   if (format === 'json') return formatJson(model);
@@ -17111,7 +17119,8 @@ async function handleMockRequestPaused(cdp, sid, session, params = {}) {
   const hit = {
     ruleId: rule.id,
     method: request.method || '',
-    url: request.url || '',
+    // Hits are only displayed (mock text "Last hit", JSON recentHits), so store them redacted (#455).
+    url: redactUrl(request.url || ''),
     status: rule.status,
     ts: Date.now(),
   };
@@ -23383,11 +23392,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         format: fopts.format,
         unsafeFullCapture: copts.unsafeFullCapture,
       });
-      const checkpointUrl = output.includes('URL: ') ? output.split('URL: ')[1]?.split('\n')[0] : undefined;
-      appendSessionEventLog(session, {
-        kind: 'checkpoint',
-        url: checkpointUrl == null ? undefined : redactUrl(checkpointUrl),
-      });
+      appendSessionEventLog(session, checkpointSessionEvent(output));
       return output;
     },
     components: args => componentsStr(cdp, sessionId, args, refMap, refState),
@@ -28059,7 +28064,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   checkpointCookieToSetCookieParams, isRestorableCheckpointCookie, cookiesForRestore,
   restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, parseNetlogArgs, filterNetlogEntries,
+  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, parseNetlogArgs, filterNetlogEntries, netStr, checkpointSessionEvent, redactSensitiveArtifactValue,
   javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
   shouldSkipActionPageEvaluate, formatDialogBlockedObserveText, observeAfterActionGuardingDialogs,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,

@@ -1,24 +1,35 @@
 // One key classifier for every redaction path (#455).
-// A key is split into tokens on `_`, `-`, `.`, brackets and camelCase, and only
-// whole tokens are compared with the keyword list, so `access_token`,
-// `accessToken` and `X-Amz-Signature` match while `pinned`, `cardinality`,
+// A key is split into tokens on `_`, `-`, `.`, `%`, brackets and camelCase, and
+// only whole tokens are compared with the keyword list, so `access_token`,
+// `accessToken` and `client_secret` match while `pinned`, `cardinality`,
 // `passage` and `sidebar` do not.
+//
+// Rules beyond "whole token in the list":
+// - Two adjacent tokens are also tried glued (`api`+`key` -> `apikey`), and a
+//   token ending in a strong suffix counts (`accesstoken`, `jsessionid`).
+// - `token` is a secret, but `token` used as a quantity is not: plural
+//   `tokens`, `maxTokens`, `max_token`, `tokenCount`, `token_limit` stay
+//   readable (LLM budgets, design-token maps).
+// - URL-query-only keys: a bare `key` (`?key=AIza…`), `sig` and `signature`
+//   (`X-Amz-Signature`) are secrets in a URL query or fragment, but not as an
+//   object key or in prose (`Sort key: name`, a `signature` prop).
 
 export const REDACTED_VALUE = '<redacted>';
 
 const SENSITIVE_KEY_TOKENS = new Set([
   'pass', 'password', 'passwords', 'passwd', 'passphrase', 'pwd',
-  'secret', 'secrets', 'token', 'tokens', 'apikey', 'privatekey',
+  'secret', 'secrets', 'token', 'apikey', 'privatekey',
   'accesskey', 'secretkey', 'sessionkey', 'authkey',
   'credential', 'credentials', 'otp', '2fa', 'mfa', 'auth', 'authorization',
   'pin', 'cvv', 'cvc', 'card', 'ssn',
   'session', 'sid', 'sessid', 'cookie', 'jwt', 'csrf', 'xsrf', 'refresh', 'access',
-  'signature', 'sig',
 ]);
+const URL_QUERY_KEY_TOKENS = new Set(['signature', 'sig']);
+const URL_QUERY_WHOLE_KEYS = new Set(['key']);
 // Glued compounds such as `accesstoken`, `clientsecret`, `jsessionid`, `phpsessid`.
 const SENSITIVE_KEY_SUFFIXES = ['token', 'secret', 'password', 'passwd', 'apikey', 'sessionid', 'sessid'];
-// Only when it is the entire key (`?key=AIza…` on Google APIs); `sort_key` stays readable.
-const SENSITIVE_WHOLE_KEYS = new Set(['key']);
+const TOKEN_QUANTITY_BEFORE = new Set(['max', 'min', 'num', 'total']);
+const TOKEN_QUANTITY_AFTER = new Set(['count', 'counts', 'limit', 'limits', 'length', 'size', 'usage', 'budget', 'total']);
 
 export function sensitiveKeyTokens(key = '') {
   return String(key ?? '')
@@ -29,19 +40,28 @@ export function sensitiveKeyTokens(key = '') {
     .filter(Boolean);
 }
 
-function isSensitiveToken(token) {
+function isSensitiveToken(token, { prev, next, urlQuery }) {
+  if (token === 'token' && (TOKEN_QUANTITY_BEFORE.has(prev) || TOKEN_QUANTITY_AFTER.has(next))) return false;
   if (SENSITIVE_KEY_TOKENS.has(token)) return true;
-  return SENSITIVE_KEY_SUFFIXES.some(suffix => token.length > suffix.length && token.endsWith(suffix));
+  if (urlQuery && URL_QUERY_KEY_TOKENS.has(token)) return true;
+  return SENSITIVE_KEY_SUFFIXES.some((suffix) => {
+    if (token.length <= suffix.length || !token.endsWith(suffix)) return false;
+    // `maxtoken` is a quantity, not a secret.
+    return !(suffix === 'token' && TOKEN_QUANTITY_BEFORE.has(token.slice(0, -suffix.length)));
+  });
 }
 
-export function isSensitiveKey(key = '') {
+// `urlQuery: true` when the key names a URL query/fragment parameter.
+export function isSensitiveKey(key = '', { urlQuery = false } = {}) {
   const tokens = sensitiveKeyTokens(key);
   if (tokens.length === 0) return false;
-  if (tokens.length === 1 && SENSITIVE_WHOLE_KEYS.has(tokens[0])) return true;
+  if (urlQuery && tokens.length === 1 && URL_QUERY_WHOLE_KEYS.has(tokens[0])) return true;
   for (let i = 0; i < tokens.length; i++) {
-    if (isSensitiveToken(tokens[i])) return true;
+    const prev = tokens[i - 1];
+    const next = tokens[i + 1];
+    if (isSensitiveToken(tokens[i], { prev, next, urlQuery })) return true;
     // `api_key` / `apiKey` / `private-key` split into two tokens.
-    if (i + 1 < tokens.length && isSensitiveToken(tokens[i] + tokens[i + 1])) return true;
+    if (next && isSensitiveToken(tokens[i] + next, { prev, next: tokens[i + 2], urlQuery })) return true;
   }
   return false;
 }
@@ -59,7 +79,7 @@ function redactQueryString(query) {
     const eq = part.indexOf('=');
     if (eq <= 0) return part;
     const rawKey = part.slice(0, eq);
-    return isSensitiveKey(decodeKey(rawKey)) ? `${rawKey}=${REDACTED_VALUE}` : part;
+    return isSensitiveKey(decodeKey(rawKey), { urlQuery: true }) ? `${rawKey}=${REDACTED_VALUE}` : part;
   }).join('&');
 }
 
@@ -78,7 +98,7 @@ export function redactUrl(value) {
   let fragment = hashAt >= 0 ? withoutUserinfo.slice(hashAt + 1) : null;
   const queryAt = head.indexOf('?');
   const path = (queryAt >= 0 ? head.slice(0, queryAt) : head)
-    .replace(PATH_PARAM_RE, (match, key) => (isSensitiveKey(decodeKey(key)) ? `;${key}=${REDACTED_VALUE}` : match));
+    .replace(PATH_PARAM_RE, (match, key) => (isSensitiveKey(decodeKey(key), { urlQuery: true }) ? `;${key}=${REDACTED_VALUE}` : match));
   const query = queryAt >= 0 ? head.slice(queryAt + 1) : null;
   if (fragment != null) {
     // OAuth implicit flow (`#access_token=…`) and hash routes (`#/cb?token=…`).
@@ -94,8 +114,19 @@ export function redactUrl(value) {
 
 const AUTH_HEADER_VALUE_RE = /\b(Authorization\s*[:=]\s*(?:Bearer|Basic)\s+)([A-Za-z0-9._~+/=-]+)/gi;
 const BEARER_VALUE_RE = /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
-const ASSIGNMENT_KEY_RE = /(^|[\s{[,;?&#])([A-Za-z0-9_.-]+)(\s*[:=]\s*)/g;
-const ASSIGNMENT_VALUE_RE = /(["']?)([^"'\s,;&}\])]+)/y;
+// prefix, optional key quote (`"access_token":`), key (may be %-encoded), separator.
+const ASSIGNMENT_KEY_RE = /(^|[\s{[,;?&#])(["']?)([A-Za-z0-9_.%-]+)\2(\s*[:=]\s*)/g;
+// Whole quoted value, an unterminated quoted value, or a bare value.
+const ASSIGNMENT_VALUE_RE = /"[^"\n]*"|'[^'\n]*'|(["']?)[^"'\s,;&}\])]+/y;
+// `#pin:checked`, `.token:hover`, `input.password:focus` are CSS selectors, not
+// `key: value` pairs; recorded selectors must replay unchanged.
+const CSS_PSEUDO_AFTER_COLON_RE = /:(?:hover|focus(?:-visible|-within)?|active|checked|disabled|enabled|visited|link|empty|required|optional|invalid|valid|in-range|out-of-range|first-child|last-child|only-child|first-of-type|last-of-type|only-of-type|nth-child|nth-last-child|nth-of-type|nth-last-of-type|not|has|is|where|placeholder-shown|read-only|read-write|before|after|root|target|indeterminate|default|autofill)(?![A-Za-z0-9_-])/y;
+
+function isCssSelectorColon(text, separator, keyEnd) {
+  if (separator !== ':') return false;
+  CSS_PSEUDO_AFTER_COLON_RE.lastIndex = keyEnd;
+  return CSS_PSEUDO_AFTER_COLON_RE.test(text);
+}
 
 // `key=value` / `key: value` pairs in free text (console lines, DOM diffs,
 // URLs inside messages). A non-secret pair is skipped past its separator only,
@@ -106,13 +137,18 @@ function redactSecretAssignments(text) {
   ASSIGNMENT_KEY_RE.lastIndex = 0;
   let match;
   while ((match = ASSIGNMENT_KEY_RE.exec(text)) !== null) {
-    const [, , key] = match;
-    const valueStart = match.index + match[0].length;
-    if (!isSensitiveKey(key)) continue;
+    const [whole, prefix, keyQuote, rawKey, separator] = match;
+    const valueStart = match.index + whole.length;
+    const isEquals = separator.includes('=');
+    // `#` opens a URL fragment parameter (`#access_token=…`) only; `#id:…` is a selector.
+    if (prefix === '#' && !isEquals) continue;
+    if (isCssSelectorColon(text, separator, match.index + prefix.length + keyQuote.length * 2 + rawKey.length)) continue;
+    const urlQuery = isEquals && !keyQuote && (prefix === '?' || prefix === '&' || prefix === '#');
+    if (!isSensitiveKey(decodeKey(rawKey), { urlQuery })) continue;
     ASSIGNMENT_VALUE_RE.lastIndex = valueStart;
     const value = ASSIGNMENT_VALUE_RE.exec(text);
     if (!value) continue;
-    const quote = value[1];
+    const quote = /^["']/.test(value[0]) ? value[0][0] : '';
     out += `${text.slice(last, valueStart)}${quote}${REDACTED_VALUE}${quote}`;
     last = valueStart + value[0].length;
     ASSIGNMENT_KEY_RE.lastIndex = last;
