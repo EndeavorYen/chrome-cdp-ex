@@ -1387,24 +1387,35 @@ POST answered with `Content-Disposition: attachment`. To fetch a URL you already
 `download.mjs` helper instead.
 
 - Before the click, `Browser.setDownloadBehavior { behavior: 'allowAndName', downloadPath, eventsEnabled: true }`
-  is set for the tab's browser context. A tab in the default profile reports a context id Chrome then
-  refuses, so the call is repeated without an id, which means that default context. After the wait the
+  is set for the tab's browser context (its `browserContextId` from `Target.getTargets`; if Chrome
+  refuses that id, the call is repeated without one, which sets the default context). After the wait the
   behaviour is set back to `default`, on success, failure, timeout and a click that throws. CDP cannot
   read the previous behaviour, so `default` (the browser's own download handling) is what you get back.
-  If that restore call fails, the receipt says so in a `Warning:` line.
-- The first download that begins after the click is the one captured. Chrome saves it as
-  `<folder>/<guid>`; it is renamed to the suggested name with `/`, `\`, `..`, control characters,
-  Windows-reserved characters and device names removed. An existing file is never overwritten: the
-  next free name is `report (1).csv`.
+  If that restore call fails, the receipt says so in a `Warning:` line, on failures too. Chrome also
+  drops the override when the connection that set it closes, so a daemon that exits, crashes or is
+  stopped mid-wait does not leave it behind (`cdp stop <target>` clears a stuck one). Only a daemon that
+  hangs while still connected keeps it.
+- Chrome reports every download in the browser, from any tab or context. The first download that begins
+  after the click in one of this tab's frames (`downloadWillBegin.frameId` in the tab's frame tree) is
+  the one captured; downloads from other tabs are ignored and counted in a timeout message. A download
+  started in a cross-origin iframe or a popup the click opened is not matched.
+- Chrome saves the file as `<folder>/<guid>`. It is renamed to the suggested name with `/`, `\`, `..`,
+  control and bidi characters, Windows-reserved characters and device names (`CON`, `CON .txt`, `COM¹`,
+  `CONIN$`) removed, cut to 200 UTF-8 bytes on a character boundary (extension kept). An existing file is
+  never overwritten: the next free name is `report (1).csv`. A name the file system still refuses
+  becomes `download<ext>`. The saved file is made owner-only (0600).
 - `--out DIR` is resolved against your working directory and created if missing. Without it the file
   goes to `cdp-<target>-downloads/` in the runtime directory (mode 0700), which is pruned with the tab's
-  other runtime artifacts after 7 days; use `--out` for files you want to keep.
+  other runtime artifacts after 7 days. On Linux the runtime directory is `$XDG_RUNTIME_DIR/cdp`, a
+  RAM-backed tmpfs capped at a fraction of memory: pass `--out` for large files and for files you want
+  to keep.
 - `--timeout ms` (default 30000, at most 600000) covers the wait from the end of the click until the
   download completes.
 - A link whose response is an attachment never navigates, which a plain `click` reports as
-  `Kind: no-navigation`. With `--expect-download` that download is the result: the receipt reads
-  `Clicked <A href="…">; it started a download instead of navigating`. If no download begins either, the
-  original `no-navigation` failure is reported after the wait.
+  `Kind: no-navigation`. With `--expect-download` a download from this tab is the result: the receipt
+  reads `Clicked <A href="…">; it started a download instead of navigating`. If no download begins
+  either, the original `no-navigation` failure is reported after the wait. Other click failures
+  (selector miss, covered, disabled) are reported as they are: nothing was clicked.
 
 Receipt:
 
@@ -1424,14 +1435,21 @@ Failures exit 1 with `Error:` / `Kind:` / `Next:` and keep `effects.download` in
 - `Kind: timeout`: no download began within `--timeout`, or one began but did not finish. An unfinished
   download is cancelled so it does not complete later as a stray `<guid>` file. Next is
   `perceive <target> --since-action` (a menu or dialog may sit between the click and the file).
-- `Kind: download-canceled`: the browser canceled the download (network error, blocked file type).
+- `Kind: download-canceled`: the browser canceled the download (network error, blocked file type, or a
+  full disk, such as a tmpfs runtime directory).
+- `Kind: download-save-failed`: the download completed but could not be renamed into the folder; the raw
+  `<guid>` file is removed. Pass `--out` with a writable folder.
 - `Kind: download-unsupported`: the endpoint does not accept `Browser.setDownloadBehavior` (some
   Electron builds). Nothing was clicked.
 
-While the click waits, every download in that browser context goes to the capture folder without a
-prompt, including one from another tab. Two `--expect-download` clicks in the same context at once
-overwrite each other's setting. This is a `click` flag, so the command surface and public synopsis are
-unchanged; MCP clients pass it through `run_command` with `command: "click"` and `confirm: true`.
+The setting belongs to the browser context, not to the click. While a click waits, every download in
+that context goes to the capture folder without a prompt, including one from another tab (it is ignored
+but not returned to the user's Downloads folder). Run one `--expect-download` at a time per browser: a
+second one in another tab moves the first one's download into its own folder, and its restore sends the
+first one's next download to the user's Downloads folder, so both can end in `timeout` or
+`download-missing`. Nothing serialises them. This is a `click` flag, so the command surface and public
+synopsis are unchanged; MCP clients pass it through `run_command` with `command: "click"` and
+`confirm: true`.
 
 ### Clearing a field — `fill ""`
 

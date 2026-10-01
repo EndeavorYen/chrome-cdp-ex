@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { detectBrowserPath } from '../skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -822,6 +823,25 @@ assertIncludes(dragDropJson.target?.dispatchText || '', 'drop', 'drag html5 page
 if (dragFixtureState().drop !== 'drop:card') {
   throw new Error(`drag should fire drop on the HTML5 drop zone\nState:\n${JSON.stringify(dragFixtureState())}`);
 }
+
+// #472 click --expect-download: the page builds a CSV blob; the saved file must hash to that body.
+const downloadDir = resolve(profileDir, 'downloads');
+const expectedCsvSha = createHash('sha256').update('id,name\n1,smoke\n').digest('hex');
+const downloadOut = step('click --expect-download saves a blob download', () => run(
+  ['click', target, '#export-csv', '--expect-download', '--out', downloadDir],
+  { timeout: 60000 },
+));
+assertIncludes(downloadOut, 'Downloaded "smoke-report.csv"', 'expect-download receipt');
+assertIncludes(downloadOut, `sha256=${expectedCsvSha}`, 'expect-download receipt sha256');
+const savedCsv = resolve(downloadDir, 'smoke-report.csv');
+if (!existsSync(savedCsv) || createHash('sha256').update(readFileSync(savedCsv)).digest('hex') !== expectedCsvSha) {
+  throw new Error(`click --expect-download should save the blob with its sha256\nOutput:\n${downloadOut}`);
+}
+const noDownloadOut = step('click --expect-download times out without a download', () => runFailure(
+  ['click', target, '#noop', '--expect-download', '--out', downloadDir, '--timeout', '1500'],
+  { timeout: 60000 },
+));
+assertIncludes(noDownloadOut, 'Kind: timeout', 'expect-download timeout kind');
 
 console.log(`Live smoke passed using ${browserName} on CDP_PORT=${port}`);
 console.log(results.join('\n'));

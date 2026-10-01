@@ -9160,7 +9160,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     await finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (output.format === 'json') return formatActionResultOutput(result, output);
     throw new Error(scrubSecretValues(
-      [formatActionFailure(e, { action, target }), ...actionDialogLines(result.effects)].join('\n'),
+      [formatActionFailure(e, { action, target }), ...downloadReceiptLines(result.effects?.download), ...actionDialogLines(result.effects)].join('\n'),
       sensitiveActionValues(action, target),
     ));
   }
@@ -9542,13 +9542,24 @@ function sessionDownloadDir(targetId, runtimeDir = RUNTIME_DIR) {
 }
 
 // Browser.* download calls go on the root (browser) session, and their events arrive there too.
-function clickDownloadBrowser(cdp, targetId) {
+function clickDownloadBrowser(cdp, sessionId, targetId) {
   return {
     setDownloadBehavior: params => cdpDomains(cdp).Browser.setDownloadBehavior(params),
     cancelDownload: params => cdpDomains(cdp).Browser.cancelDownload(params),
     browserContextId: async () => {
       const { targetInfos = [] } = await cdpDomains(cdp).Target.getTargets();
       return targetInfos.find(info => info.targetId === targetId)?.browserContextId || null;
+    },
+    // Browser.downloadWillBegin reports every download in the browser; its frameId says which tab.
+    frameIds: async () => {
+      const { frameTree } = await cdpDomains(cdp).Page.getFrameTree({}, sessionId);
+      const ids = [];
+      const walk = node => {
+        if (node?.frame?.id) ids.push(node.frame.id);
+        for (const child of node?.childFrames || []) walk(child);
+      };
+      walk(frameTree);
+      return [targetId, ...ids];
     },
     onEvent: (method, handler) => cdp.onEvent(method, handler),
   };
@@ -26167,7 +26178,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       jsClick: selector => jsClickStr(cdp, sessionId, selector, refMap, refState),
       pointerClick: selector => pointerClickStr(cdp, sessionId, selector, refMap, refState),
       expectDownload: (options, run, effects) => captureClickDownload({
-        browser: clickDownloadBrowser(cdp, targetId),
+        browser: clickDownloadBrowser(cdp, sessionId, targetId),
         dir: options.dir || sessionDownloadDir(targetId),
         timeoutMs: options.timeoutMs,
         run,

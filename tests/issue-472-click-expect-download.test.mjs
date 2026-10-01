@@ -35,7 +35,7 @@ afterEach(() => {
 const sha256 = text => createHash('sha256').update(text).digest('hex');
 
 // A fake root CDP connection: records Browser.* calls and lets a test emit Browser events.
-function fakeBrowser({ contextId = 'CTX', rejectContextId = false, unsupported = false, restoreFails = false } = {}) {
+function fakeBrowser({ contextId = 'CTX', rejectContextId = false, unsupported = false, restoreFails = false, frames = null } = {}) {
   const handlers = new Map();
   const calls = [];
   return {
@@ -53,6 +53,7 @@ function fakeBrowser({ contextId = 'CTX', rejectContextId = false, unsupported =
         if (params.behavior === 'default' && restoreFails) throw new Error('CDP websocket closed');
         return {};
       }),
+      ...(frames ? { frameIds: vi.fn(async () => frames) } : {}),
       cancelDownload: vi.fn(async (params) => {
         calls.push(['cancelDownload', params]);
         return {};
@@ -67,10 +68,10 @@ function fakeBrowser({ contextId = 'CTX', rejectContextId = false, unsupported =
 }
 
 // The click: Chrome names the file <dir>/<guid> (allowAndName) and reports progress.
-function downloadingClick(fake, dir, { guid = 'guid-1', name = 'report.csv', body = 'a,b\n1,2\n', url = 'https://app.example/export?token=s3cret&x=1', end = 'completed' } = {}) {
+function downloadingClick(fake, dir, { guid = 'guid-1', name = 'report.csv', body = 'a,b\n1,2\n', url = 'https://app.example/export?token=s3cret&x=1', end = 'completed', frameId = 'F', delayMs = 5 } = {}) {
   return async () => {
     setTimeout(() => {
-      fake.emit('Browser.downloadWillBegin', { frameId: 'F', guid, url, suggestedFilename: name });
+      fake.emit('Browser.downloadWillBegin', { frameId, guid, url, suggestedFilename: name });
       fake.emit('Browser.downloadProgress', { guid, state: 'inProgress', receivedBytes: 1, totalBytes: body.length });
       if (end === 'completed') {
         writeFileSync(join(dir, guid), body);
@@ -78,7 +79,7 @@ function downloadingClick(fake, dir, { guid = 'guid-1', name = 'report.csv', bod
       } else if (end === 'canceled') {
         fake.emit('Browser.downloadProgress', { guid, state: 'canceled', receivedBytes: 1, totalBytes: body.length });
       }
-    }, 5);
+    }, delayMs);
     return 'Clicked <BUTTON> "Export CSV" (#export)';
   };
 }
@@ -248,6 +249,127 @@ describe('#472 click --expect-download: capture', () => {
   });
 });
 
+describe('#472 review: only this tab\'s download, names that fit, saves that fail cleanly', () => {
+  it('a download from another tab is ignored; this tab\'s download is the one saved', async () => {
+    const dir = tempDir();
+    const fake = fakeBrowser({ frames: ['TAB', 'TAB-CHILD'] });
+    const effects = {};
+    const other = downloadingClick(fake, dir, { guid: 'other', name: 'other.csv', body: 'nope', frameId: 'OTHER-TAB', delayMs: 1 });
+    const mine = downloadingClick(fake, dir, { guid: 'mine', name: 'mine.csv', body: 'yes', frameId: 'TAB-CHILD', delayMs: 30 });
+    await captureClickDownload({
+      browser: fake.browser, dir, timeoutMs: 2000, effects,
+      run: async () => { await other(); return mine(); },
+    });
+    expect(effects.download).toMatchObject({ state: 'completed', filename: 'mine.csv', bytes: 3 });
+    expect(existsSync(join(dir, 'other.csv'))).toBe(false);
+  });
+
+  it('only other tabs downloading is a timeout that says so', async () => {
+    const dir = tempDir();
+    const fake = fakeBrowser({ frames: ['TAB'] });
+    const effects = {};
+    const error = await captureClickDownload({
+      browser: fake.browser, dir, timeoutMs: 80, effects,
+      run: downloadingClick(fake, dir, { frameId: 'OTHER-TAB' }),
+    }).catch(e => e);
+    expect(error.download).toMatchObject({ kind: 'timeout', phase: 'begin' });
+    expect(error.message).toMatch(/1 download from other tabs ignored/);
+    expect(effects.download).toMatchObject({ state: 'not-started', otherTabDownloads: 1 });
+  });
+
+  it('a click error that is not "did not navigate" is never rewritten, even when this tab downloads', async () => {
+    const dir = tempDir();
+    const fake = fakeBrowser({ frames: ['TAB'] });
+    const start = downloadingClick(fake, dir, { frameId: 'TAB', delayMs: 1 });
+    const covered = new Error('click point (1, 2) of <BUTTON> "Export" is covered by <DIV>');
+    const error = await captureClickDownload({
+      browser: fake.browser, dir, timeoutMs: 500, effects: {},
+      run: async () => { await start(); await new Promise(r => setTimeout(r, 20)); throw covered; },
+    }).catch(e => e);
+    expect(error).toBe(covered);
+  });
+
+  it('caps names at 200 UTF-8 bytes on a code-point boundary and keeps the extension', () => {
+    const cjk = safeDownloadFilename(`${'報'.repeat(200)}.csv`);
+    expect(Buffer.byteLength(cjk)).toBeLessThanOrEqual(200);
+    expect(cjk.endsWith('.csv')).toBe(true);
+    const emoji = safeDownloadFilename(`${'a'.repeat(199)}😀`);
+    expect(Buffer.byteLength(emoji)).toBeLessThanOrEqual(200);
+    expect(emoji).not.toMatch(/[\ud800-\udfff]/);
+    expect(safeDownloadFilename('bad\ud83dname.txt')).toBe('bad_name.txt');
+  });
+
+  it('prefixes every Windows device name form', () => {
+    for (const name of ['CON .txt', 'COM¹.txt', 'lpt³', 'CONIN$', 'conout$.log', 'nul']) {
+      expect(safeDownloadFilename(name).startsWith('_'), name).toBe(true);
+    }
+    expect(safeDownloadFilename('console.txt')).toBe('console.txt');
+  });
+
+  it('a name the file system refuses falls back to download<ext>', async () => {
+    const dir = tempDir();
+    const fake = fakeBrowser();
+    const effects = {};
+    const { open } = await import('fs/promises');
+    const openFile = vi.fn((path, flags) => (path.includes('very-long')
+      ? Promise.reject(Object.assign(new Error('name too long'), { code: 'ENAMETOOLONG' }))
+      : open(path, flags)));
+    await captureClickDownload({
+      browser: fake.browser, dir, timeoutMs: 2000, effects, fs: { openFile },
+      run: downloadingClick(fake, dir, { name: 'very-long.csv' }),
+    });
+    expect(effects.download).toMatchObject({ state: 'completed', filename: 'download.csv' });
+  });
+
+  it('a rename that fails is download-save-failed and leaves no <guid> or reserved file behind', async () => {
+    const dir = tempDir();
+    const fake = fakeBrowser();
+    const effects = {};
+    const renameFile = vi.fn(async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); });
+    const error = await captureClickDownload({
+      browser: fake.browser, dir, timeoutMs: 2000, effects, fs: { renameFile },
+      run: downloadingClick(fake, dir),
+    }).catch(e => e);
+    expect(error.download).toMatchObject({ kind: 'save-failed', code: 'EACCES' });
+    expect(error.message).toMatch(/could not save "report\.csv"/);
+    expect(readdirSync(dir)).toEqual([]);
+    expect(effects.download).toMatchObject({ state: 'save-failed', behavior: { restored: true } });
+    expect(T.classifyActionFailure(error, { action: 'click', target: { targetId: 'T1', input: '#x' } }))
+      .toMatchObject({ kind: 'download-save-failed', dispatched: true });
+  });
+
+  it.skipIf(process.platform === 'win32')('the saved file is owner-only (0600)', async () => {
+    const dir = tempDir();
+    const fake = fakeBrowser();
+    const effects = {};
+    await captureClickDownload({ browser: fake.browser, dir, timeoutMs: 2000, effects, run: downloadingClick(fake, dir) });
+    const { statSync } = await import('fs');
+    expect(statSync(effects.download.path).mode & 0o777).toBe(0o600);
+  });
+
+  it('a failed restore warns in text on failure paths too', async () => {
+    expect(downloadReceiptLines({ state: 'not-started', dir: '/d', behavior: { restored: false, restoreError: 'closed' } })[0])
+      .toMatch(/^Warning: could not set the browser's download behaviour back to default \(closed\)/);
+    const timeoutError = Object.assign(new Error('click --expect-download: no download started within 10 ms of the click'), {
+      download: { kind: 'timeout', phase: 'begin', timeoutMs: 10 },
+    });
+    const message = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#export', resolvedBy: 'selector', label: '#export', targetId: 'ABCDEF1234567890' },
+      dispatch: async () => { throw timeoutError; },
+      feedbackPolicy: 'settle-diff',
+      observe: async () => '',
+      enrichActionResult: async (result) => {
+        result.effects.download = { state: 'not-started', dir: '/d', behavior: { restored: false, restoreError: 'closed' } };
+        return result;
+      },
+      format: 'text',
+    }).catch(e => e.message);
+    expect(message).toMatch(/\nKind: timeout\n/);
+    expect(message).toMatch(/\nWarning: could not set the browser's download behaviour back to default/);
+  });
+});
+
 describe('#472 helpers', () => {
   it('sanitises file names', () => {
     expect(safeDownloadFilename('../../etc/passwd')).toBe('passwd');
@@ -258,7 +380,7 @@ describe('#472 helpers', () => {
     expect(safeDownloadFilename('a:b*c?.csv')).toBe('a_b_c_.csv');
     expect(safeDownloadFilename('invoice\u202Efdp.exe')).toBe('invoice_fdp.exe');
     expect(safeDownloadFilename('trailing. ')).toBe('trailing');
-    expect(safeDownloadFilename(`${'x'.repeat(300)}.csv`)).toHaveLength(180);
+    expect(safeDownloadFilename(`${'x'.repeat(300)}.csv`)).toBe(`${'x'.repeat(196)}.csv`);
   });
 
   it('formats sizes, URLs and the receipt line', () => {

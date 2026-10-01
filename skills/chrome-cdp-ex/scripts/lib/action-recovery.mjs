@@ -353,11 +353,25 @@ function classifyDownloadFailure(err, { base, targetId, input }) {
       ...base,
       kind: 'download-canceled',
       dispatched: true,
-      reason: 'The click started a download, but the browser canceled it (a network error, a blocked file type, or a server that ended the response).',
+      reason: 'The click started a download, but the browser canceled it (a network error, a blocked file type, a full disk, or a server that ended the response).',
       nextCommand: sinceAction,
       hints: [
         `See what the click changed with \`${sinceAction}\`.`,
         `Check the request with \`cdp netlog ${targetId}\` before clicking again.`,
+        'The default folder sits in the runtime directory, which on Linux is a small RAM-backed tmpfs: for a large file pass --out <folder on disk>.',
+      ],
+    };
+  }
+  if (info.kind === 'save-failed') {
+    return {
+      ...base,
+      kind: 'download-save-failed',
+      dispatched: true,
+      reason: 'The download completed, but the file could not be renamed or written in the download folder, so its data was removed.',
+      nextCommand: 'cdp help click',
+      hints: [
+        'Pass --out with a writable folder on a disk with free space, then click again.',
+        `See what the click changed with \`${sinceAction}\`.`,
       ],
     };
   }

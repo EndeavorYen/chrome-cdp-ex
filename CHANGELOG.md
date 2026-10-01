@@ -145,13 +145,17 @@
   downloads, such as a blob-URL "Export CSV" button or a response with `Content-Disposition: attachment`.
   It sets `Browser.setDownloadBehavior` to `allowAndName` for the tab's browser context before the
   click, waits for `Browser.downloadWillBegin` and a `completed` or `canceled` `Browser.downloadProgress`,
-  and always sets the behaviour back to `default` afterwards, also on failure and timeout. The file is
-  renamed from Chrome's `<guid>` to a sanitised suggested name that never overwrites another file. The
+  and always sets the behaviour back to `default` afterwards, also on failure and timeout (Chrome also drops
+  it when the daemon's connection closes). Only a download that begins in this tab's frames is captured;
+  Chrome reports every download in the browser. The file is renamed from Chrome's `<guid>` to a sanitised
+  suggested name (at most 200 UTF-8 bytes) that never overwrites another file, and made owner-only. The
   receipt adds `Downloaded "report.csv" 12.4 KB sha256=… → <path>` and JSON adds `effects.download` with a
-  redacted URL. No download within the timeout is `Kind: timeout` (an unfinished one is cancelled), and a
-  canceled download is `Kind: download-canceled`. The default folder `cdp-<target>-downloads/` lives in the
-  runtime directory and is pruned with the tab's other artifacts. The flag is CLI-only; MCP clients use
-  `run_command` ([#472](https://github.com/EndeavorYen/chrome-cdp-ex/issues/472)).
+  redacted URL. No download within the timeout is `Kind: timeout` (an unfinished one is cancelled), a
+  canceled download is `Kind: download-canceled`, and one that cannot be saved is
+  `Kind: download-save-failed`. The default folder `cdp-<target>-downloads/` lives in the runtime
+  directory and is pruned with the tab's other artifacts. `npm run smoke:live` clicks a blob "Export CSV"
+  button and checks the saved file's sha256. The flag is CLI-only; MCP clients use `run_command`
+  ([#472](https://github.com/EndeavorYen/chrome-cdp-ex/issues/472)).
 
 ### Bug Fixes
 
