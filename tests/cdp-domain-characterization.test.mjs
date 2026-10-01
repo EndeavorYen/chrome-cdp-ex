@@ -49,6 +49,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Network.emulateNetworkConditions': 'page-mutation',
   'Network.enable': 'session-control',
   'Network.getCookies': 'sensitive-observation',
+  'Network.getResponseBody': 'sensitive-observation',
   'Network.loadNetworkResource': 'observation',
   'Network.setCookie': 'sensitive-mutation',
   'Page.addScriptToEvaluateOnNewDocument': 'page-mutation',
@@ -417,8 +418,9 @@ describe('Phase 6 direct CDP characterization', () => {
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
     // #471 added dispatchDrag → Input.setInterceptDrags (on, off) and dispatchDragEventStep → Input.dispatchDragEvent.
     // #466 added readTargetUrl → Target.getTargets.
-    expect(inventory).toHaveLength(164);
-    expect(digest).toBe('sha256:98180c5e6b169ab23e729e3b1ae2de1bc05692d4191d9fdec3627e7d8adf9bfa');
+    // #467 added netlogRequestStr → Network.getResponseBody.
+    expect(inventory).toHaveLength(165);
+    expect(digest).toBe('sha256:9192883116b380dba63376df0d8f2f8a5075dbded529b6e643a8bb35d34ded7f');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

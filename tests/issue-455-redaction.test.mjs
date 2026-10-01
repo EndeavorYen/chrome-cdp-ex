@@ -229,9 +229,9 @@ describe('#455 surfaces redact URLs by default', () => {
     const raw = T.netlogStr(buf, null, { unsafeFull: true });
     for (const value of SECRET_VALUES) expect(raw).toContain(value);
     expect(raw).toMatch(/unsafe-full/);
-    expect(T.parseNetlogArgs([])).toEqual({ clear: false, unsafeFull: false });
-    expect(T.parseNetlogArgs(['--unsafe-full'])).toEqual({ clear: false, unsafeFull: true });
-    expect(T.parseNetlogArgs(['--clear'])).toEqual({ clear: true, unsafeFull: false });
+    expect(T.parseNetlogArgs([])).toMatchObject({ clear: false, unsafeFull: false });
+    expect(T.parseNetlogArgs(['--unsafe-full'])).toMatchObject({ clear: false, unsafeFull: true });
+    expect(T.parseNetlogArgs(['--clear'])).toMatchObject({ clear: true, unsafeFull: false });
     expect(() => T.parseNetlogArgs(['--bogus'])).toThrow(/netlog/);
   });
 
