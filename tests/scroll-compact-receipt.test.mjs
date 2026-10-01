@@ -159,7 +159,7 @@ describe('#345 skinny document-scroll-edge receipt', () => {
       effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
     });
     const text = T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked Save' });
-    expect(text).toBe('Clicked Save. Next: cdp list');
+    expect(text).toBe('Clicked Save. Outcome: changed. Next: cdp perceive ABC123 --since-action');
     expect(text).not.toMatch(/Recovery hint:/);
     expect(text).not.toMatch(/^Outcome:/m);
   });
@@ -247,7 +247,7 @@ describe('#345 skinny document-scroll-edge receipt', () => {
       dispatchText: 'Did not reach document bottom. scrollY: 100 / 5295 max (at-bottom: no)',
     });
     expect(result.outcome.status).toBe('failed');
-    expect(text).toBe(`Kind: timeout\nNext: cdp status ${TARGET_ID}`);
+    expect(text).toBe(`Error: Did not reach document bottom\nKind: timeout\nNext: cdp status ${TARGET_ID}`);
     expect(text).not.toBe(DISPATCH_TEXT);
     expect(text).not.toMatch(/Recovery hint:/);
   });

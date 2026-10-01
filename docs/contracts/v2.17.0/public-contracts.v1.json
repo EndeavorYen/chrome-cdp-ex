@@ -2555,7 +2555,7 @@
               "type": "boolean"
             },
             "selector": {
-              "description": "CSS selector, @ref, @c ref, or accessible name.",
+              "description": "CSS selector, @ref, @c ref, accessible name, or text=<exact visible text>.",
               "type": "string"
             },
             "target": {

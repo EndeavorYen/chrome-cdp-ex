@@ -161,7 +161,7 @@ describe('#343 skinny document nav receipt', () => {
     ].join('\n');
     const result = exampleOrgNavResult({ observation: axDump, network: false });
     const text = T.formatActionResultOutput(result, { dispatchText: DISPATCH_TEXT });
-    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp list`);
+    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp perceive ${TARGET_ID.slice(0, 8)} -C -d 8`);
     expect(text).not.toMatch(/RootWebArea/);
     expect(text).not.toMatch(/^Outcome:/m);
   });
@@ -175,7 +175,7 @@ describe('#343 skinny document nav receipt', () => {
       effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
     });
     const text = T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked #save' });
-    expect(text).toBe('Clicked #save. Next: cdp list');
+    expect(text).toBe('Clicked #save. Outcome: changed. Next: cdp perceive ABC123 --since-action');
     expect(text).not.toMatch(/^Outcome:/m);
     expect(text).not.toMatch(/^Receipt:/m);
     expect(text).not.toMatch(/^Verdict:/m);

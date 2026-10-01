@@ -531,7 +531,7 @@ These commands **automatically wait for DOM to settle and return compact `Action
 
 `upload` returns ActionResult evidence after setting files, so form previews, validation messages, or upload queues can appear in `perceive --since-action` and `report`.
 
-If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, `selector`, `not-fillable`, or `usage`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, `cdp help press`, or `cdp help fill`. Unknown/missing `press` keys are `Kind: usage` / `cdp help press`, not `Action failure: unknown`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis; successful actions record DOM, console, exception, and network evidence for later `record-actions` export.
+If dispatch fails, read the classified failure block instead of retrying blindly. Text output is `Error: <original message>` / `Kind: <kind>` / `Next: <command>` and the command exits 1; the `Error:` line is always present, even for `Kind: unknown`, so an unclassified failure is never mistaken for a receipt. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, `selector`, `not-fillable`, or `usage`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, `cdp help press`, or `cdp help fill`. Unknown/missing `press` keys are `Kind: usage` / `cdp help press`, not `Action failure: unknown`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis; successful actions record DOM, console, exception, and network evidence for later `record-actions` export.
 
 | Command | Auto-returns |
 |---------|-------------|
@@ -604,6 +604,7 @@ scripts/cdp.mjs nav     <target> <url> [--compact] [--format json] # URL+title; 
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
 scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; one-step jsclick, skinny URL
+scripts/cdp.mjs click   <target> "text=Save" [--format json]  # Playwright-style alias for the named form (exact visible text)
 scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path; scrollIntoView if off-screen
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
@@ -1158,6 +1159,21 @@ success, and do not auto-jsclick inside mouse `click` `@ref` / CSS. A named
 named query (`click` / `jsclick` `"Browse 1M+ applications"`) is the one-step
 jsclick path: no `perceive -C -d 8`, unique off-screen names `scrollIntoView`
 then click, skinny URL receipt (Scroll before/after when it scrolled).
+
+`text=Save`, `text="Save changes"`, and `text='Save'` are aliases for that named
+form. The match is the same exact, whitespace-normalised match on a button or
+link's `aria-label` or visible text; unquoted `text=` is not Playwright's
+case-insensitive substring match. Use `text=` to force a name lookup for a single
+word that would otherwise parse as a CSS tag selector (`text=Save` vs `Save`). A
+miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
+`Kind: selector`, and Next `perceive -C -d 8` for an `@ref`.
+
+When a successful one-line receipt has no diagnosis-specific Next, it points at the same tab: `perceive
+<target> --since-action` after an in-page action, `perceive <target> -C -d 8`
+after `nav` or a click that navigated the tab, and `list` only when the receipt
+has no target. `click` / `jsclick` receipts add `Outcome: changed` or
+`Outcome: no-change` when the settle-diff or a followed navigation observed it;
+unobserved named clicks print no outcome word.
 Short of the navigating href is FAIL.
 
 ### Pointer-sequence click — `click --pointer`

@@ -123,6 +123,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
+`click` takes a CSS selector, an `@ref`, or a button/link's visible text (`click <target> "Save changes"`). `text=Save` / `text="Save changes"` is an alias for the visible-text form with the same exact, whitespace-normalised match (not Playwright's substring match).
+
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
 Default `open` returns the target prefix and a follow-up `perceive` command; pass `--perceive` only when you want the full dump in the same call.
 
@@ -337,7 +339,7 @@ Receipt surfaces:
 | Session JSONL / action log | Audit, replay, and debugging | Full receipt, including recovery metadata and unchanged delta channels. |
 | Action JSON | Agent handoff immediately after one command | Compact receipt with dispatch, settlement semantics, signal-bearing deltas, recovery hint, and executable next steps. |
 | Report JSON | Session handoff | Smaller receipt with event identity, settlement summary, outcome, blocking signals, recovery hint, and compact delta details. |
-| Text output | Human quick read | Outcome, receipt status, blocking signals, recovery hint, settle line, and high-signal evidence samples. |
+| Text output | Human quick read | Outcome, receipt status, blocking signals, recovery hint, settle line, and high-signal evidence samples. When a one-line `click` / `jsclick` / `fill` / `press` / `select` / `scroll` / `nav` receipt has no diagnosis-specific Next, it suggests the same tab (`perceive <target> --since-action`, or `perceive <target> -C -d 8` after a navigation; `list` only without a target); click receipts add `Outcome: changed` / `Outcome: no-change` when observed. A failed action prints `Error:` / `Kind:` / `Next:` and exits 1. |
 
 For token-bound handoffs, add `--compact` to mutating action JSON and report JSON:
 
