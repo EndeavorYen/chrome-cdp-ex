@@ -91,12 +91,18 @@ describe('current open issue contracts', () => {
       send: async () => ({ ok: true, result: '' }),
     });
     const remainingDaemon = { targetId: '1234567890ABCDEF', socketPath: '/tmp/cdp-1234567890ABCDEF.sock' };
+    // #439: an untouched target counts as remaining only while its daemon answers.
+    const otherSessionAnswers = async path => {
+      if (path === remainingDaemon.socketPath) return { destroy: () => {} };
+      throw new Error('ECONNREFUSED');
+    };
     const repeatedWithOtherSession = await T.stopDaemons('ABCDEF12', {
       list: () => [remainingDaemon],
+      connect: otherSessionAnswers,
     });
     const failedCleanup = await T.stopDaemons('ABCDEF12', {
       list: () => [daemon, remainingDaemon],
-      connect: async () => { throw new Error('ECONNREFUSED'); },
+      connect: otherSessionAnswers,
       unlink: () => { throw new Error('EPERM'); },
     });
 
