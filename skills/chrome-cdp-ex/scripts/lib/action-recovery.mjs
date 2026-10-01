@@ -138,8 +138,10 @@ function classifyFillValueFailure(err, { base, target, input, perceiveCommand })
   const value = fillFailureValue(err);
   // An @ref is not CSS: inspect through the selector fill resolved for it, else re-perceive.
   const inspectSelector = isActionRef(input) ? value?.selector || '' : input;
+  // A sensitive field's check reads the length, so running it does not print the secret (#485).
+  const sensitive = value?.redacted === true || target?.sensitiveValue === true;
   const inspect = inspectSelector
-    ? querySelectorEvalCommand(prefix, inspectSelector, '?.value') || 'cdp help fill'
+    ? querySelectorEvalCommand(prefix, inspectSelector, sensitive ? '?.value.length' : '?.value') || 'cdp help fill'
     : (isActionRef(input) ? perceiveCommand : 'cdp help fill');
   if (value && value.changed === true) {
     return {

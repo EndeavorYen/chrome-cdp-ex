@@ -134,9 +134,11 @@ import { createLocatorPlan } from './lib/browser-resources.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './lib/browser-paths.mjs';
 import {
   REDACTED_VALUE,
+  isSensitiveFieldText,
   isSensitiveKey,
   redactSensitiveString,
   redactUrl,
+  scrubSecretValues,
 } from './lib/redaction.mjs';
 import {
   COMMAND_SURFACE,
@@ -7907,16 +7909,24 @@ function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = n
 // Every action receipt leaves through here. JSON models are redacted field by
 // field; text receipts are redacted as a whole because outcome reasons, page
 // URLs and dispatch text all embed raw URLs (#455).
+// A sensitive fill's typed and previous values are scrubbed from the whole output in every mode:
+// AX diffs, diagnosis samples and failure targets all quote the field's live value (#485).
+// JSON models are scrubbed before serialization (string leaves only); text is scrubbed whole.
 function formatActionResultOutput(result, opts = {}) {
-  const output = formatActionResultOutputUnredacted(result, opts);
+  const secrets = sensitiveActionValues(result?.action, result?.target);
+  const scrubModel = model => scrubSecretValues(model, secrets, { keepKeys: ACTION_JSON_IDENTIFIER_KEYS });
+  const output = formatActionResultOutputUnredacted(result, { ...opts, scrubModel });
   if (opts.format === 'json') return output;
   // #460: every text receipt names the dialogs the daemon answered on the user's behalf.
   const dialogLines = actionDialogLines(result?.effects || {});
   const text = dialogLines.length ? [output, ...dialogLines].filter(Boolean).join('\n') : output;
-  return redactSensitiveString(text);
+  return scrubSecretValues(redactSensitiveString(text), secrets);
 }
 
-function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
+// Code-generated identifiers a sensitive fill's value must never rewrite in a JSON model (#485).
+const ACTION_JSON_IDENTIFIER_KEYS = new Set(['schema', 'action', 'actionName', 'method', 'kind']);
+
+function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false, scrubModel = model => model } = {}) {
   if (qa) {
     const pdf = actionResultPdfViewerMeta(result, dispatchText);
     if (pdf) {
@@ -7924,7 +7934,7 @@ function formatActionResultOutputUnredacted(result, { format = 'text', compact =
         ? targetPrefixForDisplay(result.target.targetId)
         : '<target>';
       return format === 'json'
-        ? formatJson(pdfViewerHandoffModel({ ...pdf, url: redactUrl(pdf.url) }, { targetPrefix }))
+        ? formatJson(scrubModel(pdfViewerHandoffModel({ ...pdf, url: redactUrl(pdf.url) }, { targetPrefix })))
         : formatPdfViewerOutput(pdf, { targetPrefix });
     }
     const summary = buildQaSummaryModel({
@@ -7951,18 +7961,18 @@ function formatActionResultOutputUnredacted(result, { format = 'text', compact =
       source: 'action',
     });
     if (format === 'json') {
-      return formatJson({
+      return formatJson(scrubModel({
         summary: redactSensitiveArtifactValue(summary),
         action: compactActionResultForJson(result, { compact: true }),
-      });
+      }));
     }
     return formatQaSummaryText(summary);
   }
   if (format === 'json') {
     if (shouldUseCompactFillReceipt(result, { compact, qa, full })) {
-      return JSON.stringify(redactSensitiveArtifactValue(compactFillReceiptForJson(result)));
+      return JSON.stringify(scrubModel(redactSensitiveArtifactValue(compactFillReceiptForJson(result))));
     }
-    const model = compactActionResultForJson(result, { compact });
+    const model = scrubModel(compactActionResultForJson(result, { compact }));
     return compact ? JSON.stringify(model) : formatJson(model);
   }
   if (!full && isSuccessfulBoundedDocumentNav(result)) {
@@ -8807,7 +8817,10 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     });
     await finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (output.format === 'json') return formatActionResultOutput(result, output);
-    throw new Error([formatActionFailure(e, { action, target }), ...actionDialogLines(result.effects)].join('\n'));
+    throw new Error(scrubSecretValues(
+      [formatActionFailure(e, { action, target }), ...actionDialogLines(result.effects)].join('\n'),
+      sensitiveActionValues(action, target),
+    ));
   }
   // #437: a click on a link that opened another tab says so in its dispatch text.
   const openedTab = CLICK_OUTCOME_WORD_ACTIONS.has(String(action || '').toLowerCase())
@@ -9069,7 +9082,10 @@ function compactActionHandoffForJson(result = {}) {
 
 function compactActionResultForJson(result, { compact: compactMode = false } = {}) {
   const compact = JSON.parse(JSON.stringify(result));
-  compact.target = sanitizeActionTargetForLog(compact.action, compact.target || null);
+  compact.target = sanitizeActionTargetForLog(compact.action, result.target || null);
+  if (compact.effects?.failure?.target) {
+    compact.effects.failure.target = sanitizeActionTargetForLog(compact.action, result.target || null);
+  }
   compact.receipt = receiptForActionJson(compact.receipt);
   const effects = compact.effects || {};
   if (typeof effects.domDiff !== 'string') {
@@ -9091,16 +9107,31 @@ function compactActionResultForJson(result, { compact: compactMode = false } = {
   return compactMode ? compactActionHandoffForJson(redacted) : redacted;
 }
 
-const SENSITIVE_ACTION_TARGET_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
-
+// Whether a fill/type value must stay out of receipts and logs. The key classifier splits each
+// string on `_`, `-` and camelCase (#485), so `#api_token` and `[name=client_secret]` count.
+// `sensitiveValue` is set when fill read the control itself: a password input, or a name, id,
+// autocomplete or label that marks it secret. Only fill names a field: `type`'s first arg is the
+// typed prose itself, not a field name.
 function isSensitiveActionTarget(action, target = {}) {
   if (action !== 'fill' && action !== 'type') return false;
-  const probe = [
+  if (target.sensitiveValue === true) return true;
+  if (action !== 'fill') return false;
+  return [
     target.input,
     target.label,
     ...(Array.isArray(target.commandArgs) ? target.commandArgs.slice(0, 1) : []),
-  ].filter(Boolean).join(' ');
-  return SENSITIVE_ACTION_TARGET_RE.test(probe);
+  ].some(text => text && isSensitiveFieldText(text));
+}
+
+// Raw values of a sensitive fill (the typed text, the value it replaced, the live value) keyed by
+// its fill value state and action target. A WeakMap keeps them out of every serialized object;
+// receipts and logs read them only to scrub them (#485).
+const SENSITIVE_FILL_RAW_VALUES = new WeakMap();
+
+// Every literal a sensitive action's output must not contain.
+function sensitiveActionValues(action, target = {}) {
+  if (!target || !isSensitiveActionTarget(action, target)) return [];
+  return [sensitiveActionSecret(action, target), ...(SENSITIVE_FILL_RAW_VALUES.get(target) || [])];
 }
 
 function sensitiveActionSecret(action, target = {}) {
@@ -9111,17 +9142,9 @@ function sensitiveActionSecret(action, target = {}) {
   return args[1] == null ? '' : String(args[1]);
 }
 
+// `secret` is one literal or a list (a sensitive fill's typed and previous values).
 function replaceSecretLiteral(value, secret) {
-  if (!secret || secret === REDACTED_VALUE || value == null) return value;
-  if (typeof value === 'string') return value.includes(secret) ? value.split(secret).join(REDACTED_VALUE) : value;
-  if (Array.isArray(value)) return value.map(item => replaceSecretLiteral(item, secret));
-  if (typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, entryValue]) => [
-      key,
-      replaceSecretLiteral(entryValue, secret),
-    ]));
-  }
-  return value;
+  return scrubSecretValues(value, secret, { keepKeys: ACTION_JSON_IDENTIFIER_KEYS });
 }
 
 function redactSensitiveDispatchText(text) {
@@ -9143,10 +9166,9 @@ function sanitizeActionTargetForLog(action, target = null) {
     commandArgs: Array.isArray(target.commandArgs) ? [...target.commandArgs] : target.commandArgs,
   };
   if (!isSensitiveActionTarget(action, sanitized)) return sanitized;
-  const secret = sensitiveActionSecret(action, sanitized);
-  let next = secret && secret !== REDACTED_VALUE
-    ? replaceSecretLiteral(sanitized, secret)
-    : sanitized;
+  // The original target: a fill's raw values are keyed by it, not by this copy.
+  const secret = sensitiveActionValues(action, target);
+  let next = replaceSecretLiteral(sanitized, secret);
   const redacted = new Set(next.redacted || []);
   if (Array.isArray(next.commandArgs) && next.commandArgs.length) {
     next = { ...next, commandArgs: redactSensitiveCommandArgs(action, next.commandArgs) };
@@ -9553,7 +9575,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   const domDiff = actionResult.effects?.domDiff || '';
   const { summary, sample } = summarizeActionDomDiff(domDiff);
   const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
-  const secret = sensitiveActionSecret(actionResult.action, actionResult.target || {});
+  const secret = sensitiveActionValues(actionResult.action, actionResult.target || {});
   const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
   const entry = replaceSecretLiteral(redactSensitiveArtifactValue({
     sequence,
@@ -16265,8 +16287,26 @@ function fillLiveValueDeclaration() {
       type: String(el && el.type || '').toLowerCase(),
       value,
       textContent: String(el && el.textContent || ''),
+      field: ${fillFieldDescriptorExpression('el')},
     };
   }`;
+}
+
+// The strings that name a control (#485): fill decides from them whether the typed value is secret.
+function fillFieldDescriptorExpression(name) {
+  return `(function(el) {
+      const attr = (key) => String(el && el.getAttribute && el.getAttribute(key) || '').slice(0, 200);
+      const labels = Array.from(el && el.labels || []).slice(0, 3)
+        .map(label => String(label.textContent || '').trim().slice(0, 200));
+      return {
+        id: attr('id'),
+        name: attr('name'),
+        autocomplete: attr('autocomplete'),
+        ariaLabel: attr('aria-label'),
+        placeholder: attr('placeholder'),
+        labels,
+      };
+    })(${name})`;
 }
 
 function fillLiveValuePageScript(selector) {
@@ -16334,7 +16374,16 @@ function parseFillLiveSnapshot(raw) {
     type: parsed.type ? String(parsed.type) : '',
     value: String(parsed.value ?? ''),
     textContent: String(parsed.textContent ?? ''),
+    field: parsed.field && typeof parsed.field === 'object' ? parsed.field : null,
   };
+}
+
+// True when the control's own name, id, autocomplete, aria-label, placeholder or label marks it secret.
+function fillFieldLooksSensitive(field) {
+  if (!field || typeof field !== 'object') return false;
+  const texts = [field.id, field.name, field.autocomplete, field.ariaLabel, field.placeholder,
+    ...(Array.isArray(field.labels) ? field.labels : [])];
+  return texts.some(text => typeof text === 'string' && text && isSensitiveFieldText(text));
 }
 
 function fillLiveValueAccepted(snapshot, wanted) {
@@ -16424,9 +16473,19 @@ function formatFillDispatchText({ label, text, clearing, react, state }) {
   return `${head} (was ${fillValueDisplay(before)})`;
 }
 
+// fill found the control sensitive in the page (#485): receipts, logs and records redact its value.
+function markSensitiveFillTarget(target, state) {
+  if (!target || state?.redacted !== true) return target;
+  target.sensitiveValue = true;
+  const raw = SENSITIVE_FILL_RAW_VALUES.get(state);
+  if (raw) SENSITIVE_FILL_RAW_VALUES.set(target, raw);
+  return target;
+}
+
 // Turn a successful fill's value transition into receipt state on the action target.
 function applyFillValueState(target, state) {
   if (!target || !state || typeof state !== 'object' || !Object.hasOwn(state, 'after')) return target;
+  markSensitiveFillTarget(target, state);
   target.fillValue = { before: state.before ?? null, after: state.after ?? null };
   if (state.changed === true) {
     target.controlStateChanged = true;
@@ -16486,7 +16545,8 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   }
   const after = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
   const sensitive = String(inputType || after?.type || '').toLowerCase() === 'password'
-    || isSensitiveActionTarget('fill', { input: selector });
+    || isSensitiveActionTarget('fill', { input: selector })
+    || fillFieldLooksSensitive(after?.field);
   const state = buildFillValueState({
     before,
     after: after?.ok ? after.value : null,
@@ -16494,7 +16554,10 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     inputType: inputType || after?.type || '',
     sensitive,
   });
-  if (opts.valueState && typeof opts.valueState === 'object') Object.assign(opts.valueState, state);
+  if (opts.valueState && typeof opts.valueState === 'object') {
+    Object.assign(opts.valueState, state);
+    if (sensitive) SENSITIVE_FILL_RAW_VALUES.set(opts.valueState, [wanted, before, after?.value]);
+  }
   if (!fillLiveValueAccepted(after, wanted)) {
     if (ref) {
       const unique = await fillRefUniqueSelector(cdp, sid, selector, refMap, refState);
@@ -16503,7 +16566,7 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     throw fillValueRejectedError(selector, wanted, state);
   }
   const label = ref ? selector : `<${tag}>`;
-  return formatFillDispatchText({ label, text: wanted, clearing, react: opts.react === true, state });
+  return formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state });
 }
 
 async function selectStr(cdp, sid, selector, value) {
@@ -23967,6 +24030,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }
         return text;
       } catch (error) {
+        if (action === 'fill') markSensitiveFillTarget(actionTarget, fillValueState);
         await jsDialogs.waitForPending(1500).catch(() => {});
         if (shouldSkipActionPageEvaluate(jsDialogs)) {
           actionTarget.dialogBlocked = true;
@@ -28886,7 +28950,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonRequestMayHaveSideEffects,
   fillableControlProbeDeclaration, notFillableControlError,
   fillLiveValueAccepted, fillValueRejectedError, fillLiveValuePageScript,
-  applyFillValueState, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
+  applyFillValueState, markSensitiveFillTarget, isSensitiveActionTarget, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
   looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,

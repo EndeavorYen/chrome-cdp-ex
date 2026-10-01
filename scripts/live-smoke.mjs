@@ -396,6 +396,28 @@ const mismatchOut = step('fill rejected by number input', () => runFailure(['fil
 assertIncludes(mismatchOut, 'Kind: fill-value-mismatch', 'fill value mismatch kind');
 assertIncludes(mismatchOut, 'Value: "0.5" → "" (requested "abc"; <input type=number> rejected the text)', 'fill value mismatch value');
 assertIncludes(mismatchOut, `Next: cdp eval ${target} "document.querySelector('#smoke-amount')?.value"`, 'fill value mismatch next');
+// #485: a field whose name (not selector) marks it secret never echoes the typed value, in any
+// receipt mode, on success or failure. The daemon's dispatch wrapper carries the decision.
+const SMOKE_SECRET = 'sk-smoke-485-secret-value';
+const SMOKE_REJECTED_SECRET = 'abcdef485';
+const secretFillOuts = [
+  step('fill secret-named field', () => run(['fill', target, '#smoke-cred', SMOKE_SECRET])),
+  step('fill secret-named field json', () => run(['fill', target, '#smoke-cred', SMOKE_SECRET, '--format', 'json'])),
+  step('fill secret-named field compact json', () => run(['fill', target, '#smoke-cred', SMOKE_SECRET, '--compact', '--format', 'json'])),
+  step('fill secret-named field full json', () => run(['fill', target, '#smoke-cred', `${SMOKE_SECRET}-2`, '--full', '--format', 'json'])),
+  step('fill secret-named field full text', () => run(['fill', target, '#smoke-cred', SMOKE_SECRET, '--full'])),
+  step('fill rejected by secret-named number input json', () => runFailureStdout(['fill', target, '#smoke-code', SMOKE_REJECTED_SECRET, '--format', 'json'])),
+  step('fill rejected by secret-named number input', () => runFailure(['fill', target, '#smoke-code', SMOKE_REJECTED_SECRET])),
+];
+for (const out of secretFillOuts) {
+  if (out.includes('sk-smoke-485') || out.includes(SMOKE_REJECTED_SECRET)) throw new Error(`fill echoed a secret-named field's value:\n${out}`);
+}
+assertIncludes(secretFillOuts[0], 'with "<redacted>"', 'secret fill receipt');
+if (JSON.parse(secretFillOuts[1]).value !== '<redacted>') throw new Error(`fill.v1 should redact a secret-named field:\n${secretFillOuts[1]}`);
+if (JSON.parse(secretFillOuts[5]).effects?.failure?.kind !== 'fill-value-mismatch') {
+  throw new Error(`a secret-named number input that rejects text should be a fill-value-mismatch:\n${secretFillOuts[5]}`);
+}
+assertIncludes(secretFillOuts[6], `Next: cdp eval ${target} "document.querySelector('#smoke-code')?.value.length"`, 'secret fill value mismatch next');
 const uploadOut = step('upload action evidence', () => run(['upload', target, '#upload-file', uploadFixturePath]));
 assertIncludes(uploadOut, 'Uploaded 1 file', 'upload');
 assertIncludes(uploadOut, 'upload: dispatched', 'upload action evidence');
@@ -663,6 +685,9 @@ if (!reportLogEvents.some(event => event.kind === 'screenshot' && event.screensh
 }
 const recordActionsJson = step('record-actions json', () => run(['record-actions', target, '--format', 'json']));
 const recordActions = JSON.parse(recordActionsJson);
+for (const [label, text] of [['record-actions', recordActionsJson], ['session log', readFileSync(reportLogPath, 'utf8')], ['report', reportJson]]) {
+  if (text.includes('sk-smoke-485') || text.includes(SMOKE_REJECTED_SECRET)) throw new Error(`${label} kept a secret-named field's value (#485)`);
+}
 if (recordActions.schema !== 'chrome-cdp-ex.record-actions.v1') {
   throw new Error(`record-actions json schema mismatch:\n${recordActionsJson}`);
 }

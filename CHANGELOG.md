@@ -4,6 +4,24 @@
 
 ### Bug Fixes
 
+* `fill` no longer echoes a value typed into a field named like a secret. The typed-value check used
+  a `\b` regex, and `_` is a word character, so `#api_token`, `[name=client_secret]` and `#accessToken`
+  were not sensitive and the value showed in the text receipt, `fill.v1`, the session log and
+  `record-actions`. It now uses the token-wise key classifier from `lib/redaction.mjs`, and `fill` also
+  checks the control it already reads: password type, `name`, `id`, `autocomplete`, `aria-label`,
+  `placeholder` and label text. `autocomplete` values `one-time-code`, `cc-number`, `cc-csc`, `cc-exp`,
+  `current-password` and `new-password` count as sensitive. A password input reached through a plain
+  selector (`fill #f2 …`) used to redact only its before/after values; its typed value is now redacted
+  too. A sensitive field's typed and previous values are scrubbed from every output mode: `--compact`,
+  `--full` and `--qa` receipts, the AX diff and diagnosis samples a textbox value shows up in, and a
+  failed fill's JSON `effects.failure.target`. JSON receipts are scrubbed before serialization, in
+  string values only, so a secret such as `null`, `true` or `1234` cannot break the JSON. Its failure
+  `Next` reads `?.value.length`. Field names
+  use a narrower word list than URL keys, so the bare words `session`, `access`, `refresh`, `sid`,
+  `cookie` and `card` no longer mark a field secret ("Session name" and "Access level" stay readable
+  and replayable); compounds such as `session_id`, `access_token` and `card_number` still do. `type`
+  no longer treats its typed text as a field name. `#search`, `#pinned-note` and `[name=q]` stay
+  readable ([#485](https://github.com/EndeavorYen/chrome-cdp-ex/issues/485)).
 * The stdio MCP server speaks MCP stdio framing. It used to wrap every reply in LSP-style
   `Content-Length` headers, which a line-reading MCP client (the official SDKs) cannot parse. Replies
   are now one JSON line each. A client that sends `Content-Length` headers still gets header-framed
