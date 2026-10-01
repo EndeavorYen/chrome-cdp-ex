@@ -32,6 +32,8 @@ function refused() {
 }
 
 const SPAWN = 'spawn-debug-browser';
+// A host with a display, so relaunch lines do not get the no-DISPLAY --headless=new (#426).
+const DISPLAY = { platform: 'linux', env: { DISPLAY: ':0' } };
 
 describe('#416 relaunch recovery picks the persistent profile last used on the port', () => {
   it('keeps every profile seen on a port even after a newer temp spawn overwrote the top-level record', () => {
@@ -62,6 +64,7 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
     T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9342, profileDir: DAILY, exe: EXE, browser: 'chrome', via: SPAWN }, io);
     T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9342, profileDir: TEMP, exe: EXE, browser: 'chrome', via: SPAWN }, io);
     const err = T.cdpUnreachableError({
+      display: DISPLAY,
       host: '127.0.0.1', port: '9342', cause: 'ECONNREFUSED', lastEndpoint: T.readLastCdpEndpoint(io),
     });
     expect(err.profileDir).toBe(DAILY);
@@ -110,7 +113,7 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
       history: [{ port: '9333', profileDir: '/home/me/other-port' }],
     };
     expect(T.rankCdpRelaunchCandidates(record, '9342')).toEqual([]);
-    const err = T.cdpUnreachableError({ host: '127.0.0.1', port: '9342', cause: 'ECONNREFUSED', lastEndpoint: record });
+    const err = T.cdpUnreachableError({ display: DISPLAY, host: '127.0.0.1', port: '9342', cause: 'ECONNREFUSED', lastEndpoint: record });
     expect(err.profileDir).toBeNull();
     expect(err.relaunch).toBeNull();
     expect(err.message).toMatch(/do not invent a new --user-data-dir/i);
@@ -128,10 +131,11 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
 
   it('a single candidate keeps the old one-line message without a candidate list', () => {
     const err = T.cdpUnreachableError({
+      display: DISPLAY,
       host: '127.0.0.1', port: '9342', cause: 'ECONNREFUSED',
       lastEndpoint: { host: '127.0.0.1', port: '9342', profileDir: '/home/me/only', exe: '/opt/chrome', browser: 'chrome' },
     });
-    expect(err.relaunch).toBe('/opt/chrome --remote-debugging-port=9342 --user-data-dir /home/me/only');
+    expect(err.relaunch).toBe('/opt/chrome --remote-debugging-port=9342 --user-data-dir=/home/me/only');
     expect(err.candidates).toHaveLength(1);
     expect(err.message).not.toMatch(/other profiles/i);
   });
@@ -145,6 +149,7 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
       ],
     };
     const check = await T.checkCdpReachability({
+      display: DISPLAY,
       env: { CDP_PORT: '9342' },
       fetcher: async () => refused(),
       lastEndpoint,
@@ -163,6 +168,7 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
 
   it('separates the candidate list from the command in the error message', () => {
     const err = T.cdpUnreachableError({
+      display: DISPLAY,
       host: '127.0.0.1', port: '9342', cause: 'ECONNREFUSED',
       lastEndpoint: {
         port: '9342',
@@ -205,10 +211,11 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
 
   it('a record with a profile but no port still relaunches on the old default port', () => {
     const err = T.cdpUnreachableError({
+      display: DISPLAY,
       host: '127.0.0.1', cause: 'ECONNREFUSED',
       lastEndpoint: { host: '127.0.0.1', profileDir: '/home/me/only', exe: '/opt/chrome', browser: 'chrome' },
     });
-    expect(err.relaunch).toBe('/opt/chrome --remote-debugging-port=9222 --user-data-dir /home/me/only');
+    expect(err.relaunch).toBe('/opt/chrome --remote-debugging-port=9222 --user-data-dir=/home/me/only');
   });
 
   it('spawn-debug-browser records via=spawn-debug-browser for the profile it launched', async () => {
