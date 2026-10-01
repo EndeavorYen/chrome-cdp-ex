@@ -36,6 +36,7 @@ import {
   inspectCommandDispatcher,
 } from './lib/command-dispatch.mjs';
 import { createDaemonReadHandlers } from './lib/daemon-read-handlers.mjs';
+import { captureStackFrames, createSourceMapResolver, formatGeneratedFrame } from './lib/source-maps.mjs';
 import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
 import { isTableCollectArgs, parseTableArgs, parseTableContinuationToken } from './lib/table-contract.mjs';
 import { createTableArtifactStore } from './lib/table-artifacts.mjs';
@@ -1460,22 +1461,19 @@ function boundCapturedText(parts) {
   return { text, truncated: true, originalLength };
 }
 
-function capturedEventLoc(stackTrace) {
-  const frame = stackTrace?.callFrames?.[0];
-  const file = frame?.url?.split('/').pop() || '';
-  return file && frame.lineNumber > 0 ? `${file}:${frame.lineNumber}` : '';
-}
-
+// Capture-time bound (#459) plus up to three generated frames for source mapping (#470).
 function consoleEntryFromEvent(params = {}, ts = Date.now()) {
   const { text, ...cut } = boundCapturedText((params.args || []).map(a => a.value ?? a.description ?? JSON.stringify(a)));
-  return { level: params.type || 'log', text, loc: capturedEventLoc(params.stackTrace), ts, ...cut };
+  const frames = captureStackFrames(params.stackTrace);
+  return { level: params.type || 'log', text, loc: frames.length ? formatGeneratedFrame(frames[0]) : '', frames, ts, ...cut };
 }
 
 function exceptionEntryFromEvent(params = {}, ts = Date.now()) {
   const detail = params.exceptionDetails;
   // exception.description has the full message (e.g. "Error: foo"); text is just "Uncaught".
   const { text: msg, ...cut } = boundCapturedText([detail?.exception?.description || detail?.text || 'Unknown error']);
-  return { msg, loc: capturedEventLoc(detail?.stackTrace), ts, ...cut };
+  const frames = captureStackFrames(detail?.stackTrace, detail);
+  return { msg, loc: frames.length ? formatGeneratedFrame(frames[0]) : '', frames, ts, ...cut };
 }
 
 // One bounded console line for text surfaces. It says when the line is not the
@@ -5823,33 +5821,72 @@ function clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq) {
   };
 }
 
-function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag) {
-  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
-  const showErrors = mode === 'errors';
-  const showAll = mode === 'all';
-  let entries;
-  let exceptions = [];
+// #470: console and exception entries keep up to three 0-based stack frames so output can map
+// them through source maps lazily. `loc` stays the generated top frame, 1-based like Error.stack.
+const SOURCE_MAPPED_CONSOLE_LEVELS = new Set(['error', 'assert', 'warning', 'warn']);
 
-  if (showAll) {
-    entries = consoleBuf.all();
-    exceptions = exceptionBuf.all();
-  } else if (showErrors) {
-    entries = consoleBuf.all().filter(e => e.level === 'error' || e.level === 'warning');
-    exceptions = exceptionBuf.all();
-  } else {
-    entries = consoleBuf.since(lastReadSeq.console);
-    exceptions = exceptionBuf.since(lastReadSeq.exception);
+// Source-maps the entries an agent debugs from (errors, warnings, exceptions). `locate` is the
+// daemon resolver's locateEntries; any failure means the generated frames are printed unchanged.
+async function locateObservedEntries(locate, consoleEntries = [], exceptionEntries = []) {
+  if (typeof locate !== 'function') return new Map();
+  const wanted = [
+    ...consoleEntries.filter(entry => SOURCE_MAPPED_CONSOLE_LEVELS.has(String(entry?.level || '').toLowerCase())),
+    ...exceptionEntries,
+  ].filter(entry => Array.isArray(entry?.frames) && entry.frames.length > 0);
+  if (wanted.length === 0) return new Map();
+  try {
+    const located = await locate(wanted);
+    return located instanceof Map ? located : new Map();
+  } catch {
+    return new Map();
   }
+}
 
+function locatedEntry(located, entry) {
+  return located instanceof Map ? located.get(entry) || null : null;
+}
+
+function locatedLoc(located, entry) {
+  return locatedEntry(located, entry)?.loc ?? entry?.loc ?? '';
+}
+
+// JSON view of a buffer entry: raw frame URLs stay inside the daemon; `stack` carries the
+// bounded display frames (source-mapped when resolved).
+function observedJsonEntry(entry, located) {
+  const { frames, ...rest } = entry || {};
+  const hit = locatedEntry(located, entry);
+  const stack = hit?.stack || (Array.isArray(frames) ? frames.map(formatGeneratedFrame).filter(Boolean) : []);
+  return { ...rest, ...(hit ? { loc: hit.loc } : {}), ...(stack.length ? { stack } : {}) };
+}
+
+function selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag) {
+  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
+  if (mode === 'all') return { mode, entries: consoleBuf.all(), exceptions: exceptionBuf.all() };
+  if (mode === 'errors') {
+    return {
+      mode,
+      entries: consoleBuf.all().filter(e => e.level === 'error' || e.level === 'warning'),
+      exceptions: exceptionBuf.all(),
+    };
+  }
   return {
-    schema: 'chrome-cdp-ex.console.v1',
-    mode: showAll ? 'all' : showErrors ? 'errors' : 'new',
-    entries,
-    exceptions,
+    mode: 'new',
+    entries: consoleBuf.since(lastReadSeq.console),
+    exceptions: exceptionBuf.since(lastReadSeq.exception),
   };
 }
 
-function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, diagnostic = null }) {
+function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag, located = null) {
+  const { mode, entries, exceptions } = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag);
+  return {
+    schema: 'chrome-cdp-ex.console.v1',
+    mode,
+    entries: entries.map(entry => observedJsonEntry(entry, located)),
+    exceptions: exceptions.map(entry => observedJsonEntry(entry, located)),
+  };
+}
+
+function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, diagnostic = null, located = null }) {
   return {
     schema: 'chrome-cdp-ex.status.v1',
     targetId,
@@ -5858,8 +5895,8 @@ function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, la
       diagnostic,
     },
     page,
-    console: consoleBuf.since(lastReadSeq.console),
-    exceptions: exceptionBuf.since(lastReadSeq.exception),
+    console: consoleBuf.since(lastReadSeq.console).map(entry => observedJsonEntry(entry, located)),
+    exceptions: exceptionBuf.since(lastReadSeq.exception).map(entry => observedJsonEntry(entry, located)),
     navigation: navBuf.since(lastReadSeq.nav || 0),
     runtime,
   };
@@ -5887,11 +5924,14 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
 
   const newConsole = consoleBuf.since(lastReadSeq.console);
   const newExceptions = exceptionBuf.since(lastReadSeq.exception);
+  // Entries logged while source maps load are not printed here, so they stay unread.
+  const readThrough = { console: consoleBuf.latest(), exception: exceptionBuf.latest() };
+  const located = await locateObservedEntries(opts.locate, newConsole.slice(-20), newExceptions.slice(-10));
 
   if (newConsole.length > 0) {
     lines.push(`Console (${newConsole.length} new):`);
     for (const e of newConsole.slice(-20)) {
-      const loc = e.loc ? ` (${e.loc})` : '';
+      const loc = locatedLoc(located, e) ? ` (${locatedLoc(located, e)})` : '';
       lines.push(`  [${e.level}] ${boundedConsoleLineText(e.text, e, 200)}${loc}`);
     }
     if (newConsole.length > 20) lines.push(`  ... and ${newConsole.length - 20} more (use 'console --all')`);
@@ -5902,7 +5942,7 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
   if (newExceptions.length > 0) {
     lines.push(`Exceptions (${newExceptions.length} new):`);
     for (const e of newExceptions.slice(-10)) {
-      const loc = e.loc ? ` at ${e.loc}` : '';
+      const loc = locatedLoc(located, e) ? ` at ${locatedLoc(located, e)}` : '';
       lines.push(`  ${boundedConsoleLineText(e.msg, e, 200)}${loc}`);
     }
   }
@@ -5915,46 +5955,41 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
     }
   }
 
-  lastReadSeq.console = consoleBuf.latest();
-  lastReadSeq.exception = exceptionBuf.latest();
+  lastReadSeq.console = readThrough.console;
+  lastReadSeq.exception = readThrough.exception;
 
   return lines.join('\n');
 }
 
-async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
-  let entries;
-  let exceptions = [];
-  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
-  const showErrors = mode === 'errors';
-  const showAll = mode === 'all';
+// Caller frames below a source-mapped top frame (at most two more, see SOURCE_MAP_LIMITS).
+function locatedCallerLines(located, entry) {
+  return (locatedEntry(located, entry)?.stack || []).slice(1).map(frame => `    at ${frame}`);
+}
 
-  if (showAll) {
-    entries = consoleBuf.all();
-    exceptions = exceptionBuf.all();
-  } else if (showErrors) {
-    entries = consoleBuf.all().filter(e => e.level === 'error' || e.level === 'warning');
-    exceptions = exceptionBuf.all();
-  } else {
-    entries = consoleBuf.since(lastReadSeq.console);
-    exceptions = exceptionBuf.since(lastReadSeq.exception);
+async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag, { locate = null } = {}) {
+  const { mode, entries, exceptions } = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag);
+  if (mode === 'new') {
     lastReadSeq.console = consoleBuf.latest();
     lastReadSeq.exception = exceptionBuf.latest();
   }
 
   const lines = [];
   if (entries.length === 0 && exceptions.length === 0) {
-    return showAll ? 'Console buffer is empty' : 'No new console entries';
+    return mode === 'all' ? 'Console buffer is empty' : 'No new console entries';
   }
 
+  const located = await locateObservedEntries(locate, entries, exceptions);
   for (const e of entries) {
-    const loc = e.loc ? ` (${e.loc})` : '';
+    const loc = locatedLoc(located, e) ? ` (${locatedLoc(located, e)})` : '';
     lines.push(`[${e.level}] ${boundedConsoleLineText(e.text, e)}${loc}`);
+    lines.push(...locatedCallerLines(located, e));
   }
   if (exceptions.length > 0) {
     lines.push('--- Uncaught Exceptions ---');
     for (const e of exceptions) {
-      const loc = e.loc ? ` at ${e.loc}` : '';
+      const loc = locatedLoc(located, e) ? ` at ${locatedLoc(located, e)}` : '';
       lines.push(`[exception] ${boundedConsoleLineText(e.msg, e)}${loc}`);
+      lines.push(...locatedCallerLines(located, e));
     }
   }
   return lines.join('\n');
@@ -6197,18 +6232,20 @@ function compactRedactedText(value, { max = 220, truncated = false } = {}) {
   return text.length < max ? `${text}…` : `${sliceAtCodePoint(text, max - 1)}…`;
 }
 
-function compactConsoleDeltaEntry(entry = {}) {
+// `located` (#470) maps a buffer entry to its source-mapped location; a source-mapped loc is
+// `src/…:line:col (bundle.js:line:col)`, so the bound leaves room for both halves.
+function compactConsoleDeltaEntry(entry = {}, located = null) {
   return {
     level: compactActionText(entry.level || 'log', 30),
     text: compactRedactedText(entry.text || entry.msg || entry.message || '', { truncated: entry.truncated === true }),
-    loc: compactActionText(entry.loc || '', 120),
+    loc: compactActionText(locatedLoc(located, entry), 180),
   };
 }
 
-function compactExceptionDeltaEntry(entry = {}) {
+function compactExceptionDeltaEntry(entry = {}, located = null) {
   return {
     message: compactRedactedText(entry.msg || entry.message || entry.text || 'Unknown exception', { truncated: entry.truncated === true }),
-    loc: compactActionText(entry.loc || '', 120),
+    loc: compactActionText(locatedLoc(located, entry), 180),
   };
 }
 
@@ -6317,7 +6354,7 @@ function actionDialogLines(effects = {}) {
   return lines;
 }
 
-function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, netReqBuf = null, dialogBuf = null } = {}, baseline = {}) {
+function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, netReqBuf = null, dialogBuf = null } = {}, baseline = {}, located = null) {
   const consoleEntries = typeof consoleBuf?.since === 'function' ? consoleBuf.since(baseline.console || 0) : [];
   const exceptionEntries = typeof exceptionBuf?.since === 'function' ? exceptionBuf.since(baseline.exception || 0) : [];
   const networkEntries = typeof netReqBuf?.since === 'function' ? netReqBuf.since(baseline.network || 0) : [];
@@ -6326,8 +6363,8 @@ function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, n
   const dialogCount = typeof dialogBuf?.latest === 'function'
     ? Math.max(dialogEntries.length, dialogBuf.latest() - (baseline.dialog || 0))
     : dialogEntries.length;
-  const consoleCompact = consoleEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactConsoleDeltaEntry);
-  const exceptionCompact = exceptionEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactExceptionDeltaEntry);
+  const consoleCompact = consoleEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(entry => compactConsoleDeltaEntry(entry, located));
+  const exceptionCompact = exceptionEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(entry => compactExceptionDeltaEntry(entry, located));
   const networkCompact = networkEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactNetworkDeltaEntry);
   return {
     console: {
@@ -6350,13 +6387,26 @@ function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, n
   };
 }
 
+// Same delta, with the receipt's console errors and exceptions source-mapped first (#470).
+async function buildLocatedActionObservationDelta(buffers = {}, baseline = {}, locate = null) {
+  const { consoleBuf = null, exceptionBuf = null } = buffers;
+  const consoleEntries = typeof consoleBuf?.since === 'function' ? consoleBuf.since(baseline.console || 0) : [];
+  const exceptionEntries = typeof exceptionBuf?.since === 'function' ? exceptionBuf.since(baseline.exception || 0) : [];
+  const located = await locateObservedEntries(
+    locate,
+    consoleEntries.slice(-MAX_ACTION_DELTA_ENTRIES),
+    exceptionEntries.slice(-MAX_ACTION_DELTA_ENTRIES),
+  );
+  return buildActionObservationDelta(buffers, baseline, located);
+}
+
 function numericDeltaCount(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
 
 function normalizeConsoleDelta(delta = {}) {
-  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactConsoleDeltaEntry);
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(entry => compactConsoleDeltaEntry(entry));
   return {
     count: numericDeltaCount(delta.count, entries.length),
     errors: numericDeltaCount(delta.errors, entries.filter(entry => ['error', 'assert'].includes(String(entry.level || '').toLowerCase())).length),
@@ -6366,7 +6416,7 @@ function normalizeConsoleDelta(delta = {}) {
 }
 
 function normalizeExceptionDelta(delta = {}) {
-  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactExceptionDeltaEntry);
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(entry => compactExceptionDeltaEntry(entry));
   return {
     count: numericDeltaCount(delta.count, entries.length),
     entries,
@@ -23929,6 +23979,79 @@ async function enableDaemonDomains(cdp, sessionId) {
   try { await cdpDomains(cdp).Network.enable( {}, sessionId); } catch {}
 }
 
+// How long a map request may still answer after loadSourceMapText gave up on it (see below).
+const SOURCE_MAP_LATE_REPLY_TIMEOUT_MS = 60_000;
+
+// Reads a script or a source map for the daemon's source-map resolver (#470). A script comes
+// from the frame's resource cache; a map loads through the frame's network stack with the
+// page's credentials, the way DevTools loads maps. Network.loadNetworkResource runs no page
+// script, needs no Debugger domain (no pause on `debugger;`), and emits no requestWillBeSent,
+// so it never shows up in an action's network delta. Returns null past maxBytes or on an HTTP
+// error; throws on a transient failure.
+async function loadSourceMapText(cdp, sid, url, { kind = 'map', maxBytes, timeoutMs } = {}) {
+  const { frameTree } = await cdpDomains(cdp).Page.getFrameTree( {}, sid, timeoutMs);
+  const frameId = frameTree?.frame?.id;
+  if (!frameId) return null;
+  if (kind === 'script') {
+    try {
+      const res = await cdpDomains(cdp).Page.getResourceContent( { frameId, url }, sid, timeoutMs);
+      const text = res.base64Encoded
+        ? Buffer.from(String(res.content || ''), 'base64').toString('utf8')
+        : String(res.content ?? '');
+      return Buffer.byteLength(text, 'utf8') > maxBytes ? null : text;
+    } catch {
+      // Not in this frame's resource tree (child frame, evicted); load it like a map.
+    }
+  }
+  // The CDP request may outlive our own `timeoutMs`, so a reply that lands after we gave up is
+  // still seen and its browser-side stream closed instead of leaking until detach.
+  const request = cdpDomains(cdp).Network.loadNetworkResource( {
+    frameId,
+    url,
+    options: { disableCache: false, includeCredentials: true },
+  }, sid, SOURCE_MAP_LATE_REPLY_TIMEOUT_MS);
+  let timer;
+  const gaveUp = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Timeout: Network.loadNetworkResource')), timeoutMs);
+    timer.unref?.();
+  });
+  let reply;
+  try {
+    reply = await Promise.race([request, gaveUp]);
+  } catch (error) {
+    request.then((late) => {
+      const lateHandle = late?.resource?.stream;
+      if (lateHandle) cdpDomains(cdp).IO.close( { handle: lateHandle }, sid).catch(() => {});
+    }, () => {});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  const resource = reply?.resource;
+  if (!resource?.success || !resource.stream) {
+    // An HTTP error is a definitive miss; a network error (aborted by a navigation, server not
+    // up yet) is transient, so the resolver retries on the next output instead of caching it.
+    if (Number(resource?.httpStatusCode) >= 400) return null;
+    throw new Error(`Network.loadNetworkResource failed: ${resource?.netErrorName || 'no stream'}`);
+  }
+  const handle = resource.stream;
+  const chunks = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const chunk = await cdpDomains(cdp).IO.read( { handle, size: 1024 * 1024 }, sid, timeoutMs);
+      const data = Buffer.from(String(chunk.data || ''), chunk.base64Encoded ? 'base64' : 'utf8');
+      bytes += data.length;
+      if (bytes > maxBytes) return null;
+      chunks.push(data);
+      if (chunk.eof || data.length === 0) break;
+    }
+  } finally {
+    await cdpDomains(cdp).IO.close( { handle }, sid, timeoutMs).catch(() => {});
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function attachDaemonTarget(cdp, targetId, { background = false } = {}) {
   // Wake up the tab first (avoids timeouts on suspended/inactive background tabs).
   // Background mode (#415) skips it: activating the tab raises the window over the user's work.
@@ -24044,6 +24167,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // Enable domains for background collection and ref resolution
   await enableDaemonDomains(cdp, sessionId);
 
+  // Source maps resolve lazily, only when console/status/an action receipt prints a frame (#470).
+  const sourceMaps = createSourceMapResolver({
+    loadText: (url, opts) => loadSourceMapText(cdp, sessionId, url, opts),
+  });
+  const locateSourceFrames = entries => sourceMaps.locateEntries(entries);
+
   cdp.onEvent('Runtime.consoleAPICalled', (params) => {
     consoleBuf.push(consoleEntryFromEvent(params));
   });
@@ -24054,6 +24183,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   cdp.onEvent('Page.frameNavigated', (params) => {
     if (!params.frame.parentId) { // main frame only
+      // A reload can serve a rebuilt bundle under the same URL; maps are re-read on demand.
+      sourceMaps.clear();
       navBuf.push({ url: params.frame.url, ts: Date.now() });
       // Top-level navigation (or Vite HMR full reload) invalidates all @refs.
       session.pageGeneration += 1;
@@ -24339,9 +24470,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       observe: observeThenFlush,
       enrichActionResult: async (actionResult) => {
         await pageInfoPromise;
-        applyActionObservationDelta(actionResult, buildActionObservationDelta(
+        applyActionObservationDelta(actionResult, await buildLocatedActionObservationDelta(
           { consoleBuf, exceptionBuf, netReqBuf, dialogBuf },
-          observationBaseline
+          observationBaseline,
+          locateSourceFrames,
         ));
         if (postActionPageHealth) actionResult.effects.pageHealth = postActionPageHealth;
         else if (actionTarget.page && (actionTarget.page.title || actionTarget.page.url)) {
@@ -24410,14 +24542,16 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         return opts.format === 'json' ? formatJson(model) : model.message;
       }
       if (opts.format === 'json') {
-        const output = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode));
+        const selected = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
+        const located = await locateObservedEntries(locateSourceFrames, selected.entries, selected.exceptions);
+        const output = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode, located));
         if (opts.mode === 'new') {
           lastReadSeq.console = consoleBuf.latest();
           lastReadSeq.exception = exceptionBuf.latest();
         }
         return output;
       }
-      return consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
+      return consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode, { locate: locateSourceFrames });
     },
     controls: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
@@ -24477,6 +24611,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
           : null;
         const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
+        const located = await locateObservedEntries(
+          locateSourceFrames,
+          consoleBuf.since(lastReadSeq.console),
+          exceptionBuf.since(lastReadSeq.exception),
+        );
         const output = formatJson(buildStatusModel({
           targetId,
           page: { title: page.title, url: page.url },
@@ -24486,6 +24625,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           lastReadSeq,
           runtime,
           diagnostic: page.diagnostic || null,
+          located,
         }));
         lastReadSeq.console = consoleBuf.latest();
         lastReadSeq.exception = exceptionBuf.latest();
@@ -24494,6 +24634,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, {
         runtime: fopts.args.includes('--runtime'),
         targetPrefix: targetPrefixForDisplay(targetId),
+        locate: locateSourceFrames,
       });
     },
     styles: args => stylesStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
@@ -29232,6 +29373,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
+  selectConsoleEntries, locateObservedEntries,
+  buildLocatedActionObservationDelta, loadSourceMapText,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
   emitTargetCommandResponse,

@@ -143,6 +143,23 @@ captures it. A cut entry carries `truncated: true` and `originalLength` in
 entry. Action receipts redact only a bounded prefix of each entry, so a page
 that logs a multi-megabyte data URL does not slow down every `click` or `fill`.
 
+Console errors, warnings and uncaught exceptions are source-mapped when they are
+printed by `console`, `status`, or an action receipt. A frame in a production
+bundle reads `src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)`: the
+original position first, the generated one in parentheses (1-based line and
+column). The daemon keeps up to three frames per entry; `console` prints the
+two caller frames as `at …` lines, and `--format json` entries carry them as
+`stack`. The map comes from the script's trailing `//# sourceMappingURL=`
+comment, either an inline `data:` URL or a file loaded through the page's
+network stack with its cookies (no page script runs and the Debugger domain stays
+off). Maps over 5 MB are skipped, and an output waits at most 1.5 s for map
+loads. Only the first output waits on a load still in flight. A map host that
+times out or is unreachable is retried after 5 s, then after a wait that doubles
+up to 60 s. Parsed maps are cached per tab daemon, least recently used first out
+past 32 MB, and cleared on the next top-level navigation. With no map, or when
+it cannot be read in time, the generated frame is printed unchanged; source
+mapping never fails a command.
+
 For variable-length combat or dialogue, keep the mandatory finite cap and add
 one page condition:
 
