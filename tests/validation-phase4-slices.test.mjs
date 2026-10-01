@@ -182,6 +182,7 @@ function fixtureOutput(id) {
     page: { title: TITLE, url: URL },
     console: [], exceptions: [], navigation: [],
     runtime: null,
+    vitals: null,
     targetResolution: targetResolution(),
   });
   if (id === 'summary') return JSON.stringify({
