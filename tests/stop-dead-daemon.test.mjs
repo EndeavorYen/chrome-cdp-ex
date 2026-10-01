@@ -348,3 +348,182 @@ describe('#417 unreachable daemon without a record', () => {
     expect(model).toMatchObject({ stoppedTargets: [], failedTargets: ['ABCDEF12'] });
   });
 });
+
+describe('#439 stop counts only live daemons and removes only what the dead daemon left', () => {
+  const THIRD = 'FEDCBA0987654321FEDCBA0987654321';
+  const sock = targetId => ({ targetId, socketPath: `/runtime/cdp-${targetId}.sock` });
+  const refused = () => Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+  const timedOut = () => new Error('Timed out connecting to daemon socket');
+  const answersFor = (...ids) => async path => {
+    if (ids.some(id => path.includes(id))) return { live: true, destroy() {} };
+    throw path.startsWith('\\\\.\\pipe\\') ? enoent() : refused();
+  };
+
+  it('win32: a page-cache entry that never had a daemon is not a remaining session', async () => {
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      list: () => [pipe(FULL), pipe(OTHER)],
+      connect: answersFor(FULL),
+    }));
+    expect(model).toMatchObject({ stoppedTargets: ['ABCDEF12'], remainingSessions: 0, remainingTargets: [] });
+    expect(T.formatStopResult(model)).toBe('Stopped daemon ABCDEF12; 0 remaining session(s).');
+  });
+
+  it('win32: an unselected target with a live recorded pid or an answering pipe still counts', async () => {
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      list: () => [pipe(FULL), pipe(OTHER), pipe(THIRD)],
+      registry: fakeRegistry({ [OTHER]: { pid: 31, startedAt: 'a' } }),
+      isAlive: pid => pid === 31,
+      connect: answersFor(FULL, THIRD),
+    }));
+    expect(model.stoppedTargets).toEqual(['ABCDEF12']);
+    expect(model.remainingSessions).toBe(2);
+    expect([...model.remainingTargets].sort()).toEqual(['12345678', 'FEDCBA09']);
+  });
+
+  it('win32: a record whose pid is dead and whose pipe is missing is not a remaining session', async () => {
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      list: () => [pipe(FULL), pipe(OTHER)],
+      registry: fakeRegistry({ [OTHER]: { pid: 31, startedAt: 'a' } }),
+      connect: answersFor(FULL),
+      isAlive: () => false,
+    }));
+    expect(model).toMatchObject({ stoppedTargets: ['ABCDEF12'], remainingSessions: 0 });
+  });
+
+  it('counts an unselected daemon whose endpoint only timed out as remaining (it may be slow, not gone)', async () => {
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      platform: 'linux',
+      list: () => [sock(FULL), sock(OTHER)],
+      connect: async path => {
+        if (path.includes(FULL)) return { live: true, destroy() {} };
+        throw timedOut();
+      },
+    }));
+    expect(model).toMatchObject({ stoppedTargets: ['ABCDEF12'], remainingSessions: 1, remainingTargets: ['12345678'] });
+  });
+
+  it('a target prefix that matches nothing counts only live daemons as remaining', async () => {
+    const model = await T.stopDaemons('99999999', deps({
+      platform: 'linux',
+      list: () => [sock(FULL), sock(OTHER)],
+      connect: answersFor(OTHER),
+    }));
+    expect(model).toMatchObject({ noop: true, remainingSessions: 1, remainingTargets: ['12345678'] });
+  });
+
+  it('posix: an unselected stale socket that refuses connections is not a remaining session', async () => {
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      platform: 'linux',
+      list: () => [sock(FULL), sock(OTHER)],
+      connect: answersFor(FULL),
+    }));
+    expect(model).toMatchObject({ stoppedTargets: ['ABCDEF12'], remainingSessions: 0 });
+  });
+
+  it('leaves the record and socket that a new daemon wrote during the kill window', async () => {
+    const registry = fakeRegistry({ [FULL]: { pid: 4242, startedAt: 'old' } });
+    const unlink = vi.fn();
+    let alive = true;
+    let replaced = false;
+    const kill = vi.fn(() => {
+      alive = false;
+      // A new daemon for the same target starts while stop waits for 4242 to die.
+      registry.store.set(FULL, { pid: 5555, startedAt: 'new' });
+      replaced = true;
+    });
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      platform: 'linux',
+      list: () => [sock(FULL)],
+      registry,
+      connect: async () => {
+        if (replaced) return { live: true, destroy() {} };
+        throw timedOut();
+      },
+      isAlive: pid => (pid === 4242 ? alive : true),
+      isDaemonProcess: () => true,
+      kill,
+      unlink,
+    }));
+    expect(kill).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(registry.remove).not.toHaveBeenCalled();
+    expect(registry.store.get(FULL)).toMatchObject({ pid: 5555, startedAt: 'new' });
+    expect(unlink).not.toHaveBeenCalled();
+    expect(model.results[0]).toMatchObject({ status: 'stopped', reason: expect.stringContaining('killed pid 4242') });
+    // The new daemon is live, so the target still has a session.
+    expect(model).toMatchObject({ stoppedTargets: ['ABCDEF12'], remainingSessions: 1, remainingTargets: ['ABCDEF12'] });
+  });
+
+  it('leaves a record whose start time changed even when the pid is the same', async () => {
+    const registry = fakeRegistry({ [FULL]: { pid: 4242, startedAt: 'old' } });
+    const unlink = vi.fn();
+    let reads = 0;
+    registry.read = vi.fn(targetId => {
+      reads += 1;
+      return { targetId, pid: 4242, startedAt: reads === 1 ? 'old' : 'new' };
+    });
+    await T.stopDaemons('ABCDEF12', deps({
+      platform: 'linux',
+      list: () => [sock(FULL)],
+      registry,
+      connect: async () => { throw refused(); },
+      isAlive: () => false,
+      unlink,
+    }));
+    expect(registry.remove).not.toHaveBeenCalled();
+    expect(unlink).not.toHaveBeenCalled();
+  });
+
+  it('does not remove the socket of a daemon that only timed out, but removes the dead pid record', async () => {
+    const registry = fakeRegistry({ [FULL]: { pid: 4242, startedAt: 'old' } });
+    const unlink = vi.fn();
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      platform: 'linux',
+      list: () => [sock(FULL)],
+      registry,
+      connect: async () => { throw timedOut(); },
+      isAlive: () => false,
+      unlink,
+    }));
+    expect(unlink).not.toHaveBeenCalled();
+    expect(registry.remove).toHaveBeenCalledWith(FULL);
+    expect(model).toMatchObject({ failedTargets: ['ABCDEF12'], goneTargets: [], remainingSessions: 1 });
+    expect(model.results[0].reason).toMatch(/left in place/);
+  });
+
+  it('after killing the recorded pid, leaves a socket that still does not refuse connections', async () => {
+    const registry = fakeRegistry({ [FULL]: { pid: 4242, startedAt: 'old' } });
+    const unlink = vi.fn();
+    let alive = true;
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      platform: 'linux',
+      list: () => [sock(FULL)],
+      registry,
+      connect: async () => { throw timedOut(); },
+      isAlive: () => alive,
+      isDaemonProcess: () => true,
+      kill: () => { alive = false; },
+      unlink,
+    }));
+    expect(registry.remove).toHaveBeenCalledWith(FULL);
+    expect(unlink).not.toHaveBeenCalled();
+    expect(model.results[0]).toMatchObject({ status: 'stopped', reason: expect.stringMatching(/killed pid 4242.*left in place/) });
+    expect(model.remainingSessions).toBe(1);
+  });
+
+  it('a lost stop reply without a record does not remove a record that appeared meanwhile', async () => {
+    const registry = fakeRegistry();
+    let calls = 0;
+    const model = await T.stopDaemons('ABCDEF12', deps({
+      list: () => [pipe(FULL)],
+      registry,
+      connect: async () => {
+        if (calls++ === 0) return { live: true };
+        registry.store.set(FULL, { pid: 9, startedAt: 'new' });
+        throw enoent();
+      },
+      send: () => { throw new Error('Connection closed before response'); },
+    }));
+    expect(model.stoppedTargets).toEqual(['ABCDEF12']);
+    expect(registry.remove).not.toHaveBeenCalled();
+  });
+});

@@ -1107,6 +1107,36 @@ function createDaemonShutdown({
   };
 }
 
+// The daemon's idle shutdown timer. `remainingMs` lets `meta` report how long the daemon
+// has left, so a client can avoid a daemon that would exit before its command arrives (#440).
+function createDaemonIdleTimer({
+  timeoutMs = IDLE_TIMEOUT,
+  onIdle,
+  now = Date.now,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (typeof onIdle !== 'function') throw new Error('daemon idle handler must be a function');
+  let keepaliveUntil = 0;
+  let deadline = now() + timeoutMs;
+  let timer = setTimer(onIdle, timeoutMs);
+  function schedule() {
+    clearTimer(timer);
+    const delay = Math.max(timeoutMs, keepaliveUntil - now(), 1000);
+    deadline = now() + delay;
+    timer = setTimer(onIdle, delay);
+  }
+  return Object.freeze({
+    reset: schedule,
+    extendKeepalive(ms) {
+      keepaliveUntil = Math.max(keepaliveUntil, now() + ms);
+      schedule();
+      return keepaliveUntil;
+    },
+    remainingMs: () => Math.max(0, deadline - now()),
+  });
+}
+
 class RingBuffer {
   constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
   push(entry) { entry._seq = ++this.seq; this.buf.push(entry); if (this.buf.length > this.capacity) this.buf.shift(); }
@@ -22797,19 +22827,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   process.on('SIGINT', () => shutdown());
 
   // Idle timer
-  let keepaliveUntil = 0;
-  let idleTimer = setTimeout(shutdown, IDLE_TIMEOUT);
-  function scheduleIdle() {
-    clearTimeout(idleTimer);
-    const delay = Math.max(IDLE_TIMEOUT, keepaliveUntil - Date.now(), 1000);
-    idleTimer = setTimeout(shutdown, delay);
-  }
+  const idleTimer = createDaemonIdleTimer({ timeoutMs: IDLE_TIMEOUT, onIdle: () => shutdown() });
   function resetIdle() {
-    scheduleIdle();
+    idleTimer.reset();
   }
   function extendKeepalive(ms) {
-    keepaliveUntil = Math.max(keepaliveUntil, Date.now() + ms);
-    scheduleIdle();
+    const keepaliveUntil = idleTimer.extendKeepalive(ms);
     return `Daemon keepalive extended for ${ms}ms (until ${new Date(keepaliveUntil).toISOString()})`;
   }
 
@@ -23718,7 +23741,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }
       switch (cmd) {
         case 'meta': {
-          result = formatJson(daemonMetadata);
+          // `meta` does not reset the idle timer, so it reports the time left (#440).
+          result = formatJson({ ...daemonMetadata, idleRemainingMs: idleTimer.remainingMs() });
           break;
         }
         case 'list': {
@@ -23891,6 +23915,24 @@ async function assertFreshDaemonConnection(conn, { targetPrefix, expectedTargetI
   return assessment;
 }
 
+// The freshness check's `meta` does not reset the idle timer (#419), so a target daemon that
+// passes it with seconds left could exit before the command that follows reaches it (#440).
+// Such a daemon is let go: wait out its idle deadline, then check the daemon `reopen` gives
+// (a new one, or the same one if other use reset its timer meanwhile). Waiting, not `stop`,
+// so a concurrent command that just reset that daemon is never cut off. At most once, and
+// only in the last DAEMON_IDLE_EXIT_MARGIN_MS of a 20 min idle period.
+async function assertFreshDaemonForCommand(conn, freshness, {
+  reopen,
+  assess = assertFreshDaemonConnection,
+  wait = sleep,
+  marginMs = DAEMON_IDLE_EXIT_MARGIN_MS,
+} = {}) {
+  const assessment = await assess(conn, freshness);
+  if (!daemonIdleExitsSoon(assessment?.daemon, marginMs)) return assessment;
+  await wait(Math.max(0, assessment.daemon.idleRemainingMs) + DAEMON_IDLE_EXIT_GRACE_MS);
+  return assess(await reopen(), freshness);
+}
+
 // host:port of a CDP endpoint, normalized by URL so both sides compare equal.
 function normalizeCdpEndpoint(host, port) {
   try {
@@ -23925,32 +23967,63 @@ function daemonCommandResetsIdle(cmd) {
   return cmd !== 'meta' && cmd !== 'list_raw';
 }
 
-// Each probe is bounded so a wedged daemon on any endpoint costs at most this, then the fallback.
+// Each probe step (one connect, one request) gets at most this, so a wedged daemon costs
+// little before the fallback.
 const DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS = 1500;
+
+// A daemon whose idle timer fires within this is not used: `meta` and `list_raw` do not
+// reset the timer (#419), so it could exit before the next request reaches it (#440).
+// It must exceed one probe step, since an idle exit would also abort an in-flight list_raw.
+const DAEMON_IDLE_EXIT_MARGIN_MS = 5000;
+// After a daemon's idle deadline its shutdown runs at once; this covers timer lateness.
+const DAEMON_IDLE_EXIT_GRACE_MS = 250;
+
+function daemonIdleExitsSoon(metadata, marginMs = DAEMON_IDLE_EXIT_MARGIN_MS) {
+  const remaining = metadata?.idleRemainingMs;
+  return typeof remaining === 'number' && Number.isFinite(remaining) && remaining < marginMs;
+}
 
 async function listPagesFromMatchingDaemon({
   env = process.env,
   listSockets = listDaemonSockets,
   timeoutMs = DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS,
+  budgetMs = timeoutMs * 2,
   now = Date.now,
-  connect = socketPath => connectToSocket(socketPath, { timeoutMs }),
-  request = (conn, req) => requestDaemon(conn, req, { runtimeDir: RUNTIME_DIR, mayHaveSideEffects: false, timeoutMs }),
+  connect = (socketPath, options) => connectToSocket(socketPath, options),
+  request = (conn, req, options) => requestDaemon(conn, req, { runtimeDir: RUNTIME_DIR, mayHaveSideEffects: false, ...options }),
 } = {}) {
   const wanted = requestedCdpEndpoint(env);
   if (!wanted) return null;
-  // One overall budget for the whole probe loop, so many wedged daemons cannot stack up.
-  const deadline = now() + timeoutMs * 2;
+  // One hard budget for the whole probe loop, so many wedged daemons cannot stack up:
+  // every step gets min(step timeout, budget left), and none starts once it is spent.
+  const deadline = now() + budgetMs;
+  const stepOptions = () => {
+    const left = deadline - now();
+    return left > 0 ? { timeoutMs: Math.min(timeoutMs, left) } : null;
+  };
+  const ask = async (socketPath, daemonRequest) => {
+    const connectOptions = stepOptions();
+    if (!connectOptions) return null;
+    const conn = await connect(socketPath, connectOptions);
+    const requestOptions = stepOptions();
+    if (!requestOptions) {
+      try { conn?.destroy?.(); } catch {}
+      return null;
+    }
+    return request(conn, daemonRequest, requestOptions);
+  };
   for (const { socketPath } of listSockets()) {
-    if (now() >= deadline) return null;
+    if (!stepOptions()) return null;
     let metadata = null;
     try {
-      const metaResponse = await request(await connect(socketPath), { cmd: 'meta', args: [] });
+      const metaResponse = await ask(socketPath, { cmd: 'meta', args: [] });
       metadata = metaResponse?.ok ? parseDaemonMetadataResult(metaResponse.result) : null;
     } catch {}
     if (!metadata || metadata.cdpEndpoint !== wanted) continue;
-    // First endpoint match decides: at most one list_raw per discovery, then the fallback.
+    if (daemonIdleExitsSoon(metadata)) continue;
+    // First usable endpoint match decides: at most one list_raw per discovery, then the fallback.
     try {
-      const response = await request(await connect(socketPath), { cmd: 'list_raw', args: [] });
+      const response = await ask(socketPath, { cmd: 'list_raw', args: [] });
       if (!response?.ok) return null;
       const pages = JSON.parse(response.result);
       return Array.isArray(pages) ? pages : null;
@@ -24099,6 +24172,16 @@ function formatStopSummary(model) {
 const STOP_REQUEST_TIMEOUT_MS = 10_000;
 const STOP_KILL_POLLS = 20;
 const STOP_KILL_POLL_MS = 100;
+// A liveness probe only has to tell "nothing listens" (an immediate error) from "something
+// may": a timeout is never proof of absence, so a short one costs nothing in correctness.
+const STOP_PROBE_TIMEOUT_MS = 1000;
+const ENDPOINT_ABSENT_CODES = new Set(['ENOENT', 'ECONNREFUSED', 'ENOTSOCK']);
+
+// The same daemon wrote both records: same pid and same start time. A daemon started
+// later for the same target writes a new start time, even if its pid was reused.
+function sameDaemonRecord(a, b) {
+  return Boolean(a && b) && a.pid === b.pid && a.startedAt === b.startedAt;
+}
 
 function isProcessAlive(pid, { kill = process.kill.bind(process) } = {}) {
   try {
@@ -24167,9 +24250,15 @@ async function stopDaemons(targetPrefix, deps = {}) {
   let selected = daemons;
   if (targetPrefix) {
     const matches = daemons.filter(daemon => daemon.targetId.toLowerCase().startsWith(String(targetPrefix).toLowerCase()));
-    if (!matches.length) return buildStopResult({ requestedTarget: targetPrefix, daemons });
+    if (!matches.length) return buildStopResult({ requestedTarget: targetPrefix, daemons: await liveDaemons(daemons) });
     const targetId = resolvePrefix(targetPrefix, daemons.map(daemon => daemon.targetId), 'daemon');
     selected = [daemons.find(daemon => daemon.targetId === targetId)];
+  }
+
+  async function liveDaemons(candidates) {
+    const live = [];
+    for (const daemon of candidates) if (await hasLiveDaemon(daemon)) live.push(daemon);
+    return live;
   }
 
   async function terminate(pid) {
@@ -24182,26 +24271,53 @@ async function stopDaemons(targetPrefix, deps = {}) {
     return !isAlive(pid);
   }
 
-  // Remove what a dead daemon leaves behind: its registry record and, off win32, its socket file.
-  function removeLeftovers(daemon) {
-    registry.remove(daemon.targetId);
-    if (isWindows) return null;
+  // Probe result: 'answers', 'absent' (ENOENT / ECONNREFUSED / ENOTSOCK prove no listener)
+  // or 'unknown' (a timeout or EACCES could be a slow but live daemon).
+  async function probeEndpoint(daemon) {
     try {
-      unlink(daemon.socketPath);
+      const conn = await connect(daemon.socketPath, { timeoutMs: STOP_PROBE_TIMEOUT_MS });
+      try { conn?.destroy?.(); } catch {}
+      return 'answers';
     } catch (error) {
-      if (error?.code !== 'ENOENT') return `could not remove stale socket: ${error?.message || error}`;
+      return ENDPOINT_ABSENT_CODES.has(error?.code) ? 'absent' : 'unknown';
     }
-    return null;
   }
 
   async function endpointIsGone(daemon) {
-    try {
-      const conn = await connect(daemon.socketPath);
-      try { conn?.destroy?.(); } catch {}
-      return false;
-    } catch (error) {
-      return error?.code === 'ENOENT' || error?.code === 'ECONNREFUSED';
+    return (await probeEndpoint(daemon)) === 'absent';
+  }
+
+  // Remove what a dead daemon leaves behind, and only that (#439). `deadRecord` is the
+  // record read before stop confirmed that daemon dead (null when it had none). A record
+  // with another pid or start time, or one that appeared meanwhile, belongs to a daemon
+  // started during the kill window and is left alone, and so is its socket. Off win32
+  // the socket is removed only while the endpoint proves nothing listens on it.
+  // Returns { error } when removal failed, { leftInPlace } when the endpoint was kept.
+  async function removeLeftovers(daemon, deadRecord) {
+    const current = registry.read(daemon.targetId);
+    if (current && !sameDaemonRecord(current, deadRecord)) {
+      return { leftInPlace: `daemon record now names pid ${current.pid}; it and its endpoint were left in place` };
     }
+    if (current) registry.remove(daemon.targetId);
+    if (isWindows) return {};
+    if (!(await endpointIsGone(daemon))) {
+      return { leftInPlace: 'endpoint still does not refuse connections, so the socket was left in place' };
+    }
+    try {
+      unlink(daemon.socketPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return { error: `could not remove stale socket: ${error?.message || error}` };
+    }
+    return {};
+  }
+
+  // Remaining sessions are targets with a live daemon: a recorded pid that is alive, or an
+  // endpoint that does not prove absence. On win32 `list` also yields page-cache entries
+  // that never had a daemon, and a stale POSIX socket file has no daemon behind it (#439).
+  async function hasLiveDaemon(daemon) {
+    const record = registry.read(daemon.targetId);
+    if (record?.pid && isAlive(record.pid)) return true;
+    return (await probeEndpoint(daemon)) !== 'absent';
   }
 
   async function stopOne(daemon) {
@@ -24228,9 +24344,10 @@ async function stopDaemons(targetPrefix, deps = {}) {
       const verdict = isDaemonProcess(pid, daemon.targetId);
       if (verdict === true) {
         if (!(await terminate(pid))) return { status: 'failed', reason: `pid ${pid} is still running after kill (${reason})` };
-        const leftover = removeLeftovers(daemon);
-        if (leftover) return { status: 'failed', reason: leftover };
-        return { status: 'stopped', reason: `unresponsive, killed pid ${pid}` };
+        const leftover = await removeLeftovers(daemon, record);
+        if (leftover.error) return { status: 'failed', reason: leftover.error };
+        const kept = leftover.leftInPlace ? `; ${leftover.leftInPlace}` : '';
+        return { status: 'stopped', reason: `unresponsive, killed pid ${pid}${kept}`, endpointKept: Boolean(leftover.leftInPlace) };
       }
       if (verdict == null) return { status: 'failed', reason: `pid ${pid} is alive but could not be verified as the daemon, so it was not killed (${reason})` };
       reused = true;
@@ -24239,8 +24356,10 @@ async function stopDaemons(targetPrefix, deps = {}) {
       // A listener answered but the reply never arrived. If the daemon is gone now, the stop worked.
       const exited = pid && !reused ? !pidAlive : await endpointIsGone(daemon);
       if (exited) {
-        const leftover = removeLeftovers(daemon);
-        return leftover ? { status: 'failed', reason: leftover } : { status: 'stopped', reason: 'exited before replying' };
+        const leftover = await removeLeftovers(daemon, record);
+        if (leftover.error) return { status: 'failed', reason: leftover.error };
+        const kept = leftover.leftInPlace ? ` (${leftover.leftInPlace})` : '';
+        return { status: 'stopped', reason: `exited before replying${kept}`, endpointKept: Boolean(leftover.leftInPlace) };
       }
       return { status: 'failed', reason: `${reason}; no daemon pid record to kill` };
     }
@@ -24248,10 +24367,17 @@ async function stopDaemons(targetPrefix, deps = {}) {
     const missing = error?.code === 'ENOENT';
     if (missing && !record) return { status: 'none' };
     // Only these errors prove nothing is listening; a timeout or EACCES could be a wedged daemon.
-    const proofOfAbsence = missing || error?.code === 'ECONNREFUSED' || error?.code === 'ENOTSOCK';
-    if (!proofOfAbsence && !record) return { status: 'failed', reason };
-    const leftover = removeLeftovers(daemon);
-    if (leftover) return { status: 'failed', reason: leftover };
+    const proofOfAbsence = ENDPOINT_ABSENT_CODES.has(error?.code);
+    if (!proofOfAbsence) {
+      if (!record) return { status: 'failed', reason };
+      // The recorded pid is dead (or reused), but something holds the endpoint and did not
+      // answer in time: possibly a slow live daemon, so its socket is not stop's to remove (#439).
+      if (sameDaemonRecord(registry.read(daemon.targetId), record)) registry.remove(daemon.targetId);
+      return { status: 'failed', reason: `${reason}; the recorded daemon (pid ${pid}) is gone, but the endpoint did not refuse the connection, so it was left in place` };
+    }
+    const leftover = await removeLeftovers(daemon, record);
+    if (leftover.error) return { status: 'failed', reason: leftover.error };
+    if (leftover.leftInPlace) return { status: 'failed', reason: `${reason}; ${leftover.leftInPlace}` };
     return { status: 'gone', reason: 'no daemon process or endpoint left; stale entry removed' };
   }
 
@@ -24259,22 +24385,33 @@ async function stopDaemons(targetPrefix, deps = {}) {
   const goneDaemons = [];
   const failedDaemons = [];
   const notDaemons = new Set();
+  // Stopped, but its endpoint was kept because something may still live there (a daemon
+  // started during the kill window, or a listener that only timed out): still a session.
+  const keptEndpoints = new Set();
   const reasons = {};
   for (const daemon of selected) {
     const outcome = await stopOne(daemon);
     if (outcome.reason) reasons[daemon.targetId] = outcome.reason;
+    if (outcome.endpointKept) keptEndpoints.add(daemon.targetId);
     if (outcome.status === 'stopped') stoppedDaemons.push(daemon);
     else if (outcome.status === 'gone') goneDaemons.push(daemon);
     else if (outcome.status === 'failed') failedDaemons.push(daemon);
     else notDaemons.add(daemon.targetId);
   }
   // A cached page that never had a daemon is not a session, so it is neither failed nor remaining.
-  const sessions = daemons.filter(daemon => !notDaemons.has(daemon.targetId));
+  // Targets this call did not try to stop count only while a live daemon is behind them (#439).
+  const handled = new Set(selected.map(daemon => daemon.targetId));
+  const untouchedLive = new Set((await liveDaemons(daemons.filter(daemon => !handled.has(daemon.targetId))))
+    .map(daemon => daemon.targetId));
+  const sessions = daemons.filter(daemon => (handled.has(daemon.targetId)
+    ? !notDaemons.has(daemon.targetId)
+    : untouchedLive.has(daemon.targetId)));
   return buildStopResult({
     requestedTarget: targetPrefix || null,
     daemons: sessions,
     stoppedDaemons,
     goneDaemons,
+    removedDaemons: [...stoppedDaemons, ...goneDaemons].filter(daemon => !keptEndpoints.has(daemon.targetId)),
     failedDaemons,
     reasons,
   });
@@ -27329,6 +27466,11 @@ async function main(options = {}) {
   let rebound = false;
   let daemonAssessment = null;
   const browserIdentity = { kind: 'browser', id: 'browser-runtime', revision: 0 };
+  const openTabDaemon = resolvedTargetId => getOrStartTabDaemon(resolvedTargetId, {
+    env: aliasEnv(targetAlias),
+    liveTargetPresent: livePages.some(page => page.targetId === resolvedTargetId),
+    ...runtimeIdentity,
+  });
   const runtimeSupervisor = createBrowserSupervisor({
     discover: async () => {
       const pages = targetAlias?.port
@@ -27340,19 +27482,15 @@ async function main(options = {}) {
     open: async (resolvedTargetId, endpoint) => ({
       targetId: resolvedTargetId,
       endpoint,
-      initialConnection: await getOrStartTabDaemon(resolvedTargetId, {
-        env: aliasEnv(targetAlias),
-        liveTargetPresent: livePages.some(page => page.targetId === resolvedTargetId),
-        ...runtimeIdentity,
-      }),
+      initialConnection: await openTabDaemon(resolvedTargetId),
     }),
     inspect: async runtime => {
       if (allowStaleDaemon) return { boundTargetId: runtime.targetId, endpoint: runtime.endpoint };
-      daemonAssessment = await assertFreshDaemonConnection(runtime.initialConnection, {
+      daemonAssessment = await assertFreshDaemonForCommand(runtime.initialConnection, {
         targetPrefix: targetPrefixForDisplay(runtime.targetId),
         expectedTargetId: runtime.targetId,
         currentMetadata: collectDaemonMetadata({ scriptPath: runtimeIdentity.scriptPath }),
-      });
+      }, { reopen: () => openTabDaemon(runtime.targetId) });
       return {
         boundTargetId: daemonAssessment?.daemon?.boundTargetId || runtime.targetId,
         endpoint: runtime.endpoint,
@@ -27562,7 +27700,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
   bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
-  listPagesFromMatchingDaemon, daemonCommandResetsIdle, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
+  listPagesFromMatchingDaemon, daemonCommandResetsIdle, daemonIdleExitsSoon, assertFreshDaemonForCommand, createDaemonIdleTimer, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
   formatDaemonStartFailure,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers

@@ -296,12 +296,13 @@ describe('Phase 5 current runtime characterization', () => {
       platform: 'linux',
     });
     expect(unlink).toHaveBeenCalledWith('/runtime/cdp-AABB1111FULL.sock');
+    // #439: the other socket refuses connections too, so no live daemon remains behind it.
     expect(stale).toMatchObject({
       requestedTarget: 'AABB1111',
       stopped: false,
       stoppedTargets: [],
       failedTargets: [],
-      remainingSessions: 1,
+      remainingSessions: 0,
     });
   });
 });

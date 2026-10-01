@@ -67,6 +67,20 @@
   `cdp jsclick <t> #id`, which `sh` reads as a comment, and `recoveryCommandArg` used double quotes, so
   `$`, backticks and `!` in a selector still expanded. Now a word that needs quoting gets "…" when that is
   safe, otherwise '…' ([#445](https://github.com/EndeavorYen/chrome-cdp-ex/issues/445)).
+* `stop <target>` counts as remaining only targets with a live daemon (a running recorded pid, or an
+  endpoint that does not refuse connections). On Windows it used to count every cached page in
+  `pages.json` that never had a daemon, and on any platform a stale socket file. Stop also removes only
+  what the daemon it confirmed dead left behind: a `cdp-<target>.daemon.json` record whose pid or start
+  time changed (a new daemon started during the kill window) is kept, a socket is unlinked only while the
+  endpoint refuses connections, and a socket that only timed out (a slow but live daemon) is left in place
+  ([#439](https://github.com/EndeavorYen/chrome-cdp-ex/issues/439)).
+* A command no longer goes to a daemon about to idle out. Since `meta` and `list_raw` stopped resetting the
+  20 min idle timer (#419), a daemon could pass the freshness check and exit before the command reached it.
+  `meta` now reports `idleRemainingMs`; the same-endpoint page-list probe skips a daemon with less than
+  5 s left, and a target command waits out its own daemon in that case and starts a fresh one. The probe's
+  3 s budget is now a hard limit: each connect and request step gets min(1.5 s, time left), where a step
+  started near the end used to run its full 1.5 s (worst case about 9 s)
+  ([#440](https://github.com/EndeavorYen/chrome-cdp-ex/issues/440)).
 * `npm run smoke:live` runs again end to end (96 steps). Its assertions had drifted from the compact
   `doctor`, compact `report` and exit-1-on-failed-action receipts. It now pins `--window-size=1280,900`:
   in headless Chromium's default 800 px window, the page's fixed sidebar covered the buttons. It adds
