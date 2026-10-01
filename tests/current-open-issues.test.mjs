@@ -1900,6 +1900,7 @@ describe('v2.11.0 review regressions', () => {
     };
     const started = Date.now();
     const r = await T.checkCdpReachability({
+      display: { platform: 'linux', env: { DISPLAY: ':0' } },
       env: { CDP_PORT: '9224' },
       fetcher: async () => {
         const err = new Error('connect ECONNREFUSED 127.0.0.1:9224');
@@ -1923,7 +1924,7 @@ describe('v2.11.0 review regressions', () => {
       port: '9224',
       profileDir: '/tmp/real-x-profile',
     });
-    expect(r.relaunch).toBe('/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir /tmp/real-x-profile');
+    expect(r.relaunch).toBe('/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir=/tmp/real-x-profile');
     expect(r.relaunch).not.toMatch(/spawn-debug-browser|rm -rf|disposable/i);
     expect(r.hint).toBe(r.relaunch);
     expect(r.detail).toMatch(/cannot reach 127\.0\.0\.1:9224/i);
@@ -1972,7 +1973,7 @@ describe('v2.11.0 review regressions', () => {
       host: '127.0.0.1',
       port: '9224',
       profileDir: '/tmp/real-x-profile',
-      relaunch: expect.stringContaining('--user-data-dir /tmp/real-x-profile'),
+      relaunch: expect.stringContaining('--user-data-dir=/tmp/real-x-profile'),
     });
     expect(model.recovery).toMatchObject({
       kind: 'browser-cdp',
@@ -2029,7 +2030,7 @@ describe('v2.11.0 review regressions', () => {
     });
     const model = T.buildDoctorModel(checks);
     const cdp = model.checks.find(check => check.label === 'CDP');
-    const relaunch = '/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir /tmp/real-x-profile';
+    const relaunch = '/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir=/tmp/real-x-profile';
 
     expect(cdp).toMatchObject({
       status: 'FAIL',
@@ -2260,7 +2261,7 @@ describe('v2.11.0 review regressions', () => {
         code: 'cdp_unreachable',
         port: '9224',
         profileDir: '/tmp/real-x-profile',
-        relaunch: expect.stringContaining('--user-data-dir /tmp/real-x-profile'),
+        relaunch: expect.stringContaining('--user-data-dir=/tmp/real-x-profile'),
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -12282,7 +12283,7 @@ describe('issue #356 probe 127.0.0.1:9224 when DevToolsActivePort is missing', (
         fetcher,
         lastEndpoint: null,
         rememberEndpoint: () => {},
-      })).rejects.toThrow(/No DevToolsActivePort found and no CDP_PORT set/);
+      })).rejects.toThrow(/No DevToolsActivePort and no CDP_PORT set/);
 
       const doctor = await T.checkCdpReachability({
         env: emptyDiscoveryEnv(fakeHome),
