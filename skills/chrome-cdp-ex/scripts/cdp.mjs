@@ -6627,6 +6627,92 @@ function actionSettleBaseline(output, snapshotOpts = null, actionTarget = {}) {
   return { output: output || null, opts: opts || null };
 }
 
+function shouldCaptureFirstActionBaseline(lastPerceiveStore, actionTarget = {}, feedbackPolicy = 'settle-diff', observe = null) {
+  // #504: a daemon that has not perceived yet (fresh attach or restart) has no
+  // leftover tree to diff against. Without a before-snapshot the settle step
+  // only saw the page after the action and reported no-change for a click that
+  // changed it. An idle-hover discard leaves snapshotOpts set; it is not a
+  // fresh daemon and keeps its own rule (#291).
+  if (lastPerceiveStore?.output != null || lastPerceiveStore?.snapshotOpts != null) return false;
+  // Report-only receipts and custom observers never diff against the baseline.
+  if (observe || feedbackPolicy === 'none' || feedbackPolicy === 'report-only') return false;
+  // A fresh daemon has no live refs: the @ref dispatch fails as stale anyway.
+  const input = String(actionTarget?.input || '');
+  if (isRef(input) || isCursorRef(input) || frameRefFromActionTarget(actionTarget)) return false;
+  return true;
+}
+
+// The capture writes to its own store and ref map. Assigning session refs here
+// would let a leftover @ref from the previous daemon resolve against numbers
+// the agent never saw, and clear the daemon-start stale-ref state.
+async function captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId) {
+  const store = { output: null, model: null, snapshotOpts: null, cards: null };
+  const opts = actionObservationPerceiveOpts(targetId);
+  const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, new Map(), store, opts, null);
+  return {
+    output: perceiveStoreDiffSource(store) ?? output,
+    snapshotOpts: store.snapshotOpts || perceiveSnapshotOpts(opts),
+  };
+}
+
+// What an action's settle step diffs against: the leftover perceive in its own
+// shape, a recaptured top-level tree when the leftover is a cards/frame view
+// (#257/#279), or a fresh capture when the daemon has not perceived yet (#504).
+async function resolveActionSettleBaseline({
+  cdp, sid, consoleBuf, exceptionBuf, refMap, refState, lastPerceiveStore, targetId,
+  action, actionTarget, feedbackPolicy = 'settle-diff', observe = null,
+}) {
+  let baselineFromTarget = baselineOutputForActionTarget(refState, perceiveStoreDiffSource(lastPerceiveStore), actionTarget);
+  let baselineSnapshotOpts = lastPerceiveStore.snapshotOpts || null;
+  if (shouldCaptureFirstActionBaseline(lastPerceiveStore, actionTarget, feedbackPolicy, observe)) {
+    const first = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+    baselineFromTarget = first.output;
+    baselineSnapshotOpts = first.snapshotOpts;
+  }
+  let settleBaseline = actionSettleBaseline(
+    baselineFromTarget,
+    baselineSnapshotOpts,
+    actionTarget,
+  );
+  if (isPdfViewerPerceiveOutput(baselineFromTarget)) {
+    actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'pdf-viewer-no-change';
+  }
+  tagScrollLeftoverSettle(
+    action,
+    actionTarget,
+    baselineFromTarget,
+    baselineSnapshotOpts,
+  );
+  if (
+    !settleBaseline.output
+    && shouldCaptureTopLevelActionSettle(
+      baselineSnapshotOpts,
+      baselineFromTarget,
+      actionTarget,
+    )
+  ) {
+    const topLevelOpts = actionObservationPerceiveOpts(targetId, {
+      ...(settleBaseline.opts || {}),
+      frameRef: null,
+    });
+    const before = await perceiveStr(
+      cdp,
+      sid,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      lastPerceiveStore,
+      topLevelOpts,
+      refState,
+    );
+    settleBaseline = {
+      output: perceiveStoreDiffSource(lastPerceiveStore) ?? before,
+      opts: perceiveSnapshotOpts(topLevelOpts),
+    };
+  }
+  return settleBaseline;
+}
+
 function actionDomDiffShowsChange(domDiff) {
   const text = String(domDiff || '').trim();
   if (!text) return false;
@@ -24302,48 +24388,20 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const actionTarget = target && typeof target === 'object'
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
-    const baselineFromTarget = baselineOutputForActionTarget(refState, perceiveStoreDiffSource(lastPerceiveStore), actionTarget);
-    let settleBaseline = actionSettleBaseline(
-      baselineFromTarget,
-      lastPerceiveStore.snapshotOpts || null,
-      actionTarget,
-    );
-    if (isPdfViewerPerceiveOutput(baselineFromTarget)) {
-      actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'pdf-viewer-no-change';
-    }
-    tagScrollLeftoverSettle(
+    const settleBaseline = await resolveActionSettleBaseline({
+      cdp,
+      sid: sessionId,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      refState,
+      lastPerceiveStore,
+      targetId,
       action,
       actionTarget,
-      baselineFromTarget,
-      lastPerceiveStore.snapshotOpts,
-    );
-    if (
-      !settleBaseline.output
-      && shouldCaptureTopLevelActionSettle(
-        lastPerceiveStore.snapshotOpts,
-        baselineFromTarget,
-        actionTarget,
-      )
-    ) {
-      const topLevelOpts = actionObservationPerceiveOpts(targetId, {
-        ...(settleBaseline.opts || {}),
-        frameRef: null,
-      });
-      const before = await perceiveStr(
-        cdp,
-        sessionId,
-        consoleBuf,
-        exceptionBuf,
-        refMap,
-        lastPerceiveStore,
-        topLevelOpts,
-        refState,
-      );
-      settleBaseline = {
-        output: perceiveStoreDiffSource(lastPerceiveStore) ?? before,
-        opts: perceiveSnapshotOpts(topLevelOpts),
-      };
-    }
+      feedbackPolicy,
+      observe,
+    });
     const baselineOutput = settleBaseline.output;
     const baselineOpts = settleBaseline.opts;
     const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf, dialogBuf });
@@ -29406,6 +29464,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,
+  shouldCaptureFirstActionBaseline, captureFirstActionBaseline, resolveActionSettleBaseline,
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
   parseFormControlStateSnapshot, snapshotFormControlState,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr, buildTableCollectorBootstrapExpression,
