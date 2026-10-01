@@ -115,7 +115,8 @@
   folder. GNU tar, which Git for Windows puts first on PATH, read `C:\…\x.tgz` as `host:path`; bsdtar
   works the same as before. `spawn-debug-browser`, `doctor` and `npm run smoke:live` now share one
   browser lookup. It also finds per-user Chrome, Edge and Brave installs under `%LOCALAPPDATA%` and
-  follows `%ProgramFiles%` / `%ProgramFiles(x86)%`. The smoke used to know only macOS and Linux paths.
+  follows `%ProgramFiles%`, `%ProgramFiles(x86)%` and `%ProgramW6432%` (a 32-bit Node still finds
+  64-bit browsers). The smoke used to know only macOS and Linux paths.
   Test fixes: the fill-receipt shell test feeds its script on stdin, because MSYS `sh -c` dropped
   backslashes. The AST-inventory tests yield to the event loop between builds. A file of back-to-back
   synchronous builds had starved the vitest worker past its 60 s RPC timeout (`Timeout calling
