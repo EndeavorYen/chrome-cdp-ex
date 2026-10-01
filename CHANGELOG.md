@@ -29,8 +29,10 @@
   redacted to the end, so no part of a secret shows. Two redaction regexes were quadratic on long
   tokens: the URL-userinfo scheme part (`a.a.a…` or `a-a-a…` text) and the upper-case acronym split in
   the key classifier (a long upper-case key). A 32 KB entry of either took about 0.25-0.35 s to
-  redact, quadrupling with each doubling; both are now linear, and a 2 MB entry compacts in a few
-  milliseconds
+  redact, quadrupling with each doubling. Both are now linear: a URL scheme may only start where a run
+  of scheme characters starts, so a scheme of any length is still redacted. A 2 MB entry compacts in a
+  few milliseconds, and no cut (capture, redaction window, receipt or console line) splits a
+  surrogate pair
   ([#459](https://github.com/EndeavorYen/chrome-cdp-ex/issues/459)).
 ### Bug Fixes
 

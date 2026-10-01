@@ -85,10 +85,11 @@ function redactQueryString(query) {
   }).join('&');
 }
 
-// The scheme is bounded: an unbounded `[a-z0-9+.-]*` runs to the end of a long
-// dotted or hyphenated token from every word boundary (quadratic, #459). A
-// longer dotted scheme still matches on its tail, which is all redaction needs.
-const URL_USERINFO_RE = /\b([a-z][a-z0-9+.-]{0,63}:\/\/[^\s/?#@:]*:)([^\s/?#@]+)(@)/gi;
+// A scheme may only start where a run of scheme characters starts. With `\b`,
+// the unbounded `[a-z0-9+.-]*` rescanned a long dotted or hyphenated token
+// from every word boundary (quadratic, #459); the lookbehind scans each run
+// once, so a scheme of any length is still matched in linear time.
+const URL_USERINFO_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)(@)/gi;
 const PATH_PARAM_RE = /;([^;=/?#]+)=([^;/?#]*)/g;
 
 // Redact secret values in one URL without re-encoding the rest. Non-secret
@@ -167,7 +168,7 @@ function redactSecretAssignments(text, { truncated = false } = {}) {
 
 // `scheme://user:pa` at the very end of a cut-off text: the `@` that would mark
 // it as a password was cut away (it may also be a port; the tail is hidden anyway).
-const URL_USERINFO_CUT_RE = /\b([a-z][a-z0-9+.-]{0,63}:\/\/[^\s/?#@:]*:)([^\s/?#@]+)$/i;
+const URL_USERINFO_CUT_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)$/i;
 
 // Pass `{ truncated: true }` when `value` is a cut-off prefix of a longer text.
 export function redactSensitiveString(value, { truncated = false } = {}) {

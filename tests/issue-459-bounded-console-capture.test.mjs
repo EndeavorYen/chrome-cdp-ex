@@ -74,6 +74,39 @@ describe('#459 console and exception capture is bounded at capture time', () => 
     expect(entry.text).toBe('a'.repeat(CAP - 1));
     expect(entry.originalLength).toBe(text.length);
   });
+
+  it('keeps nothing after a part that was cut at a surrogate pair', () => {
+    const entry = T.consoleEntryFromEvent({ type: 'log', args: [{ value: `${'a'.repeat(CAP - 1)}😀` }, { value: 'b' }] });
+    expect(entry.text).toBe('a'.repeat(CAP - 1));
+    expect(entry.truncated).toBe(true);
+  });
+});
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+describe('#459 every cut is surrogate-safe', () => {
+  it('sliceAtCodePoint never splits a pair', () => {
+    expect(T.sliceAtCodePoint('ab😀c', 3)).toBe('ab');
+    expect(T.sliceAtCodePoint('ab😀c', 4)).toBe('ab😀');
+    expect(T.sliceAtCodePoint('ab😀c', 2)).toBe('ab');
+    expect(T.sliceAtCodePoint('ab', 10)).toBe('ab');
+    expect(T.sliceAtCodePoint('ab', 0)).toBe('');
+  });
+
+  it('the redaction window cut, the receipt cut and the console line cut keep whole pairs', () => {
+    for (let pad = 0; pad < 4; pad++) {
+      // Emoji everywhere, so every cut offset can land in the middle of a pair.
+      const text = `${'a'.repeat(pad)}${'😀'.repeat(WINDOW)}`;
+      const sample = consoleSample(text);
+      expect(sample, `pad ${pad}`).not.toMatch(LONE_SURROGATE);
+      expect(T.compactActionText(text, 220 + pad)).not.toMatch(LONE_SURROGATE);
+      expect(T.boundedConsoleLineText(text, {}, 300 + pad)).not.toMatch(LONE_SURROGATE);
+    }
+    // Window edge: only one emoji, straddling the 4096 cut.
+    // Leading whitespace collapses, so the window edge is visible in the sample.
+    const edge = `${' '.repeat(WINDOW - 5)}abcd😀 more`;
+    expect(consoleSample(edge)).toBe('abcd…');
+  });
 });
 
 describe('#459 compact delta entries truncate before redacting', () => {
@@ -174,6 +207,29 @@ describe('#459 redaction regexes stay linear on long tokens', () => {
   it('still redacts userinfo behind a long dotted custom scheme', () => {
     const scheme = 'com.googleusercontent.apps.123456789012-abcdefghijklmnopqrstuvwxyz012345';
     expect(redactSensitiveString(`open ${scheme}://user:Xk7Secret@host/cb`)).not.toContain('Xk7Secret');
+  });
+
+  it('redacts userinfo behind a scheme of any length (no length cap)', () => {
+    const schemes = [
+      'a'.repeat(70),
+      `com.example.${'abcdefghij1234567890'.repeat(4)}`,
+      'x'.repeat(5000),
+    ];
+    for (const scheme of schemes) {
+      expect(scheme.length).toBeGreaterThanOrEqual(70);
+      const text = `see ${scheme}://user:hunter2@host/x`;
+      expect(redactSensitiveString(text)).toBe(`see ${scheme}://user:${REDACTED_VALUE}@host/x`);
+      expect(redactUrl(`${scheme}://user:hunter2@host/x`)).toBe(`${scheme}://user:${REDACTED_VALUE}@host/x`);
+      // Cut-off text whose `@` is gone.
+      expect(redactSensitiveString(`see ${scheme}://user:hunt`, { truncated: true })).toBe(`see ${scheme}://user:${REDACTED_VALUE}`);
+    }
+  });
+
+  it('matches long scheme runs in linear time', () => {
+    for (const text of ['a.'.repeat(SIZE / 2), 'a'.repeat(SIZE), `${'a'.repeat(SIZE)}://user:`]) {
+      const { ms } = timed(() => redactSensitiveString(text, { truncated: true }));
+      expect(ms).toBeLessThan(500);
+    }
   });
 });
 

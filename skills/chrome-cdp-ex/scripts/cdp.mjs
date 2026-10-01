@@ -1404,18 +1404,30 @@ class RingBuffer {
 // ring buffers. A cut entry carries `truncated: true` and `originalLength`.
 const MAX_CAPTURED_CONSOLE_CHARS = 8192;
 
+// `text.slice(0, end)` that never keeps half of a surrogate pair at the cut.
+function sliceAtCodePoint(text, end) {
+  const cut = Math.max(0, end);
+  if (cut <= 0 || cut >= text.length) return text.slice(0, cut);
+  const before = text.charCodeAt(cut - 1);
+  const after = text.charCodeAt(cut);
+  const splitsPair = before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+  return text.slice(0, splitsPair ? cut - 1 : cut);
+}
+
 function boundCapturedText(parts) {
   let text = '';
   let originalLength = 0;
+  let room = MAX_CAPTURED_CONSOLE_CHARS;
   for (const [index, part] of parts.entries()) {
     const value = `${index > 0 ? ' ' : ''}${part}`;
     originalLength += value.length;
-    if (text.length < MAX_CAPTURED_CONSOLE_CHARS) text += value.slice(0, MAX_CAPTURED_CONSOLE_CHARS - text.length);
+    if (room <= 0) continue;
+    const kept = sliceAtCodePoint(value, room);
+    text += kept;
+    // Once a part is cut, nothing after it is kept, even if a surrogate pair left room.
+    room = kept.length < value.length ? 0 : room - kept.length;
   }
   if (originalLength <= MAX_CAPTURED_CONSOLE_CHARS) return { text };
-  // Do not keep half of a surrogate pair at the cut.
-  const last = text.charCodeAt(text.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1);
   return { text, truncated: true, originalLength };
 }
 
@@ -1443,7 +1455,7 @@ function boundedConsoleLineText(text, entry = {}, max = 300) {
   const value = String(text ?? '');
   if (value.length <= max && entry.truncated !== true) return value;
   const total = Number.isFinite(entry.originalLength) ? entry.originalLength : value.length;
-  return `${value.slice(0, max)}… [truncated, ${total} chars]`;
+  return `${sliceAtCodePoint(value, max)}… [truncated, ${total} chars]`;
 }
 
 function sockPath(targetId) {
@@ -6047,7 +6059,7 @@ function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = nul
 function compactActionText(value, max = 220) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max - 1))}…`;
+  return `${sliceAtCodePoint(text, max - 1)}…`;
 }
 
 // Redact the whole URL first, then drop scheme://authority and bound it, so a
@@ -6082,10 +6094,10 @@ const ACTION_TEXT_REDACT_WINDOW = 4096;
 function compactRedactedText(value, { max = 220, truncated = false } = {}) {
   const raw = String(value ?? '');
   const cut = truncated || raw.length > ACTION_TEXT_REDACT_WINDOW;
-  const redacted = redactSensitiveString(raw.slice(0, ACTION_TEXT_REDACT_WINDOW), { truncated: cut });
+  const redacted = redactSensitiveString(sliceAtCodePoint(raw, ACTION_TEXT_REDACT_WINDOW), { truncated: cut });
   const text = compactActionText(redacted, max);
   if (!cut || text.endsWith('…')) return text;
-  return text.length < max ? `${text}…` : `${text.slice(0, max - 1)}…`;
+  return text.length < max ? `${text}…` : `${sliceAtCodePoint(text, max - 1)}…`;
 }
 
 function compactConsoleDeltaEntry(entry = {}) {
@@ -28676,7 +28688,7 @@ if (isDirectRun) {
 export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Data structures
   RingBuffer, CDP,
-  MAX_CAPTURED_CONSOLE_CHARS, ACTION_TEXT_REDACT_WINDOW, consoleEntryFromEvent, exceptionEntryFromEvent, boundedConsoleLineText, consoleStr,
+  MAX_CAPTURED_CONSOLE_CHARS, ACTION_TEXT_REDACT_WINDOW, consoleEntryFromEvent, exceptionEntryFromEvent, boundedConsoleLineText, consoleStr, sliceAtCodePoint, compactActionText,
   // Utilities
   resolvePrefix, getDisplayPrefixLength, daemonEndpointForPlatform, sockPath, isRef, validateUrl,
   emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
