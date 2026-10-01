@@ -7911,17 +7911,22 @@ function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = n
 // URLs and dispatch text all embed raw URLs (#455).
 // A sensitive fill's typed and previous values are scrubbed from the whole output in every mode:
 // AX diffs, diagnosis samples and failure targets all quote the field's live value (#485).
+// JSON models are scrubbed before serialization (string leaves only); text is scrubbed whole.
 function formatActionResultOutput(result, opts = {}) {
   const secrets = sensitiveActionValues(result?.action, result?.target);
-  const output = formatActionResultOutputUnredacted(result, opts);
-  if (opts.format === 'json') return scrubSecretValues(output, secrets);
+  const scrubModel = model => scrubSecretValues(model, secrets, { keepKeys: ACTION_JSON_IDENTIFIER_KEYS });
+  const output = formatActionResultOutputUnredacted(result, { ...opts, scrubModel });
+  if (opts.format === 'json') return output;
   // #460: every text receipt names the dialogs the daemon answered on the user's behalf.
   const dialogLines = actionDialogLines(result?.effects || {});
   const text = dialogLines.length ? [output, ...dialogLines].filter(Boolean).join('\n') : output;
   return scrubSecretValues(redactSensitiveString(text), secrets);
 }
 
-function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
+// Code-generated identifiers a sensitive fill's value must never rewrite in a JSON model (#485).
+const ACTION_JSON_IDENTIFIER_KEYS = new Set(['schema', 'action', 'actionName', 'method', 'kind']);
+
+function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false, scrubModel = model => model } = {}) {
   if (qa) {
     const pdf = actionResultPdfViewerMeta(result, dispatchText);
     if (pdf) {
@@ -7929,7 +7934,7 @@ function formatActionResultOutputUnredacted(result, { format = 'text', compact =
         ? targetPrefixForDisplay(result.target.targetId)
         : '<target>';
       return format === 'json'
-        ? formatJson(pdfViewerHandoffModel({ ...pdf, url: redactUrl(pdf.url) }, { targetPrefix }))
+        ? formatJson(scrubModel(pdfViewerHandoffModel({ ...pdf, url: redactUrl(pdf.url) }, { targetPrefix })))
         : formatPdfViewerOutput(pdf, { targetPrefix });
     }
     const summary = buildQaSummaryModel({
@@ -7956,18 +7961,18 @@ function formatActionResultOutputUnredacted(result, { format = 'text', compact =
       source: 'action',
     });
     if (format === 'json') {
-      return formatJson({
+      return formatJson(scrubModel({
         summary: redactSensitiveArtifactValue(summary),
         action: compactActionResultForJson(result, { compact: true }),
-      });
+      }));
     }
     return formatQaSummaryText(summary);
   }
   if (format === 'json') {
     if (shouldUseCompactFillReceipt(result, { compact, qa, full })) {
-      return JSON.stringify(redactSensitiveArtifactValue(compactFillReceiptForJson(result)));
+      return JSON.stringify(scrubModel(redactSensitiveArtifactValue(compactFillReceiptForJson(result))));
     }
-    const model = compactActionResultForJson(result, { compact });
+    const model = scrubModel(compactActionResultForJson(result, { compact }));
     return compact ? JSON.stringify(model) : formatJson(model);
   }
   if (!full && isSuccessfulBoundedDocumentNav(result)) {
@@ -9139,7 +9144,7 @@ function sensitiveActionSecret(action, target = {}) {
 
 // `secret` is one literal or a list (a sensitive fill's typed and previous values).
 function replaceSecretLiteral(value, secret) {
-  return scrubSecretValues(value, secret);
+  return scrubSecretValues(value, secret, { keepKeys: ACTION_JSON_IDENTIFIER_KEYS });
 }
 
 function redactSensitiveDispatchText(text) {

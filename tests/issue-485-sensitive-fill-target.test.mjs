@@ -319,6 +319,72 @@ describe('#485 every receipt mode scrubs a sensitive field value', () => {
   });
 });
 
+describe('#485 JSON receipts are scrubbed before serialization', () => {
+  const jsonModes = [
+    ['json', 'json'],
+    ['--compact json', { format: 'json', compact: true }],
+    ['--full json', { format: 'json', full: true }],
+    ['--qa json', { format: 'json', qa: true }],
+  ];
+  // Secrets that collide with JSON keywords, numbers, the action name and the schema text.
+  for (const secret of ['null', 'true', 'fill', '1234', 'chrome-cdp-ex']) {
+    for (const [label, format] of jsonModes) {
+      it(`secret ${JSON.stringify(secret)} in ${label} stays valid JSON with intact structure`, async () => {
+        const { out } = await runFill('#f1', secret, {
+          page: { field: { autocomplete: 'one-time-code' } },
+          format,
+          observe: async () => axDiff('code', '', secret),
+        });
+        const parsed = JSON.parse(out);
+        const action = parsed.schema === 'chrome-cdp-ex.qa-summary.v1' || parsed.summary ? parsed.action : parsed;
+        if (action.schema === 'chrome-cdp-ex.fill.v1') {
+          expect(action.value).toBe('<redacted>');
+          expect(action.navigation).toBeNull();
+          expect(typeof action.changed).toBe('boolean');
+        } else {
+          expect(action.schema).toBe('chrome-cdp-ex.action.v1');
+          expect(action.action).toBe('fill');
+          expect(action.dispatch.ok).toBe(true);
+          if (action.settle && 'durationMs' in action.settle) expect(typeof action.settle.durationMs).toBe('number');
+          if (action.target?.commandArgs) expect(action.target.commandArgs).toEqual(['#f1', '<redacted>']);
+        }
+        // No string leaf still holds the secret as a quoted value, and no key was rewritten. The
+        // code-generated identifiers (`action: "fill"`, `method: "fill"`) are left alone on purpose.
+        const identifiers = new Set(['schema', 'action', 'actionName', 'method', 'kind']);
+        const leaves = [];
+        const keys = [];
+        const walk = (value) => {
+          if (typeof value === 'string') leaves.push(value);
+          else if (Array.isArray(value)) value.forEach(walk);
+          else if (value && typeof value === 'object') {
+            for (const [key, entry] of Object.entries(value)) {
+              keys.push(key);
+              if (!(identifiers.has(key) && typeof entry === 'string')) walk(entry);
+            }
+          }
+        };
+        walk(parsed);
+        expect(keys.some(key => key.includes('<redacted>'))).toBe(false);
+        expect(leaves.filter(leaf => leaf === secret || leaf.includes(`"${secret}"`))).toEqual([]);
+      });
+    }
+  }
+
+  it('a failed fill --format json with a keyword-like secret parses and keeps its numbers', async () => {
+    const { out } = await runFill('#f3', 'null', {
+      page: { field: { name: 'api_token' }, accept: () => 'x' },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+    expect(parsed.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(parsed.dispatch.ok).toBe(false);
+    expect(typeof parsed.settle.durationMs).toBe('number');
+    expect(parsed.effects.failure.kind).toBe('fill-value-mismatch');
+    expect(parsed.effects.failure.target.commandArgs).toEqual(['#f3', '<redacted>']);
+    expect(parsed.effects.navigation).toBeNull();
+  });
+});
+
 describe('#485 type prose is not a field name', () => {
   it('only classifies commandArgs[0] for fill', () => {
     const typeTarget = { input: 'current focus', label: 'current focus', commandArgs: ['my session access card notes'] };

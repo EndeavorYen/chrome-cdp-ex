@@ -216,19 +216,27 @@ const MIN_PREVIEW_PREFIX_CHARS = 8;
 // appears, also JSON-escaped and as a truncated `prefix…` preview of 8+ characters. A shorter
 // value is replaced only as a whole string or a quoted `"x"`, so a one-digit PIN cannot garble
 // counts, ids or durations.
-export function scrubSecretValues(value, secrets = []) {
+//
+// Scrub a model before it is serialized, never serialized JSON: only string leaves change, so
+// a secret such as `null`, `true` or `1234` cannot corrupt JSON keywords, numbers or keys.
+// `keepKeys` names fields whose value is a code-generated identifier (`schema`, `action`), left
+// alone so a secret such as `fill` cannot rename the schema or the action.
+export function scrubSecretValues(value, secrets = [], { keepKeys = null } = {}) {
   const list = [...new Set((Array.isArray(secrets) ? secrets : [secrets])
     .filter(secret => typeof secret === 'string' && secret !== '' && secret !== REDACTED_VALUE))]
     .sort((a, b) => b.length - a.length);
   if (list.length === 0 || value == null) return value;
-  return scrubSecretsDeep(value, list);
+  return scrubSecretsDeep(value, list, keepKeys);
 }
 
-function scrubSecretsDeep(value, list) {
+function scrubSecretsDeep(value, list, keepKeys) {
   if (typeof value === 'string') return list.reduce((text, secret) => scrubSecretInString(text, secret), value);
-  if (Array.isArray(value)) return value.map(item => scrubSecretsDeep(item, list));
+  if (Array.isArray(value)) return value.map(item => scrubSecretsDeep(item, list, keepKeys));
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, scrubSecretsDeep(entry, list)]));
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+      key,
+      keepKeys?.has(key) && typeof entry === 'string' ? entry : scrubSecretsDeep(entry, list, keepKeys),
+    ]));
   }
   return value;
 }

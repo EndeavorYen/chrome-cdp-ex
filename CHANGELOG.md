@@ -14,7 +14,9 @@
   selector (`fill #f2 …`) used to redact only its before/after values; its typed value is now redacted
   too. A sensitive field's typed and previous values are scrubbed from every output mode: `--compact`,
   `--full` and `--qa` receipts, the AX diff and diagnosis samples a textbox value shows up in, and a
-  failed fill's JSON `effects.failure.target`. Its failure `Next` reads `?.value.length`. Field names
+  failed fill's JSON `effects.failure.target`. JSON receipts are scrubbed before serialization, in
+  string values only, so a secret such as `null`, `true` or `1234` cannot break the JSON. Its failure
+  `Next` reads `?.value.length`. Field names
   use a narrower word list than URL keys, so the bare words `session`, `access`, `refresh`, `sid`,
   `cookie` and `card` no longer mark a field secret ("Session name" and "Access level" stay readable
   and replayable); compounds such as `session_id`, `access_token` and `card_number` still do. `type`
