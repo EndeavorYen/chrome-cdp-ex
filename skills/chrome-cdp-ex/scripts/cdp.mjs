@@ -129,6 +129,7 @@ import {
   resolveLiveTargetBinding,
 } from './lib/target-binding.mjs';
 import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
+import { resolveGitHead } from './lib/git-head.mjs';
 import { createLocatorPlan } from './lib/browser-resources.mjs';
 import {
   COMMAND_SURFACE,
@@ -3231,17 +3232,12 @@ function readPackageVersion(packageJsonPath) {
   }
 }
 
+// Read from .git directly: a `git` spawn cost ~25 ms on every target command (#461). Not memoised:
+// the in-process MCP server outlives a checkout, and a frozen commit would mismatch every new daemon.
+// Keeps the 12-char shape `git rev-parse --short=12 HEAD` produced, so freshness compares like with like.
 function currentGitCommit(cwd) {
-  try {
-    const res = spawnSync('git', ['-C', cwd || process.cwd(), 'rev-parse', '--short=12', 'HEAD'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const commit = String(res.stdout || '').trim();
-    return res.status === 0 && commit ? commit : null;
-  } catch {
-    return null;
-  }
+  const head = resolveGitHead(cwd || process.cwd());
+  return head ? head.slice(0, 12) : null;
 }
 
 function resolveScriptIdentityPath(scriptPath) {
