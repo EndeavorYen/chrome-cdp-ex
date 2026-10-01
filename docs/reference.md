@@ -136,6 +136,13 @@ Create a fresh diagnostic baseline with `console <target> --clear`. It clears
 both console and uncaught-exception buffers and resets unread cursors; unknown
 console flags fail instead of silently reading the buffer.
 
+Each console entry and exception message is capped at 8 KB when the daemon
+captures it. A cut entry carries `truncated: true` and `originalLength` in
+`console`/`status --format json`, and text lines from `console`, `status`, and
+`record` end with `… [truncated, N chars]` whenever they do not show the whole
+entry. Action receipts redact only a bounded prefix of each entry, so a page
+that logs a multi-megabyte data URL does not slow down every `click` or `fill`.
+
 For variable-length combat or dialogue, keep the mandatory finite cap and add
 one page condition:
 

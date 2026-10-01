@@ -1399,6 +1399,65 @@ class RingBuffer {
   clear() { this.buf.length = 0; }
 }
 
+// Console and exception text is capped when it is captured (#459): a page that
+// logs a canvas toDataURL() would otherwise keep megabytes per entry in the
+// ring buffers. A cut entry carries `truncated: true` and `originalLength`.
+const MAX_CAPTURED_CONSOLE_CHARS = 8192;
+
+// `text.slice(0, end)` that never keeps half of a surrogate pair at the cut.
+function sliceAtCodePoint(text, end) {
+  const cut = Math.max(0, end);
+  if (cut <= 0 || cut >= text.length) return text.slice(0, cut);
+  const before = text.charCodeAt(cut - 1);
+  const after = text.charCodeAt(cut);
+  const splitsPair = before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+  return text.slice(0, splitsPair ? cut - 1 : cut);
+}
+
+function boundCapturedText(parts) {
+  let text = '';
+  let originalLength = 0;
+  let room = MAX_CAPTURED_CONSOLE_CHARS;
+  for (const [index, part] of parts.entries()) {
+    const value = `${index > 0 ? ' ' : ''}${part}`;
+    originalLength += value.length;
+    if (room <= 0) continue;
+    const kept = sliceAtCodePoint(value, room);
+    text += kept;
+    // Once a part is cut, nothing after it is kept, even if a surrogate pair left room.
+    room = kept.length < value.length ? 0 : room - kept.length;
+  }
+  if (originalLength <= MAX_CAPTURED_CONSOLE_CHARS) return { text };
+  return { text, truncated: true, originalLength };
+}
+
+function capturedEventLoc(stackTrace) {
+  const frame = stackTrace?.callFrames?.[0];
+  const file = frame?.url?.split('/').pop() || '';
+  return file && frame.lineNumber > 0 ? `${file}:${frame.lineNumber}` : '';
+}
+
+function consoleEntryFromEvent(params = {}, ts = Date.now()) {
+  const { text, ...cut } = boundCapturedText((params.args || []).map(a => a.value ?? a.description ?? JSON.stringify(a)));
+  return { level: params.type || 'log', text, loc: capturedEventLoc(params.stackTrace), ts, ...cut };
+}
+
+function exceptionEntryFromEvent(params = {}, ts = Date.now()) {
+  const detail = params.exceptionDetails;
+  // exception.description has the full message (e.g. "Error: foo"); text is just "Uncaught".
+  const { text: msg, ...cut } = boundCapturedText([detail?.exception?.description || detail?.text || 'Unknown error']);
+  return { msg, loc: capturedEventLoc(detail?.stackTrace), ts, ...cut };
+}
+
+// One bounded console line for text surfaces. It says when the line is not the
+// whole entry, with the length the page actually logged.
+function boundedConsoleLineText(text, entry = {}, max = 300) {
+  const value = String(text ?? '');
+  if (value.length <= max && entry.truncated !== true) return value;
+  const total = Number.isFinite(entry.originalLength) ? entry.originalLength : value.length;
+  return `${sliceAtCodePoint(value, max)}… [truncated, ${total} chars]`;
+}
+
 function sockPath(targetId) {
   return daemonEndpointForPlatform(targetId, { runtimeDir: RUNTIME_DIR });
 }
@@ -5736,7 +5795,7 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
     lines.push(`Console (${newConsole.length} new):`);
     for (const e of newConsole.slice(-20)) {
       const loc = e.loc ? ` (${e.loc})` : '';
-      lines.push(`  [${e.level}] ${e.text.substring(0, 200)}${loc}`);
+      lines.push(`  [${e.level}] ${boundedConsoleLineText(e.text, e, 200)}${loc}`);
     }
     if (newConsole.length > 20) lines.push(`  ... and ${newConsole.length - 20} more (use 'console --all')`);
   } else {
@@ -5747,7 +5806,7 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
     lines.push(`Exceptions (${newExceptions.length} new):`);
     for (const e of newExceptions.slice(-10)) {
       const loc = e.loc ? ` at ${e.loc}` : '';
-      lines.push(`  ${e.msg.substring(0, 200)}${loc}`);
+      lines.push(`  ${boundedConsoleLineText(e.msg, e, 200)}${loc}`);
     }
   }
 
@@ -5792,13 +5851,13 @@ async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
 
   for (const e of entries) {
     const loc = e.loc ? ` (${e.loc})` : '';
-    lines.push(`[${e.level}] ${e.text.substring(0, 300)}${loc}`);
+    lines.push(`[${e.level}] ${boundedConsoleLineText(e.text, e)}${loc}`);
   }
   if (exceptions.length > 0) {
     lines.push('--- Uncaught Exceptions ---');
     for (const e of exceptions) {
       const loc = e.loc ? ` at ${e.loc}` : '';
-      lines.push(`[exception] ${e.msg.substring(0, 300)}${loc}`);
+      lines.push(`[exception] ${boundedConsoleLineText(e.msg, e)}${loc}`);
     }
   }
   return lines.join('\n');
@@ -6000,7 +6059,7 @@ function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = nul
 function compactActionText(value, max = 220) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max - 1))}…`;
+  return `${sliceAtCodePoint(text, max - 1)}…`;
 }
 
 // Redact the whole URL first, then drop scheme://authority and bound it, so a
@@ -6026,17 +6085,32 @@ function compactObservationError(err) {
   };
 }
 
+// Cut, then redact, then compact (#459): redaction only ever sees a bounded
+// prefix, so a megabyte entry costs the same as a short one. The key always
+// comes before its value, and a value cut off at the window edge is redacted
+// to the end of the window, so the cut never exposes part of a secret.
+const ACTION_TEXT_REDACT_WINDOW = 4096;
+
+function compactRedactedText(value, { max = 220, truncated = false } = {}) {
+  const raw = String(value ?? '');
+  const cut = truncated || raw.length > ACTION_TEXT_REDACT_WINDOW;
+  const redacted = redactSensitiveString(sliceAtCodePoint(raw, ACTION_TEXT_REDACT_WINDOW), { truncated: cut });
+  const text = compactActionText(redacted, max);
+  if (!cut || text.endsWith('…')) return text;
+  return text.length < max ? `${text}…` : `${sliceAtCodePoint(text, max - 1)}…`;
+}
+
 function compactConsoleDeltaEntry(entry = {}) {
   return {
     level: compactActionText(entry.level || 'log', 30),
-    text: compactActionText(redactSensitiveString(entry.text || entry.msg || entry.message || '')),
+    text: compactRedactedText(entry.text || entry.msg || entry.message || '', { truncated: entry.truncated === true }),
     loc: compactActionText(entry.loc || '', 120),
   };
 }
 
 function compactExceptionDeltaEntry(entry = {}) {
   return {
-    message: compactActionText(redactSensitiveString(entry.msg || entry.message || entry.text || 'Unknown exception')),
+    message: compactRedactedText(entry.msg || entry.message || entry.text || 'Unknown exception', { truncated: entry.truncated === true }),
     loc: compactActionText(entry.loc || '', 120),
   };
 }
@@ -19588,8 +19662,8 @@ async function injectStr(cdp, sid, args) {
 function formatRecordEvent(e, startTs) {
   const rel = Math.max(0, e.ts - startTs).toString().padStart(5, ' ');
   if (e.kind === 'dom') return `  +${rel}ms DOM ${e.summary}`;
-  if (e.kind === 'console') return `  +${rel}ms console.${e.level}: ${e.text}${e.loc ? ' (' + e.loc + ')' : ''}`;
-  if (e.kind === 'exception') return `  +${rel}ms exception: ${e.msg}${e.loc ? ' (' + e.loc + ')' : ''}`;
+  if (e.kind === 'console') return `  +${rel}ms console.${e.level}: ${boundedConsoleLineText(e.text, e)}${e.loc ? ' (' + e.loc + ')' : ''}`;
+  if (e.kind === 'exception') return `  +${rel}ms exception: ${boundedConsoleLineText(e.msg, e)}${e.loc ? ' (' + e.loc + ')' : ''}`;
   if (e.kind === 'network') return `  +${rel}ms ${e.method} ${redactUrl(e.url)} → ${e.status} (${e.duration}ms)`;
   if (e.kind === 'navigation') return `  +${rel}ms navigation ${redactUrl(e.url)}`;
   if (e.kind === 'action') return `  +${rel}ms action ${e.summary}`;
@@ -19702,11 +19776,10 @@ async function recordStr(cdp, sid, args, refs) {
   const startTs = Date.now();
   const events = [];
   const offConsole = cdp.onEvent?.('Runtime.consoleAPICalled', (params) => {
-    const text = (params.args || []).map(a => a.value ?? a.description ?? JSON.stringify(a)).join(' ');
-    events.push({ kind: 'console', level: params.type || 'log', text, ts: Date.now() });
+    events.push({ kind: 'console', ...consoleEntryFromEvent(params) });
   });
   const offException = cdp.onEvent?.('Runtime.exceptionThrown', (params) => {
-    events.push({ kind: 'exception', msg: params.exceptionDetails?.exception?.description || params.exceptionDetails?.text || 'Unknown error', ts: Date.now() });
+    events.push({ kind: 'exception', ...exceptionEntryFromEvent(params) });
   });
   const pending = new Map();
   const offReq = cdp.onEvent?.('Network.requestWillBeSent', (params) => {
@@ -23656,22 +23729,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   await enableDaemonDomains(cdp, sessionId);
 
   cdp.onEvent('Runtime.consoleAPICalled', (params) => {
-    const level = params.type || 'log';
-    const text = (params.args || []).map(a => a.value ?? a.description ?? JSON.stringify(a)).join(' ');
-    const stack = params.stackTrace?.callFrames?.[0];
-    const file = stack?.url?.split('/').pop() || '';
-    const loc = file && stack.lineNumber > 0 ? `${file}:${stack.lineNumber}` : '';
-    consoleBuf.push({ level, text, loc, ts: Date.now() });
+    consoleBuf.push(consoleEntryFromEvent(params));
   });
 
   cdp.onEvent('Runtime.exceptionThrown', (params) => {
-    const detail = params.exceptionDetails;
-    // exception.description has full message (e.g. "Error: foo"); text is just "Uncaught"
-    const msg = detail?.exception?.description || detail?.text || 'Unknown error';
-    const stack = detail?.stackTrace?.callFrames?.[0];
-    const file = stack?.url?.split('/').pop() || '';
-    const loc = file && stack.lineNumber > 0 ? `${file}:${stack.lineNumber}` : '';
-    exceptionBuf.push({ msg, loc, ts: Date.now() });
+    exceptionBuf.push(exceptionEntryFromEvent(params));
   });
 
   cdp.onEvent('Page.frameNavigated', (params) => {
@@ -28626,6 +28688,7 @@ if (isDirectRun) {
 export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Data structures
   RingBuffer, CDP,
+  MAX_CAPTURED_CONSOLE_CHARS, ACTION_TEXT_REDACT_WINDOW, consoleEntryFromEvent, exceptionEntryFromEvent, boundedConsoleLineText, consoleStr, sliceAtCodePoint, compactActionText,
   // Utilities
   resolvePrefix, getDisplayPrefixLength, daemonEndpointForPlatform, sockPath, isRef, validateUrl,
   emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
