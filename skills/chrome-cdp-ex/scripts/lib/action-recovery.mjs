@@ -170,6 +170,42 @@ function classifyFillValueFailure(err, { base, target, input, perceiveCommand })
   };
 }
 
+const COVERED_CLICK_MESSAGE_RE = /^click point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by /;
+
+// #436: another element is on top at the click point, so the mouse click was not sent. A covering
+// dialog is dismissed first; fixed/sticky layout (sidebar, header, toast) is bypassed with a JS
+// click, which calls HTMLElement.click() without hit-testing.
+function classifyCoveredClickFailure(err, { base, targetId, input }) {
+  const raw = err?.clickCovered && typeof err.clickCovered === 'object' ? err.clickCovered : {};
+  const covering = {
+    by: raw.by ? String(raw.by) : null,
+    within: raw.within ? String(raw.within) : null,
+    withinPosition: raw.withinPosition ? String(raw.withinPosition) : null,
+    dialog: raw.dialog === true,
+    recentred: raw.recentred === true,
+  };
+  const arg = recoveryCommandArg(input);
+  const jsClick = arg ? `cdp click ${targetId} ${arg} --js` : 'cdp help click';
+  const overlay = arg ? `cdp overlay ${targetId} ${arg}` : `cdp overlay ${targetId}`;
+  const dismiss = `cdp dismiss-modal ${targetId}`;
+  return {
+    ...base,
+    kind: 'covered',
+    dispatched: false,
+    covering,
+    reason: 'Another element covers the click point, so a real mouse click would land on it instead of the target. Nothing was clicked.',
+    nextCommand: covering.dialog ? dismiss : jsClick,
+    hints: [
+      ...(covering.dialog
+        ? [`A dialog covers the target: close it with \`${dismiss}\`, then click again.`]
+        : []),
+      `See what covers the target with \`${overlay}\`.`,
+      `\`${jsClick}\` runs the target's click handler without hit-testing; use it when the cover is page layout (a fixed sidebar or sticky header), not a dialog the user must close first.`,
+      'Do not retry the same mouse click: it would hit the covering element again.',
+    ],
+  };
+}
+
 export function classifyActionFailure(err, context = {}) {
   return applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {});
 }
@@ -198,6 +234,11 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   if (action === 'fill' && err?.fillValue && typeof err.fillValue === 'object') {
     // Structured fill state wins over message matching: the requested text is part of the message.
     return classifyFillValueFailure(err, { base, target, input, perceiveCommand });
+  }
+
+  // #436: checked before message matching because the message quotes page text.
+  if ((err?.clickCovered && typeof err.clickCovered === 'object') || COVERED_CLICK_MESSAGE_RE.test(originalMessage)) {
+    return classifyCoveredClickFailure(err, { base, targetId, input });
   }
 
   if (lower.includes('unknown ref') || lower.includes('refs were cleared') || lower.includes('refs were invalidated')) {
@@ -969,6 +1010,17 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'perceive', reason: 'Refresh refs after the overlay changes.' },
     ],
     avoid: ['retrying the same click before clearing or re-checking the overlay'],
+  },
+  covered: {
+    strategy: 'bypass-hit-test',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'overlay', reason: 'See which element covers the click point.' },
+      { key: 'next-or-perceive', reason: 'Close a covering dialog, or JS-click past fixed layout.' },
+      { key: 'since-action', reason: 'Confirm the target handler ran.' },
+    ],
+    avoid: ['retrying the same mouse click while another element covers the click point'],
   },
   'no-input-events': {
     strategy: 'use-jsclick',

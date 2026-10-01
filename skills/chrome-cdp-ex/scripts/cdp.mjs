@@ -9944,7 +9944,83 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
   return object.objectId;
 }
 
-function scrollSettledRectFunctionDeclaration() {
+// #436: page-side hit test of a click point. `this` is the click target; `rect` is its settled
+// viewport rect in the target's own document (frame-local for @f refs). Returns null when the point
+// cannot be tested (zero size, outside the viewport, nothing hit), { covered: false } when the real
+// mouse event would reach the target, otherwise what is on top. elementFromPoint already skips
+// pointer-events:none layers. Open shadow roots are walked to the deepest element; a closed one
+// stops at its host, which then counts as an ancestor of the target.
+function clickPointHitFunctionSource() {
+  return `function clickPointHit(target, rect) {
+    if (!target || target.nodeType !== 1) return null;
+    const doc = target.ownerDocument;
+    if (!doc || typeof doc.elementFromPoint !== 'function') return null;
+    if (!(rect.w > 0 && rect.h > 0)) return null;
+    const x = rect.x + rect.w / 2;
+    const y = rect.y + rect.h / 2;
+    if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return null;
+    let top = doc.elementFromPoint(x, y);
+    for (let depth = 0; top && top.shadowRoot && depth < 32; depth++) {
+      const inner = top.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === top) break;
+      top = inner;
+    }
+    if (!top) return null;
+    const composedParent = node => {
+      const parent = node.parentNode;
+      return parent && parent.nodeType === 11 && parent.host ? parent.host : parent;
+    };
+    const composedContains = (outer, inner) => {
+      for (let node = inner, guard = 0; node && guard < 4096; node = composedParent(node), guard++) {
+        if (node === outer) return true;
+      }
+      return false;
+    };
+    // The target, something inside it, or an ancestor (the target itself is not hit-testable,
+    // e.g. pointer-events:none) receives the same event a user's click there would send.
+    if (composedContains(target, top) || composedContains(top, target)) return { covered: false };
+    const label = typeof top.closest === 'function' ? top.closest('label') : null;
+    if (label && label.control === target) return { covered: false };
+    const positionOf = node => {
+      try { return getComputedStyle(node).position || ''; } catch { return ''; }
+    };
+    const describe = (node, withText) => {
+      const tag = String(node.tagName || 'node').toUpperCase();
+      const id = node.id ? '#' + node.id : '';
+      const classes = !id && typeof node.className === 'string' && node.className.trim()
+        ? '.' + node.className.trim().split(/\\s+/).slice(0, 2).join('.')
+        : '';
+      const text = withText
+        ? String((node.getAttribute && node.getAttribute('aria-label')) || node.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40)
+        : '';
+      return '<' + tag + id + classes + '>' + (text ? ' "' + text + '"' : '');
+    };
+    // Only on the failure path: the nearest fixed/sticky layer and whether a dialog is on top.
+    const dialogSelector = 'dialog,[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
+    let layer = null;
+    let dialog = false;
+    for (let node = top, guard = 0; node && node.nodeType === 1 && guard < 64; node = composedParent(node), guard++) {
+      const position = positionOf(node);
+      if (!layer && (position === 'fixed' || position === 'sticky')) layer = { node, position };
+      if (!dialog && typeof node.matches === 'function' && node.matches(dialogSelector)) dialog = true;
+    }
+    return {
+      covered: true,
+      x: Math.round(x),
+      y: Math.round(y),
+      by: describe(top, true),
+      byPosition: positionOf(top),
+      within: layer && layer.node !== top ? describe(layer.node, false) : null,
+      withinPosition: layer ? layer.position : null,
+      dialog,
+    };
+  }`;
+}
+
+// `hitTest` folds the #436 click-point hit test into the same evaluation (no extra round trip).
+// A fully visible target that is covered (sticky header, toast) is centred once and re-tested;
+// whatever still covers it after that is reported, never retried.
+function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
   return `async function() {
     const connectedToOwningDocument = () => {
       try {
@@ -9970,51 +10046,64 @@ function scrollSettledRectFunctionDeclaration() {
     const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
       initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
     if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center' });
-    const deadline = Date.now() + 1800;
+    const settle = async (maxSamples) => {
+      const deadline = Date.now() + 1800;
+      let previous = readRect();
+      let stableSamples = 0;
+      for (let sample = 0; sample < maxSamples; sample++) {
+        if (Date.now() >= deadline) break;
+        await Promise.race([
+          new Promise(resolve => {
+            if (typeof requestAnimationFrame === 'function') requestAnimationFrame(resolve);
+            else resolve();
+          }),
+          new Promise(resolve => setTimeout(resolve, 50)),
+        ]);
+        const current = readRect();
+        const movement = Math.max(
+          Math.abs(current.x - previous.x),
+          Math.abs(current.y - previous.y),
+          Math.abs(current.w - previous.w),
+          Math.abs(current.h - previous.h),
+        );
+        const currentVisible = current.x >= 0 && current.y >= 0 &&
+          current.x + current.w <= window.innerWidth && current.y + current.h <= window.innerHeight;
+        previous = current;
+        stableSamples = movement < 0.5 ? stableSamples + 1 : 0;
+        if (currentVisible && stableSamples >= 2) break;
+      }
+      return previous;
+    };
     const maxSamples = fullyVisible ? 2 : 60;
-    let previous = readRect();
-    let stableSamples = 0;
-    for (let sample = 0; sample < maxSamples; sample++) {
-      if (Date.now() >= deadline) break;
-      await Promise.race([
-        new Promise(resolve => {
-          if (typeof requestAnimationFrame === 'function') requestAnimationFrame(resolve);
-          else resolve();
-        }),
-        new Promise(resolve => setTimeout(resolve, 50)),
-      ]);
-      const current = readRect();
-      const movement = Math.max(
-        Math.abs(current.x - previous.x),
-        Math.abs(current.y - previous.y),
-        Math.abs(current.w - previous.w),
-        Math.abs(current.h - previous.h),
-      );
-      const currentVisible = current.x >= 0 && current.y >= 0 &&
-        current.x + current.w <= window.innerWidth && current.y + current.h <= window.innerHeight;
-      previous = current;
-      stableSamples = movement < 0.5 ? stableSamples + 1 : 0;
-      if (currentVisible && stableSamples >= 2) break;
-    }
+    let previous = await settle(maxSamples);${hitTest ? `
+    ${clickPointHitFunctionSource()}
+    let hit = clickPointHit(this, previous);
+    if (hit && hit.covered && fullyVisible) {
+      this.scrollIntoView({ block: 'center', inline: 'center' });
+      previous = await settle(60);
+      hit = clickPointHit(this, previous);
+      if (hit && hit.covered) hit.recentred = true;
+    }` : ''}
     return {
       connected: connectedToOwningDocument(),
       ...previous,
       tag: this.tagName,
       href: this.tagName === 'A' ? (this.href || null) : null,
       pageHref: location.href,
-      text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
+      text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),${hitTest ? `
+      hit,` : ''}
     };
   }`;
 }
 
-async function resolveRef(cdp, sid, refMap, ref, refState) {
+async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = false } = {}) {
   const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
   let result;
   try {
     result = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
-      functionDeclaration: scrollSettledRectFunctionDeclaration(),
+      functionDeclaration: scrollSettledRectFunctionDeclaration({ hitTest }),
       returnByValue: true,
       awaitPromise: true,
     }, sid, REF_RESOLVE_TIMEOUT);
@@ -13330,6 +13419,33 @@ function cssClickMissMessage(selector, error) {
     : `${text}. No element matches this CSS selector; pass the control's visible text or an @ref from perceive.`;
 }
 
+// #436: the real mouse event goes to whatever is on top at the click point. When that is not the
+// target (see clickPointHitFunctionSource), fail before dispatch and name the covering element,
+// instead of sending the click into it and reporting `Clicked <target>`.
+function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
+  if (!hit || hit.covered !== true) return;
+  const label = String(text || '').replace(/\s+/g, ' ').trim();
+  const target = `<${tag || '?'}>${label ? ` "${label}"` : ''}${ref ? ` (${ref})` : ''}`;
+  const by = !hit.within && (hit.byPosition === 'fixed' || hit.byPosition === 'sticky')
+    ? `position:${hit.byPosition} ${hit.by}`
+    : String(hit.by || '<unknown>');
+  const within = hit.within ? ` (inside position:${hit.withinPosition} ${hit.within})` : '';
+  const recentred = hit.recentred ? ' even after scrolling it to the viewport centre' : '';
+  const err = new Error(
+    `click point (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)}) of ${target} is covered by ${by}${within}${recentred}. `
+    + 'The mouse click was not sent: it would land on the covering element.'
+  );
+  err.clickCovered = {
+    by: String(hit.by || ''),
+    within: hit.within || null,
+    withinPosition: hit.withinPosition || null,
+    byPosition: hit.byPosition || null,
+    dialog: hit.dialog === true,
+    recentred: hit.recentred === true,
+  };
+  throw err;
+}
+
 function namedClickMissMessage(input, error) {
   const text = String(error || '');
   const name = namedClickQueryName(input);
@@ -13573,7 +13689,8 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
     return `Clicked <${r.sel}> "${r.text}" (${selector})`;
   }
   if (isRef(selector)) {
-    const r = await resolveRef(cdp, sid, refMap, selector, refState);
+    const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true });
+    assertClickPointNotCovered(r.hit, { x: r.x + r.w / 2, y: r.y + r.h / 2, tag: r.tag, text: r.text, ref: selector });
     let objectId = null;
     try {
       objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { returnRealm: 'page' });
@@ -13597,7 +13714,7 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
         return { ok: false, error: 'Invalid selector: ' + (err && err.message ? err.message : String(err)) };
       }
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
-      const rect = await (${scrollSettledRectFunctionDeclaration()}).call(el);
+      const rect = await (${scrollSettledRectFunctionDeclaration({ hitTest: true })}).call(el);
       return {
         ok: true,
         x: rect.x + rect.w / 2,
@@ -13606,12 +13723,14 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
         text: rect.text,
         href: rect.href || (el.tagName === 'A' ? (el.href || null) : null),
         pageHref: rect.pageHref || location.href,
+        hit: rect.hit,
       };
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(cssClickMissMessage(selector, r.error));
+  assertClickPointNotCovered(r.hit, { x: r.x, y: r.y, tag: r.tag, text: r.text });
   await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
   await confirmClickFollowedHref(cdp, sid, r);
   return `Clicked <${r.tag}> "${r.text}"`;
@@ -24663,7 +24782,9 @@ ACTION FEEDBACK
   Named click / jsclick (a control name, not @ref or CSS)
   is report-only: skinny URL receipt, no AX dump. Unique off-screen
   names scrollIntoView first. Mouse click @ref still
-  fail-closes with no-input-events. scroll to top/to bottom is also
+  fail-closes with no-input-events. Mouse click @ref / CSS hit-tests the
+  click point first: when another element is on top it fails with
+  Kind: covered, names that element, and sends nothing. scroll to top/to bottom is also
   report-only (window document or nested overflow).
   Sequential batch fill then press Enter is report-only on the fill:
   leftover typeahead AX / quicksearch is not the success signal.

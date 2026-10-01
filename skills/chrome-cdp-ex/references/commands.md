@@ -1155,7 +1155,20 @@ event sequences that pass through `:active`/`:hover`/focus rings — but `jsclic
 is the right escape hatch when you can prove the mouse path is the blocker. A
 fail-closed mouse click reports `Kind: no-input-events` with Next
 `cdp jsclick <target> <sel>` (selector included). Do not treat `dispatch.ok` as
-success, and do not auto-jsclick inside mouse `click` `@ref` / CSS. A named
+success, and do not auto-jsclick inside mouse `click` `@ref` / CSS.
+
+Before the mouse `click` `@ref` / CSS path dispatches, it hit-tests the click point (the
+element centre after the scroll settles, walking open shadow roots; frame-local for `@fN:M`).
+The target, something inside it, an ancestor, or a `<label>` whose `control` is the target
+counts as a hit; `pointer-events: none` layers never intercept. If anything else is on top
+(a fixed sidebar, sticky header, toast, or dialog), nothing is sent and the click exits 1:
+`Error: click point (549, 219) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation> "load:1" (inside position:fixed <ASIDE.sidebar>)…`,
+`Kind: covered`, `dispatched: false`. A fully visible target that is covered is scrolled to the
+viewport centre once and re-tested first. Next is `cdp click <target> <sel> --js` (a JS click
+does not hit-test), or `cdp dismiss-modal <target>` when the cover is a dialog; the hints add
+`cdp overlay <target> <sel>`. Only the centre point is tested, and an `@fN:M` target is not
+tested against covers in the parent document. A named
+
 named query (`click` / `jsclick` `"Browse 1M+ applications"`) is the one-step
 jsclick path: no `perceive -C -d 8`, unique off-screen names `scrollIntoView`
 then click, skinny URL receipt (Scroll before/after when it scrolled).

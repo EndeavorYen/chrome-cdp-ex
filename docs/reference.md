@@ -125,6 +125,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 
 `click` takes a CSS selector, an `@ref`, or a button/link's visible text (`click <target> "Save changes"`). `text=Save` / `text="Save changes"` is an alias for the visible-text form with the same exact, whitespace-normalised match (not Playwright's substring match).
 
+The mouse `click` path for a CSS selector or `@ref` hit-tests its click point before dispatch. When another element is on top (a fixed sidebar, sticky header, toast, or dialog), it sends nothing and exits 1 with `Error: click point (x, y) of <BUTTON> "…" is covered by <…>`, `Kind: covered`, and Next `click <target> <sel> --js` (or `dismiss-modal` when the cover is a dialog). A fully visible but covered target is scrolled to the viewport centre once and re-tested before failing.
+
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
 Default `open` returns the target prefix and a follow-up `perceive` command; pass `--perceive` only when you want the full dump in the same call.
 
