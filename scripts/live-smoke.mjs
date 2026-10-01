@@ -349,6 +349,19 @@ if (!Object.hasOwn(parsedFillAction, 'navigation') || parsedFillAction.navigatio
 if (!Array.isArray(parsedFillAction.typeahead)) {
   throw new Error(`fill --format json should include a typeahead array:\n${fillJsonOut}`);
 }
+// #429: an explicit "" clears the field and names the previous value; a missing text stays an error.
+const clearOut = step('fill "" clears a field', () => run(['fill', target, '#smoke-name', '']));
+assertIncludes(clearOut, 'Cleared <INPUT> (was "Ada")', 'fill clear');
+const clearAgainJson = JSON.parse(step('fill "" on an empty field json', () => run(['fill', target, '#smoke-name', '', '--format', 'json'])));
+if (clearAgainJson.schema !== 'chrome-cdp-ex.fill.v1' || clearAgainJson.value !== '' || clearAgainJson.previousValue !== '') {
+  throw new Error(`fill "" on an empty field should return a fill.v1 receipt with previousValue "":\n${JSON.stringify(clearAgainJson)}`);
+}
+assertIncludes(step('fill without text is a usage error', () => runFailure(['fill', target, '#smoke-name'])), 'text required', 'fill missing text');
+// #428: a number input that rejects text is a value change, not fill-no-change, with a shell-safe Next.
+const mismatchOut = step('fill rejected by number input', () => runFailure(['fill', target, '#smoke-amount', 'abc']));
+assertIncludes(mismatchOut, 'Kind: fill-value-mismatch', 'fill value mismatch kind');
+assertIncludes(mismatchOut, 'Value: "0.5" → "" (requested "abc"; <input type=number> rejected the text)', 'fill value mismatch value');
+assertIncludes(mismatchOut, `Next: cdp eval ${target} "document.querySelector('#smoke-amount')?.value"`, 'fill value mismatch next');
 const uploadOut = step('upload action evidence', () => run(['upload', target, '#upload-file', uploadFixturePath]));
 assertIncludes(uploadOut, 'Uploaded 1 file', 'upload');
 assertIncludes(uploadOut, 'upload: dispatched', 'upload action evidence');

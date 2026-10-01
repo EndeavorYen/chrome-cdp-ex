@@ -66,6 +66,7 @@ import {
   buildNoChangeOutcomeRecommendation,
   classifyActionFailure,
   formatActionFailure,
+  formatFillValueLine,
   isClassifiedActionFailureText,
   actionFailurePage,
   isExpectedClipboardNoChange,
@@ -75,6 +76,7 @@ import {
   overlaySelectorArg,
   isTimeoutError,
   looksLikeClipboardControl,
+  querySelectorEvalCommand,
   recoveryCommandsFromDiagnosis,
   uniqueNextStepCommands,
 } from './lib/action-recovery.mjs';
@@ -4559,7 +4561,7 @@ async function htmlStr(cdp, sid, selectorOrArgs, extra = {}) {
     const sel = parsed.selector || selector || '';
     throw new Error(
       `html: no element matched within root "${rootLabel}"${sel ? ` for selector ${sel}` : ''}. ` +
-      `Fallback: cdp eval ${targetPrefix} "document.querySelector(${JSON.stringify(sel || 'selector')})?.outerHTML"`
+      `Fallback: ${querySelectorEvalCommand(targetPrefix, sel, '?.outerHTML') || `cdp perceive ${targetPrefix} -C -d 8`}`
     );
   }
   return parsed.html || '';
@@ -5825,7 +5827,8 @@ function buildActionOutcome(actionResult = {}) {
     return {
       ...base,
       status: 'failed',
-      changed: false,
+      // A failed fill can still have mutated the control (fill-value-mismatch): say so.
+      changed: effects.failure?.pageChanged === true,
       needsAttention: true,
       evidence: 'dispatch',
       reason: effects.failure?.reason || 'Action failed before dispatch completed.',
@@ -6768,7 +6771,8 @@ function formatFailedDispatchText(result = {}) {
   const kind = result.effects?.failure?.kind
     || result.effects?.diagnosis?.kind
     || 'unknown';
-  return `Kind: ${kind}\nNext: ${defaultMutatingNextCommand(result)}`;
+  const valueLine = formatFillValueLine(result.effects?.failure || {});
+  return [`Kind: ${kind}`, ...(valueLine ? [valueLine] : []), `Next: ${defaultMutatingNextCommand(result)}`].join('\n');
 }
 
 function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}) {
@@ -6974,6 +6978,14 @@ function fillTypedValue(result = {}) {
   return text == null ? '' : String(text);
 }
 
+// The control's value before fill (null when unknown). fillStr already masks password values.
+function fillPreviousValue(result = {}) {
+  const before = result.target?.fillValue?.before;
+  if (before == null) return null;
+  if (isSensitiveActionTarget(result.action, result.target || {})) return before === '' ? '' : REDACTED_VALUE;
+  return String(before);
+}
+
 function fillNavigationUrl(effects = {}) {
   const nav = effects.navigation;
   if (nav == null || nav === false) return null;
@@ -6993,6 +7005,7 @@ function compactFillReceiptForJson(result = {}) {
   const receipt = {
     schema: 'chrome-cdp-ex.fill.v1',
     value: fillTypedValue(result),
+    previousValue: fillPreviousValue(result),
     changed: result.outcome?.changed === true || result.outcome?.status === 'changed',
     navigation: fillNavigationUrl(result.effects || {}),
     typeahead,
@@ -14675,7 +14688,17 @@ async function snapshotFormControlState(cdp, sid, selector, refMap, refState) {
   }
 }
 
-function fillableControlPageProbe(selector) {
+// In-page expression for a control's live value (`name` is the element variable).
+function fillControlValueExpression(name) {
+  return `(${name} && ${name}.isContentEditable
+      ? String(${name}.innerText || ${name}.textContent || '')
+      : String((${name} && ${name}.value != null) ? ${name}.value : (${name} && ${name}.textContent) || ''))`;
+}
+
+// Probe + optional pre-clear. `before` is the value the control held before fill touched it.
+// A clear (`fill ""`) skips the pre-clear: assigning el.value = '' through the instance setter
+// updates React's value tracker, so the later native-setter clear would look like no change.
+function fillableControlPageProbe(selector, { clear = true } = {}) {
   return `(function() {
     const probe = ${fillableControlProbeDeclaration()};
     const el = document.querySelector(${JSON.stringify(selector)});
@@ -14688,13 +14711,29 @@ function fillableControlPageProbe(selector) {
         tag: info.tag,
       };
     }
+    const before = ${fillControlValueExpression('el')};
     el.scrollIntoView({ block: 'center', inline: 'center' });
     el.focus();
-    if (el.isContentEditable) el.textContent = '';
+    ${clear ? `if (el.isContentEditable) el.textContent = '';
     else el.value = '';
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    return { ok: true, tag: info.tag };
+    el.dispatchEvent(new Event('input', { bubbles: true }));` : '// clear: native setter path follows'}
+    return { ok: true, tag: info.tag, type: info.type, before: before };
   })()`;
+}
+
+function fillableRefProbeDeclaration({ clear = true } = {}) {
+  return `function() {
+    const info = (${fillableControlProbeDeclaration()}).call(this);
+    if (!info.fillable) return info;
+    const el = this;
+    info.before = ${fillControlValueExpression('el')};
+    this.scrollIntoView({block:'center'});
+    this.focus();
+    ${clear ? `if (this.isContentEditable) this.textContent = '';
+    else this.value = '';
+    this.dispatchEvent(new Event('input',{bubbles:true}));` : '// clear: native setter path follows'}
+    return info;
+  }`;
 }
 
 function notFillableControlError(selector, tag) {
@@ -14703,24 +14742,61 @@ function notFillableControlError(selector, tag) {
   return new Error(`fill: ${shown} is not a fillable control${tagPart}. Use click for links/buttons.`);
 }
 
-function fillValueRejectedError(selector, text) {
+const FILL_VALUE_PREVIEW_MAX = 120;
+
+function fillValuePreview(value) {
+  const text = String(value);
+  return text.length > FILL_VALUE_PREVIEW_MAX ? `${text.slice(0, FILL_VALUE_PREVIEW_MAX)}…` : text;
+}
+
+// Before/after/requested values for a fill receipt. `changed` compares the raw live values;
+// password fields (and selectors that look sensitive) never echo a non-empty value.
+function buildFillValueState({ before = null, after = null, requested = '', inputType = '', sensitive = false } = {}) {
+  const shown = (value) => {
+    if (value == null) return null;
+    if (sensitive && value !== '') return REDACTED_VALUE;
+    return fillValuePreview(value);
+  };
+  return {
+    before: shown(before),
+    after: shown(after),
+    requested: shown(requested),
+    inputType: inputType ? String(inputType).toLowerCase() : null,
+    changed: before == null || after == null ? null : String(before) !== String(after),
+    ...(sensitive ? { redacted: true } : {}),
+  };
+}
+
+// A receipt value: quoted text, or the bare <redacted> marker so it never reads as a literal.
+function fillValueDisplay(value) {
+  if (value == null) return '(unknown)';
+  return value === REDACTED_VALUE ? REDACTED_VALUE : JSON.stringify(value);
+}
+
+function fillValueRejectedError(selector, text, state = null) {
   const shown = selector || '<element>';
-  return new Error(
-    `fill: ${shown} did not accept "${formatInputTextPreview(String(text ?? ''))}"; live value is still empty`
-  );
+  const requested = state?.requested ?? formatInputTextPreview(String(text ?? ''));
+  let detail = 'live value is still empty';
+  if (state?.changed === true) {
+    detail = `value changed ${fillValueDisplay(state.before)} → ${fillValueDisplay(state.after)}`;
+  } else if (state?.after) {
+    detail = `value stayed ${fillValueDisplay(state.after)}`;
+  }
+  const err = new Error(`fill: ${shown} did not accept "${requested}"; ${detail}`);
+  if (state) err.fillValue = state;
+  return err;
 }
 
 function fillLiveValueDeclaration() {
   return `function() {
     const el = this;
     const cdpFillLiveValue = true;
-    const value = el && el.isContentEditable
-      ? String(el.innerText || el.textContent || '')
-      : String((el && el.value != null) ? el.value : (el && el.textContent) || '');
+    const value = ${fillControlValueExpression('el')};
     return {
       ok: true,
       cdpFillLiveValue,
       tag: el && el.tagName ? String(el.tagName).toUpperCase() : '?',
+      type: String(el && el.type || '').toLowerCase(),
       value,
       textContent: String(el && el.textContent || ''),
     };
@@ -14735,6 +14811,51 @@ function fillLiveValuePageScript(selector) {
   })()`;
 }
 
+// A CSS selector that matches exactly this element in its document, so a recovery command for
+// an @ref can use `document.querySelector`. '' when none can be built (shadow DOM, detached).
+function fillUniqueSelectorDeclaration() {
+  return `function() {
+    const cdpFillUniqueSelector = true;
+    const el = this;
+    if (!el || el.nodeType !== 1 || !el.isConnected || el.getRootNode() !== document) return '';
+    const esc = (value) => (window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, ch => '\\\\' + ch));
+    const uniqueId = (node) => {
+      if (!node.id) return '';
+      const sel = '#' + esc(node.id);
+      try { return document.querySelectorAll(sel).length === 1 ? sel : ''; } catch (e) { return ''; }
+    };
+    const parts = [];
+    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+      const id = uniqueId(node);
+      if (id) { parts.unshift(id); break; }
+      if (node === document.documentElement) { parts.unshift('html'); break; }
+      let index = 1;
+      for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        if (sib.tagName === node.tagName) index++;
+      }
+      parts.unshift(node.tagName.toLowerCase() + ':nth-of-type(' + index + ')');
+    }
+    const selector = parts.join(' > ');
+    try { return document.querySelector(selector) === el ? selector : ''; } catch (e) { return ''; }
+  }`;
+}
+
+async function fillRefUniqueSelector(cdp, sid, selector, refMap, refState) {
+  if (!isRef(selector) || parseFrameRef(selector)) return '';
+  try {
+    const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+    const res = await cdpDomains(cdp).Runtime.callFunctionOn({
+      objectId,
+      functionDeclaration: fillUniqueSelectorDeclaration(),
+      returnByValue: true,
+    }, sid);
+    const value = res.result?.value;
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
+}
+
 function parseFillLiveSnapshot(raw) {
   let parsed = raw;
   if (typeof raw === 'string') {
@@ -14744,6 +14865,7 @@ function parseFillLiveSnapshot(raw) {
   return {
     ok: parsed.ok !== false,
     tag: parsed.tag || '?',
+    type: parsed.type ? String(parsed.type) : '',
     value: String(parsed.value ?? ''),
     textContent: String(parsed.textContent ?? ''),
   };
@@ -14777,15 +14899,6 @@ async function fillLiveValueAcceptedNow(cdp, sid, selector, text, refMap, refSta
   }
 }
 
-async function assertFillLiveValue(cdp, sid, selector, text, refMap, refState) {
-  const snapshot = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => ({
-    ok: false,
-    value: '',
-    textContent: '',
-  }));
-  if (!fillLiveValueAccepted(snapshot, text)) throw fillValueRejectedError(selector, text);
-}
-
 async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
@@ -14817,7 +14930,7 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
         else el.value = value;
       }
       const inputEvent = typeof InputEvent === 'function'
-        ? new InputEvent('input', { bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: value })
+        ? new InputEvent('input', { bubbles: true, cancelable: true, composed: true, inputType: value === '' ? 'deleteContent' : 'insertText', data: value === '' ? null : value })
         : new Event('input', { bubbles: true, cancelable: true });
       el.dispatchEvent(inputEvent);
       el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
@@ -14830,48 +14943,98 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   return `React-filled ${isRef(selector) ? selector : `<${tag}>`} with "${formatInputTextPreview(text)}"`;
 }
 
+function formatFillDispatchText({ label, text, clearing, react, state }) {
+  const before = state?.before;
+  if (clearing) {
+    if (before == null) return `Cleared ${label}`;
+    return before === '' ? `Cleared ${label} (value unchanged: already empty)` : `Cleared ${label} (was ${fillValueDisplay(before)})`;
+  }
+  const head = `${react ? 'React-filled' : 'Filled'} ${label} with "${formatInputTextPreview(text)}"`;
+  if (before == null || before === '') return head;
+  if (state.changed === false) return `${head} (value unchanged: already ${fillValueDisplay(before)})`;
+  return `${head} (was ${fillValueDisplay(before)})`;
+}
+
+// Turn a successful fill's value transition into receipt state on the action target.
+function applyFillValueState(target, state) {
+  if (!target || !state || typeof state !== 'object' || !Object.hasOwn(state, 'after')) return target;
+  target.fillValue = { before: state.before ?? null, after: state.after ?? null };
+  if (state.changed === true) {
+    target.controlStateChanged = true;
+    target.controlStateDiff = `value ${fillValueDisplay(state.before)} → ${fillValueDisplay(state.after)}`;
+  } else if (state.changed === false) {
+    target.expectedOutcome = target.expectedOutcome || 'fill-value-unchanged';
+  }
+  return target;
+}
+
+// fill <selector|@ref> <text>: clear the control, enter text, then verify the live value.
+// `text === ''` clears the field through the native value setter (input + change events), the
+// path React/Vue controlled inputs observe. The receipt compares the real before/after values.
 async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (text == null) throw new Error('Text required');
+  const wanted = String(text);
+  const clearing = wanted === '';
+  const ref = isRef(selector);
+  let before = null;
+  let inputType = '';
+  let tag = '?';
   if (opts.react) {
-    const out = await fillReactStr(cdp, sid, selector, text, refMap, refState);
-    await assertFillLiveValue(cdp, sid, selector, text, refMap, refState);
-    return out;
-  }
-  if (isRef(selector)) {
-    const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
-    const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
-      objectId,
-      functionDeclaration: `function() {
-        const info = (${fillableControlProbeDeclaration()}).call(this);
-        if (!info.fillable) return info;
-        this.scrollIntoView({block:'center'});
-        this.focus();
-        if (this.isContentEditable) this.textContent = '';
-        else this.value = '';
-        this.dispatchEvent(new Event('input',{bubbles:true}));
-        return info;
-      }`,
-      returnByValue: true,
-    }, sid);
-    const probed = probe.result?.value || {};
-    if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
-    await cdpDomains(cdp).Input.insertText( { text }, sid);
-    if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, text, refMap, refState))) {
-      await fillReactStr(cdp, sid, selector, text, refMap, refState);
+    const snapshot = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
+    if (snapshot?.ok) {
+      before = snapshot.value;
+      inputType = snapshot.type || '';
     }
-    await assertFillLiveValue(cdp, sid, selector, text, refMap, refState);
-    return `Filled ${selector} with "${formatInputTextPreview(text)}"`;
+    const out = await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
+    tag = out.match(/^React-filled <([^>]+)>/)?.[1] || tag;
+  } else {
+    let probed;
+    if (ref) {
+      const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+      const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
+        objectId,
+        functionDeclaration: fillableRefProbeDeclaration({ clear: !clearing }),
+        returnByValue: true,
+      }, sid);
+      probed = probe.result?.value || {};
+      if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
+    } else {
+      probed = JSON.parse(await evalStr(cdp, sid, fillableControlPageProbe(selector, { clear: !clearing })));
+      if (!probed.ok) throw new Error(probed.error);
+    }
+    if (typeof probed.before === 'string') before = probed.before;
+    inputType = probed.type || '';
+    tag = probed.tag || tag;
+    if (clearing) {
+      await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
+    } else {
+      await cdpDomains(cdp).Input.insertText( { text: wanted }, sid);
+      if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, wanted, refMap, refState))) {
+        await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
+      }
+    }
   }
-  const result = await evalStr(cdp, sid, fillableControlPageProbe(selector));
-  const r = JSON.parse(result);
-  if (!r.ok) throw new Error(r.error);
-  await cdpDomains(cdp).Input.insertText( { text }, sid);
-  if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, text, refMap, refState))) {
-    await fillReactStr(cdp, sid, selector, text, refMap, refState);
+  const after = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
+  const sensitive = String(inputType || after?.type || '').toLowerCase() === 'password'
+    || isSensitiveActionTarget('fill', { input: selector });
+  const state = buildFillValueState({
+    before,
+    after: after?.ok ? after.value : null,
+    requested: wanted,
+    inputType: inputType || after?.type || '',
+    sensitive,
+  });
+  if (opts.valueState && typeof opts.valueState === 'object') Object.assign(opts.valueState, state);
+  if (!fillLiveValueAccepted(after, wanted)) {
+    if (ref) {
+      const unique = await fillRefUniqueSelector(cdp, sid, selector, refMap, refState);
+      if (unique) state.selector = unique;
+    }
+    throw fillValueRejectedError(selector, wanted, state);
   }
-  await assertFillLiveValue(cdp, sid, selector, text, refMap, refState);
-  return `Filled <${r.tag}> with "${formatInputTextPreview(text)}"`;
+  const label = ref ? selector : `<${tag}>`;
+  return formatFillDispatchText({ label, text: wanted, clearing, react: opts.react === true, state });
 }
 
 async function selectStr(cdp, sid, selector, value) {
@@ -15099,7 +15262,7 @@ async function stylesStr(cdp, sid, selectorOrArgs, extra = {}) {
     const rootLabel = parsed?.root || root || 'document';
     throw new Error(
       `styles: no element matched within root "${rootLabel}" for selector ${selector}. ` +
-      `Fallback: cdp eval ${targetPrefix} "getComputedStyle(document.querySelector(${JSON.stringify(selector)}))"`
+      `Fallback: ${querySelectorEvalCommand(targetPrefix, selector, '', { wrap: 'getComputedStyle' }) || `cdp perceive ${targetPrefix} -C -d 8`}`
     );
   }
   // Legacy path: eval may still return a plain object if script changes.
@@ -16873,8 +17036,9 @@ function formatTextNoMatchError(parsed = {}, opts = {}) {
     `text: no element matched within root "${root}". Tried: ${tried}.`,
     `Scope: root=${root}${selector ? `; selector=${selector}` : ''}.`,
   ];
-  if (selector) {
-    lines.push(`Fallback: cdp eval <target> "document.querySelector(${JSON.stringify(selector)})?.textContent"`);
+  const fallback = selector ? querySelectorEvalCommand(opts.targetPrefix || '<target>', selector, '?.textContent') : null;
+  if (fallback) {
+    lines.push(`Fallback: ${fallback}`);
   } else {
     lines.push('Try `text <target> --auto` or `text <target> "main, [role=main], body"`.');
   }
@@ -18150,7 +18314,7 @@ async function recordStr(cdp, sid, args, refs) {
     if (opts.action) {
       if (opts.action === 'click') actionText = await clickStr(cdp, sid, opts.actionArgs[0], refs);
       else if (opts.action === 'press') actionText = await pressStr(cdp, sid, opts.actionArgs[0]);
-      else if (opts.action === 'fill') actionText = await fillStr(cdp, sid, opts.actionArgs[0], opts.actionArgs.slice(1).join(' '), refs);
+      else if (opts.action === 'fill') actionText = await fillStr(cdp, sid, opts.actionArgs[0], opts.actionArgs.length > 1 ? opts.actionArgs.slice(1).join(' ') : null, refs);
       else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
       else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], opts.actionArgs.slice(2));
@@ -22361,6 +22525,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         return beforePage;
       })
       .catch(() => actionTarget.page || beforePage);
+    // Live fill state is a dispatch channel, not target metadata: keep it out of logs/receipts.
+    const fillValueState = actionTarget.fillValueState || null;
+    delete actionTarget.fillValueState;
     const wrappedDispatch = async () => {
       try {
         const snapshotControls = shouldSnapshotFormControlState(action, actionTarget);
@@ -22384,6 +22551,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           }
         }
         actionTarget.dispatchText = String(text || '');
+        if (action === 'fill') applyFillValueState(actionTarget, fillValueState);
         if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
           actionTarget.expectedOutcome = 'clipboard-no-change';
         }
@@ -22696,9 +22864,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     fill: async args => {
       const parsed = parseFillArgs(args);
       const feedbackPolicy = fillFeedbackPolicy(session.batchNextCommand);
+      // fillStr records the before/after value here; actionFeedback turns it into receipt state.
+      const fillValueState = {};
       const value = parsed.react
-        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text] }, feedbackPolicy, null, parsed.fopts)
-        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text] }, feedbackPolicy, null, parsed.fopts);
+        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true, valueState: fillValueState }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts)
+        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { valueState: fillValueState }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts);
       if (feedbackPolicy === 'report-only') {
         session.awaitSearchSubmitListing = true;
         session.searchSubmitQuery = parsed.text;
@@ -24291,6 +24461,8 @@ Usage: cdp <command> [args]
 {{command:wait}}
 {{command:fill}}
                                     --react: native value setter + input/change events
+                                    "" clears the field (native setter + input/change events)
+                                    Receipt shows the previous value; a rejected value is fill-value-mismatch
                                     JSON defaults to chrome-cdp-ex.fill.v1; --full restores action.v1
 {{command:select}}
 {{command:fullshot}}
@@ -24787,7 +24959,8 @@ function parseFillArgs(args = []) {
     positional.push(token);
   }
   const selector = positional[0] || '';
-  const text = positional.slice(1).join(' ');
+  // null = no text argument (an error); '' = an explicit empty string, which clears the field.
+  const text = positional.length > 1 ? positional.slice(1).join(' ') : null;
   return {
     format: fopts.format,
     compact: fopts.compact,
@@ -25035,10 +25208,24 @@ function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
   if (cmd === 'fill') {
     const parsed = parseFillArgs(args);
     const suffix = formatArgSuffix(parsed.format, parsed);
-    if (parsed.react) return ['--react', parsed.selector, parsed.text, ...suffix];
-    return [parsed.selector, parsed.text, ...suffix];
+    const text = parsed.text == null ? [] : [parsed.text];
+    if (parsed.react) return ['--react', parsed.selector, ...text, ...suffix];
+    return [parsed.selector, ...text, ...suffix];
   }
   return args;
+}
+
+// CLI validation for fill: a missing text argument is an error, an explicit "" is a clear.
+function fillCliArgError(cmdArgs = []) {
+  let parsed;
+  try {
+    parsed = parseFillArgs(cmdArgs);
+  } catch {
+    return null; // parseFillArgs errors (unknown flag, --help) surface from the command itself
+  }
+  if (!parsed.selector) return 'selector required';
+  if (parsed.text == null) return 'text required';
+  return null;
 }
 
 function commandUsageTemplate(cmd = '', targetPrefix = '') {
@@ -26790,14 +26977,8 @@ async function main(options = {}) {
     if (!checkArgs[0]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
   } else if (cmd === 'fill') {
-    const checkArgs = argsWithoutFormat(cmdArgs);
-    if (checkArgs[0] === '--react') {
-      if (!checkArgs[1]) exitCliError('selector required', { cmd, targetPrefix, format: cliErrorFormat });
-      if (!checkArgs[2]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
-    } else {
-      if (!checkArgs[0]) exitCliError('selector required', { cmd, targetPrefix, format: cliErrorFormat });
-      if (!checkArgs[1]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
-    }
+    const fillError = fillCliArgError(cmdArgs);
+    if (fillError) exitCliError(fillError, { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
   } else if (cmd === 'evalraw') {
     // args: [method, ...jsonParts] — join json parts in case of spaces
@@ -27136,6 +27317,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonRequestMayHaveSideEffects,
   fillableControlProbeDeclaration, notFillableControlError,
   fillLiveValueAccepted, fillValueRejectedError, fillLiveValuePageScript,
+  applyFillValueState, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
   looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
