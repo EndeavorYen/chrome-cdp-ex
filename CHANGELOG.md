@@ -87,6 +87,24 @@
   to click it on purpose. An `@ref` is checked for disabled without waiting, also when its scroll
   settle timed out. A selector that still matches nothing fails as `Kind: selector`, as before
   ([#468](https://github.com/EndeavorYen/chrome-cdp-ex/issues/468)).
+* `status <target> --vitals` (also with `--runtime`) reports, in about 600 characters:
+  * LCP with its element selector and text.
+  * CLS (largest session window), with the top shifting selectors of that window.
+  * An INP estimate over slow (104 ms or longer) interactions, with its target. One outlier is
+    skipped per 50 `performance.interactionCount`.
+  * Long-task and long-animation-frame counts / total / worst.
+  * TTFB / DCL / load.
+
+  It reads entries the page already buffered (`PerformanceObserver` with `buffered: true`, about
+  120 ms, then disconnected); the page script lives in the new `scripts/lib/web-vitals.mjs`. A
+  saturated timeline buffer is reported (`dropped: N`, `Buffer full, dropped:`) instead of passing
+  for the total. URLs go through the shared URL redactor. `--format json` adds a
+  `chrome-cdp-ex.vitals.v1` `vitals` object to the status JSON. Unsupported entry types are
+  `unavailable`, not an error. Text `status` now collects `--runtime` / `--vitals` before reading
+  the console and exception buffers, so entries logged meanwhile are printed instead of being
+  marked read unseen. The `status` synopsis gains `[--vitals]`, so the reviewed command catalog
+  identity and the frozen CLI help bytes change
+  ([#473](https://github.com/EndeavorYen/chrome-cdp-ex/issues/473)).
 
 ### Bug Fixes
 

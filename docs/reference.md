@@ -48,7 +48,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
 | `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
 | `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
-| `status` | `status <target> [--runtime]` | `read / standard` |
+| `status` | `status <target> [--runtime] [--vitals]` | `read / standard` |
 | `console` | `console <target> [--all\|--errors\|--clear]` | `conditional-mutation / conditional` |
 | `summary` | `summary <target>` | `read / standard` |
 | `report` | `report <target> [--last N\|--all] [--format json] [--qa\|--summary] [--compact]` | `evidence / standard` |
@@ -161,6 +161,47 @@ up to 60 s. Parsed maps are cached per tab daemon, least recently used first out
 past 32 MB, and cleared on the next top-level navigation. With no map, or when
 it cannot be read in time, the generated frame is printed unchanged; source
 mapping never fails a command.
+
+For "why is this page slow or janky", run `status <target> --vitals` (it can be
+combined with `--runtime`). It reads the entries the page already buffered for
+`largest-contentful-paint`, `layout-shift`, `event`, `longtask` and
+`long-animation-frame` (`PerformanceObserver` with `buffered: true`, observed for
+about 120 ms and then disconnected) plus the navigation timing entry, and prints
+at most about 600 characters. The vitals are collected before the console and
+exception buffers are read, so entries logged during the window are printed in
+the same call. The text covers:
+
+- LCP time (from `activationStart`), with the element's selector and text.
+- CLS (largest session window), with the top shifting selectors of that window.
+  Each element is credited with the score of every shift in the window it took
+  part in.
+- INP over slow interactions only: one outlier is skipped per 50 page
+  interactions (`performance.interactionCount` when available). When that pick
+  falls below the 104 ms buffer threshold, INP is reported as `< 104 ms`
+  (rated good, or unrated when the `event` buffer is full).
+- Long-task and long-animation-frame (LoAF) counts, totals and worst durations.
+- TTFB / DCL / load.
+
+`status --vitals --format json` adds a `vitals` object (`chrome-cdp-ex.vitals.v1`,
+with good / needs-improvement / poor ratings) to `chrome-cdp-ex.status.v1`;
+without `--vitals` it is `null`. JSON adds `slowInteractions`,
+`interactionCount`, `windowShifts`, LoAF `maxBlockingMs` and the slowest script.
+
+Each timeline buffer keeps only the first 150 (`layout-shift`, `event`, LCP) or
+200 (`longtask`, LoAF) entries of the page's life. When the browser reports
+dropped entries (`droppedEntriesCount`), or a buffer holds its full capacity,
+the metric carries `bufferFull: true` and `dropped` (the reported count, or
+`null` when Chrome reported none). Chrome 154 reported 0 for a full LoAF buffer.
+The text prints a `Buffer full, dropped:` line (`?` for an unknown count),
+because those counts then cover only the start of the page.
+
+An entry type the page does not support is `unavailable`, a supported type with
+no entries is `none`, and a collection failure is reported as `unavailable` with
+the reason instead of failing `status`. Chrome only buffers Event Timing entries
+of 104 ms or longer, so faster interactions are not visible. URLs and
+classic-script invokers lose their query and fragment, and then go through the
+shared URL redactor (userinfo, sensitive path parameters such as
+`;jsessionid=`).
 
 For variable-length combat or dialogue, keep the mandatory finite cap and add
 one page condition:

@@ -103,6 +103,7 @@
     "package/skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-sampler.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",
+    "package/skills/chrome-cdp-ex/scripts/lib/web-vitals.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs",
     "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs",
     "package/skills/chrome-cdp-ex/scripts/session.mjs"

@@ -1155,7 +1155,7 @@ function validateStep(id, stdout, {
     return model.schema;
   }
   if (id === 'status') {
-    if (!exactKeys(model, ['schema', 'targetId', 'target', 'page', 'console', 'exceptions', 'navigation', 'runtime', 'targetResolution'])
+    if (!exactKeys(model, ['schema', 'targetId', 'target', 'page', 'console', 'exceptions', 'navigation', 'runtime', 'vitals', 'targetResolution'])
       || model.schema !== 'chrome-cdp-ex.status.v1'
       || typeof model.targetId !== 'string'
       || !model.targetId.startsWith(targetPrefix)
@@ -1169,6 +1169,7 @@ function validateStep(id, stdout, {
       || !Array.isArray(model.exceptions) || model.exceptions.length !== 0
       || !Array.isArray(model.navigation) || model.navigation.length !== 0
       || model.runtime !== null
+      || model.vitals !== null
       || !validTargetResolution(model.targetResolution, targetPrefix, model.targetId)) {
       throw new Error(`status fixture output is invalid: ${JSON.stringify(model).slice(0, 1000)}`);
     }
