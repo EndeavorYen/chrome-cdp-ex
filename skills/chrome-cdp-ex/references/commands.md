@@ -1189,6 +1189,18 @@ has no target. `click` / `jsclick` receipts add `Outcome: changed` or
 unobserved named clicks print no outcome word.
 Short of the navigating href is FAIL.
 
+A link that opens another browsing context (`target="_blank"`, a named target
+other than this frame's own name, or a `<base target>` default) is followed in
+the tab it opens. The click compares page targets before and after and reports
+`Clicked <A> "Docs" → opened new tab 9DE1D904 https://…`, exits 0, and its Next is
+`perceive 9DE1D904 -C -d 8`. A named target that reuses an already open tab
+prints `→ opened in tab <prefix> <url>`. It is `Kind: no-navigation` (exit 1)
+only when this tab did not navigate and no tab opened within the click's
+navigation wait. A named target whose tab already shows the link URL is reloaded
+in place without a trace in the target list, so that failure names the tab to
+check. cdp does not activate the new tab (background mode, #415);
+Chrome's own focus rules for a clicked `_blank` link still apply.
+
 ### Pointer-sequence click — `click --pointer`
 
 ```bash
