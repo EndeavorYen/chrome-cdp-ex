@@ -51,7 +51,7 @@ describe('action recovery lib', () => {
       { action: 'click', target: { targetId: '62E1DF19', input: '#p17btn' } },
     )).toMatchObject({
       kind: 'no-input-events',
-      nextCommand: 'cdp jsclick 62E1DF19 #p17btn',
+      nextCommand: 'cdp jsclick 62E1DF19 "#p17btn"', // #445: quoted, or sh reads #… as a comment
     });
   });
 
