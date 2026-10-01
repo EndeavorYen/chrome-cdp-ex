@@ -45,6 +45,17 @@
 
 ### Bug fixes
 
+* A real mouse `click` (CSS selector, `@ref`, or `clickxy`) on a same-tab `<a href>` to a fast page no
+  longer exits 1 with `Kind: no-input-events` while the tab has navigated. The click path installs a
+  page-side mousedown/click probe and reads it back after dispatch; a fast navigation committed first,
+  so the read ran in the new document, found no probe, and looked like "the page received no
+  mousedown/click events". `dispatchClick` now listens for a main-frame `Page.frameNavigated` on the
+  tab's session while it dispatches (no extra CDP round trip). When the probe has vanished and that
+  event arrived, or the probe was in the top document and `location.href` changed, the click landed
+  and the normal click receipt follows (`Clicked <A> "Go next". Outcome: changed`, exit 0).
+  `no-input-events`, with its hidden-tab hint, stays for a click that produced neither page events nor
+  a navigation, including a probe that survived with zero events. Clicks whose probe saw events make
+  the same calls as before ([#447](https://github.com/EndeavorYen/chrome-cdp-ex/issues/447)).
 * `click` no longer reports `Clicked <BUTTON> "…"` when another element covers the button. The mouse
   path for a CSS selector or `@ref` sent the real mouse event to the element centre without checking
   what was on top there, so a fixed sidebar, sticky header, toast, or dialog got the click and the
