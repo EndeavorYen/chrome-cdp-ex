@@ -146,6 +146,24 @@
   does not bound it. Priority text such as `saved` or `error` is listed under `+++ Added`, as in the
   default shape
   ([#487](https://github.com/EndeavorYen/chrome-cdp-ex/issues/487)).
+* A `click @ref` no longer takes down the tab daemon ([#464](https://github.com/EndeavorYen/chrome-cdp-ex/issues/464)).
+  On Windows with headed Chrome, a click on an element that needed a smooth scroll failed 10 of 16
+  times. It either exited with `Connection closed before response` or printed `Clicked` for a click
+  that never landed. There were three causes, and each is fixed:
+  * Ref resolution scrolled with the page's `scroll-behavior: smooth`. Its settle budget (1.8 s, then
+    up to another 1.8 s for the hit-test re-centre) outlived the 2 s CDP timeout.
+    Automation scrolls are now `behavior: 'instant'`, and every settle pass shares one 1.4 s budget.
+  * After that timeout, the no-scroll fallback returned `{ rect, objectId }` where callers read
+    `x`/`y` directly, so the click point was `NaN`. The rect is now unwrapped, and `dispatchClick`
+    refuses a non-finite point with a clear error.
+  * `dispatchClick` slept with the mouse-event promises still unhandled, so the `NaN` rejection
+    became an unhandled rejection that killed the daemon. Each promise is now handled as it is
+    created.
+
+  A daemon that still dies on an uncaught error writes `cdp-<id>.crash.json`
+  (`chrome-cdp-ex.daemon-crash.v1`), and the client's error names the cause:
+  `Connection closed before response: the daemon for this tab crashed (…)`.
+  The same repro now passes 16 of 16, and a click takes about 0.8 s instead of 2.5–3.4 s.
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 

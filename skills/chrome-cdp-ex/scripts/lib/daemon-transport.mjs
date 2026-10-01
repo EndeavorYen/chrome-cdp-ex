@@ -181,6 +181,7 @@ export function requestDaemon(conn, request, options = {}) {
     timeoutMs: requestedTimeoutMs,
     maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
     mayHaveSideEffects = false,
+    crashReport = null,
   } = options;
   const timeoutCeiling = ipcTimeoutForRequest(request);
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
@@ -204,9 +205,14 @@ export function requestDaemon(conn, request, options = {}) {
       clearTimeout(timer);
       operation();
     };
-    const closeDiagnostic = kind => responseFailure(new Error(
-      `Connection closed before response. The daemon for this tab may have crashed or exited (idle timeout, page closed, or browser disconnect). Re-run "perceive <target>" to restart it; check ${runtimeDir} for stale sockets if this repeats.`,
-    ), { mayHaveSideEffects, kind });
+    const closeDiagnostic = kind => {
+      let crash = null;
+      try { crash = typeof crashReport === 'function' ? crashReport() : null; } catch {}
+      return responseFailure(new Error(crash
+        ? `Connection closed before response: the daemon for this tab crashed (${crash}). Re-run "perceive <target>" to restart it.`
+        : `Connection closed before response. The daemon for this tab may have crashed or exited (idle timeout, page closed, or browser disconnect). Re-run "perceive <target>" to restart it; check ${runtimeDir} for stale sockets if this repeats.`,
+      ), { mayHaveSideEffects, kind });
+    };
     const onData = chunk => {
       const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
       const newline = incoming.indexOf(10);

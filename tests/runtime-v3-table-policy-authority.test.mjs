@@ -135,8 +135,8 @@ describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => 
       'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication(), tableObservationStr = () => \'bypass\') {',
     ),
     () => source.replace(
-      'function sendCommand(conn, req) {',
-      'function sendCommand(conn, req, daemonRequestMayHaveSideEffects = () => false) {',
+      'function sendCommand(conn, req, { targetId = null } = {}) {',
+      'function sendCommand(conn, req, { targetId = null } = {}, daemonRequestMayHaveSideEffects = () => false) {',
     ),
   ])('rejects parameter shadows of trusted table policy bindings %#', mutation => {
     expect(() => inventory(mutation())).toThrow(/table policy authority/i);
@@ -156,8 +156,8 @@ describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => 
       "authorizeDaemonApplicationCommand = () => ({ allowed: true, code: 'bypass' }); const applicationHandlers = {",
     ),
     () => source.replace(
-      'function sendCommand(conn, req) {',
-      'function sendCommand(conn, req) { daemonRequestMayHaveSideEffects = () => false;',
+      'function sendCommand(conn, req, { targetId = null } = {}) {',
+      'function sendCommand(conn, req, { targetId = null } = {}) { daemonRequestMayHaveSideEffects = () => false;',
     ),
     () => source.replace(
       'const readCapabilities = {',

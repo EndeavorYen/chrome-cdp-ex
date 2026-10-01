@@ -2952,7 +2952,9 @@ describe('issues #181-#191 open contracts', () => {
       compact: true,
     });
     expect(() => T.parseClickArgs(['@1', '--foo'])).toThrow(/click: unknown argument --foo/);
-    expect(T.scrollSettledRectFunctionDeclaration()).toMatch(/Date\.now\(\) \+ 1800/);
+    // #464: one bounded settle budget that fits inside the ref-resolve CDP timeout.
+    expect(T.scrollSettledRectFunctionDeclaration()).toContain(`Date.now() + ${T.REF_SETTLE_BUDGET_MS}`);
+    expect(T.REF_SETTLE_BUDGET_MS).toBeLessThan(T.REF_RESOLVE_TIMEOUT);
     expect(T.scrollSettledRectFunctionDeclaration()).toMatch(/setTimeout/);
   });
 

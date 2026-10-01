@@ -11,7 +11,7 @@ const HF_HOME_VIEWPORT = { width: 1042, height: 632 };
 const HERO_NAME = 'Browse 2M+ models';
 const APPS_NAME = 'Browse 1M+ applications';
 const TARGET_ID = '54A7C685ABCDEF0123456789ABCDEF01';
-const JSCLICK_SCROLL_INTO_VIEW = { block: 'center', inline: 'center' };
+const JSCLICK_SCROLL_INTO_VIEW = { block: 'center', inline: 'center', behavior: 'instant' };
 
 function leftoverGoldenPathDump() {
   return [

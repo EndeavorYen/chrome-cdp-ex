@@ -166,6 +166,8 @@ const RELOAD_READY_PROBE_TIMEOUT = 500;
 const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 500;
 const REF_RESOLVE_TIMEOUT = 2000;
+// Page-side scroll settle budget inside REF_RESOLVE_TIMEOUT, leaving room for the round trip.
+const REF_SETTLE_BUDGET_MS = 1400;
 const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
 const HOVER_MUTATION_TIMEOUT_MS = 3000;
 const HOVER_MUTATION_MARKER = 'chrome-cdp-ex.hover-mutation.v1';
@@ -1413,6 +1415,52 @@ const DAEMON_RECORD_SUFFIX = '.daemon.json';
 function daemonRecordPath(targetId, runtimeDir = RUNTIME_DIR) {
   const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
   return resolve(runtimeDir, `cdp-${safeTarget}${DAEMON_RECORD_SUFFIX}`);
+}
+
+// A tab daemon that dies on an uncaught error leaves one bounded record behind, so the
+// client's "Connection closed before response" can say why (#464). The session log is
+// rewritten by the next daemon, so it cannot carry this.
+const DAEMON_CRASH_SCHEMA = 'chrome-cdp-ex.daemon-crash.v1';
+
+function daemonCrashReportPath(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}.crash.json`);
+}
+
+function recordDaemonCrash(targetId, kind, error, { runtimeDir = RUNTIME_DIR, writer = writeFileSync, now = Date.now, pid = process.pid } = {}) {
+  const payload = {
+    schema: DAEMON_CRASH_SCHEMA,
+    ts: now(),
+    pid,
+    kind,
+    // Bounded first, then redacted: an error message can quote page data.
+    message: redactSensitiveString(String(error?.message || error || 'unknown error').slice(0, 300)),
+    stack: redactSensitiveString(String(error?.stack || '').slice(0, 2000)),
+  };
+  try {
+    writer(daemonCrashReportPath(targetId, runtimeDir), `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+  } catch {}
+  return payload;
+}
+
+function readDaemonCrashReport(targetId, { sinceMs = 0, runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+  try {
+    const record = JSON.parse(reader(daemonCrashReportPath(targetId, runtimeDir), 'utf8'));
+    if (record?.schema !== DAEMON_CRASH_SCHEMA || !(Number(record.ts) >= sinceMs)) return null;
+    return `${record.kind}: ${record.message}`;
+  } catch {
+    return null;
+  }
+}
+
+function installDaemonCrashRecorder(targetId, { processRef = process, record = recordDaemonCrash } = {}) {
+  const fail = kind => error => {
+    record(targetId, kind, error);
+    try { processRef.stderr.write(`Daemon ${kind}: ${error?.stack || error}\n`); } catch {}
+    processRef.exit(1);
+  };
+  processRef.on('uncaughtException', fail('uncaughtException'));
+  processRef.on('unhandledRejection', fail('unhandledRejection'));
 }
 
 function writeDaemonRecord(targetId, { pid = process.pid, startedAt = new Date().toISOString() } = {}, { runtimeDir = RUNTIME_DIR, writer = writeFileSync } = {}) {
@@ -10936,9 +10984,12 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     const initial = readRect();
     const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
       initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
-    if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center' });
+    if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    // One budget for every settle pass (including the hit-test re-centre), kept below the
+    // caller's REF_RESOLVE_TIMEOUT so the CDP call returns instead of timing out (#464).
+    const settleDeadline = Date.now() + ${REF_SETTLE_BUDGET_MS};
     const settle = async (maxSamples) => {
-      const deadline = Date.now() + 1800;
+      const deadline = settleDeadline;
       let previous = readRect();
       let stableSamples = 0;
       for (let sample = 0; sample < maxSamples; sample++) {
@@ -10970,7 +11021,7 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     ${clickPointHitFunctionSource()}
     let hit = clickPointHit(this, previous);
     if (hit && hit.covered && fullyVisible) {
-      this.scrollIntoView({ block: 'center', inline: 'center' });
+      this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       previous = await settle(60);
       hit = clickPointHit(this, previous);
       if (hit && hit.covered) hit.recentred = true;
@@ -11002,7 +11053,24 @@ async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = false } =
     }, sid, REF_RESOLVE_TIMEOUT);
   } catch (error) {
     if (isTimeoutError(error, ['Runtime.callFunctionOn'])) {
-      return resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, { objectId });
+      // resolveRefRectNoScroll returns { rect, objectId }; callers of resolveRef read the
+      // rect fields directly, so unwrap it (#464: x/y were undefined → NaN click point).
+      const { rect } = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, { objectId });
+      const value = { ...rect, connected: true, settled: false };
+      if (hitTest) {
+        // No settle happened, so check the point now: a covered target still fails as
+        // covered instead of clicking whatever sits there.
+        const probe = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, {
+          objectId,
+          functionDeclaration: `function() {
+            ${clickPointHitFunctionSource()}
+            const box = this.getBoundingClientRect();
+            return clickPointHit(this, { x: box.x, y: box.y, w: box.width, h: box.height });
+          }`,
+        });
+        value.hit = probe && typeof probe === 'object' ? probe : null;
+      }
+      return value;
     }
     throw error;
   }
@@ -13899,7 +13967,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
     (function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
-      el.scrollIntoView({ block: 'center', inline: 'center' });
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       const rect = el.getBoundingClientRect();
       return {
         ok: true,
@@ -13930,6 +13998,12 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
   const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${r.text}"`;
   const fb = fallback ? ' (fallback)' : '';
   return `${out}\nElement screenshot of ${desc} — ${Math.round(r.w)}×${Math.round(r.h)} CSS px (clip: ${Math.round(clip.width)}×${Math.round(clip.height)} with padding)${fb}`;
+}
+
+// Attach a no-op rejection handler now and return the same promise for a later await.
+function handledLater(promise) {
+  promise.catch(() => {});
+  return promise;
 }
 
 async function dispatchMouseEventAllowingAckTimeout(cdp, sid, params) {
@@ -14200,6 +14274,9 @@ async function readClickEventProbe(cdp, sid, probe = {}) {
 // probe is fail-closed for top-level clicks; framed targets must probe the
 // iframe document instead of treating a top-level empty `seen` as proof.
 async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error(`Click point is not a finite viewport coordinate (x=${x}, y=${y}); the target's box could not be measured. Re-run perceive and retry, or use a CSS selector.`);
+  }
   const probe = await installClickEventProbe(cdp, sid, {
     objectId: probeTarget.objectId || null,
     x,
@@ -14208,10 +14285,13 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
   const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
   const navigation = watchMainFrameNavigation(cdp, sid);
   try {
-    const moved = dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
-    const pressed = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
+    // The events overlap on purpose, so each promise is marked handled as soon as it exists:
+    // a rejection while we sleep must reach Promise.all, not crash the daemon as an
+    // unhandled rejection (#464).
+    const moved = handledLater(dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 }));
+    const pressed = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 }));
     await sleep(50);
-    const released = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
+    const released = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 }));
     await Promise.all([moved, pressed, released]);
     const framed = probeTarget.framed === true;
     if (probe.opaqueFrame && framed) return;
@@ -14603,7 +14683,7 @@ function namedInViewportClickExpression(name) {
         });
       }
       el = named[0];
-      el.scrollIntoView({ block: 'center', inline: 'center' });
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       scrolled = true;
     }
     const rect = el.getBoundingClientRect();
@@ -14680,7 +14760,7 @@ async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
     const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
       functionDeclaration: pointer ? pointerClickFunctionDeclaration() : `function() {
-        this.scrollIntoView({ block: 'center', inline: 'center' });
+        this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         if (typeof this.click === 'function') this.click();
         else this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         return { tag: this.tagName, text: (this.textContent || '').trim().substring(0, 80) };
@@ -14734,7 +14814,7 @@ function pointerClickFunctionDeclaration(settleMs = POINTER_CLICK_SETTLE_MS) {
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
       return { ok: false, error: 'click --pointer: element is disabled (' + el.tagName + ' "' + label + '")' };
     }
-    el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const rect = el.getBoundingClientRect();
     if (!(rect.width > 0 && rect.height > 0)) {
       return { ok: false, error: 'click --pointer: element is not visible (zero size) (' + el.tagName + ' "' + label + '")' };
@@ -16024,7 +16104,7 @@ function fillableControlPageProbe(selector, { clear = true } = {}) {
       };
     }
     const before = ${fillControlValueExpression('el')};
-    el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     el.focus();
     ${clear ? `if (el.isContentEditable) el.textContent = '';
     else el.value = '';
@@ -16039,7 +16119,7 @@ function fillableRefProbeDeclaration({ clear = true } = {}) {
     if (!info.fillable) return info;
     const el = this;
     info.before = ${fillControlValueExpression('el')};
-    this.scrollIntoView({block:'center'});
+    this.scrollIntoView({ block: 'center', behavior: 'instant' });
     this.focus();
     ${clear ? `if (this.isContentEditable) this.textContent = '';
     else this.value = '';
@@ -16229,7 +16309,7 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
     objectId,
     functionDeclaration: `function(value) {
       const el = this;
-      el.scrollIntoView({ block: 'center', inline: 'center' });
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       el.focus();
       if (el.isContentEditable) {
         el.textContent = value;
@@ -17409,7 +17489,7 @@ async function loadAllStr(cdp, sid, selector, intervalMs = LOADALL_DEFAULT_INTER
       (function() {
         const el = document.querySelector(${JSON.stringify(selector)});
         if (!el) return null;
-        el.scrollIntoView({ block: 'center', inline: 'center' });
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         const rect = el.getBoundingClientRect();
         return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       })()
@@ -23510,6 +23590,7 @@ async function attachDaemonTarget(cdp, targetId, { background = false } = {}) {
 }
 
 async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
+  installDaemonCrashRecorder(targetId);
   resetScreenshotTier();
   const sp = sockPath(targetId);
   const daemonMetadata = {
@@ -24705,10 +24786,12 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
   }));
 }
 
-function sendCommand(conn, req) {
+function sendCommand(conn, req, { targetId = null } = {}) {
+  const sentAt = Date.now();
   return requestDaemon(conn, req, {
     runtimeDir: RUNTIME_DIR,
     mayHaveSideEffects: daemonRequestMayHaveSideEffects(req),
+    crashReport: targetId ? () => readDaemonCrashReport(targetId, { sinceMs: sentAt }) : null,
   });
 }
 
@@ -27930,7 +28013,7 @@ async function main(options = {}) {
             env: aliasEnv(alias),
             ...runtimeIdentity,
           });
-          const resp = await sendCommand(conn, { cmd: opts.command, args: opts.commandArgs });
+          const resp = await sendCommand(conn, { cmd: opts.command, args: opts.commandArgs }, { targetId });
           try { conn.end(); } catch {}
           if (resp.ok) {
             entry.ok = true;
@@ -28103,7 +28186,7 @@ async function main(options = {}) {
         console.log(formatOpenReadyMessage(targetId, url));
         try {
           const conn = await connectToSocket(sp);
-          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
+          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] }, { targetId });
           conn.end();
           if (resp.ok && resp.result) console.log('---\n' + resp.result);
         } catch (e) {
@@ -28349,9 +28432,9 @@ async function main(options = {}) {
       if (allowStaleDaemon && runtime.initialConnection) {
         const connection = runtime.initialConnection;
         runtime.initialConnection = null;
-        return sendCommand(connection, request);
+        return sendCommand(connection, request, { targetId: runtime.targetId });
       }
-      return sendCommand(await connectToSocket(runtime.endpoint), request);
+      return sendCommand(await connectToSocket(runtime.endpoint), request, { targetId: runtime.targetId });
     },
     stop: async resolvedTargetId => {
       const stopResult = await stopDaemons(resolvedTargetId);
@@ -28596,7 +28679,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
-  dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent,
+  dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent, handledLater, resolveRef,
+  daemonCrashReportPath, recordDaemonCrash, readDaemonCrashReport, installDaemonCrashRecorder, REF_SETTLE_BUDGET_MS, REF_RESOLVE_TIMEOUT,
   parseClickEventProbeOutput, clickProbeSawPageEvent,
   isNamedClickQuery, namedClickQueryName, textSelectorName, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
   namedClickActionTarget, namedInViewportClickExpression, NAMED_IN_VIEWPORT_CLICK_OUTCOME,
