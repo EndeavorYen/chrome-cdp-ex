@@ -52,7 +52,7 @@ describe('public contract baseline', () => {
 
     expect(contract.schema).toBe('chrome-cdp-ex.public-contracts.v1');
     expect(contract.productVersion).toBe(packageVersion);
-    expect(contract.commands).toHaveLength(81);
+    expect(contract.commands).toHaveLength(82);
     expect(contract.commands.every(command => (
       typeof command.kind === 'string'
       && typeof command.authorization === 'string'
@@ -61,8 +61,8 @@ describe('public contract baseline', () => {
     expect(new Set(aliases).size).toBe(23);
     expect(contract.schemas).toHaveLength(5);
     expect(contract.schemas.every(schema => schema.id.startsWith('https://'))).toBe(true);
-    expect(contract.mcp.tools).toHaveLength(26);
-    expect(contract.mcp.runCommandAllowlist).toHaveLength(83);
+    expect(contract.mcp.tools).toHaveLength(27);
+    expect(contract.mcp.runCommandAllowlist).toHaveLength(84);
     expect(contract.mcp.resourceTemplates).toHaveLength(3);
   });
 
@@ -111,6 +111,7 @@ describe('public contract baseline', () => {
     expect(contract.mcp.mappingCases.every(entry => commandSpellings.has(entry.command[0]))).toBe(true);
     expect(contract.mcp.invalidCases.map(entry => entry.id)).toEqual([
       'mutation-without-confirm',
+      'drag-without-confirm',
       'sensitive-read-without-confirm',
       'checkpoint-without-confirm',
       'qa-page-without-confirm',

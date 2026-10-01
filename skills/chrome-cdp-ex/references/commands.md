@@ -226,6 +226,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
 | `scroll` | `scroll <target> <dir\|x,y\|to top\|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa\|--summary] [--compact]` | `mutation / mutation` |
 | `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
+| `drag` | `drag <target> <from sel\|@ref> <to sel\|@ref\|x,y> [--steps N] [--html5\|--pointer] [--format json]` | `mutation / mutation` |
 | `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
 | `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
 | `wait` | `wait <target> <ms>` | `read / standard` |
@@ -620,6 +621,7 @@ scripts/cdp.mjs scroll  <target> to top [--format json] [--compact]    # documen
 scripts/cdp.mjs scroll  <target> to bottom --scroll-container SELECTOR [--format json] # explicit overflow container (same idea as table --scroll-container)
 scripts/cdp.mjs loadall <target> <selector> [interval-ms] [--timeout-ms N]  # click "load more" until gone (interval default 1500ms, timeout default 30000ms)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
+scripts/cdp.mjs drag    <target> <from sel|@ref> <to sel|@ref|x,y> [--steps N] [--html5|--pointer] [--format json] # real mouse drag (auto-returns perceive diff)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
 scripts/cdp.mjs waitfor <target> --gone <sel|@ref> [ms]  # wait for element to DISAPPEAR (streaming end)
 scripts/cdp.mjs waitfor <target> --text "str" [ms]   # wait for text to appear on page (max 5min)
@@ -684,6 +686,49 @@ scripts/cdp.mjs stop    [target] [--format json] # stop daemon(s) with confirmat
 Add `--allow-stale-daemon` to a target command only when preserving an intentional old daemon session matters more than running the current checkout. Normal recovery is `scripts/cdp.mjs stop <target>`, then rerun the original command.
 
 `stop` reports which daemon target prefixes were stopped or failed and how many sessions remain. JSON mode returns `chrome-cdp-ex.stop.v1`; repeating cleanup is a successful explicit no-op with `noop: true`, while failed cleanup keeps the target in `remainingTargets` and lists it in `failedTargets`. A daemon whose browser is gone is reported as `already gone` (`goneTargets`; its stale socket and `cdp-<target>.daemon.json` record are removed), and an unreachable daemon that is still running is killed by its recorded pid after a check that the pid is still that daemon. `remainingSessions` counts only targets with a live daemon (a running recorded pid or an endpoint that answers). A record or socket that a newer daemon wrote, or a socket that only timed out, is left in place. `results` has one `{target, status, reason}` entry per daemon, and text mode prints one line per daemon when any was not a plain stop.
+
+### Drag and drop
+
+`drag <target> <from> <to>` presses the left button at the source centre, sends `--steps N` (default 10, max 100)
+`mouseMoved` events with the button held, and releases at the destination. The source (CSS selector, `@ref`, or `@c`
+ref) is scrolled into view first; the destination (CSS selector, `@ref`, `@c` ref, or `x,y` CSS pixels) is read where it
+is, so it must already be in the viewport. Both points are hit-tested first: something on top of either point fails
+with `Kind: covered` and nothing is sent.
+
+By default the gesture runs with `Input.setInterceptDrags`. If the page starts an HTML5 drag (a `draggable` source whose
+`dragstart` is not cancelled), Chrome hands the drag data to the CLI, which sends `dragEnter`, `dragOver`, and `drop` to
+the destination with that data and then releases the button. Otherwise the gesture stays a plain pointer drag, which is
+what sortable lists, sliders, and splitters built on pointer or mouse events need. `--html5` fails with
+`Kind: drag-not-started` when no HTML5 drag starts (the pointer gesture was still sent); `--pointer` skips interception.
+
+The receipt names the mode and the page events a capture listener saw, for example
+`page events: pointerdown, pointermove×10, pointerup` or `dragstart, dragenter, dragover, drop, dragend`. An HTML5 drop
+that fires no `drop` event says the destination did not accept it (its `dragover` handler did not call `preventDefault`).
+A drag the page saw no events for fails closed with `Kind: no-input-events`; on a hidden background tab, Next is
+`CDP_BACKGROUND=0 cdp drag …`.
+
+A started HTML5 drag always ends with a `drop` or a `dragCancel`. If the page starts the drag only after the
+release (a slow `dragstart` handler), or fires `dragstart` with no `drop`/`dragend`, the drag is cancelled and the
+command fails with `Kind: drag-incomplete`; otherwise the tab would ignore mouse input until it reloads. A sortable
+reorder does not change the accessibility tree, so the receipt also compares the source's place among its siblings
+and reports `order: <LI> "A" index 0 → 2 in <UL#list>` as a change.
+
+Where the item lands depends on the library: the drop goes to the destination's centre with a single `dragOver`, so a
+list that inserts by the hovered item's midpoint may place it before the destination (another library may place it
+after). Drop at an `x,y` a little past the midpoint to choose a side. `--steps` adds moves (about 16 ms each) but does
+not hold the press longer, so libraries that start a drag only after a press delay (SortableJS `delay`, touch-style
+long press) may not activate. An `@c` destination is re-checked against the viewport and fails as `Kind: stale-ref`
+when scrolling the source moved the page; a destination outside the viewport fails as `Kind: not-in-viewport`.
+
+`--pointer` (and the fallback when `Input.setInterceptDrags` is unavailable) does not intercept: on a headed browser a
+draggable source can start a native OS drag there, which the physical mouse then drives. Prefer the default mode for
+draggable sources.
+
+```bash
+cdp drag <target> '#list [data-id="a"]' '#list [data-id="c"]'   # reorder a pointer-based sortable list
+cdp drag <target> '#card' '#drop-zone' --html5 --format json     # HTML5 drag-and-drop, fail if it never starts
+cdp drag <target> @12 640,300 --steps 20                         # drop at a viewport point
+```
 
 ### Dialog handling
 

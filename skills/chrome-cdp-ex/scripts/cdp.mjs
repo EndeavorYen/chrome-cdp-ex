@@ -192,6 +192,15 @@ const HOVER_MUTATION_MARKER = 'chrome-cdp-ex.hover-mutation.v1';
 const HOVER_REVEAL_MARKER = 'chrome-cdp-ex.hover-reveal.v1';
 const CLICK_MOUSE_ACK_TIMEOUT_MS = 6000;
 const CLICK_EVENT_PROBE_KEY = '__chromeCdpExClickProbe';
+const DRAG_EVENT_PROBE_KEY = '__chromeCdpExDragProbe';
+const DRAG_DEFAULT_STEPS = 10;
+const DRAG_MAX_STEPS = 100;
+const DRAG_PRESS_HOLD_MS = 50;
+const DRAG_STEP_DELAY_MS = 16;
+const DRAG_INTERCEPT_WAIT_MS = 250;
+// After the release: how long to wait for a page whose dragstart handler is still running.
+const DRAG_LATE_START_SYNC_MS = 3000;
+const DRAG_LATE_START_GRACE_MS = 100;
 const LOADALL_DEFAULT_INTERVAL_MS = 1500;
 const LOADALL_DEFAULT_TIMEOUT_MS = 30_000;
 const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
@@ -10757,6 +10766,15 @@ function playwrightStepFromCommand(action = {}) {
     case 'dismiss-modal':
     case 'dismissmodal':
       return finish(['await page.keyboard.press("Escape");', '// Review: chrome-cdp-ex may have clicked a specific close button instead.']);
+    case 'drag': {
+      let drag = null;
+      try { drag = parseDragArgs(args); } catch { drag = null; }
+      if (!drag) return skip('unsupported drag arguments');
+      if (!isPlaywrightPortableSelector(drag.from)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+      if (DRAG_POINT_RE.test(drag.to)) return skip('drop at coordinates; review before exporting');
+      if (!isPlaywrightPortableSelector(drag.to)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+      return finish([`await page.locator(${JSON.stringify(drag.from)}).dragTo(page.locator(${JSON.stringify(drag.to)}));`]);
+    }
     default:
       return skip(`unsupported command: ${cmd}`);
   }
@@ -16315,6 +16333,521 @@ async function hoverStr(cdp, sid, selector, refMap, refState) {
   await dispatchHoverMove(cdp, sid, r.x, r.y);
   const after = await readHoverRevealState(cdp, sid, selector);
   return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})${formatHoverRevealClause(before, after)}`;
+}
+
+// ---------------------------------------------------------------------------
+// drag (#471): a real mouse drag from one element to another element or point.
+// ---------------------------------------------------------------------------
+// The default mode intercepts drags (Input.setInterceptDrags) for the whole gesture.
+// Whether Chrome starts an HTML5 drag is then decided by the page itself (draggable,
+// a dragstart handler that does not cancel), not guessed from attributes: a started
+// drag arrives as Input.dragIntercepted and is finished with Input.dispatchDragEvent
+// at the destination; otherwise the gesture stays a plain pointer drag. --pointer
+// skips interception, --html5 fails when no HTML5 drag starts.
+
+const DRAG_POINT_RE = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/;
+
+function parseDragSteps(value) {
+  const raw = String(value ?? '').trim();
+  const steps = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(steps) || steps < 1 || steps > DRAG_MAX_STEPS) {
+    throw new Error(`drag: --steps must be an integer from 1 to ${DRAG_MAX_STEPS}`);
+  }
+  return steps;
+}
+
+function parseDragArgs(args = []) {
+  const positional = [];
+  let steps = DRAG_DEFAULT_STEPS;
+  let mode = 'auto';
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index] ?? '');
+    if (arg === '--steps') steps = parseDragSteps(args[++index]);
+    else if (arg.startsWith('--steps=')) steps = parseDragSteps(arg.slice('--steps='.length));
+    else if (arg === '--html5' || arg === '--pointer') {
+      const requested = arg.slice(2);
+      if (mode !== 'auto' && mode !== requested) throw new Error('drag: --html5 and --pointer are mutually exclusive');
+      mode = requested;
+    } else if (arg.startsWith('--')) throw new Error(`drag: unknown flag ${arg}`);
+    else positional.push(arg);
+  }
+  const [from, to] = positional;
+  if (!from || !to) {
+    throw new Error('drag: source and destination required (drag <target> <from sel|@ref> <to sel|@ref|x,y>)');
+  }
+  if (positional.length > 2) throw new Error(`drag: unexpected argument ${positional[2]}`);
+  if (DRAG_POINT_RE.test(from)) throw new Error('drag: the source must be a CSS selector or @ref, not x,y coordinates');
+  return { from, to, steps, mode };
+}
+
+function dragElementLabel(point, input = '') {
+  const text = String(point?.text || '').replace(/\s+/g, ' ').trim();
+  const ref = isRef(input) || isCursorRef(input) ? ` (${input})` : '';
+  return `<${point?.tag || '?'}>${text ? ` "${text}"` : ''}${ref}`;
+}
+
+// #436 for drags: the press and the drop go to whatever is on top at those points.
+function assertDragPointNotCovered(point, role, input) {
+  const hit = point?.hit;
+  if (!hit || hit.covered !== true) return;
+  const by = !hit.within && (hit.byPosition === 'fixed' || hit.byPosition === 'sticky')
+    ? `position:${hit.byPosition} ${hit.by}`
+    : String(hit.by || '<unknown>');
+  const within = hit.within ? ` (inside position:${hit.withinPosition} ${hit.within})` : '';
+  const recentred = hit.recentred ? ' even after scrolling it to the viewport centre' : '';
+  const verb = role === 'start' ? 'start on' : 'drop onto';
+  const err = new Error(
+    `drag ${role} point (${Math.round(Number(point.x) || 0)}, ${Math.round(Number(point.y) || 0)}) of ${dragElementLabel(point, input)} is covered by ${by}${within}${recentred}. `
+    + `The drag was not sent: it would ${verb} the covering element.`
+  );
+  err.dragCovered = {
+    point: role,
+    input: String(input || ''),
+    by: String(hit.by || ''),
+    within: hit.within || null,
+    withinPosition: hit.withinPosition || null,
+    byPosition: hit.byPosition || null,
+    dialog: hit.dialog === true,
+    recentred: hit.recentred === true,
+  };
+  throw err;
+}
+
+function dragSourceExpression(selector) {
+  return `(async function() {
+    /* chrome-cdp-ex.drag-source */
+    let el;
+    try {
+      el = document.querySelector(${JSON.stringify(selector)});
+    } catch (err) {
+      return { ok: false, error: 'Invalid selector: ' + (err && err.message ? err.message : String(err)) };
+    }
+    if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+    const rect = await (${scrollSettledRectFunctionDeclaration({ hitTest: true })}).call(el);
+    return { ok: true, x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, w: rect.w, h: rect.h, tag: rect.tag, text: rect.text, hit: rect.hit };
+  })()`;
+}
+
+// The destination is read where it is: scrolling it into view could move the source away.
+function dragDestinationBody(el) {
+  return `${clickPointHitFunctionSource()}
+    const box = ${el}.getBoundingClientRect();
+    const rect = { x: box.x, y: box.y, w: box.width, h: box.height };
+    return {
+      ok: true,
+      x: rect.x + rect.w / 2,
+      y: rect.y + rect.h / 2,
+      w: rect.w,
+      h: rect.h,
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+      tag: ${el}.tagName,
+      text: (${el}.getAttribute('aria-label') || ${el}.getAttribute('title') || ${el}.textContent || '').trim().substring(0, 80),
+      hit: clickPointHit(${el}, rect),
+    };`;
+}
+
+function dragDestinationExpression(selector) {
+  return `(function() {
+    /* chrome-cdp-ex.drag-destination */
+    let el;
+    try {
+      el = document.querySelector(${JSON.stringify(selector)});
+    } catch (err) {
+      return { ok: false, error: 'Invalid selector: ' + (err && err.message ? err.message : String(err)) };
+    }
+    if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+    ${dragDestinationBody('el')}
+  })()`;
+}
+
+function dragDestinationRefFunctionDeclaration() {
+  return `function() {
+    ${dragDestinationBody('this')}
+  }`;
+}
+
+function dragPointExpression(x, y) {
+  return `(function() {
+    /* chrome-cdp-ex.drag-point */
+    const el = document.elementFromPoint(${Number(x)}, ${Number(y)});
+    return {
+      ok: true,
+      x: ${Number(x)},
+      y: ${Number(y)},
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+      tag: el ? el.tagName : null,
+      text: el ? (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim().substring(0, 80) : '',
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+    };
+  })()`;
+}
+
+function assertDragPointInViewport(point, role, label) {
+  const { x, y, vw, vh } = point;
+  if (!(Number(vw) > 0 && Number(vh) > 0)) return;
+  if (x >= 0 && y >= 0 && x < vw && y < vh) return;
+  const where = role === 'start' ? 'source' : 'drop target';
+  const after = role === 'start' ? '' : ' after the source was scrolled into view';
+  const err = new Error(
+    `drag: ${where} ${label} is outside the viewport${after} (point (${Math.round(x)}, ${Math.round(y)}), viewport ${Math.round(vw)}x${Math.round(vh)}). `
+    + 'Scroll so both points are visible, or drop at x,y CSS pixels.'
+  );
+  err.dragOffViewport = { point: role, x: Math.round(x), y: Math.round(y), vw: Math.round(vw), vh: Math.round(vh) };
+  throw err;
+}
+
+async function resolveDragSource(cdp, sid, input, refMap, refState) {
+  if (isCursorRef(input)) {
+    const r = resolveCursorRef(refMap, input, refState);
+    return { x: r.x + r.w / 2, y: r.y + r.h / 2, w: r.w, h: r.h, tag: r.sel, text: r.text, hit: null };
+  }
+  if (isRef(input)) {
+    const r = await resolveRef(cdp, sid, refMap, input, refState, { hitTest: true });
+    return { x: r.x + r.w / 2, y: r.y + r.h / 2, w: r.w, h: r.h, tag: r.tag, text: r.text, hit: r.hit || null };
+  }
+  const r = JSON.parse(await evalStr(cdp, sid, dragSourceExpression(input)));
+  if (!r.ok) throw new Error(cssClickMissMessage(input, r.error));
+  return r;
+}
+
+async function resolveDragDestination(cdp, sid, input, refMap, refState) {
+  const coordinates = String(input).match(DRAG_POINT_RE);
+  if (coordinates) {
+    const point = JSON.parse(await evalStr(cdp, sid, dragPointExpression(Number(coordinates[1]), Number(coordinates[2]))));
+    assertDragPointInViewport(point, 'drop', `(${point.x}, ${point.y})`);
+    return { ...point, point: true };
+  }
+  if (isCursorRef(input)) {
+    // A cursor ref is a perceive-time point: check it is still in the viewport and report what
+    // is under it now. dragStr rejects it when scrolling the source moved the page.
+    const r = resolveCursorRef(refMap, input, refState);
+    const point = JSON.parse(await evalStr(cdp, sid, dragPointExpression(r.x + r.w / 2, r.y + r.h / 2)));
+    assertDragPointInViewport(point, 'drop', `${input} (${Math.round(point.x)}, ${Math.round(point.y)})`);
+    return { ...point, w: r.w, h: r.h, cursorRef: true, label: r.text || r.sel };
+  }
+  if (isRef(input)) {
+    const r = await resolveRefRectNoScroll(cdp, sid, refMap, input, refState, {
+      functionDeclaration: dragDestinationRefFunctionDeclaration(),
+    });
+    if (!(r.w > 0 && r.h > 0)) throw new Error(`drag: drop target ${dragElementLabel(r, input)} has no size (hidden or not rendered)`);
+    // Checked in the frame's own viewport, then moved into top-level coordinates.
+    assertDragPointInViewport(r, 'drop', dragElementLabel(r, input));
+    const frameParsed = parseFrameRef(input);
+    if (frameParsed) {
+      const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
+      const offset = await frameViewportOffset(cdp, sid, entry);
+      r.x += offset.x;
+      r.y += offset.y;
+    }
+    return r;
+  }
+  const r = JSON.parse(await evalStr(cdp, sid, dragDestinationExpression(input)));
+  if (!r.ok) throw new Error(cssClickMissMessage(input, r.error));
+  if (!(r.w > 0 && r.h > 0)) throw new Error(`drag: drop target ${dragElementLabel(r, input)} has no size (hidden or not rendered)`);
+  assertDragPointInViewport(r, 'drop', dragElementLabel(r, input));
+  return r;
+}
+
+function dragEventProbeInstallScript(x = null, y = null) {
+  return `(function() {
+    const key = ${JSON.stringify(DRAG_EVENT_PROBE_KEY)};
+    const px = ${JSON.stringify(x == null ? null : Number(x))};
+    const py = ${JSON.stringify(y == null ? null : Number(y))};
+    // The element under the press point and up to four ancestors, with each one's index among
+    // its parent's element children: a sortable reorder moves one of them, which the AX diff misses.
+    const placement = [];
+    let node = px == null ? null : document.elementFromPoint(px, py);
+    for (let depth = 0; node && node.parentElement && depth < 5; depth++, node = node.parentElement) {
+      placement.push({ node: node, parent: node.parentElement, index: Array.prototype.indexOf.call(node.parentElement.children, node) });
+    }
+    const types = ['pointerdown', 'mousedown', 'pointermove', 'mousemove', 'pointerup', 'mouseup',
+      'dragstart', 'dragenter', 'dragover', 'drop', 'dragend'];
+    const existing = window[key];
+    if (existing && existing.handler) {
+      for (const type of existing.types || types) window.removeEventListener(type, existing.handler, true);
+    }
+    const counts = {};
+    const handler = function(event) { counts[event.type] = (counts[event.type] || 0) + 1; };
+    for (const type of types) window.addEventListener(type, handler, true);
+    window[key] = { types: types, handler: handler, counts: counts, placement: placement };
+    return true;
+  })()`;
+}
+
+function dragEventProbeReadScript() {
+  return `(function() {
+    const key = ${JSON.stringify(DRAG_EVENT_PROBE_KEY)};
+    const probe = window[key];
+    if (!probe) return null;
+    for (const type of probe.types || []) window.removeEventListener(type, probe.handler, true);
+    try { delete window[key]; } catch (err) { window[key] = undefined; }
+    const describe = function(el) {
+      if (!el || !el.tagName) return '<?>';
+      const id = el.id ? '#' + el.id : '';
+      const text = !id ? String(el.getAttribute('aria-label') || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40) : '';
+      return '<' + el.tagName + id + '>' + (text ? ' "' + text + '"' : '');
+    };
+    let moved = null;
+    for (const entry of probe.placement || []) {
+      const parent = entry.node.parentElement;
+      if (!entry.node.isConnected) {
+        moved = describe(entry.node) + ' was replaced in ' + describe(entry.parent);
+        break;
+      }
+      if (parent !== entry.parent) {
+        moved = describe(entry.node) + ' moved from ' + describe(entry.parent) + ' to ' + describe(parent);
+        break;
+      }
+      const index = Array.prototype.indexOf.call(parent.children, entry.node);
+      if (index !== entry.index) {
+        moved = describe(entry.node) + ' index ' + entry.index + ' → ' + index + ' in ' + describe(parent);
+        break;
+      }
+    }
+    return { counts: probe.counts || {}, moved: moved };
+  })()`;
+}
+
+async function installDragEventProbe(cdp, sid, point = {}) {
+  try {
+    return (await evalStr(cdp, sid, dragEventProbeInstallScript(point.x, point.y))) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+async function readDragEventProbe(cdp, sid) {
+  try {
+    const parsed = JSON.parse(await evalStr(cdp, sid, dragEventProbeReadScript()));
+    if (!parsed || typeof parsed.counts !== 'object' || !parsed.counts) return null;
+    return { counts: parsed.counts, moved: typeof parsed.moved === 'string' ? parsed.moved : null };
+  } catch {
+    return null;
+  }
+}
+
+const DRAG_PROBE_EVENT_ORDER = Object.freeze([
+  'pointerdown', 'mousedown', 'pointermove', 'mousemove', 'pointerup', 'mouseup',
+  'dragstart', 'dragenter', 'dragover', 'drop', 'dragend',
+]);
+
+function formatDragEventCounts(counts = {}) {
+  const pointer = ['pointerdown', 'pointermove', 'pointerup'].some(type => counts[type] > 0);
+  return DRAG_PROBE_EVENT_ORDER
+    .filter(type => counts[type] > 0)
+    // Chrome derives pointer* from the same mouse events; print the mouse twins only when pointer* is missing.
+    .filter(type => !(pointer && type.startsWith('mouse')))
+    .map(type => (counts[type] > 1 ? `${type}×${counts[type]}` : type))
+    .join(', ');
+}
+
+function dragNoPageEventsError(from, to, visibility = 'unknown') {
+  const hidden = visibility === 'hidden'
+    ? " The tab's document.visibilityState is hidden (window covered or minimised): Input.* events are dropped while hidden."
+    : '';
+  const err = new Error(
+    `drag: Input.dispatchMouseEvent completed but the page received no mouse or drag events between (${Math.round(from.x)}, ${Math.round(from.y)}) and (${Math.round(to.x)}, ${Math.round(to.y)}). The drag failed closed.${hidden}`
+  );
+  err.visibility = visibility;
+  return err;
+}
+
+// #471 review: a drag the page started but that never got a drop or a cancel leaves the
+// renderer in drag mode, and the tab then ignores CDP mouse input until it reloads.
+function dragIncompleteError(from, fromInput, reason) {
+  const why = reason === 'late'
+    ? 'the page started an HTML5 drag only after the mouse was released (its dragstart handler ran longer than the gesture), so nothing was dropped. The drag was cancelled with Input.dispatchDragEvent dragCancel so the tab keeps taking input.'
+    : 'the page fired dragstart but no drop or dragend, so the drag never finished. A dragCancel was sent so the tab keeps taking input.';
+  const err = new Error(`drag: ${why} Source: ${dragElementLabel(from, fromInput)}.`);
+  err.dragIncomplete = { reason };
+  return err;
+}
+
+function dragStaleCursorRefError(input) {
+  return new Error(
+    `drag: the ${input} drop point is stale: perceive measured it before the source was scrolled into view, and the page has scrolled since. `
+    + 'Run perceive -C again, or drop at x,y CSS pixels.'
+  );
+}
+
+async function dispatchDragEventStep(cdp, sid, params) {
+  return cdpDomains(cdp).Input.dispatchDragEvent(params, sid);
+}
+
+function dragNotStartedError(from, fromInput) {
+  return new Error(
+    `drag --html5: Chrome did not start an HTML5 drag from ${dragElementLabel(from, fromInput)} (it is not draggable, or its dragstart handler cancelled the drag). `
+    + 'The pointer press, moves, and release were still sent.'
+  );
+}
+
+// Every Input call is awaited before the next one, so no dispatch promise is left
+// pending without a handler (#464). Returns what was sent for the receipt.
+async function dispatchDrag(cdp, sid, from, to, { steps = DRAG_DEFAULT_STEPS, mode = 'auto' } = {}) {
+  const base = { modifiers: 0, pointerType: 'mouse' };
+  let data = null;
+  let resolveIntercept = () => {};
+  const intercepted = new Promise(resolve => { resolveIntercept = resolve; });
+  const off = mode !== 'pointer' && typeof cdp?.onEvent === 'function'
+    ? cdp.onEvent('Input.dragIntercepted', (params, msg) => {
+      if (sid && msg?.sessionId && msg.sessionId !== sid) return;
+      if (!data && params?.data) {
+        data = params.data;
+        resolveIntercept(data);
+      }
+    })
+    : null;
+  let intercepting = false;
+  let interceptUnavailable = null;
+  let pressedAt = null;
+  let moves = 0;
+  let dropSent = false;
+  let cancelSent = false;
+  try {
+    if (mode !== 'pointer') {
+      try {
+        await cdpDomains(cdp).Input.setInterceptDrags({ enabled: true }, sid);
+        intercepting = true;
+      } catch (error) {
+        if (mode === 'html5') throw new Error(`drag --html5: Input.setInterceptDrags is not available here (${error.message})`);
+        interceptUnavailable = String(error?.message || error);
+      }
+    }
+    await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...base, x: from.x, y: from.y, type: 'mouseMoved', button: 'none', buttons: 0 });
+    await dispatchClickMouseEvent(cdp, sid, { ...base, x: from.x, y: from.y, type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 });
+    pressedAt = { x: from.x, y: from.y };
+    await sleep(DRAG_PRESS_HOLD_MS);
+    for (let step = 1; step <= steps && !data; step += 1) {
+      const t = step / steps;
+      const point = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+      await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...base, ...point, type: 'mouseMoved', button: 'left', buttons: 1 });
+      pressedAt = point;
+      moves = step;
+      if (step < steps && !data) await sleep(DRAG_STEP_DELAY_MS);
+    }
+    if (intercepting && !data) {
+      let timer;
+      await Promise.race([
+        intercepted,
+        new Promise(resolve => { timer = setTimeout(resolve, DRAG_INTERCEPT_WAIT_MS); }),
+      ]);
+      clearTimeout(timer);
+    }
+    const html5 = Boolean(data);
+    if (html5) {
+      for (const type of ['dragEnter', 'dragOver', 'drop']) {
+        await dispatchDragEventStep(cdp, sid, { type, x: to.x, y: to.y, data, modifiers: 0 });
+      }
+      dropSent = true;
+    }
+    await dispatchClickMouseEvent(cdp, sid, { ...base, x: to.x, y: to.y, type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 });
+    pressedAt = null;
+    if (!html5 && intercepting) {
+      // A dragstart handler still running at the release can start the drag afterwards. Wait for
+      // the renderer to finish that task (one round trip), then give the intercept a moment to land.
+      await evalStr(cdp, sid, '0', false, { timeoutMs: DRAG_LATE_START_SYNC_MS }).catch(() => {});
+      if (!data) {
+        let timer;
+        await Promise.race([
+          intercepted,
+          new Promise(resolve => { timer = setTimeout(resolve, DRAG_LATE_START_GRACE_MS); }),
+        ]);
+        clearTimeout(timer);
+      }
+      if (data) {
+        cancelSent = true;
+        await dispatchDragEventStep(cdp, sid, { type: 'dragCancel', x: to.x, y: to.y, data, modifiers: 0 }).catch(() => {});
+        return { mode: 'pointer', moves, lateStart: true };
+      }
+    }
+    if (!html5 && mode === 'html5') return { mode: 'pointer', moves, notStarted: true };
+    return { mode: html5 ? 'html5' : 'pointer', moves, interceptUnavailable };
+  } finally {
+    // A started drag that got no drop keeps the renderer in drag mode: cancel it first.
+    if (data && !dropSent && !cancelSent) {
+      await dispatchDragEventStep(cdp, sid, { type: 'dragCancel', x: to.x, y: to.y, data, modifiers: 0 }).catch(() => {});
+    }
+    // Never leave the left button held down in the page after a failed dispatch.
+    if (pressedAt) {
+      await dispatchClickMouseEvent(cdp, sid, { ...base, ...pressedAt, type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 })
+        .catch(() => {});
+    }
+    if (typeof off === 'function') off();
+    if (intercepting) await cdpDomains(cdp).Input.setInterceptDrags({ enabled: false }, sid).catch(() => {});
+  }
+}
+
+function formatDragReceipt({ from, to, fromInput, toInput, sent, counts }) {
+  const fromLabel = dragElementLabel(from, fromInput);
+  const toLabel = to.point
+    ? `(${Math.round(to.x)}, ${Math.round(to.y)})${to.tag ? ` over <${to.tag}>` : ''}`
+    : dragElementLabel(to, toInput);
+  const path = `(${Math.round(from.x)}, ${Math.round(from.y)}) → (${Math.round(to.x)}, ${Math.round(to.y)})`;
+  const mode = sent.mode === 'html5'
+    ? `mode: html5 — Chrome started a drag after ${sent.moves} mouseMoved; dragEnter, dragOver, drop sent with Input.dispatchDragEvent ${path}`
+    : `mode: pointer — mousePressed, ${sent.moves} mouseMoved, mouseReleased ${path}`;
+  const lines = [`Dragged ${fromLabel} → ${toLabel}`, mode];
+  if (sent.interceptUnavailable) lines.push('Input.setInterceptDrags is unavailable here, so HTML5 drag-and-drop was not intercepted.');
+  if (sent.moved) lines.push(`order: ${sent.moved}`);
+  if (counts) {
+    const events = formatDragEventCounts(counts);
+    lines.push(`page events: ${events || 'none'}`);
+    if (sent.mode === 'html5' && !(counts.drop > 0)) {
+      lines.push('Drop not accepted: the destination fired no drop event (its dragover handler did not call preventDefault).');
+    }
+  }
+  return lines.join('\n');
+}
+
+async function readDragScroll(cdp, sid) {
+  try {
+    return JSON.parse(await evalStr(cdp, sid, 'JSON.stringify([Math.round(window.scrollX), Math.round(window.scrollY)])'));
+  } catch {
+    return null;
+  }
+}
+
+// `state` is the action-receipt channel: `state.orderChange` makes a reorder count as a change.
+async function dragStr(cdp, sid, options, refMap, refState, state = null) {
+  const opts = Array.isArray(options) ? parseDragArgs(options) : options;
+  const scrollBefore = isCursorRef(opts.to) ? await readDragScroll(cdp, sid) : null;
+  const from = await resolveDragSource(cdp, sid, opts.from, refMap, refState);
+  if (!(from.w > 0 && from.h > 0)) throw new Error(`drag: source ${dragElementLabel(from, opts.from)} has no size (hidden or not rendered)`);
+  assertDragPointNotCovered(from, 'start', opts.from);
+  const to = await resolveDragDestination(cdp, sid, opts.to, refMap, refState);
+  assertDragPointNotCovered(to, 'drop', opts.to);
+  if (scrollBefore && to.cursorRef && (scrollBefore[0] !== to.scrollX || scrollBefore[1] !== to.scrollY)) {
+    throw dragStaleCursorRefError(opts.to);
+  }
+  // Window capture listeners in the top document cannot see events inside an iframe.
+  const framed = Boolean(parseFrameRef(opts.from) || parseFrameRef(opts.to));
+  const probe = framed ? false : await installDragEventProbe(cdp, sid, from);
+  let sent;
+  let readout = null;
+  try {
+    sent = await dispatchDrag(cdp, sid, from, to, opts);
+  } finally {
+    if (probe) readout = await readDragEventProbe(cdp, sid);
+  }
+  const counts = readout ? readout.counts : null;
+  if (counts && !Object.values(counts).some(count => count > 0)) {
+    throw dragNoPageEventsError(from, to, await probePageVisibility(cdp, sid));
+  }
+  if (sent.notStarted) throw dragNotStartedError(from, opts.from);
+  if (sent.lateStart) throw dragIncompleteError(from, opts.from, 'late');
+  if (counts && counts.dragstart > 0 && !(counts.drop > 0) && !(counts.dragend > 0)) {
+    // Covers --pointer and the no-interception fallback, where nothing else ends the drag.
+    await dispatchDragEventStep(cdp, sid, { type: 'dragCancel', x: to.x, y: to.y, data: { items: [], dragOperationsMask: 1 }, modifiers: 0 }).catch(() => {});
+    throw dragIncompleteError(from, opts.from, 'no-end');
+  }
+  if (readout?.moved) {
+    sent.moved = readout.moved;
+    if (state && typeof state === 'object') state.orderChange = readout.moved;
+  }
+  return formatDragReceipt({ from, to, fromInput: opts.from, toInput: opts.to, sent, counts });
 }
 
 async function dispatchHoverWithLeftoverPolicy({
@@ -24292,6 +24825,7 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   select: capabilities => createDaemonActionHandlers(capabilities).select,
   clickxy: capabilities => createDaemonActionHandlers(capabilities).clickxy,
   'dismiss-modal': capabilities => createDaemonActionHandlers(capabilities)['dismiss-modal'],
+  drag: capabilities => createDaemonActionHandlers(capabilities).drag,
   jsclick: capabilities => createDaemonActionHandlers(capabilities).jsclick,
   type: capabilities => createDaemonActionHandlers(capabilities).type,
   'verify-click': capabilities => createDaemonActionHandlers(capabilities)['verify-click'],
@@ -24741,6 +25275,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     // Live fill state is a dispatch channel, not target metadata: keep it out of logs/receipts.
     const fillValueState = actionTarget.fillValueState || null;
     delete actionTarget.fillValueState;
+    const dragState = actionTarget.dragState || null;
+    delete actionTarget.dragState;
     const wrappedDispatch = async () => {
       try {
         const snapshotControls = shouldSnapshotFormControlState(action, actionTarget);
@@ -24765,6 +25301,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }
         actionTarget.dispatchText = String(text || '');
         if (action === 'fill') applyFillValueState(actionTarget, fillValueState);
+        // #471: a sortable reorder changes sibling order, which the AX diff does not show.
+        if (action === 'drag' && dragState?.orderChange) {
+          actionTarget.controlStateChanged = true;
+          actionTarget.controlStateDiff = dragState.orderChange;
+          actionTarget.stateChangeLabel = 'Order changed';
+        }
         if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
           actionTarget.expectedOutcome = 'clipboard-no-change';
         }
@@ -24824,7 +25366,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         return text;
       }
       if (actionTarget.controlStateChanged) {
-        const note = `Control state changed: ${actionTarget.controlStateDiff}`;
+        const note = `${actionTarget.stateChangeLabel || 'Control state changed'}: ${actionTarget.controlStateDiff}`;
         text = actionDomDiffShowsChange(text) ? `${note}\n${text}` : note;
       }
       const quietOpts = actionNetworkQuietOptions(action);
@@ -25085,6 +25627,14 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     'dismiss-modal': async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    drag: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const opts = parseDragArgs(fopts.args);
+      // dragStr records a sibling-order change here; actionFeedback turns it into receipt state.
+      const dragState = {};
+      const value = await actionFeedback('drag', () => dragStr(cdp, sessionId, opts, refMap, refState, dragState), { input: opts.from, resolvedBy: 'selector-or-ref', label: `${opts.from} → ${opts.to}`, commandArgs: [...fopts.args], dragState }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     emulate: async args => commandResult(
@@ -25483,6 +26033,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     select: applicationPreflight.handlerBuilders.select(actionCapabilities),
     clickxy: applicationPreflight.handlerBuilders.clickxy(actionCapabilities),
     'dismiss-modal': dismissModalBuilder(actionCapabilities),
+    drag: applicationPreflight.handlerBuilders.drag(actionCapabilities),
     jsclick: applicationPreflight.handlerBuilders.jsclick(actionCapabilities),
     type: applicationPreflight.handlerBuilders.type(actionCapabilities),
     'verify-click': verifyClickBuilder(actionCapabilities),
@@ -26607,6 +27158,12 @@ const CLI_HELP_LAYOUT = Object.freeze([
     "summaryIndent": null
   },
   {
+    "name": "drag",
+    "headGap": 4,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
     "name": "waitfor",
     "headGap": 1,
     "summaryGap": 2,
@@ -26920,6 +27477,13 @@ Usage: cdp <command> [args]
 {{command:scroll}}
                                     Successful document-scroll-edge is scrollY/scrollMax/at-bottom. --compact is metrics only.
 {{command:hover}}
+{{command:drag}}
+                                    <to> is a selector, @ref, or x,y CSS pixels; the source is scrolled into view first.
+                                    Default: one gesture with Input.setInterceptDrags; if the page starts an HTML5 drag,
+                                    dragEnter/dragOver/drop go to the destination with the intercepted data.
+                                    --html5 fails when no HTML5 drag starts; --pointer sends mouse events only.
+                                    --steps N: mouseMoved steps between press and release (default 10, max 100).
+                                    A covered start or drop point fails with Kind: covered and sends nothing.
 {{command:waitfor}}
   waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)
   waitfor <target> --text "str" [--scope sel] [ms]  Wait for text to appear on page
@@ -27033,7 +27597,7 @@ Usage: cdp <command> [args]
 {{command:stop}}
 
 ACTION FEEDBACK
-  click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,
+  click, verify-click, jsclick, clickxy, drag, fill, type, press, select, scroll,
   upload, inject, dismiss-modal, and viewport (when resizing) automatically wait for DOM to
   settle and return compact action evidence plus a perceive diff.
   Named click / jsclick (a control name, not @ref or CSS)
@@ -27090,7 +27654,7 @@ DAEMON IPC (for advanced use / scripting)
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
   Commands mirror the CLI: perceive, status, summary, console, frame, snap, controls, eval, eval64, call, wait, keepalive, shot, diff-shot,
-  elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
+  elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, drag, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, emulate, upload, text, table, components, back, forward, reload, closetab, netlog, inject, cascade,
   record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, responsive-audit,
@@ -27536,7 +28100,7 @@ function authorizeDaemonApplicationCommand({ command, args = [], policy, mutates
   const tablePolicyMatches = command === 'table' && policy === 'conditional' && mutates === false;
   if (tablePolicyMatches) parseTableArgs(args);
   const allowed = ([
-    'back', 'click', 'clickxy', 'clock', 'closetab', 'dismiss-modal', 'fill', 'forward', 'hover',
+    'back', 'click', 'clickxy', 'clock', 'closetab', 'dismiss-modal', 'drag', 'fill', 'forward', 'hover',
     'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
     'inject', 'loadall', 'nav', 'press', 'qa', 'reload', 'responsive-audit', 'restore', 'scroll',
     'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
@@ -27717,6 +28281,8 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
       return `cdp ${cmd} ${target} <selector|@ref>`;
     case 'clickxy':
       return `cdp clickxy ${target} <x> <y>`;
+    case 'drag':
+      return `cdp drag ${target} <from selector|@ref> <to selector|@ref|x,y>`;
     case 'fill':
       return `cdp fill ${target} <selector|@ref> <text>`;
     case 'type':
@@ -29725,6 +30291,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   actionDisabledError, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS,
   dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent, handledLater, resolveRef,
   daemonCrashReportPath, recordDaemonCrash, readDaemonCrashReport, installDaemonCrashRecorder, REF_SETTLE_BUDGET_MS, REF_RESOLVE_TIMEOUT,
+  dragStr, dispatchDrag, parseDragArgs, formatDragEventCounts, dragEventProbeInstallScript, dragEventProbeReadScript,
   parseClickEventProbeOutput, clickProbeSawPageEvent,
   isNamedClickQuery, namedClickQueryName, textSelectorName, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
   namedClickActionTarget, namedInViewportClickExpression, NAMED_IN_VIEWPORT_CLICK_OUTCOME,

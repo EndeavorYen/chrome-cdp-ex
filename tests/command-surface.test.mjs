@@ -130,11 +130,11 @@ describe('command surface catalog', () => {
       .toThrow(/toolName.*must be null/);
   });
 
-  it('owns all 81 public projections and policy specs without inferred gaps', () => {
-    expect(COMMAND_SURFACE.commands).toHaveLength(81);
-    expect(projectCliCommands()).toHaveLength(81);
+  it('owns all 82 public projections and policy specs without inferred gaps', () => {
+    expect(COMMAND_SURFACE.commands).toHaveLength(82);
+    expect(projectCliCommands()).toHaveLength(82);
     expect(COMMAND_SURFACE.commands.map(command => command.help.order).sort((left, right) => left - right)).toEqual(
-      Array.from({ length: 81 }, (_, index) => index),
+      Array.from({ length: 82 }, (_, index) => index),
     );
     expect(COMMAND_SURFACE.commands.every(command => Object.isFrozen(command.mcp))).toBe(true);
     const registry = createCommandRegistry(COMMAND_SURFACE.commands.map(command => ({
@@ -148,7 +148,7 @@ describe('command surface catalog', () => {
       authorization: command.authorization,
       evidencePolicy: command.evidencePolicy,
     })));
-    expect(registry.list()).toHaveLength(81);
+    expect(registry.list()).toHaveLength(82);
     expect(registry.resolve('navigate')?.name).toBe('nav');
     expect(COMMAND_SURFACE.resolve('use')).toMatchObject({ kind: 'protected-mutation', authorization: 'mutation' });
     expect(COMMAND_SURFACE.resolve('tab-group')).toMatchObject({ kind: 'conditional-mutation', authorization: 'conditional' });
@@ -252,10 +252,10 @@ describe('MCP surface catalog', () => {
     expect(() => defineMcpSurface(oversizedSchemaArray)).toThrow(/array limit/);
   });
 
-  it('validates the shipped 26-tool, three-resource, ordered 83-spelling surface', () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(26);
+  it('validates the shipped 27-tool, three-resource, ordered 84-spelling surface', () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(27);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
-    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(83);
+    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(84);
     expect(Object.isFrozen(MCP_TOOL_DEFINITIONS[0].inputSchema)).toBe(true);
     expect(Object.isFrozen(MCP_TOOL_DEFINITIONS[0].inputSchema.properties)).toBe(true);
     expect(Object.isFrozen(MCP_RESOURCE_TEMPLATES[0])).toBe(true);

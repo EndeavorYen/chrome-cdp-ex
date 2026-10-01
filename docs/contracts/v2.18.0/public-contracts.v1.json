@@ -802,6 +802,20 @@
     },
     {
       "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "drag",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
       "authorization": "standard",
       "evidencePolicy": "none",
       "feedbackPolicy": null,
@@ -1221,6 +1235,17 @@
         "id": "mutation-without-confirm",
         "kind": "tool",
         "tool": "click"
+      },
+      {
+        "args": {
+          "from": "#card",
+          "target": "fixture",
+          "to": "#zone"
+        },
+        "error": "drag requires confirm: true",
+        "id": "drag-without-confirm",
+        "kind": "tool",
+        "tool": "drag"
       },
       {
         "args": {
@@ -1728,6 +1753,29 @@
       },
       {
         "args": {
+          "confirm": true,
+          "from": "#card",
+          "mode": "html5",
+          "steps": 5,
+          "target": "fixture",
+          "to": "#zone"
+        },
+        "command": [
+          "drag",
+          "fixture",
+          "#card",
+          "#zone",
+          "--steps",
+          "5",
+          "--html5",
+          "--format",
+          "json"
+        ],
+        "id": "drag",
+        "tool": "drag"
+      },
+      {
+        "args": {
           "target": "fixture"
         },
         "command": [
@@ -2205,6 +2253,7 @@
       "diffshot",
       "dismiss-modal",
       "doctor",
+      "drag",
       "elshot",
       "emulate",
       "export-playwright",
@@ -2283,6 +2332,7 @@
       "cookies",
       "dialog",
       "dismiss-modal",
+      "drag",
       "emulate",
       "fill",
       "forget",
@@ -2773,6 +2823,61 @@
           "type": "object"
         },
         "name": "fill"
+      },
+      {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Drag"
+        },
+        "description": "Drag from a source element to a destination element or x,y point with a real mouse, finishing HTML5 drag-and-drop when the source starts one, and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "from": {
+              "description": "Source CSS selector, @ref, or @c ref.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "auto (default) intercepts an HTML5 drag if the page starts one; html5 requires it; pointer sends mouse events only.",
+              "enum": [
+                "auto",
+                "html5",
+                "pointer"
+              ],
+              "type": "string"
+            },
+            "steps": {
+              "description": "Intermediate mouseMoved steps. Defaults to 10.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "to": {
+              "description": "Destination CSS selector, @ref, @c ref, or x,y CSS pixel point.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "from",
+            "target",
+            "to"
+          ],
+          "type": "object"
+        },
+        "name": "drag"
       },
       {
         "annotations": {
@@ -3330,7 +3435,7 @@
               "type": "array"
             },
             "command": {
-              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, target, open, use, current, forget, perceive, controls, overlay, snap, snapshot, summary, status, console, shot, screenshot, elshot, fullshot, scanshot, diff-shot, diffshot, click, verify-click, jsclick, clickxy, type, press, key, scroll, hover, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, forward, reload, viewport, resize, emulate, wait, waitfor, loadall, cascade, components, frame, frames, text, table, html, styles, net, netlog, cookies, qa, responsive-audit, visual-check, report, record, checkpoint, restore, record-actions, export-playwright, tab-group, broadcast, spawn-debug-browser, spawn, attach, stop, closetab, keepalive, mock, clock, throttle, inject",
+              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, target, open, use, current, forget, perceive, controls, overlay, snap, snapshot, summary, status, console, shot, screenshot, elshot, fullshot, scanshot, diff-shot, diffshot, click, verify-click, jsclick, clickxy, type, press, key, scroll, hover, drag, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, forward, reload, viewport, resize, emulate, wait, waitfor, loadall, cascade, components, frame, frames, text, table, html, styles, net, netlog, cookies, qa, responsive-audit, visual-check, report, record, checkpoint, restore, record-actions, export-playwright, tab-group, broadcast, spawn-debug-browser, spawn, attach, stop, closetab, keepalive, mock, clock, throttle, inject",
               "type": "string"
             },
             "confirm": {

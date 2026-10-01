@@ -24,7 +24,7 @@ describe('command-surface documentation generator', () => {
         .map(command => command.name);
       expect(block).toContain('Generated from the immutable command catalog');
       for (const name of names) expect(block).toContain(`\`${name}\``);
-      expect(block.match(/^\| `[^`]+` /gm)).toHaveLength(81);
+      expect(block.match(/^\| `[^`]+` /gm)).toHaveLength(82);
       expect(block).not.toMatch(/best|guarantee|faster|recommended/i);
       expect(block).not.toContain('One-call diagnostics: Node version, skill install path,');
       expect(block).not.toContain('Close common dialog/modal patterns safely');

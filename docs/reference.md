@@ -11,7 +11,7 @@ Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> p
 | Discovery | `help`, `doctor`, `list`, `target`, `tab-group`, `broadcast`, `open`, `spawn-debug-browser`, `attach`, `use`, `forget`, `current`, `stop`, `closetab`, `keepalive` |
 | Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `components`, `status`, `console`, `report`, `qa`, `responsive-audit` |
 | Visual capture | `shot`, `elshot`, `fullshot`, `scanshot`, `diff-shot` |
-| Interaction | `click`, `verify-click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
+| Interaction | `click`, `verify-click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `drag`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
 | Waiting and flow | `wait`, `waitfor`, `loadall`, `batch`, `flow`, `repeat` |
 | Navigation | `nav`, `back`, `forward`, `reload`, `viewport`, `emulate` |
 | Inspection | `html`, `eval`, `eval64`, `evalraw`, `call`, `styles`, `net`, `netlog`, `cookies`, `cookieset`, `cookiedel` |
@@ -70,6 +70,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
 | `scroll` | `scroll <target> <dir\|x,y\|to top\|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa\|--summary] [--compact]` | `mutation / mutation` |
 | `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
+| `drag` | `drag <target> <from sel\|@ref> <to sel\|@ref\|x,y> [--steps N] [--html5\|--pointer] [--format json]` | `mutation / mutation` |
 | `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
 | `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
 | `wait` | `wait <target> <ms>` | `read / standard` |

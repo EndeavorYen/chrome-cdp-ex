@@ -15,23 +15,23 @@ import {
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
 describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUILD_TIMEOUT }, () => {
-  it('freezes the exact 81-command daemon/CLI ownership graph and deletion allowlist', async () => {
+  it('freezes the exact 82-command daemon/CLI ownership graph and deletion allowlist', async () => {
     await yieldToEventLoop();
     expect(buildRuntimeDispatchInventory(source)).toEqual(fixture);
     expect(fixture).toMatchObject({
       schema: 'chrome-cdp-ex.runtime-dispatch.v1',
       productVersion: packageVersion,
       counts: {
-        commands: 81,
+        commands: 82,
         aliases: 23,
-        targetCommands: 68,
+        targetCommands: 69,
         targetlessCommands: 13,
-        applicationCommands: 68,
+        applicationCommands: 69,
         legacyDaemonCommands: 0,
         daemonGroups: 6,
       },
       applicationCommands: [
-        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'closetab', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'diff-shot', 'dismiss-modal', 'elshot', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'fullshot', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'loadall', 'mock', 'nav', 'net', 'netlog',
+        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'closetab', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'diff-shot', 'dismiss-modal', 'drag', 'elshot', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'fullshot', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'loadall', 'mock', 'nav', 'net', 'netlog',
         'overlay', 'perceive', 'press', 'qa', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'responsive-audit', 'restore', 'scanshot', 'scroll', 'select', 'shot', 'snap', 'status', 'styles', 'summary',
         'table', 'text', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'wait', 'waitfor',
       ],
@@ -136,7 +136,7 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,',
       'planted: capabilities => createDaemonActionHandlers(capabilities).loadall,',
-    ))).toThrow(/exactly cover.*68 target commands/);
+    ))).toThrow(/exactly cover.*69 target commands/);
     await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const applicationRoute = applicationDispatcher.route(cmd);',
@@ -151,7 +151,7 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 6 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 82 commands, 6 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {
@@ -161,7 +161,7 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
     )).map(([kind, commands]) => [kind, commands.length]))).toEqual({
       read: 23,
       'conditional-mutation': 8,
-      mutation: 32,
+      mutation: 33,
       'protected-mutation': 7,
       script: 3,
       evidence: 1,

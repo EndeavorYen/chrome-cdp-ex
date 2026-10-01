@@ -32,8 +32,8 @@ function codeSpan(value) {
 
 export function renderGeneratedRegion(target, surface = COMMAND_SURFACE) {
   if (!GENERATED_FILES.includes(target)) throw new Error(`Generated path is not in the exact allowlist: ${target}`);
-  if (!isCommandSurface(surface) || surface.commands.length !== 81) {
-    throw new Error('Generated command surface requires the branded 81-command catalog');
+  if (!isCommandSurface(surface) || surface.commands.length !== 82) {
+    throw new Error('Generated command surface requires the branded 82-command catalog');
   }
   const commands = [...surface.commands].sort((left, right) => left.help.order - right.help.order);
   const rows = commands.map(command => [

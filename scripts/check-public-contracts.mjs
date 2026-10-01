@@ -232,6 +232,7 @@ const MCP_MAPPING_INPUTS = Object.freeze([
   { id: 'verify-click', tool: 'verify_click', args: { target: 'fixture', selector: '@1', expectText: 'Done', confirm: true } },
   { id: 'dismiss-modal', tool: 'dismiss_modal', args: { target: 'fixture', confirm: true } },
   { id: 'fill', tool: 'fill', args: { target: 'fixture', selector: '#name', text: 'Ada', confirm: true } },
+  { id: 'drag', tool: 'drag', args: { target: 'fixture', from: '#card', to: '#zone', steps: 5, mode: 'html5', confirm: true } },
   { id: 'viewport-read', tool: 'viewport', args: { target: 'fixture' } },
   { id: 'viewport-set', tool: 'viewport', args: { target: 'fixture', size: '1280x720', confirm: true } },
   { id: 'qa-page', tool: 'qa_page', args: { target: 'fixture', desktop: '1280x720', confirm: true } },
@@ -260,6 +261,7 @@ const MCP_MAPPING_INPUTS = Object.freeze([
 
 const MCP_INVALID_INPUTS = Object.freeze([
   { id: 'mutation-without-confirm', kind: 'tool', tool: 'click', args: { target: 'fixture', selector: '@1' } },
+  { id: 'drag-without-confirm', kind: 'tool', tool: 'drag', args: { target: 'fixture', from: '#card', to: '#zone' } },
   { id: 'sensitive-read-without-confirm', kind: 'tool', tool: 'components', args: { target: 'fixture', selector: '#app' } },
   { id: 'checkpoint-without-confirm', kind: 'tool', tool: 'session_checkpoint', args: { target: 'fixture' } },
   { id: 'qa-page-without-confirm', kind: 'tool', tool: 'qa_page', args: { target: 'fixture' } },
