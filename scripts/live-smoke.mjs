@@ -92,7 +92,9 @@ browser = spawn(browserPath, [
   // tab drops Input.* events and the click steps would fail with no-input-events.
   '--disable-features=CalculateNativeWinOcclusion',
   // A headed browser aborts at once on Linux without a display.
-  ...(process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY ? ['--headless=new'] : []),
+  // CDP_SMOKE_HEADLESS=1 keeps the smoke browser off a shared desktop on any platform.
+  ...((process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY)
+    || /^(1|true|yes|on)$/i.test(process.env.CDP_SMOKE_HEADLESS || '') ? ['--headless=new'] : []),
   // Opt-in for hosts whose kernel blocks Chromium's sandbox (Ubuntu AppArmor userns rules).
   ...(/^(1|true|yes|on)$/i.test(process.env.CDP_SMOKE_NO_SANDBOX || '') ? ['--no-sandbox'] : []),
   url,
@@ -798,6 +800,27 @@ const restoredStorageJson = step('verify restored storage', () => run(['eval', t
 const restoredStorage = JSON.parse(restoredStorageJson);
 if (restoredStorage.local !== 'local-ok' || restoredStorage.session !== 'session-ok') {
   throw new Error(`restore should reinstate checkpoint storage\nOutput:\n${restoredStorageJson}`);
+}
+
+// #471 drag: a pointer-event sortable list and an HTML5 drop zone. Reset first: restore may
+// have reloaded the page (modal visible again) and earlier steps may have scrolled it.
+const dragFixtureState = () => JSON.parse(run(['eval', target, 'JSON.stringify({order:document.getElementById("sortable-status").textContent,drop:document.getElementById("drop-status").textContent})']));
+step('reset drag fixtures', () => run(['eval', target, '(function(){document.getElementById("motd").hidden=true; const list=document.getElementById("sortable"); for (const id of ["alpha","beta","gamma"]) list.appendChild(list.querySelector(`[data-id="${id}"]`)); document.getElementById("sortable-status").textContent="order:alpha,beta,gamma"; document.getElementById("drop-status").textContent="drop:none"; document.documentElement.style.scrollBehavior="auto"; return "reset";})()']));
+const dragSortOut = step('drag reorders a pointer sortable list', () => run(['drag', target, '#sortable [data-id="alpha"]', '#sortable [data-id="gamma"]']));
+assertIncludes(dragSortOut, 'Dragged <LI> "Alpha" → <LI> "Gamma"', 'drag sortable receipt');
+assertIncludes(dragSortOut, 'mode: pointer', 'drag sortable mode');
+assertIncludes(dragSortOut, 'Outcome: changed', 'drag sortable outcome');
+if (dragFixtureState().order !== 'order:beta,gamma,alpha') {
+  throw new Error(`drag should reorder the sortable list\nOutput:\n${dragSortOut}\nState:\n${JSON.stringify(dragFixtureState())}`);
+}
+const dragDropJson = JSON.parse(step('drag fires drop on an HTML5 drop zone', () => run(['drag', target, '#drag-card', '#drop-zone', '--format', 'json'])));
+if (dragDropJson.schema !== 'chrome-cdp-ex.action.v1' || dragDropJson.action !== 'drag' || dragDropJson.dispatch?.ok !== true) {
+  throw new Error(`drag --format json should return drag action evidence:\n${JSON.stringify(dragDropJson, null, 2)}`);
+}
+assertIncludes(dragDropJson.target?.dispatchText || '', 'mode: html5', 'drag html5 mode');
+assertIncludes(dragDropJson.target?.dispatchText || '', 'drop', 'drag html5 page events');
+if (dragFixtureState().drop !== 'drop:card') {
+  throw new Error(`drag should fire drop on the HTML5 drop zone\nState:\n${JSON.stringify(dragFixtureState())}`);
 }
 
 console.log(`Live smoke passed using ${browserName} on CDP_PORT=${port}`);

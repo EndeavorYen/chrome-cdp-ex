@@ -13,7 +13,7 @@ import { createDaemonReadHandlers } from '../skills/chrome-cdp-ex/scripts/lib/da
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 
 const ACTION_COMMANDS = Object.freeze([
-  'back', 'clickxy', 'clock', 'closetab', 'cookiedel', 'cookieset', 'dialog', 'dismiss-modal', 'emulate',
+  'back', 'clickxy', 'clock', 'closetab', 'cookiedel', 'cookieset', 'dialog', 'dismiss-modal', 'drag', 'emulate',
   'fill', 'forward', 'hover', 'inject', 'jsclick', 'keepalive', 'loadall', 'mock', 'nav', 'netlog', 'press',
   'qa', 'reload', 'responsive-audit', 'restore', 'scroll', 'select', 'throttle', 'type', 'upload',
   'verify-click', 'viewport',
@@ -177,9 +177,9 @@ describe('Phase 4 specs derived from the public command owner', () => {
     }
   });
 
-  it('derives all 81 deterministic specs with byte-equivalent public metadata', () => {
+  it('derives all 82 deterministic specs with byte-equivalent public metadata', () => {
     const specs = cdpTest.buildApplicationCommandSpecs(cdpTest.COMMANDS);
-    expect(specs).toHaveLength(81);
+    expect(specs).toHaveLength(82);
     expect(specs.map(entry => entry.name)).toEqual(
       cdpTest.COMMANDS.map(entry => entry.name).sort(),
     );
@@ -228,7 +228,7 @@ describe('Phase 4 specs derived from the public command owner', () => {
 
   it('rejects a missing or duplicate slice command', () => {
     const missing = structuredClone(cdpTest.COMMANDS).filter(item => item.name !== 'report');
-    expect(() => cdpTest.buildApplicationCommandSpecs(missing)).toThrow(/exactly 81/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(missing)).toThrow(/exactly 82/);
     const duplicate = structuredClone(cdpTest.COMMANDS);
     duplicate[0] = structuredClone(duplicate.find(item => item.name === 'report'));
     expect(() => cdpTest.buildApplicationCommandSpecs(duplicate)).toThrow('help.name');
@@ -237,7 +237,7 @@ describe('Phase 4 specs derived from the public command owner', () => {
   it('rejects extra records, extra fields, custom arrays, and oversized projections before registry creation', () => {
     const planted = structuredClone(cdpTest.COMMANDS);
     planted.push({ ...structuredClone(planted[0]), name: 'planted', aliases: [] });
-    expect(() => cdpTest.buildApplicationCommandSpecs(planted)).toThrow(/81-item array limit|exactly 81/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(planted)).toThrow(/82-item array limit|exactly 82/);
 
     const extraField = structuredClone(cdpTest.COMMANDS);
     extraField[0].planted = true;
@@ -248,7 +248,7 @@ describe('Phase 4 specs derived from the public command owner', () => {
     expect(() => cdpTest.buildApplicationCommandSpecs(customPrototype)).toThrow(/plain array/);
 
     const oversized = Array.from({ length: 100000 }, () => cdpTest.COMMANDS[0]);
-    expect(() => cdpTest.buildApplicationCommandSpecs(oversized)).toThrow(/81-item array limit/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(oversized)).toThrow(/82-item array limit/);
 
     for (const value of [null, undefined]) {
       const optionalExtra = structuredClone(cdpTest.COMMANDS);
@@ -796,9 +796,9 @@ describe('Phase 4 daemon dispatch seam', () => {
       commands: cdpTest.COMMANDS,
       handlerBuilders: builders,
     });
-    expect(preflight.registry.list()).toHaveLength(81);
-    expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(68);
+    expect(preflight.registry.list()).toHaveLength(82);
+    expect(Object.keys(preflight.routeOwners)).toHaveLength(82);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(69);
     expect(Object.values(preflight.routeOwners).filter(owner => owner === 'adapter')).toHaveLength(13);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
@@ -880,7 +880,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     const migrated = new Set(Object.keys(context.handlers));
     const legacy = cdpTest.COMMANDS.filter(command => !migrated.has(command.name));
-    expect(legacy).toHaveLength(77);
+    expect(legacy).toHaveLength(78);
     for (const command of legacy) {
       await expect(cdpTest.executeDaemonApplicationRoute({
         cmd: command.name,
@@ -1011,7 +1011,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     );
     expect(cdpTest).not.toHaveProperty('MIGRATED_DAEMON_COMMANDS');
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(68);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(69);
     expect(Object.values(preflight.routeOwners).filter(owner => owner === 'adapter')).toHaveLength(13);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,

@@ -173,6 +173,45 @@ function classifyFillValueFailure(err, { base, target, input, perceiveCommand })
 }
 
 const COVERED_CLICK_MESSAGE_RE = /^click point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by /;
+const COVERED_DRAG_MESSAGE_RE = /^drag (start|drop) point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by /;
+
+// #471: a covered drag start or drop point. There is no JS fallback for a drag, so the
+// recovery is to clear the covering layer (or close the dialog) and drag again.
+function classifyCoveredDragFailure(err, { base, targetId, input, message }) {
+  const raw = err?.dragCovered && typeof err.dragCovered === 'object' ? err.dragCovered : {};
+  const point = raw.point === 'start' || raw.point === 'drop'
+    ? raw.point
+    : (String(message || '').match(COVERED_DRAG_MESSAGE_RE)?.[1] || 'start');
+  const covering = {
+    point,
+    by: raw.by ? String(raw.by) : null,
+    within: raw.within ? String(raw.within) : null,
+    withinPosition: raw.withinPosition ? String(raw.withinPosition) : null,
+    dialog: raw.dialog === true,
+    recentred: raw.recentred === true,
+  };
+  const pointInput = raw.input ? String(raw.input) : (point === 'start' ? input : '');
+  const coordinates = /^\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*$/.test(pointInput);
+  const arg = pointInput && !coordinates ? recoveryCommandArg(pointInput) : '';
+  const overlay = arg ? `cdp overlay ${targetId} ${arg}` : `cdp overlay ${targetId}`;
+  const dismiss = `cdp dismiss-modal ${targetId}`;
+  return {
+    ...base,
+    kind: 'covered',
+    dispatched: false,
+    covering,
+    reason: `Another element covers the drag ${point} point, so a real mouse drag would ${point === 'start' ? 'start on' : 'drop onto'} it instead. Nothing was dragged.`,
+    nextCommand: covering.dialog ? dismiss : overlay,
+    hints: [
+      ...(covering.dialog
+        ? [`A dialog covers the ${point} point: close it with \`${dismiss}\`, then drag again.`]
+        : []),
+      `See what covers the ${point} point with \`${overlay}\`.`,
+      'Scroll or close the covering layer so both points are clear, or drop at x,y CSS pixels that are not covered.',
+      'Do not retry the same drag: it would hit the covering element again.',
+    ],
+  };
+}
 
 // #436: another element is on top at the click point, so the mouse click was not sent. A covering
 // dialog is dismissed first; fixed/sticky layout (sidebar, header, toast) is bypassed with a JS
@@ -328,6 +367,11 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyDisabledFailure(err, { base, targetId, input, action, perceiveCommand });
   }
 
+  // #471: same hit test as #436, for the drag start and drop points.
+  if ((err?.dragCovered && typeof err.dragCovered === 'object') || COVERED_DRAG_MESSAGE_RE.test(originalMessage)) {
+    return classifyCoveredDragFailure(err, { base, targetId, input, message: originalMessage });
+  }
+
   // #436: checked before message matching because the message quotes page text.
   if ((err?.clickCovered && typeof err.clickCovered === 'object') || COVERED_CLICK_MESSAGE_RE.test(originalMessage)) {
     return classifyCoveredClickFailure(err, { base, targetId, input });
@@ -417,6 +461,46 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
       hints: [
         `Refresh refs with \`${perceiveCommand}\`.`,
         'For React/Vue rerenders or HMR, prefer a stable CSS selector over an old @ref.',
+      ],
+    };
+  }
+
+  if (action === 'drag' && lower.includes('received no mouse or drag events')) {
+    const hidden = lower.includes('visibilitystate is hidden');
+    const dragArgs = Array.isArray(target?.commandArgs) && target.commandArgs.length
+      ? target.commandArgs.map(arg => recoveryCommandArg(arg)).join(' ')
+      : '<from> <to>';
+    // Background mode (the default) leaves the tab hidden; a foreground rerun activates it first.
+    const foreground = `CDP_BACKGROUND=0 cdp drag ${targetId} ${dragArgs}`;
+    return {
+      ...base,
+      kind: 'no-input-events',
+      visibility: hidden ? 'hidden' : 'unknown',
+      dispatched: false,
+      reason: hidden
+        ? 'The tab is hidden (window covered or minimised), so Input.* events are dropped and the page received no mouse or drag events.'
+        : 'The mouse drag completed without delivering any mouse or drag events to the page.',
+      nextCommand: hidden ? foreground : statusCommand,
+      hints: [
+        ...(hidden ? [`The tab is hidden: \`${foreground}\` activates it first; that does not raise a window other windows cover.`] : []),
+        `Check the tab with \`${statusCommand}\` (a pending dialog or a busy page also swallows input).`,
+        'Do not treat the drag as done: the page saw no events.',
+      ],
+    };
+  }
+
+  if (action === 'drag' && lower.includes('did not start an html5 drag')) {
+    const sinceAction = `cdp perceive ${targetId} --since-action`;
+    return {
+      ...base,
+      kind: 'drag-not-started',
+      dispatched: true,
+      reason: 'drag --html5 was requested, but the page did not start an HTML5 drag from the source; the pointer press, moves, and release were still sent.',
+      nextCommand: sinceAction,
+      hints: [
+        `See what the pointer gesture changed with \`${sinceAction}\` before retrying.`,
+        'Drop --html5 for libraries that drag with pointer or mouse events (sortable lists, sliders, splitters).',
+        'For HTML5 drag-and-drop, drag the element that is draggable (draggable="true", or a link or image).',
       ],
     };
   }
@@ -1146,6 +1230,16 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'since-action', reason: 'Confirm the live handler or form control changed.' },
     ],
     avoid: ['treating mouse dispatch.ok as a successful click when the page received no events'],
+  },
+  'drag-not-started': {
+    strategy: 'inspect-pointer-drag',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'since-action', reason: 'See what the pointer drag changed before retrying.' },
+      { key: 'next-or-perceive', reason: 'Pick the draggable element, or drag without --html5.' },
+    ],
+    avoid: ['retrying drag --html5 on an element that does not start an HTML5 drag'],
   },
   'wrong-frame': {
     strategy: 'refresh-frame-context',

@@ -31,7 +31,7 @@ function proof(overrides = {}) {
       applicationExecutions: 1,
       deniedExecutions: 0,
       signalCodes: [130, 143],
-      inventory: { commands: 81, application: 68, adapters: 13, daemonGroups: 6, deletions: 0 },
+      inventory: { commands: 82, application: 69, adapters: 13, daemonGroups: 6, deletions: 0 },
     },
     ...overrides,
   };
@@ -45,7 +45,7 @@ describe('Phase 7 Runtime v3 final evidence', () => {
       recovery: '1->2',
       denials: 5,
       failClosed: 9,
-      applicationCommands: 68,
+      applicationCommands: 69,
     });
   });
 
@@ -66,7 +66,7 @@ describe('Phase 7 Runtime v3 final evidence', () => {
   it('runs accepted live routes in a bounded isolated process instead of sharing runtime cache', async () => {
     await expect(runIsolatedValidationScript('scripts/check-docs-contract.mjs', {
       timeoutMs: 5_000,
-    })).resolves.toContain('Docs contract OK: 20 survivor commands on the card (81 catalog)');
+    })).resolves.toContain('Docs contract OK: 20 survivor commands on the card (82 catalog)');
     await expect(runIsolatedValidationScript('validation/fixtures/controlled-failure.mjs', {
       timeoutMs: 5_000,
     })).rejects.toThrow(/exited 23/);

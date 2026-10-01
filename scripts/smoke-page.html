@@ -18,6 +18,14 @@
     #custom-clickable { cursor: pointer; display: inline-block; padding: 8px 12px; background: #fde68a; border-radius: 8px; }
     #phase7-coordinate { position: fixed; left: 16px; top: 300px; width: 96px; height: 44px; z-index: 10; margin: 0; }
     [role="dialog"] { position: fixed; inset: 20% auto auto 50%; transform: translateX(-50%); background: white; border: 2px solid #0f172a; padding: 20px; z-index: 20; box-shadow: 0 20px 60px #0005; }
+    /* Fixed 420 px box + 780 px spacer = the original 1200 px gap, so #smooth-target stays put. */
+    #drag-fixtures { box-sizing: border-box; height: 420px; overflow: hidden; margin: 0; border: 1px solid #c7d2fe; background: #eef2ff; padding: 8px 12px; }
+    #drag-fixtures h2 { margin: 0 0 4px; }
+    #drag-fixtures p { margin: 4px 0; }
+    #sortable { list-style: none; padding: 0; margin: 0; }
+    .sortable-item { padding: 10px 12px; margin: 4px 0; background: white; border: 1px solid #a5b4fc; border-radius: 6px; user-select: none; touch-action: none; cursor: grab; }
+    #drag-card { display: inline-block; padding: 10px 12px; background: #fbcfe8; border-radius: 6px; cursor: grab; }
+    #drop-zone { margin-top: 8px; padding: 24px 12px; border: 2px dashed #6366f1; background: white; }
     [hidden] { display: none !important; }
     /*# sourceURL=chrome-cdp-ex-smoke.css */
   </style>
@@ -65,7 +73,19 @@
       name="smoke-child"
       srcdoc="<main><h2>Smoke child frame</h2><button id='child-action'>Child action</button><p id='child-status'>child:none</p><script>document.getElementById('child-action').addEventListener('click',()=>{document.getElementById('child-status').textContent='success: child:clicked';});</script></main>">
     </iframe>
-    <div style="height: 1200px" aria-hidden="true"></div>
+    <section id="drag-fixtures" role="region" aria-label="Drag fixtures">
+      <h2>Drag fixtures</h2>
+      <ul id="sortable" aria-label="sortable list">
+        <li class="sortable-item" data-id="alpha">Alpha</li>
+        <li class="sortable-item" data-id="beta">Beta</li>
+        <li class="sortable-item" data-id="gamma">Gamma</li>
+      </ul>
+      <p id="sortable-status">order:alpha,beta,gamma</p>
+      <div id="drag-card" draggable="true">Drag card</div>
+      <div id="drop-zone" aria-label="drop zone">Drop here</div>
+      <p id="drop-status">drop:none</p>
+    </section>
+    <div style="height: 780px" aria-hidden="true"></div>
     <button id="smooth-target">Smooth target</button>
     <p id="smooth-status">smooth:not-clicked</p>
   </main>
@@ -153,6 +173,39 @@
     document.getElementById('close-modal').addEventListener('click', () => {
       document.getElementById('motd').hidden = true;
       appendLog('modal dismissed');
+    });
+    // Pointer-event sortable list (no HTML5 drag): reorders on release after a 4 px move.
+    const sortable = document.getElementById('sortable');
+    let sortDrag = null;
+    sortable.addEventListener('pointerdown', (e) => {
+      const item = e.target.closest('.sortable-item');
+      if (item && e.button === 0) sortDrag = { item, x: e.clientX, y: e.clientY, moved: false };
+    });
+    document.addEventListener('pointermove', (e) => {
+      if (sortDrag && Math.hypot(e.clientX - sortDrag.x, e.clientY - sortDrag.y) > 4) sortDrag.moved = true;
+    });
+    document.addEventListener('pointerup', (e) => {
+      const drag = sortDrag;
+      sortDrag = null;
+      if (!drag || !drag.moved) return;
+      const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('.sortable-item');
+      if (!over || over === drag.item) return;
+      const items = [...sortable.children];
+      if (items.indexOf(drag.item) < items.indexOf(over)) over.after(drag.item);
+      else over.before(drag.item);
+      document.getElementById('sortable-status').textContent = 'order:' + [...sortable.children].map(li => li.dataset.id).join(',');
+    });
+    // HTML5 drag-and-drop: the zone accepts the drop by cancelling dragover.
+    const dragCard = document.getElementById('drag-card');
+    const dropZone = document.getElementById('drop-zone');
+    dragCard.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', 'card');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    dropZone.addEventListener('dragover', (e) => e.preventDefault());
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      document.getElementById('drop-status').textContent = 'drop:' + (e.dataTransfer.getData('text/plain') || 'empty');
     });
     document.addEventListener('keydown', (e) => {
       if (e.key.toLowerCase() === 'c') document.getElementById('shortcut-status').textContent = 'shortcut:c';

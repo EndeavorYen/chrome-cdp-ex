@@ -26,8 +26,8 @@ const EXPECTED_FAILURE_PROOF = Object.freeze({
   deniedExecutions: 0,
   signalCodes: Object.freeze([130, 143]),
   inventory: Object.freeze({
-    commands: 81,
-    application: 68,
+    commands: 82,
+    application: 69,
     adapters: 13,
     daemonGroups: 6,
     deletions: 0,

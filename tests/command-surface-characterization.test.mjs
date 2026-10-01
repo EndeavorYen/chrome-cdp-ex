@@ -58,19 +58,19 @@ function digestJson(value) {
 }
 
 describe('Phase 6 command-surface characterization', () => {
-  it('freezes all 81 command records, aliases, target flags, mutations, formats, and help bytes', () => {
+  it('freezes all 82 command records, aliases, target flags, mutations, formats, and help bytes', () => {
     expect(createHash('sha256').update(JSON.stringify(COMMAND_SURFACE.commands)).digest('hex'))
       .toBe(COMMAND_SURFACE_IDENTITY);
     expect(cdpTest.COMMANDS.map(commandProjection)).toEqual(contract.commands);
-    expect(cdpTest.COMMANDS).toHaveLength(81);
+    expect(cdpTest.COMMANDS).toHaveLength(82);
     expect(cdpTest.COMMANDS.flatMap(command => command.aliases)).toHaveLength(23);
-    expect(cdpTest.COMMANDS.filter(command => command.needsTarget)).toHaveLength(68);
-    expect(cdpTest.COMMANDS.filter(command => command.mutates)).toHaveLength(32);
+    expect(cdpTest.COMMANDS.filter(command => command.needsTarget)).toHaveLength(69);
+    expect(cdpTest.COMMANDS.filter(command => command.mutates)).toHaveLength(33);
     const targetSpellings = cdpTest.COMMANDS
       .filter(command => command.needsTarget)
       .flatMap(command => [command.name, ...command.aliases]);
     expect([...cdpTest.NEEDS_TARGET]).toEqual(targetSpellings);
-    expect(cdpTest.NEEDS_TARGET).toHaveLength(86);
+    expect(cdpTest.NEEDS_TARGET).toHaveLength(87);
     for (const command of cdpTest.COMMANDS) {
       for (const spelling of [command.name, ...command.aliases]) {
         expect(cdpTest.commandMeta(spelling), spelling).toBe(command);
@@ -129,18 +129,18 @@ describe('Phase 6 command-surface characterization', () => {
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
     expect([...MCP_RUN_COMMAND_ALLOWLIST].sort()).toEqual(contract.mcp.runCommandAllowlist);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:3e721092730483a8e035d2a1c91e33a3670bedc8354469acdc637cc6be890fd1');
+      .toBe('sha256:18da89e4ae7c6cbcb6a6caf963da4dfc7a36a66911ebb113b9db96b678150118');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))
-      .toBe('sha256:82bc5511c77a48a44f84c91df1c350bc0a350cf3800d992dca7ce7a0e641a3f2');
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(26);
+      .toBe('sha256:724a7edc2acaaae366f209c41b8e5c7fd3795970ebe864e823a8d45d1be3d828');
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(27);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
-    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(83);
+    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(84);
     expect(MCP_RESOURCE_RECORDS.map(resource => resource.mapper)).toEqual([
       'doctor-status', 'session-report', 'session-screenshot-latest',
     ]);
-    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(26);
+    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(27);
     for (const fixture of contract.mcp.mappingCases) {
       expect(buildMcpToolCommand(fixture.tool, fixture.args), fixture.id).toEqual(fixture.command);
     }
@@ -155,6 +155,7 @@ describe('Phase 6 command-surface characterization', () => {
       controls: ['controls'],
       dismiss_modal: ['dismiss-modal'],
       doctor: ['doctor'],
+      drag: ['drag'],
       fill: ['fill'],
       list_tabs: ['list-tabs'],
       navigate: ['navigate'],
@@ -189,6 +190,7 @@ describe('Phase 6 command-surface characterization', () => {
       controls: 'tool:controls',
       dismiss_modal: 'tool:dismiss-modal',
       doctor: 'tool:doctor',
+      drag: 'tool:drag',
       fill: 'tool:fill',
       list_tabs: 'tool:list-tabs',
       navigate: 'tool:navigate',
