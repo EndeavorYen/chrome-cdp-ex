@@ -9,6 +9,7 @@ import {
   createMcpInitializeResult,
   createMcpToolResult,
   listMcpResources,
+  mcpPolicyDenial,
   resolveMcpResource,
   snapshotMcpData,
 } from './lib/mcp-adapter.mjs';
@@ -110,6 +111,7 @@ export function createMcpRequestHandler({
   runtimeClient = defaultRuntimeClient,
   sendMessage = writeStdout,
   runtimeDir = resolveRuntimeDir(),
+  env = process.env,
 } = {}) {
   if (!isRuntimeClient(runtimeClient)) throw new Error('mcp.runtimeClient: must be a branded RuntimeClient');
   return async function handleRequest(message) {
@@ -149,6 +151,11 @@ export function createMcpRequestHandler({
         const args = message.params?.arguments || {};
         const command = buildMcpToolCommand(name, args);
         const startedAtMs = Date.now();
+        const denial = mcpPolicyDenial(command, env);
+        if (denial) {
+          sendMessage({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: denial }], isError: true } });
+          return;
+        }
         const result = await runtimeClient.execute(command);
         sendMessage({
           jsonrpc: '2.0',

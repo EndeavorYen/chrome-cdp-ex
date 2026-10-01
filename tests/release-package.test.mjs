@@ -78,6 +78,7 @@ const requiredEntries = [
   'skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs',
   'skills/chrome-cdp-ex/scripts/lib/runtime-dir.mjs',
   'skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs',
+  'skills/chrome-cdp-ex/scripts/lib/session-policy.mjs',
   'skills/chrome-cdp-ex/scripts/lib/session-report.mjs',
   'skills/chrome-cdp-ex/scripts/lib/source-maps.mjs',
   'skills/chrome-cdp-ex/scripts/lib/target-binding.mjs',

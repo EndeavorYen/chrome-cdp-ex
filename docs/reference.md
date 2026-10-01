@@ -502,6 +502,11 @@ Configuration:
 | `CDP_PORT_FILE` | Override the `DevToolsActivePort` file path. |
 | `CDP_BACKGROUND` | Background mode is on by default: no command focuses a tab or raises the window. `0` (also `false`, `no`, `off`) turns it off. |
 | `CDP_FOREGROUND` | `1` turns background mode off, like `CDP_BACKGROUND=0`. |
+| `CDP_CONTENT_BOUNDARIES` | `1` wraps `perceive`/`text`/`console`/`table`/`netlog` output in nonce-marked `PAGE CONTENT (untrusted)` blocks. Off by default. |
+| `CDP_ALLOWED_ORIGINS` | Comma-separated origins (`https://*.example.com` for subdomains); `nav`/`open` elsewhere fail with `Kind: policy`, and a command that navigates elsewhere fails after the fact. Unset by default. |
+| `CDP_DENY_ACTIONS` | Comma-separated command names that exit 1 with `Kind: policy`, also as `batch`/`flow`/`repeat`/`replay` steps and MCP tool calls. Unset by default. |
+
+The last three are opt-in session guardrails: defense-in-depth for agents, not a security boundary. Details and limits: `skills/chrome-cdp-ex/references/commands.md` (Session guardrails).
 
 ### Background mode
 

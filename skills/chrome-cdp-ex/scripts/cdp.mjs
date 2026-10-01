@@ -41,6 +41,22 @@ import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
 import { isTableCollectArgs, parseTableArgs, parseTableContinuationToken } from './lib/table-contract.mjs';
 import { createTableArtifactStore } from './lib/table-artifacts.mjs';
 import {
+  createContentBoundaryNonce,
+  createMainFrameNavigationLog,
+  createRequestPolicyState,
+  deniedCommandMessage,
+  guardDaemonCommand,
+  isContentBoundary,
+  navigationBlockedMessage,
+  originLabel,
+  policyPreflightMessage,
+  policyRecovery,
+  policyRequestFields,
+  readSessionPolicy,
+  snapshotPolicyWire,
+  wrapContentBoundary,
+} from './lib/session-policy.mjs';
+import {
   addTableSampleBatch,
   buildTableExportBundle,
   canonicalizeTableCells,
@@ -214,6 +230,9 @@ const WAIT_DURATION_MAX_MS = 60 * 60 * 1000;
 // cannot keep its daemon alive forever (#462).
 const DAEMON_REQUEST_IDLE_PAUSE_MAX_MS = WAIT_DURATION_MAX_MS + 5 * 60 * 1000;
 const daemonRequestStorage = new AsyncLocalStorage();
+// #466: the session policy of the daemon request being served (null without one), shared by its
+// batch/flow/repeat/replay steps.
+const daemonPolicyStorage = new AsyncLocalStorage();
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
@@ -727,7 +746,8 @@ function validateDaemonProtocolRequest(input) {
   const request = snapshotApplicationDataObject(input, 'daemon request');
   const expectedKeys = new Set(['id', 'cmd', 'args']);
   for (const key of Object.keys(request)) {
-    if (!expectedKeys.has(key)) throw new Error(`daemon request.${key}: is not allowed`);
+    // #466: `policy` is optional and present only when a session policy variable is set.
+    if (!expectedKeys.has(key) && key !== 'policy') throw new Error(`daemon request.${key}: is not allowed`);
   }
   for (const key of expectedKeys) {
     if (!Object.hasOwn(request, key)) throw new Error(`daemon request ${key === 'cmd' ? 'command' : key} is required`);
@@ -746,6 +766,7 @@ function validateDaemonProtocolRequest(input) {
     id: request.id,
     cmd: request.cmd,
     args: Object.freeze(args),
+    ...(Object.hasOwn(request, 'policy') ? { policy: snapshotPolicyWire(request.policy) } : {}),
   });
   const tableCollect = frozenRequest.cmd === 'table'
     ? parseTableArgs(frozenRequest.args).mode === 'collect'
@@ -22379,6 +22400,41 @@ function replayStepFromAction(action = {}) {
   return { cmd: command[0], args: command.slice(1), command, commandText };
 }
 
+// #466: the steps batch/flow/repeat/replay would run, so the session policy can refuse the whole
+// command before its first step. Null when the arguments do not parse; the command reports that.
+function policyCompositeSteps(cmd, args = []) {
+  try {
+    if (cmd === 'batch') {
+      return parseBatchArgs(args).commands.map(command => ({
+        cmd: String(command?.cmd || ''),
+        args: Array.isArray(command?.args) ? command.args.map(String) : [],
+      }));
+    }
+    if (cmd === 'flow') {
+      // wait/assert steps stay as empty entries so step numbers match the flow text.
+      return parseFlowSteps(parseFormatArgs(args, ['text', 'json']).args.join(' '))
+        .map(step => (step.kind === 'command' ? { cmd: step.cmd, args: step.args } : { cmd: '', args: [] }));
+    }
+    if (cmd === 'repeat') {
+      const opts = parseRepeatArgs(args);
+      return [{ cmd: opts.cmd, args: opts.args }];
+    }
+    if (cmd === 'replay') {
+      const { artifact } = parseReplayArgs(args);
+      const actions = [
+        ...(Array.isArray(artifact.environment) ? artifact.environment : []),
+        ...(Array.isArray(artifact.actions) ? artifact.actions : []),
+      ];
+      // Steps replay skips stay as empty entries so step numbers match the artifact.
+      return actions.map(replayStepFromAction)
+        .map(step => (!step.skip && step.cmd ? { cmd: step.cmd, args: step.args } : { cmd: '', args: [] }));
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function replayRecoveryNextSteps(targetId) {
   const target = targetId || '<target>';
   return [
@@ -25085,6 +25141,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const exceptionBuf = new RingBuffer(50);
   const navBuf = new RingBuffer(10);
   const netReqBuf = new RingBuffer(100); // network request/response pairs
+  // #466: committed main-frame URLs for the CDP_ALLOWED_ORIGINS check after each command, and
+  // this daemon's CDP_CONTENT_BOUNDARIES nonce. The nonce never reaches the page.
+  const mainFrameNavigationLog = createMainFrameNavigationLog();
+  const contentBoundaryNonce = createContentBoundaryNonce();
   const pendingReqs = session.pendingRequests; // requestId → {method, url, ts}
   const networkStatusByRequest = createEarlyResponseStatusStore(); // ExtraInfo statuses that arrived before their request
   let lastReadSeq = { console: 0, exception: 0 };
@@ -25122,6 +25182,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       // A reload can serve a rebuilt bundle under the same URL; maps are re-read on demand.
       sourceMaps.clear();
       navBuf.push({ url: params.frame.url, ts: Date.now() });
+      mainFrameNavigationLog.record(params.frame.url);
       // Top-level navigation (or Vite HMR full reload) invalidates all @refs.
       session.pageGeneration += 1;
       invalidateSessionRefs(session, 'navigation');
@@ -26082,11 +26143,37 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // Handle a command
-  async function handleCommand({ cmd, args }, execution = undefined) {
+  async function readContentBoundary() {
+    let url = '';
+    try {
+      const info = await cdp.send('Target.getTargetInfo', { targetId }, undefined, STATUS_PAGE_INFO_TIMEOUT);
+      url = info?.targetInfo?.url || '';
+    } catch {}
+    return { nonce: contentBoundaryNonce, origin: originLabel(url) };
+  }
+
+  async function handleCommand({ cmd, args, policy }, execution = undefined, { outermost = false, guarded = false } = {}) {
   if (daemonCommandResetsIdle(cmd)) resetIdle();
   if (daemonRequestStorage.getStore() === undefined) {
-    return daemonRequestStorage.run(execution || null, () => handleCommand({ cmd, args }, execution));
+    const policyState = createRequestPolicyState(policy);
+    return daemonRequestStorage.run(execution || null, () => daemonPolicyStorage.run(
+      policyState,
+      () => handleCommand({ cmd, args }, execution, { outermost: true }),
+    ));
   }
+    // #466: with a session policy, every command and step runs inside its checks.
+    const policyState = daemonPolicyStorage.getStore() || null;
+    if (policyState && !guarded) {
+      return guardDaemonCommand({
+        state: policyState,
+        cmd,
+        args,
+        execute: () => handleCommand({ cmd, args }, execution, { guarded: true }),
+        navigationLog: mainFrameNavigationLog,
+        compositeSteps: policyCompositeSteps,
+        readContentBoundary: outermost ? readContentBoundary : null,
+      });
+    }
     try {
       enforceDaemonTableCollectionGate({ cmd, args }, execution);
       let result;
@@ -27727,6 +27814,7 @@ text --auto for what the page says.
 
 Chrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.
 Electron: CDP_PORT=9333 (not 9222).
+Opt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.
 
 cdp help <command> prints leftover topic help.
 `;
@@ -28363,6 +28451,9 @@ function jsclickSelectorFromCliError(message, { cmd = '', args = [], err = null 
 function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null, args = [] } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
+  // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refusals (Kind: policy) and bad policy variables.
+  const sessionPolicyRecovery = policyRecovery(message, { targetPrefix });
+  if (sessionPolicyRecovery) return sessionPolicyRecovery;
   if (err?.code === 'daemon_socket_path_too_long' || lower.includes('over the 107-byte unix socket limit') || lower.includes('over the 103-byte unix socket limit')) {
     // #444: rerun the same command with a runtime dir short enough for a Unix socket path.
     const rerun = ['cdp', cmd || 'list', ...(targetPrefix ? [targetPrefix] : []), ...(args || []).map(recoveryCommandArg).filter(Boolean)];
@@ -29433,7 +29524,10 @@ function emitTargetCommandResponse(response, {
         ? boundedTableObservationEmissionJson(output)
         : boundedTableObservationEmissionText(output);
     }
-    console.log(output);
+    // #466: present only when CDP_CONTENT_BOUNDARIES=1 asked the daemon for it.
+    console.log(isContentBoundary(response?.contentBoundary)
+      ? wrapContentBoundary(output, response.contentBoundary, { format })
+      : output);
     const semantics = classifyCommandResultSemantics(
       { ok: response?.ok === true, result: output },
       { command: cmd },
@@ -29479,6 +29573,25 @@ async function main(options = {}) {
 
   // Daemon mode (internal)
   if (cmd === '_daemon') { await runDaemon(args[0], applicationPreflight); return; }
+
+  // #466: opt-in session policy. Read on every run, refused before anything else when invalid.
+  let sessionPolicy = null;
+  try {
+    sessionPolicy = readSessionPolicy(process.env);
+  } catch (e) {
+    console.error(formatCliError(e, { cmd, format: detectCliErrorFormat(args) }));
+    return finish(1);
+  }
+  const deniedCommand = deniedCommandMessage(sessionPolicy, cmd);
+  if (deniedCommand) {
+    const deniedTarget = NEEDS_TARGET.has(cmd) && args[0] && !String(args[0]).startsWith('-') ? args[0] : '';
+    console.error(formatCliError(deniedCommand, {
+      cmd: commandMeta(cmd)?.name || cmd,
+      targetPrefix: deniedTarget,
+      format: detectCliErrorFormat(args),
+    }));
+    return finish(1);
+  }
 
   if (!cmd || cmd === '--help' || cmd === '-h') {
     console.log(helpStr()); return finish(0);
@@ -29587,6 +29700,10 @@ async function main(options = {}) {
       const group = getTabGroup(readTabGroups(), opts.groupName);
       if (!group) throw new Error(`broadcast: unknown group "${opts.groupName}"`);
       if (!group.members.length) throw new Error(`broadcast: group "${opts.groupName}" has no members`);
+      const broadcastBlocked = policyPreflightMessage(sessionPolicy, opts.command, opts.commandArgs, {
+        compositeSteps: policyCompositeSteps,
+      });
+      if (broadcastBlocked) throw new Error(broadcastBlocked);
       const results = [];
       for (const member of group.members) {
         const entry = { target: member, targetPrefix: String(member).slice(0, 8), ok: false, result: null, error: null };
@@ -29611,7 +29728,11 @@ async function main(options = {}) {
             env: aliasEnv(alias),
             ...runtimeIdentity,
           });
-          const resp = await sendCommand(conn, { cmd: opts.command, args: opts.commandArgs }, { targetId });
+          const resp = await sendCommand(conn, {
+            cmd: opts.command,
+            args: opts.commandArgs,
+            ...policyRequestFields(sessionPolicy, opts.command, { contentBoundary: false }),
+          }, { targetId });
           try { conn.end(); } catch {}
           if (resp.ok) {
             entry.ok = true;
@@ -29672,6 +29793,11 @@ async function main(options = {}) {
     const opts = parseOpenArgs(args);
     const url = opts.url;
     if (url !== 'about:blank') validateUrl(url);
+    const openBlocked = navigationBlockedMessage(sessionPolicy, url, 'open');
+    if (openBlocked) {
+      console.error(formatCliError(openBlocked, { cmd: 'open', format: opts.format }));
+      return finish(1);
+    }
 
     // Reuse an existing tab with the same/similar URL when requested.
     if (opts.reuseUrl && url !== 'about:blank') {
@@ -29785,9 +29911,13 @@ async function main(options = {}) {
         console.log(formatOpenReadyMessage(targetId, url));
         try {
           const conn = await connectToSocket(sp);
-          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] }, { targetId });
+          const resp = await sendCommand(conn, { cmd: 'perceive', args: [], ...policyRequestFields(sessionPolicy, 'perceive') }, { targetId });
           conn.end();
-          if (resp.ok && resp.result) console.log('---\n' + resp.result);
+          if (resp.ok && resp.result) {
+            console.log('---\n' + (isContentBoundary(resp.contentBoundary)
+              ? wrapContentBoundary(resp.result, resp.contentBoundary)
+              : resp.result));
+          }
         } catch (e) {
           console.error(formatOpenAutoPerceiveFailure(e, targetId));
         }
@@ -29973,6 +30103,13 @@ async function main(options = {}) {
     console.error(formatCliError('target ID required. Run "cdp list" first.', { cmd, format: cliErrorFormat }));
     return finish(1);
   }
+  // #466: a disallowed `nav` URL or a denied step fails here, before a daemon attaches; the
+  // daemon checks again for the steps it runs.
+  const policyBlocked = policyPreflightMessage(sessionPolicy, cmd, cmdArgs, { compositeSteps: policyCompositeSteps });
+  if (policyBlocked) {
+    console.error(formatCliError(policyBlocked, { cmd, targetPrefix, format: cliErrorFormat }));
+    return finish(1);
+  }
 
   // Resolve against live discovery before trusting daemon or cache state.
   const targetAlias = resolveTargetAlias(targetPrefix);
@@ -30131,7 +30268,7 @@ async function main(options = {}) {
 
   let response;
   try {
-    response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs });
+    response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs, ...policyRequestFields(sessionPolicy, cmd) });
   } catch (error) {
     console.error(formatCliError(error, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat, args: cmdArgs }));
     return finish(1);
@@ -30446,4 +30583,5 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
   runTableCollectionLifecycle, createDaemonRequestConnection, MAX_DAEMON_REQUEST_LINE_BYTES,
   createDaemonShutdown, enforceDaemonTableCollectionGate,
+  policyCompositeSteps,
 } : undefined;
