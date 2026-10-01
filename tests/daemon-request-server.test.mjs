@@ -178,7 +178,8 @@ describe('daemon request server lifecycle', () => {
     expect(dispose).toHaveBeenCalledOnce();
     expect(conn.write).not.toHaveBeenCalled();
     expect(lifecycle.activeRequestCount()).toBe(0);
-    for (const name of ['data', 'end', 'close', 'error']) expect(conn.listenerCount(name)).toBe(0);
+    for (const name of ['data', 'end', 'close']) expect(conn.listenerCount(name)).toBe(0);
+    expect(conn.listenerCount('error')).toBe(1); // late-error sink only (#457)
   });
 
   it('keeps ownership through response flush and aborts once if the peer closes first', async () => {
@@ -458,7 +459,8 @@ describe('daemon request server lifecycle', () => {
       expect(conn.write).not.toHaveBeenCalled();
       expect(lifecycle.activeRequestCount()).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
-      for (const name of ['data', 'end', 'close', 'error']) expect(conn.listenerCount(name)).toBe(0);
+      for (const name of ['data', 'end', 'close']) expect(conn.listenerCount(name)).toBe(0);
+      expect(conn.listenerCount('error')).toBe(1); // late-error sink only (#457)
 
       lateCallback();
       expect(lateEffect).not.toHaveBeenCalled();
