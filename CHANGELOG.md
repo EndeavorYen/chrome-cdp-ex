@@ -92,12 +92,13 @@
   its old classification
   ([#490](https://github.com/EndeavorYen/chrome-cdp-ex/issues/490)).
 * A quoted secret is redacted through its real closing quote. Redaction used to stop at the first line
-  break or escaped quote, so `password: "QZ7X JQ9Z
-XJ3Q"` kept `JQ9Z XJ3Q` visible and
+  break or escaped quote, so `password: "QZ7X JQ9Z\nXJ3Q"` kept `JQ9Z XJ3Q` visible and
   `{"password":"a\"QZ7 XJ3"}` kept `QZ7 XJ3` in console text, receipts and session logs. A small
   scanner now reads the value, honouring backslash escapes and line breaks; a quote with no closing quote
-  within 4 KB is redacted up to that bound. A stray quote that would close on the next secret's opening
-  quote (`token: 'x … password: 'QZ7'`) keeps redacting through that secret. Redaction stays linear
+  within 4 KB is redacted up to that bound. Keys are also looked for inside a redacted quoted value, so a
+  stray quote (`token: "x`) that closes on the next secret's quoted key (`{"password":"QZ7"}`), on a
+  quote inside it, or at the bound in the middle of it does not expose that secret. Quotes in prose
+  (`password: it's "QZ7"`) stay ambiguous and are not guessed at. Redaction stays linear
   ([#503](https://github.com/EndeavorYen/chrome-cdp-ex/issues/503)).
 * The stdio MCP server speaks MCP stdio framing. It used to wrap every reply in LSP-style
   `Content-Length` headers, which a line-reading MCP client (the official SDKs) cannot parse. Replies

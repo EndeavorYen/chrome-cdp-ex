@@ -71,6 +71,37 @@ describe('#503 a quoted secret is redacted through its real closing quote', () =
     expectNoSecret(redactSensitiveString('token: "x, password: "QZ7 XJ3 JQ9" done'));
   });
 
+  // #506 review: the stray region can close on a quoted key, on a quote inside
+  // the next secret, or stop at the bound in the middle of the next key.
+  it('redacts a JSON secret whose quoted key closes a stray quote', () => {
+    expect(redactSensitiveString('token: "x\n{"password":"QZ7 XJ3"}'))
+      .toBe(`token: "${R}"password":"${R}"}`);
+    expect(redactSensitiveString('token: "x\n{\n  "password": "QZ7 XJ3"\n}'))
+      .toBe(`token: "${R}"password": "${R}"\n}`);
+    for (const text of [
+      "token: 'x\n{'password':'QZ7 XJ3'}",
+      'token: "x\n"password": "QZ7 XJ3"',
+      'token: "x\n"password"="QZ7 XJ3"',
+      'token: "x\n[{"a":1,"password":"QZ7 XJ3"}]',
+      'pin: "\nuser: "bob"\npassword: "QZ7 XJ3"',
+    ]) expectNoSecret(redactSensitiveString(text));
+  });
+
+  it('redacts the next secret when the stray region closes inside it (either quote)', () => {
+    expectNoSecret(redactSensitiveString('token: "x\npassword: \'QZ7 "XJ3\''));
+    expectNoSecret(redactSensitiveString("token: 'x\npassword: \"se'QZ7 XJ3\""));
+  });
+
+  it('redacts a secret that straddles the 4 KB bound of a stray quote', () => {
+    for (let pad = MAX_QUOTED_VALUE_CHARS - 24; pad <= MAX_QUOTED_VALUE_CHARS + 2; pad++) {
+      for (const sep of ['\n', ' ']) {
+        const out = redactSensitiveString(`token: "x${'q'.repeat(pad)}${sep}password: "QZ7 XJ3" done`);
+        expectNoSecret(out);
+        expect(out.endsWith(' done'), `pad ${pad}`).toBe(true);
+      }
+    }
+  });
+
   it('leaves non-secret quoted values and the text after a closed value alone', () => {
     expect(redactSensitiveString('{"password":"a","name":"Ada\\"s"}\nnext: "line"'))
       .toBe(`{"password":"${R}","name":"Ada\\"s"}\nnext: "line"`);
@@ -96,6 +127,9 @@ describe('#503 quoted-value scanning stays linear', () => {
     'chained stray quotes': () => "token: 'x\n".repeat(SIZE / 10),
     'secret keys inside a long value': () => `pin: "${'\npin: \''.repeat(SIZE / 7)}`,
     'long key before each quote': () => ` ${'k'.repeat(60)}pin: "x"`.repeat(SIZE / 69),
+    'secret keys packed in one bare run': () => `pin: "${'?pin=a'.repeat(SIZE / 6)}`,
+    'stray quotes closing on quoted keys': () => 'token: "x\n{"password":"y"}\n'.repeat(SIZE / 28),
+    'tight double-quote chain': () => ' pin:"'.repeat(SIZE / 6),
   };
   for (const [name, make] of Object.entries(cases)) {
     it(`redacts 64 KB of ${name} in linear time`, () => {

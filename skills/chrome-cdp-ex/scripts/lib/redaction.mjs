@@ -155,10 +155,11 @@ const BARE_VALUE_RE = /[^"'\s,;&}\])]+/y;
 // A quoted secret is read up to its real closing quote (#503): `\"` and line
 // breaks are part of the value. With no closing quote within this many
 // characters, everything up to the bound is redacted.
+//
+// Quotes in prose are ambiguous and are not guessed at: in
+// `password: 'it's QZ7'` the apostrophe closes the value, and in
+// `password: it's "QZ7"` the value is the bare word `it`. Both leak.
 export const MAX_QUOTED_VALUE_CHARS = 4096;
-// `key: ` / `"key":` right before a quote, at the end of a short lookback.
-const KEY_BEFORE_QUOTE_RE = /(?:^|[\s{[,;?&#])(["']?)([A-Za-z0-9_.%-]{1,64})\1\s*[:=]\s*$/;
-const KEY_BEFORE_QUOTE_LOOKBACK = 96;
 
 function isHighSurrogate(code) {
   return code >= 0xd800 && code <= 0xdbff;
@@ -179,14 +180,6 @@ function scanQuotedValue(text, start) {
   return { end, closed: false };
 }
 
-// Did the quote at `quoteAt` open another secret's value? `token: 'x … password: 'QZ7'`
-// otherwise closes the stray `'x` on password's opening quote and shows `QZ7'`.
-function quoteOpensSecretValue(text, quoteAt, floor) {
-  const from = Math.max(floor, quoteAt - KEY_BEFORE_QUOTE_LOOKBACK);
-  const match = KEY_BEFORE_QUOTE_RE.exec(text.slice(from, quoteAt));
-  return Boolean(match) && isSensitiveKey(decodeKey(match[2]));
-}
-
 // The secret value starting at `valueStart` as `{ end, quote, closed }`, or null.
 function secretValueSpan(text, valueStart) {
   const first = text[valueStart];
@@ -197,12 +190,7 @@ function secretValueSpan(text, valueStart) {
   }
   // A lone quote at the very end has no value to hide.
   if (valueStart + 1 >= text.length) return null;
-  let span = scanQuotedValue(text, valueStart);
-  // Each extra scan starts at the previous closing quote, so the text is read once.
-  while (span.closed && span.end < text.length && quoteOpensSecretValue(text, span.end - 1, valueStart + 1)) {
-    span = scanQuotedValue(text, span.end - 1);
-  }
-  return { ...span, quote: first };
+  return { ...scanQuotedValue(text, valueStart), quote: first };
 }
 
 // `#pin:checked`, `.token:hover`, `input.password:focus` are CSS selectors, not
@@ -220,9 +208,15 @@ function isCssSelectorColon(text, separator, keyEnd) {
 // so a secret hiding in its value (`?a=b#access_token=…`) is still examined.
 // A quoted value left open (by the page, or by a cut) is redacted to the end
 // of the text or MAX_QUOTED_VALUE_CHARS, whichever comes first.
+//
+// Keys are also looked for inside a quoted secret value. A stray quote
+// (`token: "x`) closes on whatever quote comes next, which may open the
+// next secret's key or value (`{"password":"QZ7"}`, `password: 'QZ7 "X'`) or
+// lie past the bound; that next secret is still found and its span merged.
+// Key scanning only moves forward and resumes after a bare value, and two
+// scans for the same quote never overlap, so this stays linear.
 function redactSecretAssignments(text) {
-  let out = '';
-  let last = 0;
+  const spans = [];
   ASSIGNMENT_KEY_RE.lastIndex = 0;
   let match;
   while ((match = ASSIGNMENT_KEY_RE.exec(text)) !== null) {
@@ -236,11 +230,23 @@ function redactSecretAssignments(text) {
     if (!isSensitiveKey(decodeKey(rawKey), { urlQuery })) continue;
     const span = secretValueSpan(text, valueStart);
     if (!span) continue;
-    out += `${text.slice(last, valueStart)}${span.quote}${REDACTED_VALUE}${span.closed ? span.quote : ''}`;
-    last = span.end;
-    ASSIGNMENT_KEY_RE.lastIndex = last;
+    const close = span.closed ? span.quote : '';
+    const prev = spans[spans.length - 1];
+    if (prev && valueStart < prev.end) {
+      if (span.end > prev.end) Object.assign(prev, { end: span.end, close });
+    } else {
+      spans.push({ start: valueStart, end: span.end, open: span.quote, close });
+    }
+    ASSIGNMENT_KEY_RE.lastIndex = span.quote ? valueStart + 1 : span.end;
   }
-  return last === 0 ? text : `${out}${text.slice(last)}`;
+  if (spans.length === 0) return text;
+  let out = '';
+  let last = 0;
+  for (const span of spans) {
+    out += `${text.slice(last, span.start)}${span.open}${REDACTED_VALUE}${span.close}`;
+    last = span.end;
+  }
+  return `${out}${text.slice(last)}`;
 }
 
 // `scheme://user:pa` at the very end of a cut-off text: the `@` that would mark
