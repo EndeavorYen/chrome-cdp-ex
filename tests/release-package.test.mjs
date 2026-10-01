@@ -70,6 +70,7 @@ const requiredEntries = [
   'skills/chrome-cdp-ex/scripts/lib/page-health.mjs',
   'skills/chrome-cdp-ex/scripts/lib/pdf-text.mjs',
   'skills/chrome-cdp-ex/scripts/lib/perception-model.mjs',
+  'skills/chrome-cdp-ex/scripts/lib/redaction.mjs',
   'skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs',
   'skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs',
   'skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs',
@@ -158,7 +159,7 @@ describe('release package checker', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Release package OK: 61 required entries');
+    expect(result.stdout).toContain('Release package OK: 62 required entries');
   });
 
   it('rejects an artifact that omits a release-critical entry', () => {

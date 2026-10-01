@@ -248,7 +248,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |
 | `closetab` | `closetab <target>` | `mutation / mutation` |
-| `netlog` | `netlog <target> [--clear]` | `conditional-mutation / conditional` |
+| `netlog` | `netlog <target> [--clear] [--unsafe-full]` | `conditional-mutation / conditional` |
 | `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
 | `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
 | `record` | `record <target> [ms]` | `conditional-mutation / conditional` |
@@ -640,7 +640,7 @@ scripts/cdp.mjs back    <target>                       # navigate back in browse
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history
 scripts/cdp.mjs reload  <target>                       # reload current page
 scripts/cdp.mjs closetab <target> [--force]            # close a browser tab (refuses the last open tab unless --force)
-scripts/cdp.mjs netlog  <target> [--clear]             # network request log (XHR/Fetch with status + timing)
+scripts/cdp.mjs netlog  <target> [--clear] [--unsafe-full]  # network request log (XHR/Fetch with status + timing; URL secrets redacted)
 scripts/cdp.mjs mock    <target> [add|clear]           # mock matching network requests in the live tab
 scripts/cdp.mjs clock   <target> [freeze|offset|reset] # override Date/time in the live tab
 scripts/cdp.mjs throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  # emulate network conditions
@@ -795,9 +795,10 @@ Opt-in. With `CDP_BACKGROUND=1` (accepts `1`, `true`, `yes`, `on`) no command se
 ```bash
 scripts/cdp.mjs netlog <target>               # show captured XHR/Fetch/Document requests
 scripts/cdp.mjs netlog <target> --clear        # clear the log
+scripts/cdp.mjs netlog <target> --unsafe-full  # print URLs verbatim (secrets included)
 ```
 
-Tracks XHR, Fetch, and Document requests in the background with status codes, timing, and response sizes. Use for debugging API calls.
+Tracks XHR, Fetch, and Document requests in the background with status codes, timing, and response sizes. Use for debugging API calls. Secret URL values (query, fragment, path `;jsessionid=`, userinfo password) are printed as `<redacted>` by default; keys such as `access_token`, `client_secret`, `session_id`, `accessToken`, `api_key` and `X-Amz-Signature` are matched token by token, so `pinned` or `cardinality` stay readable. `--unsafe-full` prints raw URLs, and MCP `run_command` asks for confirmation first.
 
 ### Network mocking
 

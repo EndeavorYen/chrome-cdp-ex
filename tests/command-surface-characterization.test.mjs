@@ -76,9 +76,9 @@ describe('Phase 6 command-surface characterization', () => {
       }
     }
     const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
-    expect(Buffer.byteLength(catalogHelp)).toBe(25354);
+    expect(Buffer.byteLength(catalogHelp)).toBe(25413);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:179b1e577ed1555657f49ed8153faa99f9403033d143030ab348b3c7584169a8');
+      .toBe('sha256:1ca2d882265a747f32adbc28d438fd244e280750a0d43e0069c3b5c3d0b6637b');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
