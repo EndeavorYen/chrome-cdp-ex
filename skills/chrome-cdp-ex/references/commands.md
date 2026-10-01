@@ -879,7 +879,8 @@ CSS px = screenshot image px / DPR
 - Prefer `snap` over `html` for page structure — compact by default, use `snap --full` for complete tree.
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
-- Daemons keep CDP sessions alive per tab (auto-exit after 20min idle), so only the first command per tab triggers Chrome's "Allow debugging" dialog.
+- Daemons keep CDP sessions alive per tab (auto-exit after 20min idle), so only the first command per tab triggers Chrome's "Allow debugging" dialog. The idle countdown pauses while a command runs (a long `wait` or `loadall` is not cut off) and restarts in full when the last one ends; one request holds the pause for at most 65 min (`DAEMON_REQUEST_IDLE_PAUSE_MAX_MS`).
+- Runtime dir retention: each daemon writes `cdp-<target>.log` and `cdp-<target>-screenshots/` there. After a new daemon answers its first request, it removes another tab's log, rotated `.log.1`, screenshot folder and `cdp-<target>.crash.json` once the newest of them is older than 7 days (`RUNTIME_ARTIFACT_MAX_AGE_MS`), keeping the 20 newest tabs' sets (`RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS`). Tabs with a running daemon and the daemon's own tab are never pruned; files Windows still holds open are skipped. A log past 5 MB (`SESSION_LOG_ROTATE_BYTES`) is renamed to `.log.1` (one kept) and restarted. Copy screenshots you need to keep out of the runtime dir.
 - **Shell quoting**: CSS selectors like `input[type=text]` contain shell metacharacters. Always wrap in quotes: `click <t> 'input[type="text"]'`.
 - **WSL2 gotcha**: Never improvise WSL2→Windows connectivity (localhost, gateway IP, port forwarding, launching Chrome from WSL). The only proven pattern: user starts Chrome on Windows, agent uses Windows-side Node.js to run the CDP script.
 
