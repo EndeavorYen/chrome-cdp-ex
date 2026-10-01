@@ -131,6 +131,7 @@ import {
 import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
 import { resolveGitHead } from './lib/git-head.mjs';
 import { createLocatorPlan } from './lib/browser-resources.mjs';
+import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './lib/browser-paths.mjs';
 import {
   REDACTED_VALUE,
   isSensitiveKey,
@@ -22369,33 +22370,6 @@ async function doctorStr(opts = {}) {
 // still means the browser default dir and cannot enable CDP on Chromium 136+.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BROWSER_PATHS = {
-  darwin: {
-    edge:   ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
-    chrome: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
-    brave:  ['/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'],
-  },
-  linux: {
-    edge:   ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable', '/usr/bin/microsoft-edge-dev'],
-    chrome: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'],
-    brave:  ['/usr/bin/brave-browser', '/usr/bin/brave'],
-  },
-  win32: {
-    edge:   [
-      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    ],
-    chrome: [
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    ],
-    brave: [
-      'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
-      'C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
-    ],
-  },
-};
-
 function defaultBrowserUserDataDir(browser, { platform = process.platform, env = process.env, home } = {}) {
   const p = pathApiForPlatform(platform);
   const resolvedHome = home || env.HOME || env.USERPROFILE || homedir();
@@ -22761,39 +22735,11 @@ function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
   return lines.join('\n');
 }
 
-const BROWSER_COMMANDS = {
-  edge: ['microsoft-edge', 'microsoft-edge-stable', 'microsoft-edge-dev', 'msedge'],
-  chrome: ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome'],
-  brave: ['brave-browser', 'brave'],
-};
-
-function findOnPath(commands, env = process.env, fs = { existsSync }, platform = process.platform) {
-  const p = pathApiForPlatform(platform);
-  const sep = platform === 'win32' ? ';' : ':';
-  const dirs = String(env?.PATH || '').split(sep).filter(Boolean);
-  for (const cmd of commands || []) {
-    for (const dir of dirs) {
-      const candidate = p.resolve(dir, cmd);
-      if (fs.existsSync(candidate)) return candidate;
-      if (platform === 'win32' && fs.existsSync(`${candidate}.exe`)) return `${candidate}.exe`;
-    }
-  }
-  return null;
-}
-
-function detectBrowserPath(browser, platform = process.platform, fs = { existsSync }, env = process.env) {
-  const list = (DEFAULT_BROWSER_PATHS[platform] || {})[browser] || [];
-  for (const candidate of list) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return findOnPath(BROWSER_COMMANDS[browser] || [], env, fs, platform);
-}
-
 function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { existsSync }, env = process.env) {
   const exe = opts.executable || detectBrowserPath(opts.browser, platform, fs, env);
   if (!exe || !fs.existsSync(exe)) {
     const list = [
-      ...((DEFAULT_BROWSER_PATHS[platform] || {})[opts.browser] || []),
+      ...defaultBrowserPaths(opts.browser, platform, env),
       ...((BROWSER_COMMANDS[opts.browser] || []).map(c => `$PATH:${c}`)),
     ];
     const tried = list.length ? list.join(', ') : '(no candidates configured for this platform)';

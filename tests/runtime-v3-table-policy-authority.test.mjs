@@ -1,13 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  baselineTablePolicyAuthority,
   expectInventoryDriftOrReject,
   inventory,
   mcpAdapterSource,
   source,
+  yieldToEventLoop,
 } from './runtime-v3-table-policy-authority-helpers.mjs';
 
 describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => {
+  // Every test runs synchronous inventory builds; let the worker's event loop turn between them.
+  beforeEach(yieldToEventLoop);
+
   it('binds the exact catalog policy and argv-aware production owners', () => {
     const authority = inventory().tablePolicyAuthority;
     expect(authority).toMatchObject({
@@ -272,7 +277,7 @@ describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => 
       expect(error.message).toMatch(/table policy authority/i);
       return;
     }
-    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+    expect(mutated).not.toEqual(baselineTablePolicyAuthority());
   });
 
   it('drifts when MCP checks observation argv and restores collect argv after confirmation', () => {
@@ -287,7 +292,7 @@ describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => 
       expect(error.message).toMatch(/table policy authority/i);
       return;
     }
-    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+    expect(mutated).not.toEqual(baselineTablePolicyAuthority());
   });
 
   it('drifts when the MCP confirmation enforcer is changed to a no-op', () => {
@@ -302,7 +307,7 @@ describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => 
       expect(error.message).toMatch(/table policy authority/i);
       return;
     }
-    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+    expect(mutated).not.toEqual(baselineTablePolicyAuthority());
   });
 
   it('drifts when MCP own-data snapshot injects confirmation for table commands', () => {
@@ -317,6 +322,6 @@ describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => 
       expect(error.message).toMatch(/table policy authority/i);
       return;
     }
-    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+    expect(mutated).not.toEqual(baselineTablePolicyAuthority());
   });
 });

@@ -42,7 +42,23 @@ export const fixture = JSON.parse(readFileSync(
 ));
 export const scriptPath = join(rootDir, 'scripts/runtime-dispatch-inventory.mjs');
 
-export function expectInventoryDrift(mutation) {
+// One buildRuntimeDispatchInventory call runs five ESLint passes over the ~28k-line cdp.mjs
+// (3-6 s alone on a developer machine). A mutated source cannot reuse an earlier parse, so
+// these budgets are sized for a 2-worker hosted runner (Windows included) with headroom,
+// not for an idle laptop.
+export const INVENTORY_BUILD_TIMEOUT = 120_000;
+export const MULTI_BUILD_TIMEOUT = 300_000;
+
+// The vitest worker reads the runner's RPC replies only when its event loop turns. A file of
+// back-to-back synchronous builds starves it past birpc's 60 s call timeout, and vitest then
+// reports `Timeout calling "onTaskUpdate"` although every assertion passed. Await this before
+// each build so the loop turns between builds (#463).
+export function yieldToEventLoop() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+export async function expectInventoryDrift(mutation) {
+  await yieldToEventLoop();
   try {
     expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
   } catch (error) {

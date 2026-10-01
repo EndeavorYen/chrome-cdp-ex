@@ -10,6 +10,7 @@ import {
   tableContractSource,
   tableExtractionSource,
   tableSamplerSource,
+  yieldToEventLoop,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
 export {
@@ -21,6 +22,7 @@ export {
   tableContractSource,
   tableExtractionSource,
   tableSamplerSource,
+  yieldToEventLoop,
 };
 
 export function inventory(cdpSource = source, overrides = {}) {
@@ -36,6 +38,14 @@ export function inventory(cdpSource = source, overrides = {}) {
   });
 }
 
+// The unmutated sources never change within a run, so build their authority once instead of
+// once per mutation (each build is several seconds of synchronous ESLint work). Read-only.
+let baselineAuthority = null;
+export function baselineTablePolicyAuthority() {
+  baselineAuthority ??= inventory().tablePolicyAuthority;
+  return baselineAuthority;
+}
+
 export function expectInventoryDriftOrReject(cdpSource) {
   let authority;
   try {
@@ -45,7 +55,7 @@ export function expectInventoryDriftOrReject(cdpSource) {
     expect(error.message).toMatch(/table policy authority/i);
     return;
   }
-  expect(authority).not.toEqual(inventory().tablePolicyAuthority);
+  expect(authority).not.toEqual(baselineTablePolicyAuthority());
 }
 
 export function expectOverrideDriftOrReject(overrides) {
@@ -57,7 +67,7 @@ export function expectOverrideDriftOrReject(overrides) {
     expect(error.message).toMatch(/table policy authority/i);
     return;
   }
-  expect(authority).not.toEqual(inventory().tablePolicyAuthority);
+  expect(authority).not.toEqual(baselineTablePolicyAuthority());
 }
 
 export function mutate(text, before, after) {
