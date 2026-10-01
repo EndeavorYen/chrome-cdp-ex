@@ -45,7 +45,7 @@ describe('#459 console and exception capture is bounded at capture time', () => 
       stackTrace: { callFrames: [{ url: 'https://app.test/static/canvas.js', lineNumber: 42 }] },
     });
     expect(entry.level).toBe('log');
-    expect(entry.loc).toBe('canvas.js:42');
+    expect(entry.loc).toBe('canvas.js:43:1'); // 1-based line:column since #470
     expect(entry.text.length).toBeLessThanOrEqual(CAP);
     expect(entry.text.startsWith('frame: data:image/png;base64,')).toBe(true);
     expect(entry.truncated).toBe(true);

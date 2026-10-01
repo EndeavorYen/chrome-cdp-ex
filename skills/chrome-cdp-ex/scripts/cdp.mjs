@@ -29373,7 +29373,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
-  consoleStr, consoleEntryFromEvent, exceptionEntryFromEvent, selectConsoleEntries, locateObservedEntries,
+  selectConsoleEntries, locateObservedEntries,
   buildLocatedActionObservationDelta, loadSourceMapText,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
