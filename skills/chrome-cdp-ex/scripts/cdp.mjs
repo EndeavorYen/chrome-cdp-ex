@@ -5755,14 +5755,9 @@ function compactNetworkDeltaEntry(entry = {}) {
   };
 }
 
+// Keeps the origin (which site raised the dialog); secrets go through the shared URL redactor (#455).
 function compactDialogUrl(value) {
-  const raw = String(value ?? '').trim();
-  if (!raw) return '';
-  try {
-    const url = new URL(raw);
-    if (/^https?:$/.test(url.protocol)) return compactActionText(`${url.origin}${compactActionUrl(raw)}`, 240);
-  } catch {}
-  return compactActionText(redactSensitiveString(raw), 240);
+  return compactActionText(redactUrl(String(value ?? '').trim()), 240);
 }
 
 // A JavaScript dialog the daemon answered on the user's behalf during the action (#460).

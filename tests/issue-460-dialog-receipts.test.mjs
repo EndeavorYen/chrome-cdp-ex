@@ -146,7 +146,7 @@ describe('#460 auto-handled JavaScript dialogs appear in action receipts', () =>
     const { output } = await runAction({
       dialogBuf,
       format: 'json',
-      duringDispatch: () => openDialog(dialogBuf, { type: 'alert', message: long, url: `${PAGE_URL}?token=zzz` }),
+      duringDispatch: () => openDialog(dialogBuf, { type: 'alert', message: long, url: `${PAGE_URL}?access_token=zzz` }),
     });
     const [dialog] = JSON.parse(output).effects.dialogs;
     expect(dialog.message.length).toBeLessThanOrEqual(200);
