@@ -227,7 +227,12 @@ function redactSecretAssignments(text) {
     if (prefix === '#' && !isEquals) continue;
     if (isCssSelectorColon(text, separator, match.index + prefix.length + keyQuote.length * 2 + rawKey.length)) continue;
     const urlQuery = isEquals && !keyQuote && (prefix === '?' || prefix === '&' || prefix === '#');
-    if (!isSensitiveKey(decodeKey(rawKey), { urlQuery })) continue;
+    if (!isSensitiveKey(decodeKey(rawKey), { urlQuery })) {
+      // Give back the whitespace after a non-secret key's separator: it is the prefix
+      // the next key needs (`user: token=…`, `msg: password: "…"`).
+      ASSIGNMENT_KEY_RE.lastIndex = match.index + whole.trimEnd().length;
+      continue;
+    }
     const span = secretValueSpan(text, valueStart);
     if (!span) continue;
     const close = span.closed ? span.quote : '';

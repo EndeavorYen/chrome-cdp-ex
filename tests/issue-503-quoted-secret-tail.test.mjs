@@ -151,3 +151,19 @@ describe('#503 quoted-value scanning stays linear', () => {
     }
   });
 });
+
+describe('#503 review: a non-secret key does not hide the next secret key', () => {
+  it.each([
+    ['user: token=QZ7', 'QZ7'],
+    ['Error: token=QZ7', 'QZ7'],
+    ['msg: password: "QZ7 XJ3"', 'QZ7'],
+    ['password: "x "b": token=QZ7', 'QZ7'],
+  ])('%s', (input, secret) => {
+    expect(redactSensitiveString(input)).not.toContain(secret);
+  });
+
+  it('keeps non-secret pairs readable', () => {
+    expect(redactSensitiveString('user: alice, sort: name')).toBe('user: alice, sort: name');
+  });
+});
+
