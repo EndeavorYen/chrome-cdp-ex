@@ -4746,6 +4746,7 @@ async function settleObservedNavigation(cdp, sid, {
     const nextSid = attached?.sessionId;
     if (!nextSid) throw error;
     await enableDaemonDomains(cdp, nextSid);
+    rememberSessionTarget(nextSid, targetId);
     onSessionId?.(nextSid);
     await waitForDocumentReady(cdp, nextSid, readyTimeoutMs, { probeTimeoutMs });
     return nextSid;
@@ -5866,6 +5867,16 @@ function buildActionOutcome(actionResult = {}) {
     };
   }
 
+  if (effects.openedTab) {
+    return {
+      ...base,
+      status: 'changed',
+      changed: true,
+      evidence: 'new-tab',
+      reason: `The link opened ${effects.openedTab.existing ? 'in tab' : 'a new tab'} ${effects.openedTab.targetPrefix} (${effects.openedTab.url}).`,
+    };
+  }
+
   if (navigation.navigated) {
     return {
       ...base,
@@ -6017,6 +6028,12 @@ function actionDeltaDetails(actionResult = {}) {
       status: 'failed',
       summary: `Dispatch failed: ${effects.failure.kind}`,
       ...(effects.failure.reason ? { sample: effects.failure.reason } : {}),
+    });
+  } else if (outcome.evidence === 'new-tab' && effects.openedTab) {
+    details.push({
+      type: 'tab',
+      status: effects.openedTab.existing ? 'reused' : 'opened',
+      summary: `${effects.openedTab.existing ? 'Opened in tab' : 'Opened new tab'} ${effects.openedTab.targetPrefix}: ${effects.openedTab.url}`,
     });
   } else if (outcome.status === 'changed') {
     const sample = summarizeActionDomDiff(effects.domDiff).sample;
@@ -6362,6 +6379,20 @@ function buildActionRecommendation(actionResult = {}) {
       priority: diagnosis.recovery?.priority || (diagnosis.status === 'blocked' ? 'high' : 'medium'),
       verifyCommand: diagnosis.recovery?.verifyCommand || diagnosis.nextCommand || null,
       commands,
+    };
+  }
+  const openedTab = actionResult.effects?.openedTab;
+  if (openedTab?.targetPrefix) {
+    // #437: the click's result is in the other tab; look there, not at this one.
+    return {
+      source: 'action-evidence',
+      action: actionResult.action || null,
+      targetPrefix: target,
+      strategy: 'continue-in-opened-tab',
+      priority: 'medium',
+      reason: `The link opened ${openedTab.existing ? 'in tab' : 'a new tab'} ${openedTab.targetPrefix}; perceive that tab to continue.`,
+      commands: uniqueNextStepCommands([`cdp perceive ${openedTab.targetPrefix} -C -d 8`]),
+      optionalCommands: [],
     };
   }
   const outcome = actionResult.outcome || buildActionOutcome(actionResult);
@@ -6809,6 +6840,8 @@ const CLICK_OUTCOME_WORD_ACTIONS = new Set(['click', 'jsclick']);
 // (report-only, outcome `dispatched`) print no word rather than a guess.
 function clickOutcomeWord(result = {}) {
   if (!CLICK_OUTCOME_WORD_ACTIONS.has(String(result.action || '').toLowerCase())) return '';
+  // #437: "→ opened new tab …" already states the outcome; `changed` would read as this tab.
+  if (result.outcome?.evidence === 'new-tab') return '';
   const status = result.outcome?.status;
   return status === 'changed' || status === 'no-change' ? status : '';
 }
@@ -7997,13 +8030,18 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     if (output.format === 'json') return formatActionResultOutput(result, output);
     throw new Error(formatActionFailure(e, { action, target }));
   }
+  // #437: a click on a link that opened another tab says so in its dispatch text.
+  const openedTab = CLICK_OUTCOME_WORD_ACTIONS.has(String(action || '').toLowerCase())
+    ? parseClickOpenedTab(dispatchText)
+    : null;
+  const openedTabEffect = openedTab ? { openedTab } : {};
   if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') {
     const result = createActionResult({
       action,
       target: target || { input: '', resolvedBy: 'command', label: '' },
       dispatch: { ok: true, method: dispatchMethod },
       settle: { ok: true, durationMs: Date.now() - startedAt },
-      effects: { domDiff: null, console: [], network: [], navigation: null },
+      effects: { domDiff: null, console: [], network: [], navigation: null, ...openedTabEffect },
       nextHint: feedbackPolicy === 'report-only' ? nextHint : null,
     });
     await finalizeActionResult(result, { enrichActionResult, onActionResult });
@@ -8017,7 +8055,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       target: target || { input: '', resolvedBy: 'command', label: '' },
       dispatch: { ok: true, method: dispatchMethod },
       settle: { ok: true, durationMs: Date.now() - startedAt },
-      effects: { domDiff, console: [], network: [], navigation: null },
+      effects: { domDiff, console: [], network: [], navigation: null, ...openedTabEffect },
       nextHint,
     });
     await finalizeActionResult(result, { enrichActionResult, onActionResult });
@@ -8034,6 +8072,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
         console: [],
         network: [],
         navigation: null,
+        ...openedTabEffect,
         ...(observationError ? { observationError } : {}),
       },
       nextHint,
@@ -9944,6 +9983,17 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
   return object.objectId;
 }
 
+// #437: page-side reads of where a link opens. The effective target is the link's own
+// `target` attribute, else the first `<base target>` (HTML "get an element's target").
+// `frameName` is the link's own window name: a target equal to it stays in this frame.
+function linkTargetPageExpression(el) {
+  return `(${el}.tagName === 'A' ? String((${el}.getAttribute('target') ?? (${el}.ownerDocument || document).querySelector('base[target]')?.getAttribute('target')) || '') : null)`;
+}
+
+function linkFrameNamePageExpression(el) {
+  return `(${el}.tagName === 'A' ? String((${el}.ownerDocument || document).defaultView?.name || '') : '')`;
+}
+
 // #436: page-side hit test of a click point. `this` is the click target; `rect` is its settled
 // viewport rect in the target's own document (frame-local for @f refs). Returns null when the point
 // cannot be tested (zero size, outside the viewport, nothing hit), { covered: false } when the real
@@ -10089,6 +10139,8 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       ...previous,
       tag: this.tagName,
       href: this.tagName === 'A' ? (this.href || null) : null,
+      linkTarget: ${linkTargetPageExpression('this')},
+      frameName: ${linkFrameNamePageExpression('this')},
       pageHref: location.href,
       text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),${hitTest ? `
       hit,` : ''}
@@ -13320,18 +13372,135 @@ async function evalPageHref(cdp, sid, timeoutMs = CLICK_HREF_PROBE_TIMEOUT_MS) {
   }
 }
 
-async function confirmClickFollowedHref(cdp, sid, target = {}) {
-  if (String(target.tag || '').toUpperCase() !== 'A') return;
-  if (!isNavigatingHref(target.href, target.pageHref)) return;
+// #437: the daemon's tab target id per CDP session, so a followed-href check can tell a
+// popup this tab opened (TargetInfo.openerId) from any other new tab.
+const SESSION_TARGET_IDS = new Map();
+
+function rememberSessionTarget(sessionId, targetId) {
+  if (sessionId && targetId) SESSION_TARGET_IDS.set(sessionId, targetId);
+}
+
+function forgetSessionTarget(sessionId) {
+  SESSION_TARGET_IDS.delete(sessionId);
+}
+
+function clickFollowsHref(target = {}) {
+  return String(target.tag || '').toUpperCase() === 'A' && isNavigatingHref(target.href, target.pageHref);
+}
+
+// #437: whether following this link opens another browsing context instead of this one.
+// `_blank` always does; `_self`/`_parent`/`_top` never do; any other name does unless it
+// is this frame's own window name. (A name that matches another open window reuses that
+// tab, which findClickOpenedTab also reports.)
+function linkOpensNewBrowsingContext(target = {}) {
+  const name = String(target.linkTarget || '').trim();
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  if (lower === '_blank') return true;
+  if (lower === '_self' || lower === '_parent' || lower === '_top') return false;
+  return name !== String(target.frameName || '');
+}
+
+async function boundedPageTargets(cdp, timeoutMs) {
+  const budget = Math.max(1, Number(timeoutMs) || 1);
+  let timer;
+  try {
+    const result = await Promise.race([
+      cdpDomains(cdp).Target.getTargets({}, undefined, budget),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), budget); }),
+    ]);
+    if (!result) return null;
+    return (result.targetInfos || []).filter(info => info?.type === 'page' && info.targetId);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// #437: page targets before a click on a link that opens another browsing context, so a
+// tab the click opens is recognisable afterwards. Only such links pay this round trip.
+function clickNewTabWatchFromTargets(sid, targetInfos) {
+  if (!targetInfos) return null;
+  return {
+    openerId: SESSION_TARGET_IDS.get(sid) || null,
+    pagesBefore: new Map(targetInfos.map(info => [info.targetId, String(info.url || '')])),
+  };
+}
+
+async function prepareClickFollowedHref(cdp, sid, target = {}) {
+  if (!clickFollowsHref(target) || !linkOpensNewBrowsingContext(target)) return null;
+  return clickNewTabWatchFromTargets(sid, await boundedPageTargets(cdp, CLICK_NAVIGATION_WAIT_MS));
+}
+
+// A new page target opened by this tab (or showing the link URL), or a tab that existed
+// before the click and now shows the link URL (a named target reusing that window).
+function findClickOpenedTab(targetInfos, watch, href) {
+  for (const info of targetInfos || []) {
+    const url = String(info.url || '');
+    const before = watch.pagesBefore.get(info.targetId);
+    if (before === undefined) {
+      const opener = Boolean(watch.openerId) && info.openerId === watch.openerId;
+      if (opener || navigationDestinationMatches(url, href)) {
+        return { targetId: info.targetId, url: isBlankPageUrl(url) ? String(href) : url, existing: false };
+      }
+    } else if (info.targetId !== watch.openerId && before !== url && navigationDestinationMatches(url, href)) {
+      return { targetId: info.targetId, url, existing: true };
+    }
+  }
+  return null;
+}
+
+function formatClickOpenedTab(opened) {
+  if (!opened) return '';
+  return ` → ${opened.existing ? 'opened in tab' : 'opened new tab'} ${targetPrefixForDisplay(opened.targetId)} ${opened.url}`;
+}
+
+// Anchored to the end of a line, with a URL that cannot hold `"`: the suffix always follows the
+// receipt's closing quote, so link text that merely contains "→ opened new tab …" cannot match.
+const CLICK_OPENED_TAB_RE = / → opened (new tab|in tab) ([0-9A-Fa-f]{8,32}) ([^\s"]+)$/m;
+
+function parseClickOpenedTab(text) {
+  const match = String(text || '').match(CLICK_OPENED_TAB_RE);
+  if (!match) return null;
+  return { targetPrefix: match[2], url: match[3], existing: match[1] === 'in tab' };
+}
+
+// Returns null when the click is not a followed link, { url } after this tab navigated,
+// or { openedTab } when the link opened (or reused) another tab (#437). Throws when a
+// followed link did neither within CLICK_NAVIGATION_WAIT_MS.
+async function confirmClickFollowedHref(cdp, sid, target = {}, newTabWatch = null) {
+  if (!clickFollowsHref(target)) return null;
   const before = String(target.pageHref || '');
   const deadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
-    const current = await evalPageHref(cdp, sid, Math.min(CLICK_HREF_PROBE_TIMEOUT_MS, remaining));
-    if (current && current !== before) return current;
+    const probeMs = Math.min(CLICK_HREF_PROBE_TIMEOUT_MS, remaining);
+    const [current, pages] = await Promise.all([
+      evalPageHref(cdp, sid, probeMs),
+      newTabWatch ? boundedPageTargets(cdp, probeMs) : null,
+    ]);
+    if (current && current !== before) return { url: current };
+    const openedTab = newTabWatch ? findClickOpenedTab(pages, newTabWatch, target.href) : null;
+    if (openedTab) return { openedTab };
     const pause = Math.min(40, deadline - Date.now());
     if (pause > 0) await sleep(pause);
+  }
+  if (newTabWatch) {
+    const linkTarget = String(target.linkTarget || '').trim();
+    // A named target whose window already shows the link URL is reloaded in place, which
+    // leaves no trace in the target list. Name that tab instead of guessing either way.
+    const sameUrlTab = linkTarget.toLowerCase() === '_blank'
+      ? null
+      : [...newTabWatch.pagesBefore].find(([id, url]) => id !== newTabWatch.openerId
+        && navigationDestinationMatches(url, target.href))?.[0];
+    const reloadHint = sameUrlTab
+      ? `; tab ${targetPrefixForDisplay(sameUrlTab)} already shows that URL and may have reloaded it (cdp perceive ${targetPrefixForDisplay(sameUrlTab)} -C -d 8)`
+      : '';
+    throw new Error(
+      `Click on <A href="${target.href}" target="${linkTarget}"> did not navigate and no new tab opened${reloadHint}. Try jsclick or click --js.`
+    );
   }
   throw new Error(
     `Click on <A href="${target.href}"> did not navigate. Try jsclick or click --js.`
@@ -13519,6 +13688,8 @@ function namedInViewportClickExpression(name) {
     }
     const rect = el.getBoundingClientRect();
     const href = el.href || el.getAttribute('href') || null;
+    const linkTarget = ${linkTargetPageExpression('el')};
+    const frameName = ${linkFrameNamePageExpression('el')};
     const pageHref = location.href;
     if (typeof el.click === 'function') el.click();
     else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -13527,6 +13698,8 @@ function namedInViewportClickExpression(name) {
       tag: el.tagName,
       text: nameOf(el).substring(0, 80),
       href,
+      linkTarget,
+      frameName,
       pageHref,
       x: rect.x,
       y: rect.y,
@@ -13544,15 +13717,23 @@ async function namedInViewportJsClickStr(cdp, sid, input) {
   if (!name) {
     throw new Error(`${String(input).trim()} has no visible text to match. Pass the button or link text, e.g. click <target> "text=Save", or an @ref from perceive.`);
   }
+  // #437: the name is resolved and clicked in one evaluate, so whether it is a link that
+  // opens a new tab is known only afterwards. Send the page-target snapshot first without
+  // waiting: CDP handles one connection's messages in order, so it reflects the tabs from
+  // before the click and adds no round trip; it is awaited only for such a link.
+  const pagesBefore = boundedPageTargets(cdp, CLICK_NAVIGATION_WAIT_MS);
   const result = await evalStr(cdp, sid, namedInViewportClickExpression(name));
   const parsed = JSON.parse(result);
   if (!parsed.ok) throw new Error(namedClickMissMessage(input, parsed.error));
-  const href = await confirmClickFollowedHref(cdp, sid, parsed);
-  const line = `JS-clicked <${parsed.tag || '?'}> "${parsed.text || ''}"`;
+  const newTabWatch = clickFollowsHref(parsed) && linkOpensNewBrowsingContext(parsed)
+    ? clickNewTabWatchFromTargets(sid, await pagesBefore)
+    : null;
+  const followed = await confirmClickFollowedHref(cdp, sid, parsed, newTabWatch);
+  const line = `JS-clicked <${parsed.tag || '?'}> "${parsed.text || ''}"${formatClickOpenedTab(followed?.openedTab)}`;
   const scrollLine = parsed.scrolled
     ? `\nScroll: ${parsed.scrollYBefore} → ${parsed.scrollYAfter}`
     : '';
-  return href ? `${line}${scrollLine}\nURL: ${href}` : `${line}${scrollLine}`;
+  return followed?.url ? `${line}${scrollLine}\nURL: ${followed.url}` : `${line}${scrollLine}`;
 }
 
 // JS-fallback click: uses HTMLElement.click() / dispatchEvent in the page
@@ -13697,13 +13878,14 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
     } catch {
       objectId = null;
     }
+    const newTabWatch = await prepareClickFollowedHref(cdp, sid, r);
     await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2, {
       selector,
       objectId,
       framed: Boolean(parseFrameRef(selector)),
     });
-    await confirmClickFollowedHref(cdp, sid, r);
-    return `Clicked <${r.tag}> "${r.text}" (${selector})`;
+    const followed = await confirmClickFollowedHref(cdp, sid, r, newTabWatch);
+    return `Clicked <${r.tag}> "${r.text}" (${selector})${formatClickOpenedTab(followed?.openedTab)}`;
   }
   const expr = `
     (async function() {
@@ -13722,6 +13904,8 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
         tag: rect.tag,
         text: rect.text,
         href: rect.href || (el.tagName === 'A' ? (el.href || null) : null),
+        linkTarget: rect.linkTarget,
+        frameName: rect.frameName,
         pageHref: rect.pageHref || location.href,
         hit: rect.hit,
       };
@@ -13731,9 +13915,10 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(cssClickMissMessage(selector, r.error));
   assertClickPointNotCovered(r.hit, { x: r.x, y: r.y, tag: r.tag, text: r.text });
+  const newTabWatch = await prepareClickFollowedHref(cdp, sid, r);
   await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
-  await confirmClickFollowedHref(cdp, sid, r);
-  return `Clicked <${r.tag}> "${r.text}"`;
+  const followed = await confirmClickFollowedHref(cdp, sid, r, newTabWatch);
+  return `Clicked <${r.tag}> "${r.text}"${formatClickOpenedTab(followed?.openedTab)}`;
 }
 
 // Click at CSS pixel coordinates using Input.dispatchMouseEvent
@@ -22419,6 +22604,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   let sessionId;
   try {
     sessionId = await attachDaemonTarget(cdp, targetId, { background: isBackgroundMode() });
+    rememberSessionTarget(sessionId, targetId);
   } catch (e) {
     process.stderr.write(`Daemon: attach failed: ${e.message}\n`);
     cdp.close();
@@ -22807,6 +22993,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
         postActionPageHealth = await collectPageHealth(cdp, sessionId, { changed: true }).catch(() => null);
         return formatActionNavigationDiff(actionTarget.pageHrefBefore, actionTarget.pageHrefAfter);
+      }
+      // #437: the link's page is in another tab; this tab's AX diff is not the evidence.
+      const openedTab = watchNavigation ? parseClickOpenedTab(actionTarget.dispatchText) : null;
+      if (openedTab) {
+        appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+        return `Opened ${openedTab.existing ? 'in tab' : 'new tab'} ${openedTab.targetPrefix}: ${openedTab.url}`;
       }
       let text = await observeAfterActionGuardingDialogs(jsDialogs, observeAfterAction);
       if (actionTarget.dialogBlocked || shouldSkipActionPageEvaluate(jsDialogs)) {
@@ -27397,6 +27589,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isNamedClickQuery, namedClickQueryName, textSelectorName, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
   namedClickActionTarget, namedInViewportClickExpression, NAMED_IN_VIEWPORT_CLICK_OUTCOME,
   isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
+  rememberSessionTarget, forgetSessionTarget, linkOpensNewBrowsingContext, findClickOpenedTab,
+  parseClickOpenedTab,
   waitForHoverDomChange, hoverRecaptureShowsChange, discardHoverIdleBaseline,
   shouldSkipActionDomSettle, formatActionNavigationDiff, actionNavigationEvidence,
   actionFailurePage,
