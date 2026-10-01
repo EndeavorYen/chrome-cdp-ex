@@ -14874,6 +14874,9 @@ function parseFillLiveSnapshot(raw) {
 function fillLiveValueAccepted(snapshot, wanted) {
   const expected = String(wanted ?? '');
   if (!snapshot || snapshot.ok !== true) return false;
+  // A clear must check the value itself: an <input>'s textContent is always "", so it would
+  // accept a field the page refilled. An emptied contenteditable may keep a trailing <br> ("\n").
+  if (expected === '') return String(snapshot.value ?? '').replace(/\n+$/, '') === '';
   return snapshot.value === expected || snapshot.textContent === expected;
 }
 

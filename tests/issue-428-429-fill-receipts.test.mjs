@@ -222,6 +222,22 @@ describe('#429 fill "" clears a field', () => {
     expect(out).toBe('Cleared @1 (was "Ada")');
   });
 
+  it('fails the clear when the page puts the value back (an <input> textContent is always "")', async () => {
+    // A controlled input that re-renders its old value: the native set of "" does not stick.
+    const { cdp, state } = fakeFillPage({ value: 'Ada', accept: text => (text === '' ? 'Ada' : text) });
+    const err = await rejection(T.fillStr(cdp, 'sid', '#name', '', new Map()));
+    expect(state.value).toBe('Ada');
+    expect(err.message).toMatch(/did not accept ""; value stayed "Ada"/);
+    expect(err.fillValue).toMatchObject({ before: 'Ada', after: 'Ada', changed: false });
+  });
+
+  it('accepts an exact empty value, not empty textContent, as a clear', () => {
+    expect(T.fillLiveValueAccepted({ ok: true, value: 'Ada', textContent: '' }, '')).toBe(false);
+    expect(T.fillLiveValueAccepted({ ok: true, value: '', textContent: '' }, '')).toBe(true);
+    // An emptied contenteditable can keep a trailing <br>, which innerText reports as "\n".
+    expect(T.fillLiveValueAccepted({ ok: true, value: '\n', textContent: '' }, '')).toBe(true);
+  });
+
   it('reports no change when the field is already empty', async () => {
     const valueState = {};
     const { cdp } = fakeFillPage({ value: '' });
