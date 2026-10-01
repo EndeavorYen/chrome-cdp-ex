@@ -103,12 +103,13 @@
     at 500 and 30 s, and `reload` / `restore` clear it with the other observation buffers.
   * A running command pauses the 20 min idle countdown, so a long `wait` (up to 1 h) is no longer cut
     off with "Connection closed before response", and the countdown restarts in full when the last
-    command ends. `meta` reports a full idle period while other work is in flight; `meta` and
-    `list_raw` probes still do not keep a daemon alive.
-  * `cdp-<target>.log`, `cdp-<target>-screenshots/` and `cdp-<target>.crash.json` are pruned when a
-    daemon starts: a tab's set goes once it is older than 7 days and not among the 20 newest. Tabs with
-    a running daemon and the daemon's own tab are kept, and files Windows holds open are skipped. A log
-    past 5 MB is rotated to `.log.1`.
+    command ends. One request holds the pause for at most 65 min (the 1 h `wait` maximum plus 5 min),
+    so a command that never finishes cannot keep its daemon alive forever. `meta` reports a full idle
+    period while other work is in flight; `meta` and `list_raw` probes still do not keep a daemon alive.
+  * `cdp-<target>.log`, `cdp-<target>-screenshots/` and `cdp-<target>.crash.json` are pruned, off the
+    event loop, after a new daemon answers its first request: a tab's set goes once it is older than
+    7 days and not among the 20 newest. Tabs with a running daemon and the daemon's own tab are kept,
+    and files Windows holds open are skipped. A log past 5 MB is rotated to `.log.1`.
 
 * Attaching to a running browser on Linux now records its profile, exe and launch flags even when no
   remembered profile is behind that port, e.g. a browser chrome-cdp-ex did not spawn, or one attached

@@ -7,7 +7,7 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, readlinkSync, realpathSync, renameSync, rmSync, statSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, readlinkSync, realpathSync, renameSync, statSync, promises as fsPromises } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { homedir, hostname as osHostname, tmpdir } from 'os';
 import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
@@ -178,6 +178,11 @@ const CLICK_NAVIGATION_WAIT_MS = 500;
 const SEARCH_SUBMIT_PROBE_WAIT_MS = 1500;
 const CLICK_HREF_PROBE_TIMEOUT_MS = 120;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
+// `wait <ms>` is the longest single command a daemon serves.
+const WAIT_DURATION_MAX_MS = 60 * 60 * 1000;
+// A request pauses the idle countdown for at most this, so a handler that never settles
+// cannot keep its daemon alive forever (#462).
+const DAEMON_REQUEST_IDLE_PAUSE_MAX_MS = WAIT_DURATION_MAX_MS + 5 * 60 * 1000;
 const daemonRequestStorage = new AsyncLocalStorage();
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
@@ -1184,8 +1189,11 @@ function createDaemonShutdown({
 // has left, so a client can avoid a daemon that would exit before its command arrives (#440).
 // A running command pauses the countdown, so a long `wait` or `loadall` is never cut off and
 // leaves a full idle period behind it: the countdown restarts when the last one ends (#462).
+// A request stops counting as running after maxPauseMs, so a wedged handler cannot hold the
+// pause forever: its daemon then idles out a full timeout later.
 function createDaemonIdleTimer({
   timeoutMs = IDLE_TIMEOUT,
+  maxPauseMs = DAEMON_REQUEST_IDLE_PAUSE_MAX_MS,
   onIdle,
   now = Date.now,
   setTimer = setTimeout,
@@ -1212,18 +1220,23 @@ function createDaemonIdleTimer({
       schedule();
       return keepaliveUntil;
     },
-    // Returns the matching end call; calling it twice ends the request once.
+    // Returns the matching end call; calling it twice ends the request once. The request
+    // also ends by itself after maxPauseMs.
     beginRequest() {
       inFlight += 1;
       clearTimer(timer);
       timer = null;
       let ended = false;
-      return () => {
+      let ceiling = null;
+      const end = () => {
         if (ended) return;
         ended = true;
+        clearTimer(ceiling);
         inFlight -= 1;
         if (inFlight === 0) schedule();
       };
+      ceiling = setTimer(end, maxPauseMs);
+      return end;
     },
     // While paused the daemon has at least a full idle period left.
     remainingMs: () => (inFlight > 0 ? nextDelay() : Math.max(0, deadline - now())),
@@ -1232,19 +1245,22 @@ function createDaemonIdleTimer({
 
 // Wraps the daemon request handler so a command in flight pauses the idle timer. `meta` and
 // `list_raw` are probes that must not keep a daemon alive (#419): pausing for them would
-// restart the full countdown when they end.
-function idleTrackedDaemonRequestHandler(idleTimer, handle) {
+// restart the full countdown when they end. `onSettled` runs after every request.
+function idleTrackedDaemonRequestHandler(idleTimer, handle, { onSettled = () => {} } = {}) {
   return (request, execution) => {
-    if (!daemonCommandResetsIdle(request?.cmd)) return handle(request, execution);
-    const end = idleTimer.beginRequest();
+    const end = daemonCommandResetsIdle(request?.cmd) ? idleTimer.beginRequest() : () => {};
+    const settle = () => {
+      end();
+      try { onSettled(); } catch {}
+    };
     let pending;
     try {
       pending = handle(request, execution);
     } catch (error) {
-      end();
+      settle();
       throw error;
     }
-    return Promise.resolve(pending).finally(end);
+    return Promise.resolve(pending).finally(settle);
   };
 }
 
@@ -3694,7 +3710,7 @@ function parseDaemonMetadataResult(result) {
 }
 
 async function waitStr(msArg) {
-  const ms = parseDelayMs(msArg, { name: 'wait duration', max: 60 * 60 * 1000 });
+  const ms = parseDelayMs(msArg, { name: 'wait duration', max: WAIT_DURATION_MAX_MS });
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     await sleep(Math.min(250, deadline - Date.now()));
@@ -9023,11 +9039,13 @@ const RUNTIME_ARTIFACT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS = 20;
 const RUNTIME_ARTIFACT_PATTERN = /^cdp-(.+?)(\.log|\.log\.1|\.crash\.json|-screenshots)$/;
 
-function runtimeArtifactSets(runtimeDir, { readdir = readdirSync, lstat = lstatSync } = {}) {
+// Async with fs/promises by default, so a large prune (many screenshot folders, a virus
+// scanner on Windows) runs on the libuv pool instead of blocking the daemon's event loop.
+async function runtimeArtifactSets(runtimeDir, { readdir = fsPromises.readdir, lstat = fsPromises.lstat } = {}) {
   const sets = new Map();
   let names;
   try {
-    names = readdir(runtimeDir);
+    names = await readdir(runtimeDir);
   } catch {
     return sets;
   }
@@ -9037,7 +9055,7 @@ function runtimeArtifactSets(runtimeDir, { readdir = readdirSync, lstat = lstatS
     const path = resolve(runtimeDir, name);
     let stats;
     try {
-      stats = lstat(path);
+      stats = await lstat(path);
     } catch {
       continue;
     }
@@ -9051,7 +9069,7 @@ function runtimeArtifactSets(runtimeDir, { readdir = readdirSync, lstat = lstatS
   return sets;
 }
 
-function pruneRuntimeArtifacts({
+async function pruneRuntimeArtifacts({
   runtimeDir = RUNTIME_DIR,
   protectedTargetIds = [],
   now = Date.now(),
@@ -9059,26 +9077,26 @@ function pruneRuntimeArtifacts({
   keepNewest = RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS,
   fs = {},
 } = {}) {
-  const { readdir = readdirSync, lstat = lstatSync, rm = rmSync } = fs;
+  const { readdir = fsPromises.readdir, lstat = fsPromises.lstat, rm = fsPromises.rm } = fs;
   const kept = new Set([...protectedTargetIds].map(id => String(id).replace(/[^A-Za-z0-9_.-]/g, '_')));
-  const sets = [...runtimeArtifactSets(runtimeDir, { readdir, lstat }).values()]
+  const sets = [...(await runtimeArtifactSets(runtimeDir, { readdir, lstat })).values()]
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
   let removedTargets = 0;
   let failedPaths = 0;
-  sets.forEach((set, index) => {
-    if (index < keepNewest || kept.has(set.targetId) || now - set.mtimeMs <= maxAgeMs) return;
+  for (const [index, set] of sets.entries()) {
+    if (index < keepNewest || kept.has(set.targetId) || now - set.mtimeMs <= maxAgeMs) continue;
     let removedAll = true;
     for (const path of set.paths) {
       // A file still open elsewhere (EPERM/EBUSY on Windows) is left for a later daemon start.
       try {
-        rm(path, { recursive: true, force: true });
+        await rm(path, { recursive: true, force: true });
       } catch {
         failedPaths += 1;
         removedAll = false;
       }
     }
     if (removedAll) removedTargets += 1;
-  });
+  }
   return { removedTargets, failedPaths };
 }
 
@@ -9102,11 +9120,11 @@ function liveRuntimeArtifactTargetIds({
   return live;
 }
 
-function pruneDaemonRuntimeArtifacts(session, targetId) {
+async function pruneDaemonRuntimeArtifacts(session, targetId) {
   try {
     const protectedTargetIds = liveRuntimeArtifactTargetIds();
     protectedTargetIds.add(targetId);
-    const result = pruneRuntimeArtifacts({ protectedTargetIds });
+    const result = await pruneRuntimeArtifacts({ protectedTargetIds });
     if (result.removedTargets || result.failedPaths) {
       appendSessionEventLog(session, { kind: 'runtime-artifacts-pruned', ts: Date.now(), ...result });
     }
@@ -9114,6 +9132,41 @@ function pruneDaemonRuntimeArtifacts(session, targetId) {
   } catch {
     return null;
   }
+}
+
+// The prune runs once, after the daemon's first request has been answered, so it never sits
+// between a new daemon and the command that started it. A daemon that gets no request still
+// prunes after fallbackMs. `arm` is called once the daemon owns its endpoint.
+const RUNTIME_PRUNE_FALLBACK_MS = 30_000;
+
+function createRuntimePruneScheduler({
+  run,
+  fallbackMs = RUNTIME_PRUNE_FALLBACK_MS,
+  defer = setImmediate,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (typeof run !== 'function') throw new Error('runtime prune runner must be a function');
+  let armed = false;
+  let started = false;
+  let fallback = null;
+  const start = () => {
+    if (started) return;
+    started = true;
+    clearTimer(fallback);
+    Promise.resolve().then(run).catch(() => {});
+  };
+  return Object.freeze({
+    arm() {
+      if (armed || started) return;
+      armed = true;
+      fallback = setTimer(start, fallbackMs);
+      fallback?.unref?.();
+    },
+    requestSettled() {
+      if (armed && !started) defer(start);
+    },
+  });
 }
 
 function directoryArtifactStats(dir) {
@@ -23598,6 +23651,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Idle timer
   const idleTimer = createDaemonIdleTimer({ timeoutMs: IDLE_TIMEOUT, onIdle: () => shutdown() });
+  // Other tabs' old runtime artifacts (#462), pruned after the first answered request.
+  const runtimePrune = createRuntimePruneScheduler({ run: () => pruneDaemonRuntimeArtifacts(session, targetId) });
   function resetIdle() {
     idleTimer.reset();
   }
@@ -24559,7 +24614,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   server = net.createServer((conn) => {
     let requestConnection;
     requestConnection = createDaemonRequestConnection(conn, {
-      handleRequest: idleTrackedDaemonRequestHandler(idleTimer, handleCommand),
+      handleRequest: idleTrackedDaemonRequestHandler(idleTimer, handleCommand, { onSettled: runtimePrune.requestSettled }),
       cleanup: (_request, execution) => tableArtifactStore.rollbackRequest(execution),
       onFlushed: (_request, execution) => tableArtifactStore.releaseRequest(execution),
       onDispose: () => {
@@ -24590,8 +24645,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // Only the daemon that won the listen race owns the record.
   server.once('listening', () => {
     writeDaemonRecord(targetId, { pid: daemonMetadata.pid, startedAt: daemonMetadata.startedAt });
-    // Off the listen path, so the first command is not held up by the scan.
-    setImmediate(() => pruneDaemonRuntimeArtifacts(session, targetId));
+    runtimePrune.arm();
   });
   server.listen(sp);
 }
@@ -28492,7 +28546,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
   bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
-  listPagesFromMatchingDaemon, daemonCommandResetsIdle, daemonIdleExitsSoon, assertFreshDaemonForCommand, createDaemonIdleTimer, idleTrackedDaemonRequestHandler,
+  listPagesFromMatchingDaemon, daemonCommandResetsIdle, daemonIdleExitsSoon, assertFreshDaemonForCommand, createDaemonIdleTimer, idleTrackedDaemonRequestHandler, createRuntimePruneScheduler, DAEMON_REQUEST_IDLE_PAUSE_MAX_MS, RUNTIME_PRUNE_FALLBACK_MS,
   pruneRuntimeArtifacts, liveRuntimeArtifactTargetIds, RUNTIME_ARTIFACT_MAX_AGE_MS, RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS, SESSION_LOG_ROTATE_BYTES,
   createEarlyResponseStatusStore, createDaemonNetworkObserver, EARLY_RESPONSE_STATUS_MAX, EARLY_RESPONSE_STATUS_MAX_AGE_MS, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
   formatDaemonStartFailure,

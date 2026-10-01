@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -82,7 +82,22 @@ describe('#462 the idle timer does not fire while a command runs', () => {
     const pending = new Map();
     return {
       pending,
-      fire() { for (const [id, { fn }] of [...pending]) { pending.delete(id); fn(); } },
+      // Timers that would call the idle handler (the request ceilings call something else).
+      idle(onIdle) { return [...pending.values()].filter(timer => timer.fn === onIdle); },
+      fire(onIdle) {
+        for (const [id, timer] of [...pending]) {
+          if (timer.fn !== onIdle) continue;
+          pending.delete(id);
+          timer.fn();
+        }
+      },
+      fireCeilings(onIdle) {
+        for (const [id, timer] of [...pending]) {
+          if (timer.fn === onIdle) continue;
+          pending.delete(id);
+          timer.fn();
+        }
+      },
       setTimer: vi.fn((fn, ms) => { next += 1; pending.set(next, { fn, ms }); return next; }),
       clearTimer: vi.fn(id => { pending.delete(id); }),
     };
@@ -108,9 +123,9 @@ describe('#462 the idle timer does not fire while a command runs', () => {
     const wrapped = T.idleTrackedDaemonRequestHandler(idle, handle);
 
     const response = wrapped({ id: 1, cmd: 'wait', args: ['T', '1500000'] }, null);
-    expect(timers.pending.size).toBe(0);
+    expect(timers.idle(onIdle)).toHaveLength(0);
     clock.now += 25 * 60 * 1000;
-    timers.fire();
+    timers.fire(onIdle);
     expect(onIdle).not.toHaveBeenCalled();
     // A daemon with work in flight is not about to idle out (#440).
     expect(idle.remainingMs()).toBe(20_000);
@@ -118,11 +133,48 @@ describe('#462 the idle timer does not fire while a command runs', () => {
 
     finish({ ok: true, result: 'done' });
     await expect(response).resolves.toEqual({ ok: true, result: 'done' });
+    // The request's ceiling timer is cleared with it.
     expect(timers.pending.size).toBe(1);
-    expect([...timers.pending.values()][0].ms).toBe(20_000);
+    expect(timers.idle(onIdle).map(timer => timer.ms)).toEqual([20_000]);
     expect(idle.remainingMs()).toBe(20_000);
-    timers.fire();
+    timers.fire(onIdle);
     expect(onIdle).toHaveBeenCalledOnce();
+  });
+
+  it('a request that never settles holds the pause only up to the longest wait plus a margin', () => {
+    const clock = { now: 0 };
+    const timers = fakeTimers();
+    const onIdle = vi.fn();
+    const idle = idleTimer(clock, timers, onIdle);
+    const wrapped = T.idleTrackedDaemonRequestHandler(idle, () => new Promise(() => {}));
+    void wrapped({ id: 1, cmd: 'eval', args: ['T', 'await new Promise(() => {})'] });
+    expect(T.DAEMON_REQUEST_IDLE_PAUSE_MAX_MS).toBe(65 * 60 * 1000);
+    expect([...timers.pending.values()].map(timer => timer.ms)).toEqual([T.DAEMON_REQUEST_IDLE_PAUSE_MAX_MS]);
+    expect(timers.idle(onIdle)).toHaveLength(0);
+
+    clock.now += T.DAEMON_REQUEST_IDLE_PAUSE_MAX_MS;
+    timers.fireCeilings(onIdle);
+    // The countdown resumes in full; the wedged handler no longer keeps the daemon alive.
+    expect(timers.idle(onIdle).map(timer => timer.ms)).toEqual([20_000]);
+    expect(idle.remainingMs()).toBe(20_000);
+    timers.fire(onIdle);
+    expect(onIdle).toHaveBeenCalledOnce();
+  });
+
+  it('a request ended by its ceiling does not end another request when it settles later', async () => {
+    const clock = { now: 0 };
+    const timers = fakeTimers();
+    const onIdle = vi.fn();
+    const idle = idleTimer(clock, timers, onIdle);
+    const late = idle.beginRequest();
+    timers.fireCeilings(onIdle);
+    expect(timers.idle(onIdle)).toHaveLength(1);
+    const current = idle.beginRequest();
+    expect(timers.idle(onIdle)).toHaveLength(0);
+    late();
+    expect(timers.idle(onIdle)).toHaveLength(0);
+    current();
+    expect(timers.idle(onIdle)).toHaveLength(1);
   });
 
   it('overlapping requests keep it paused until the last one ends, even when one fails', async () => {
@@ -131,35 +183,41 @@ describe('#462 the idle timer does not fire while a command runs', () => {
     const onIdle = vi.fn();
     const idle = idleTimer(clock, timers, onIdle);
     const settle = {};
-    const wrapped = T.idleTrackedDaemonRequestHandler(idle, req => new Promise((resolve, reject) => { settle[req.id] = { resolve, reject }; }));
+    const onSettled = vi.fn();
+    const wrapped = T.idleTrackedDaemonRequestHandler(idle, req => new Promise((resolve, reject) => { settle[req.id] = { resolve, reject }; }), { onSettled });
     const first = wrapped({ id: 1, cmd: 'loadall', args: [] });
     const second = wrapped({ id: 2, cmd: 'click', args: [] });
     settle[1].reject(new Error('boom'));
     await expect(first).rejects.toThrow('boom');
-    expect(timers.pending.size).toBe(0);
+    expect(timers.idle(onIdle)).toHaveLength(0);
     settle[2].resolve({ ok: true });
     await second;
+    expect(timers.idle(onIdle)).toHaveLength(1);
     expect(timers.pending.size).toBe(1);
+    expect(onSettled).toHaveBeenCalledTimes(2);
   });
 
-  it('meta and list_raw probes do not pause it or restart it', async () => {
+  it('meta and list_raw probes do not pause it or restart it, but still count as settled requests', async () => {
     const clock = { now: 0 };
     const timers = fakeTimers();
     const idle = idleTimer(clock, timers, vi.fn());
     clock.now += 19_000;
-    const wrapped = T.idleTrackedDaemonRequestHandler(idle, async () => ({ ok: true }));
+    const onSettled = vi.fn();
+    const wrapped = T.idleTrackedDaemonRequestHandler(idle, async () => ({ ok: true }), { onSettled });
     await wrapped({ id: 1, cmd: 'meta', args: [] });
     await wrapped({ id: 2, cmd: 'list_raw', args: [] });
     expect(idle.remainingMs()).toBe(1_000);
+    expect(onSettled).toHaveBeenCalledTimes(2);
   });
 
   it('a keepalive asked for during a command still holds after it finishes', async () => {
     const clock = { now: 0 };
     const timers = fakeTimers();
-    const idle = idleTimer(clock, timers, vi.fn());
+    const onIdle = vi.fn();
+    const idle = idleTimer(clock, timers, onIdle);
     const end = idle.beginRequest();
     idle.extendKeepalive(60_000);
-    expect(timers.pending.size).toBe(0);
+    expect(timers.idle(onIdle)).toHaveLength(0);
     expect(idle.remainingMs()).toBe(60_000);
     end();
     end();
@@ -197,14 +255,14 @@ describe('#462 runtime artifacts are pruned and the session log rotates', () => 
     }
   }
 
-  it('100 old sets are pruned to the newest bound, while a live daemon and the current target keep theirs', () => {
+  it('100 old sets are pruned to the newest bound, while a live daemon and the current target keep theirs', async () => {
     const dir = runtimeDir();
     for (let i = 0; i < 100; i++) writeSet(dir, `T${String(i).padStart(3, '0')}`, (10 + i) * DAY, { crash: i % 10 === 0 });
     writeFileSync(join(dir, 'cdp-T099.log.1'), 'old');
     utimesSync(join(dir, 'cdp-T099.log.1'), new Date(NOW - 200 * DAY), new Date(NOW - 200 * DAY));
     writeFileSync(join(dir, 'pages.json'), '[]');
     writeFileSync(join(dir, 'cdp-T050.daemon.json'), '{}');
-    const result = T.pruneRuntimeArtifacts({
+    const result = await T.pruneRuntimeArtifacts({
       runtimeDir: dir,
       now: NOW,
       protectedTargetIds: ['T090', 'T095'],
@@ -225,15 +283,15 @@ describe('#462 runtime artifacts are pruned and the session log rotates', () => 
     expect(result.failedPaths).toBe(0);
   });
 
-  it('sets younger than the age limit are kept even beyond the newest bound', () => {
+  it('sets younger than the age limit are kept even beyond the newest bound', async () => {
     const dir = runtimeDir();
     for (let i = 0; i < 30; i++) writeSet(dir, `Y${i}`, i * 60 * 1000);
-    const result = T.pruneRuntimeArtifacts({ runtimeDir: dir, now: NOW });
+    const result = await T.pruneRuntimeArtifacts({ runtimeDir: dir, now: NOW });
     expect(result.removedTargets).toBe(0);
     expect(readdirSync(dir).filter(name => name.endsWith('.log'))).toHaveLength(30);
   });
 
-  it('a locked file is skipped without failing the prune', () => {
+  it('a locked file is skipped without failing the prune', async () => {
     const dir = runtimeDir();
     for (let i = 0; i < 25; i++) writeSet(dir, `L${String(i).padStart(2, '0')}`, (8 + i) * DAY);
     const rm = vi.fn((path, options) => {
@@ -241,15 +299,77 @@ describe('#462 runtime artifacts are pruned and the session log rotates', () => 
       if (path.endsWith('cdp-L23-screenshots')) throw Object.assign(new Error('locked'), { code: 'EPERM' });
       rmSync(path, options);
     });
-    const result = T.pruneRuntimeArtifacts({ runtimeDir: dir, now: NOW, fs: { rm } });
+    const result = await T.pruneRuntimeArtifacts({ runtimeDir: dir, now: NOW, fs: { rm } });
     expect(result.failedPaths).toBe(2);
     expect(existsSync(join(dir, 'cdp-L24.log'))).toBe(true);
     expect(existsSync(join(dir, 'cdp-L22.log'))).toBe(false);
   });
 
-  it('a missing runtime dir prunes nothing', () => {
-    expect(T.pruneRuntimeArtifacts({ runtimeDir: join(tmpdir(), 'cdp-462-missing-dir'), now: NOW }))
-      .toEqual({ removedTargets: 0, failedPaths: 0 });
+  it('a missing runtime dir prunes nothing', async () => {
+    await expect(T.pruneRuntimeArtifacts({ runtimeDir: join(tmpdir(), 'cdp-462-missing-dir'), now: NOW }))
+      .resolves.toEqual({ removedTargets: 0, failedPaths: 0 });
+  });
+
+  it('a screenshots entry that is a link (a Windows junction) is never followed or removed', async () => {
+    const dir = runtimeDir();
+    const outside = runtimeDir();
+    writeFileSync(join(outside, 'keep.png'), 'outside');
+    for (let i = 0; i < 25; i++) writeSet(dir, `S${String(i).padStart(2, '0')}`, (8 + i) * DAY);
+    const link = join(dir, 'cdp-JUNC-screenshots');
+    try {
+      symlinkSync(outside, link, 'junction');
+    } catch {
+      return; // no link privilege on this host
+    }
+    const old = new Date(NOW - 90 * DAY);
+    try { lutimesSync(link, old, old); } catch {}
+    const result = await T.pruneRuntimeArtifacts({ runtimeDir: dir, now: NOW });
+    expect(result.removedTargets).toBe(5);
+    expect(readdirSync(dir)).toContain('cdp-JUNC-screenshots');
+    expect(readFileSync(join(outside, 'keep.png'), 'utf8')).toBe('outside');
+  });
+
+  it('the daemon prune starts once, after the first answered request, not on listen', async () => {
+    const run = vi.fn(async () => ({ removedTargets: 0, failedPaths: 0 }));
+    const deferred = [];
+    const timers = [];
+    const scheduler = T.createRuntimePruneScheduler({
+      run,
+      defer: fn => deferred.push(fn),
+      setTimer: (fn, ms) => { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+      clearTimer: timer => { if (timer) timer.cleared = true; },
+    });
+    scheduler.requestSettled(); // before the daemon owns its endpoint
+    expect(deferred).toHaveLength(0);
+    scheduler.arm();
+    expect(timers.map(timer => timer.ms)).toEqual([T.RUNTIME_PRUNE_FALLBACK_MS]);
+    expect(run).not.toHaveBeenCalled();
+    scheduler.requestSettled();
+    expect(run).not.toHaveBeenCalled();
+    deferred.shift()();
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledOnce();
+    expect(timers[0].cleared).toBe(true);
+    scheduler.requestSettled();
+    deferred.forEach(fn => fn());
+    timers[0].fn();
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('a daemon that never gets a request still prunes after the fallback delay, and a failing prune is contained', async () => {
+    const run = vi.fn(async () => { throw new Error('boom'); });
+    const timers = [];
+    const scheduler = T.createRuntimePruneScheduler({
+      run,
+      defer: () => {},
+      setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      clearTimer: () => {},
+    });
+    scheduler.arm();
+    timers[0].fn();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it('live targets are those with a running recorded daemon or a socket', () => {
@@ -262,6 +382,21 @@ describe('#462 runtime artifacts are pruned and the session log rotates', () => 
     });
     const live = T.liveRuntimeArtifactTargetIds({ runtimeDir: '/rt', readdir, reader, isAlive: pid => pid === 11 });
     expect([...live].sort()).toEqual(['AAA', 'CCC']);
+  });
+
+  it('runDaemon wires the idle-tracking request handler and the deferred prune', () => {
+    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('\nasync function runDaemon(');
+    expect(start).toBeGreaterThan(0);
+    const end = source.indexOf('\n}\n', start);
+    const body = source.slice(start, end);
+    expect(body).toMatch(/const idleTimer = createDaemonIdleTimer\(/);
+    expect(body).toMatch(/const runtimePrune = createRuntimePruneScheduler\(\{ run: \(\) => pruneDaemonRuntimeArtifacts\(session, targetId\) \}\)/);
+    expect(body).toMatch(/createDaemonRequestConnection\(conn, \{\s*handleRequest: idleTrackedDaemonRequestHandler\(idleTimer, handleCommand, \{ onSettled: runtimePrune\.requestSettled \}\),/);
+    expect(body).toMatch(/server\.once\('listening', \(\) => \{[^}]*writeDaemonRecord\([^)]*\{[^}]*\}\);\s*runtimePrune\.arm\(\);/);
+    // The prune must not run on the listen path itself.
+    expect(body).not.toMatch(/setImmediate\(\(\) => pruneDaemonRuntimeArtifacts/);
+    expect(body).toMatch(/networkStatusByRequest = createEarlyResponseStatusStore\(\)/);
   });
 
   it('the session log rotates to .1 once it passes the size limit', () => {
