@@ -10,6 +10,14 @@ import {
   MCP_TOOL_MAPPER_BY_NAME,
 } from './command-surface.mjs';
 import { parseTableRunCommandArgs } from './table-contract.mjs';
+import {
+  deniedCommandMessage,
+  formatPolicyFailureText,
+  navigationBlockedMessage,
+  policyPreflightMessage,
+  readSessionPolicy,
+  urlFlagValue,
+} from './session-policy.mjs';
 
 export {
   MCP_RESOURCE_TEMPLATES,
@@ -667,4 +675,27 @@ export function createMcpInitializeResult(params = {}) {
       resources: {},
     },
   };
+}
+
+// #466: the text of a tool call the session policy (CDP_DENY_ACTIONS, CDP_ALLOWED_ORIGINS) refuses,
+// or null. The MCP server answers with it instead of running the CLI; the CLI and the tab daemon
+// apply the same checks again, including to batch/flow/repeat/replay steps.
+export function mcpPolicyDenial(command, env = process.env) {
+  const [name, ...rest] = Array.isArray(command) ? command : [];
+  let policy;
+  try {
+    policy = readSessionPolicy(env);
+  } catch (error) {
+    return formatPolicyFailureText(error.message);
+  }
+  if (!policy) return null;
+  const record = COMMAND_SURFACE.resolve(String(name || ''));
+  const targetPrefix = record?.needsTarget ? String(rest[0] || '') : '';
+  const message = deniedCommandMessage(policy, name, rest)
+    || (record?.name === 'open' ? navigationBlockedMessage(policy, rest[0], 'open') : null)
+    || (record?.name === 'spawn-debug-browser'
+      ? navigationBlockedMessage(policy, urlFlagValue(rest), 'spawn-debug-browser')
+      : null)
+    || (record?.needsTarget ? policyPreflightMessage(policy, name, rest.slice(1)) : null);
+  return message ? formatPolicyFailureText(message, { targetPrefix }) : null;
 }

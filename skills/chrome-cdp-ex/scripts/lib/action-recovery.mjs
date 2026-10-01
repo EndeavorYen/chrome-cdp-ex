@@ -1,3 +1,5 @@
+import { classifyPolicyMessage } from './session-policy.mjs';
+
 export function isTimeoutError(err, methods = []) {
   const msg = err?.message || String(err || '');
   if (!msg.startsWith('Timeout:')) return false;
@@ -360,6 +362,22 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
 
   if (err?.navigationCancelled && typeof err.navigationCancelled === 'object') {
     return classifyNavigationCancelledFailure(err, { base, targetId, input });
+  }
+
+  // #466: a session-policy refusal names URLs and commands that the checks below would misread.
+  const policy = classifyPolicyMessage(originalMessage);
+  if (policy) {
+    return {
+      ...base,
+      kind: 'policy',
+      reason: policy.navigated
+        ? 'The action navigated the tab to an origin CDP_ALLOWED_ORIGINS does not allow; the navigation already happened.'
+        : `An opt-in session policy (${policy.rule === 'deny-actions' ? 'CDP_DENY_ACTIONS' : 'CDP_ALLOWED_ORIGINS'}) refused the action before it touched the page.`,
+      nextCommand: policy.navigated ? `cdp back ${targetId}` : statusCommand,
+      hints: policy.navigated
+        ? [`Go back with \`cdp back ${targetId}\`, or nav to an allowed origin, before acting on the page.`]
+        : ['Use a command or origin the policy allows, or ask the user to change it. Do not work around it with eval or evalraw.'],
+    };
   }
 
   // #468: checked before message matching because the message quotes page text.
@@ -1388,6 +1406,17 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'report', reason: 'Preserve any partial diagnostics already captured.' },
     ],
     avoid: [],
+  },
+  // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refused the command, or it reached a disallowed origin.
+  policy: {
+    strategy: 'respect-policy',
+    priority: 'high',
+    verify: 'next-or-status',
+    intents: [
+      { key: 'next-or-status', reason: 'Go back to an allowed origin, or check where the tab is now.' },
+      { key: 'perceive', reason: 'Re-read the page before choosing a command the policy allows.' },
+    ],
+    avoid: ['retrying the refused command or navigation', 'working around the policy with eval, evalraw, or another command'],
   },
   default: {
     strategy: 'refresh-perception',
