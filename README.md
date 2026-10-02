@@ -43,7 +43,7 @@ From a checkout or unpacked release:
 ./bin/chrome-cdp stop
 ```
 
-`click`, `fill`, and `press` print a one-line receipt with URL, outcome, and next command.
+`click`, `fill`, and `press` print a one-line receipt with URL, outcome, and next command. A failed action prints `Error:`, a `Kind:` (for example `covered`, `disabled`, `stale-ref`) and a runnable `Next:`, and exits 1.
 
 If `node -v` is older than 22, doctor prints a Node 22 path that `./bin/chrome-cdp` re-execs.
 
@@ -72,11 +72,25 @@ cd chrome-cdp-ex
 
 [SKILL.md](skills/chrome-cdp-ex/SKILL.md) · [docs/reference.md](docs/reference.md) · [docs/pk-324-board.md](docs/pk-324-board.md) · [INTEGRATIONS.md](INTEGRATIONS.md) · [Grok Bot from-zero](docs/integrations/grok-bot.md)
 
+## What it does
+
+- **See the page cheaply.** `perceive` prints the accessibility tree with `@ref` handles, layout hints and the controls that matter, bounded for tokens. `perceive --since-action` shows only what the last action changed. `text --auto` reads the main content; `shot`, `elshot`, `scanshot` and `responsive-audit` capture pixels, including Electron pages with live WebGL canvases.
+- **Act like a person, report like a test.** `click`, `fill`, `select`, `press`, `scroll`, `drag` and `dismiss-modal` send real input events. `click`, `fill` and `select` on a selector wait briefly for the target to be attached, visible and enabled; a click refuses to land on a covering element; and every action returns a receipt: what changed, any dialog it answered, any download it saved (`click --expect-download`), and the next command.
+- **Debug the live app.** `console` and `status` print source-mapped stack frames (`src/Foo.tsx:42:7`), `netlog --id N` shows one request's status, timing, headers and a bounded body, and `status --vitals` reports LCP, CLS, INP and long tasks.
+- **Drive it from any agent.** It is a Claude Code skill, a plain CLI any agent can shell out to, and a stdio MCP server. MCP results carry screenshots as image blocks, versioned JSON as `structuredContent`, and tool hints derived from the command catalog. See [INTEGRATIONS.md](INTEGRATIONS.md).
+
+## Safe on your real browser
+
+This runs against the browser you are logged into, so the defaults lean careful:
+
+- **Background by default.** Commands do not focus tabs or raise the browser over your work. A tab that is truly hidden (a background tab, a minimized window) fails fast with `Kind: hidden-tab` and a rerun hint instead of hanging. `CDP_BACKGROUND=0` restores the old activate-the-tab behaviour.
+- **Redacted by default.** Tokens in URLs (`access_token`, `client_secret`, signed URLs), auth headers, cookies, JWTs, secret-named form fields and nested JSON secrets are replaced with `<redacted>` in receipts, logs, `netlog` and reports. `--unsafe-full` is the explicit opt-out.
+- **Secrets stay out of the transcript.** `fill <target> <sel> --secret NAME` types a value from `CDP_SECRET_NAME` or `CDP_SECRETS_FILE`; output shows `<secret:NAME>`.
+- **Opt-in guardrails.** `CDP_CONTENT_BOUNDARIES=1` wraps page text in nonce-marked untrusted-content fences, `CDP_ALLOWED_ORIGINS` limits where navigation may go, and `CDP_DENY_ACTIONS` refuses chosen commands (and the commands that do the same job). They are defense-in-depth for agents, not a security boundary.
+
 ## Daily browser CDP
 
-From Chrome 136, `--remote-debugging-port` is ignored on the default profile. chrome-cdp-ex cannot silently attach to an already-running default Chrome or Edge. Use a persistent non-default user-data-dir that you always launch with remote debugging, then sign in once. See [Daily browser CDP](docs/daily-browser-cdp.md).
-
-Commands do not focus tabs or raise the browser window (background mode, the default); set `CDP_BACKGROUND=0` to let them. See [Background mode](docs/reference.md#background-mode).
+From Chrome 136, `--remote-debugging-port` is ignored on the default profile. chrome-cdp-ex cannot silently attach to an already-running default Chrome or Edge. Use a persistent non-default user-data-dir that you always launch with remote debugging, then sign in once. See [Daily browser CDP](docs/daily-browser-cdp.md) for the launch line (it includes `--disable-backgrounding-occluded-windows`, so a browser window behind your terminal keeps rendering).
 
 Grok Bot from-zero setup (replace computer use / browser use): [docs/integrations/grok-bot.md](docs/integrations/grok-bot.md).
 
@@ -85,6 +99,10 @@ For Electron, launch with a remote debugging port. Set `CDP_PORT` to that port. 
 ```bash
 CDP_PORT=9333 ./bin/chrome-cdp list
 ```
+
+## Platforms
+
+macOS, Linux, Windows and WSL2 (a Windows-side Node bridges the WSL↔Windows gap). CI runs the full test suite on Linux and Windows for every pull request.
 
 ## License
 
