@@ -551,11 +551,12 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
     description: 'Fill a field by selector or @ref and return action evidence. Requires confirm: true.',
     inputSchema: {
       type: 'object',
-      required: ['target', 'selector', 'text', 'confirm'],
+      required: ['target', 'selector', 'confirm'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
         selector: stringSchema('CSS selector or @ref.'),
-        text: stringSchema('Text to enter. Sensitive values are redacted by cdp action artifacts.'),
+        text: stringSchema('Text to enter; "" clears the field. Required unless secret is given. Sensitive values are redacted by cdp action artifacts.'),
+        secret: stringSchema('Instead of text: a secret NAME ([A-Z0-9_]+). The value is read from CDP_SECRET_<NAME> or CDP_SECRETS_FILE in the server environment and shows as <secret:NAME> in all output.'),
         react: booleanSchema('Use native value setter plus input/change events.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
       },
@@ -861,7 +862,7 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"drag","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime","Input"],"help":{"synopsis":"drag <target> <from sel|@ref> <to sel|@ref|x,y> [--steps N] [--html5|--pointer] [--format json]","summary":"Drag with a real mouse; finishes HTML5 drag-and-drop when the source starts one","order":45,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"drag","mapper":"drag"}},
   {"name":"waitfor","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["DOM","Runtime"],"help":{"synopsis":"waitfor <target> <selector> [ms]","summary":"Wait for element (default 10s, max 5min)","order":46,"section":"workflow"},"mcp":{"exposure":"tool-and-run-command","toolName":"wait_for","mapper":"wait-for"}},
   {"name":"loadall","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"protected-mutation","authorization":"mutation","evidencePolicy":"none","domains":["DOM","Runtime","Input"],"help":{"synopsis":"loadall <target> <selector> [interval-ms] [--timeout-ms N]","summary":"Repeatedly click a load-more control until it disappears; interval-ms is the click interval (default 1500), --timeout-ms is the cap (default 30000)","order":47,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
-  {"name":"fill","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime","Input"],"help":{"synopsis":"fill <target> <sel|@ref> <txt> [--format json]","summary":"Clear field and type text (for form filling)","order":49,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"fill","mapper":"fill"}},
+  {"name":"fill","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime","Input"],"help":{"synopsis":"fill <target> <sel|@ref> <txt|--secret NAME> [--format json]","summary":"Clear field and type text (for form filling)","order":49,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"fill","mapper":"fill"}},
   {"name":"select","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Runtime"],"help":{"synopsis":"select <target> <selector> <val> [--format json]","summary":"Select an option in a <select> element by value","order":50,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"fullshot","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["Page","Runtime"],"help":{"synopsis":"fullshot <target> [file]","summary":"Full-page screenshot (single image — may be hard to read)","order":51,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"scanshot","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["Page","Runtime"],"help":{"synopsis":"scanshot <target>","summary":"Segmented full-page capture (viewport-sized images, readable)","order":52,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
@@ -989,8 +990,8 @@ function surfaceDigest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export const COMMAND_SURFACE_IDENTITY = 'f59b1edb0cd17e148f8de0a21c30eb53964626ca70a357d9c7fe6b625e8305c4';
-export const MCP_SURFACE_IDENTITY = 'ec02469997f5c816068c7c0a4925daa98bb86da076065df0a847e321da40cd8b';
+export const COMMAND_SURFACE_IDENTITY = 'd56a796a4c55fa541f8ef65cfaf888dcaf6d858e50b8704f2c5a0c72429a1ffd';
+export const MCP_SURFACE_IDENTITY = 'c32f08c1846f7e5e157d2788f2107875a2617611a06cc478dd38db5a3f7fbb27';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }

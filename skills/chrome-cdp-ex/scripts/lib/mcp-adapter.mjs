@@ -346,8 +346,15 @@ export function buildMcpToolCommand(name, args = {}) {
       requireConfirm(args, 'fill');
       const command = ['fill', requireString(args, 'target')];
       if (args.react) command.push('--react');
+      // secret: a NAME the CLI resolves from CDP_SECRET_<NAME>/CDP_SECRETS_FILE (#469); the
+      // value never enters this request. It replaces text, so passing both is an error.
+      if (args.secret !== undefined) {
+        if (args.text !== undefined) throw new Error('pass text or secret, not both');
+        command.push(requireString(args, 'selector'), '--secret', requireString(args, 'secret'));
+        return optionalFormatJson(command);
+      }
       // text: "" clears the field; a missing text is an error, never a silent clear.
-      if (typeof args.text !== 'string') throw new Error('text is required (pass "" to clear the field)');
+      if (typeof args.text !== 'string') throw new Error('text is required (pass "" to clear the field), or secret: "NAME"');
       command.push(requireString(args, 'selector'), args.text);
       return optionalFormatJson(command);
     }
