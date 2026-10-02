@@ -292,26 +292,96 @@ export function redactSensitiveString(value, { truncated = false } = {}) {
 const MIN_SUBSTRING_SECRET_CHARS = 4;
 const MIN_PREVIEW_PREFIX_CHARS = 8;
 
-// Literal secret values (a value typed into a sensitive field, the value it replaced) scrubbed
-// from a string, array or object (#485). A value of 4+ characters is replaced wherever it
-// appears, also JSON-escaped and as a truncated `prefix…` preview of 8+ characters. A shorter
-// value is replaced only as a whole string or a quoted `"x"`, so a one-digit PIN cannot garble
-// counts, ids or durations.
+// Literal secret values scrubbed from output: a value typed into a sensitive field and the value
+// it replaced (#485, shown as <redacted>), or a named `fill --secret NAME` value (#469, shown as
+// <secret:NAME>). One scrubber with one set of rules:
+// - a value of 4+ characters is replaced wherever it appears, as typed, JSON-escaped once (how
+//   perceive and JSON quote it) and twice (JSON inside a JSON string), and as a truncated
+//   `prefix…` / `prefix...` preview of 8+ characters;
+// - a shorter value is replaced only as a whole string or quoted (`"x"`, `\"x\"`), so a
+//   one-digit PIN cannot garble counts, ids or durations;
+// - `minLength` drops shorter values entirely (the daemon's session-wide scrub of later output);
+// - objects are scrubbed in their string leaves only, never keys, and `keepKeys` names fields
+//   whose value is a code-generated identifier (`schema`, `action`) that is left alone.
+// Scrub a model before it is serialized, or serialized JSON with scrubSecretText; never run a
+// raw substring replace over JSON text, where `null`, `true` or `1234` would corrupt it.
 //
-// Scrub a model before it is serialized, never serialized JSON: only string leaves change, so
-// a secret such as `null`, `true` or `1234` cannot corrupt JSON keywords, numbers or keys.
-// `keepKeys` names fields whose value is a code-generated identifier (`schema`, `action`), left
-// alone so a secret such as `fill` cannot rename the schema or the action.
-export function scrubSecretValues(value, secrets = [], { keepKeys = null } = {}) {
-  const list = [...new Set((Array.isArray(secrets) ? secrets : [secrets])
-    .filter(secret => typeof secret === 'string' && secret !== '' && secret !== REDACTED_VALUE))]
-    .sort((a, b) => b.length - a.length);
+// `secrets` is a string, a list of strings and `{ value, replacement }` entries, or a Map of
+// value -> replacement. Plain strings are replaced with <redacted>. When one value is listed
+// twice, the first entry wins.
+export function scrubSecretValues(value, secrets = [], { keepKeys = null, minLength = 0 } = {}) {
+  const list = normalizeSecretList(secrets, minLength);
   if (list.length === 0 || value == null) return value;
   return scrubSecretsDeep(value, list, keepKeys);
 }
 
+// Scrub a command's output text. A JSON document is scrubbed inside its string values only: keys
+// and `keepKeys` identifiers stay, and the result is still valid JSON with its formatting. Any
+// other text is scrubbed as a whole.
+export function scrubSecretText(text, secrets = [], { keepKeys = null, minLength = 0 } = {}) {
+  if (typeof text !== 'string' || text === '') return text;
+  const list = normalizeSecretList(secrets, minLength);
+  if (list.length === 0) return text;
+  if (!isJsonDocument(text)) return scrubSecretsInString(text, list);
+  const scrubLiteral = (literal) => {
+    const decoded = JSON.parse(literal);
+    const scrubbed = scrubSecretsInString(decoded, list);
+    return scrubbed === decoded ? literal : JSON.stringify(scrubbed);
+  };
+  return text.replace(JSON_KEY_OR_STRING_RE, (match, key, separator, keyedValue, plain) => {
+    if (plain !== undefined) return scrubLiteral(plain);
+    if (keyedValue === undefined) return match;
+    const keep = keepKeys?.has(JSON.parse(key));
+    return `${key}${separator}${keep ? keyedValue : scrubLiteral(keyedValue)}`;
+  });
+}
+
+const JSON_STRING_SOURCE = '"(?:[^"\\\\]|\\\\.)*"';
+// `"key": "value"` (value optional, when it is not a string) or a lone string literal.
+const JSON_KEY_OR_STRING_RE = new RegExp(
+  `(${JSON_STRING_SOURCE})(\\s*:\\s*)(${JSON_STRING_SOURCE})?|(${JSON_STRING_SOURCE})`,
+  'g',
+);
+
+function isJsonDocument(text) {
+  const head = text.trimStart()[0];
+  if (head !== '{' && head !== '[') return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeSecretList(secrets, minLength) {
+  const byValue = new Map();
+  const add = (secret, replacement) => {
+    if (typeof secret !== 'string' || secret === '' || secret === REDACTED_VALUE) return;
+    if (secret.length < minLength || byValue.has(secret)) return;
+    byValue.set(secret, typeof replacement === 'string' && replacement ? replacement : REDACTED_VALUE);
+  };
+  if (secrets instanceof Map) {
+    for (const [secret, replacement] of secrets) add(secret, replacement);
+  } else {
+    for (const entry of Array.isArray(secrets) ? secrets : [secrets]) {
+      if (entry && typeof entry === 'object') add(entry.value, entry.replacement);
+      else add(entry, REDACTED_VALUE);
+    }
+  }
+  return [...byValue]
+    .map(([secret, replacement]) => ({ secret, replacement, forms: secretForms(secret) }))
+    .sort((a, b) => b.secret.length - a.secret.length);
+}
+
+function secretForms(secret) {
+  const once = JSON.stringify(secret).slice(1, -1);
+  const twice = JSON.stringify(once).slice(1, -1);
+  return [...new Set([secret, once, twice])];
+}
+
 function scrubSecretsDeep(value, list, keepKeys) {
-  if (typeof value === 'string') return list.reduce((text, secret) => scrubSecretInString(text, secret), value);
+  if (typeof value === 'string') return scrubSecretsInString(value, list);
   if (Array.isArray(value)) return value.map(item => scrubSecretsDeep(item, list, keepKeys));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
@@ -322,24 +392,27 @@ function scrubSecretsDeep(value, list, keepKeys) {
   return value;
 }
 
-function scrubSecretInString(text, secret) {
-  if (text === secret) return REDACTED_VALUE;
+function scrubSecretsInString(text, list) {
+  return list.reduce((out, entry) => scrubSecretInString(out, entry), text);
+}
+
+function scrubSecretInString(text, { secret, replacement, forms }) {
+  if (text === secret) return replacement;
   let out = text;
-  const escaped = JSON.stringify(secret).slice(1, -1);
-  for (const form of escaped === secret ? [secret] : [secret, escaped]) {
+  for (const form of forms) {
     if (secret.length >= MIN_SUBSTRING_SECRET_CHARS) {
-      out = out.split(form).join(REDACTED_VALUE);
+      out = out.split(form).join(replacement);
     } else {
-      out = out.split(`"${form}"`).join(`"${REDACTED_VALUE}"`)
-        .split(`\\"${form}\\"`).join(`\\"${REDACTED_VALUE}\\"`);
+      out = out.split(`"${form}"`).join(`"${replacement}"`)
+        .split(`\\"${form}\\"`).join(`\\"${replacement}\\"`);
     }
-    if (form.length > MIN_PREVIEW_PREFIX_CHARS) out = scrubTruncatedPreviews(out, form);
+    if (form.length > MIN_PREVIEW_PREFIX_CHARS) out = scrubTruncatedPreviews(out, form, replacement);
   }
   return out;
 }
 
 // `sk-live-abcdef…` / `sk-live-abcdef...`: a receipt cut the secret short.
-function scrubTruncatedPreviews(text, secret) {
+function scrubTruncatedPreviews(text, secret, replacement = REDACTED_VALUE) {
   const head = secret.slice(0, MIN_PREVIEW_PREFIX_CHARS);
   let out = '';
   let from = 0;
@@ -351,7 +424,7 @@ function scrubTruncatedPreviews(text, secret) {
     const rest = text.slice(at + length, at + length + 3);
     const ellipsis = rest.startsWith('…') ? 1 : rest === '...' ? 3 : 0;
     if (ellipsis) {
-      out += `${text.slice(from, at)}${REDACTED_VALUE}`;
+      out += `${text.slice(from, at)}${replacement}`;
       from = at + length + ellipsis;
       scan = from;
     } else {

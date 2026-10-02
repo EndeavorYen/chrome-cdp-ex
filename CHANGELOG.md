@@ -179,6 +179,23 @@
   ([#467](https://github.com/EndeavorYen/chrome-cdp-ex/issues/467)).
 
 ### Bug Fixes
+### Features
+
+* `fill <target> <sel|@ref> --secret NAME` types a secret without putting it on the command line. The
+  CLI reads `CDP_SECRET_<NAME>`, or `NAME` from the dotenv-style file at `CDP_SECRETS_FILE` (refused on
+  POSIX when group/other can read or write it), at call time and sends only the referenced values to
+  the tab daemon, beside the args. Receipts, `fill.v1`, `report`, `record-actions`, the session log and
+  errors show `<secret:NAME>`. For the daemon's lifetime, later output is scrubbed of values of 4+
+  characters on a best-effort basis (raw, JSON-escaped and cut previews; JSON inside strings only; the
+  daemon's `meta`/`list_raw` replies untouched), and the daemon starts without `CDP_SECRET_*` variables.
+  A named secret wins over sensitive-field redaction (`<secret:NAME>`, never `<redacted>`), and one
+  scrubber in `lib/redaction.mjs` serves both. The secrets file follows a documented dotenv grammar (inline comments, `\n` escapes in double quotes). Recorded steps keep `--secret NAME`, so `replay` re-reads the
+  secret at replay time and `export-playwright` emits `process.env.CDP_SECRET_NAME`. `batch`, `flow`,
+  `repeat` and `record --action` steps accept it too; `broadcast` does not. An unknown name is `Kind: usage` and lists the
+  available names only. The MCP `fill` tool takes `secret` instead of `text`; `type` refuses `--secret`
+  ([#469](https://github.com/EndeavorYen/chrome-cdp-ex/issues/469)).
+
+### Bug fixes
 
 * `fill` no longer echoes a value typed into a field named like a secret. The typed-value check used
   a `\b` regex, and `_` is a word character, so `#api_token`, `[name=client_secret]` and `#accessToken`
