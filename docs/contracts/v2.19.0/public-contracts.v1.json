@@ -5,7 +5,7 @@
       "exitCode": 0,
       "id": "no-args-help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -14,7 +14,7 @@
       "exitCode": 0,
       "id": "help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -802,6 +802,20 @@
     },
     {
       "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "drag",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
       "authorization": "standard",
       "evidencePolicy": "none",
       "feedbackPolicy": null,
@@ -1122,7 +1136,8 @@
       "name": "netlog",
       "needsTarget": true,
       "outputFormats": [
-        "text"
+        "text",
+        "json"
       ]
     },
     {
@@ -1221,6 +1236,17 @@
         "id": "mutation-without-confirm",
         "kind": "tool",
         "tool": "click"
+      },
+      {
+        "args": {
+          "from": "#card",
+          "target": "fixture",
+          "to": "#zone"
+        },
+        "error": "drag requires confirm: true",
+        "id": "drag-without-confirm",
+        "kind": "tool",
+        "tool": "drag"
       },
       {
         "args": {
@@ -1728,6 +1754,29 @@
       },
       {
         "args": {
+          "confirm": true,
+          "from": "#card",
+          "mode": "html5",
+          "steps": 5,
+          "target": "fixture",
+          "to": "#zone"
+        },
+        "command": [
+          "drag",
+          "fixture",
+          "#card",
+          "#zone",
+          "--steps",
+          "5",
+          "--html5",
+          "--format",
+          "json"
+        ],
+        "id": "drag",
+        "tool": "drag"
+      },
+      {
+        "args": {
           "target": "fixture"
         },
         "command": [
@@ -2129,7 +2178,7 @@
         "tool": "run_command"
       }
     ],
-    "protocolVersion": "2024-11-05",
+    "protocolVersion": "2025-06-18",
     "resourceMappings": [
       {
         "command": [
@@ -2205,6 +2254,7 @@
       "diffshot",
       "dismiss-modal",
       "doctor",
+      "drag",
       "elshot",
       "emulate",
       "export-playwright",
@@ -2283,6 +2333,7 @@
       "cookies",
       "dialog",
       "dismiss-modal",
+      "drag",
       "emulate",
       "fill",
       "forget",
@@ -2316,9 +2367,20 @@
       "viewport",
       "visual-check"
     ],
-    "serverVersion": "2.18.0",
+    "serverVersion": "2.19.0",
+    "supportedProtocolVersions": [
+      "2025-06-18",
+      "2024-11-05"
+    ],
     "tools": [
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Doctor"
+        },
         "description": "Run chrome-cdp-ex readiness diagnostics and return structured setup guidance.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2328,6 +2390,13 @@
         "name": "doctor"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "List tabs"
+        },
         "description": "List debuggable browser tabs and named target aliases.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2337,6 +2406,13 @@
         "name": "list_tabs"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Open or attach"
+        },
         "description": "Open a URL in a debuggable tab, or register a named alias for an existing target.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2371,6 +2447,13 @@
         "name": "open_or_attach"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Select target"
+        },
         "description": "Select a debuggable page target by URL and/or title substring (or exact match).",
         "inputSchema": {
           "additionalProperties": false,
@@ -2393,6 +2476,13 @@
         "name": "select_target"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Perceive"
+        },
         "description": "Capture structured page perception with refs, layout, and console health.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2452,6 +2542,13 @@
         "name": "perceive"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Controls"
+        },
         "description": "Return a compact list of visible controls for low-token target discovery.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2487,6 +2584,13 @@
         "name": "controls"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Overlay"
+        },
         "description": "Detect dialogs, overlays, and hit-test blockers for the page or a target point.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2508,6 +2612,13 @@
         "name": "overlay"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Screenshot"
+        },
         "description": "Capture a viewport screenshot for a target.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2537,6 +2648,13 @@
         "name": "screenshot"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Click"
+        },
         "description": "Click a selector, @ref, or accessible name and return action evidence. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2573,6 +2691,13 @@
         "name": "click"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Verify click"
+        },
         "description": "Click once and assert expected text, network request/status, and console health. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2627,6 +2752,13 @@
         "name": "verify_click"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Dismiss modal"
+        },
         "description": "Close common dialogs/modals safely and return action evidence. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2650,6 +2782,13 @@
         "name": "dismiss_modal"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Fill"
+        },
         "description": "Fill a field by selector or @ref and return action evidence. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2663,6 +2802,10 @@
               "description": "Use native value setter plus input/change events.",
               "type": "boolean"
             },
+            "secret": {
+              "description": "Instead of text: a secret NAME ([A-Z0-9_]+). The value is read from CDP_SECRET_<NAME> or CDP_SECRETS_FILE in the server environment and shows as <secret:NAME> in all output.",
+              "type": "string"
+            },
             "selector": {
               "description": "CSS selector or @ref.",
               "type": "string"
@@ -2672,21 +2815,82 @@
               "type": "string"
             },
             "text": {
-              "description": "Text to enter. Sensitive values are redacted by cdp action artifacts.",
+              "description": "Text to enter; \"\" clears the field. Required unless secret is given. Sensitive values are redacted by cdp action artifacts.",
               "type": "string"
             }
           },
           "required": [
             "confirm",
             "selector",
-            "target",
-            "text"
+            "target"
           ],
           "type": "object"
         },
         "name": "fill"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Drag"
+        },
+        "description": "Drag from a source element to a destination element or x,y point with a real mouse, finishing HTML5 drag-and-drop when the source starts one, and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "from": {
+              "description": "Source CSS selector, @ref, or @c ref.",
+              "type": "string"
+            },
+            "mode": {
+              "description": "auto (default) intercepts an HTML5 drag if the page starts one; html5 requires it; pointer sends mouse events only.",
+              "enum": [
+                "auto",
+                "html5",
+                "pointer"
+              ],
+              "type": "string"
+            },
+            "steps": {
+              "description": "Intermediate mouseMoved steps. Defaults to 10.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "to": {
+              "description": "Destination CSS selector, @ref, @c ref, or x,y CSS pixel point.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "from",
+            "target",
+            "to"
+          ],
+          "type": "object"
+        },
+        "name": "drag"
+      },
+      {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Viewport"
+        },
         "description": "Read or set viewport size. Setting size requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2712,6 +2916,13 @@
         "name": "viewport"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "QA page"
+        },
         "description": "Run page, console, screenshot, and optional semantic interaction QA.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2765,6 +2976,13 @@
         "name": "qa_page"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Responsive audit"
+        },
         "description": "Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2805,6 +3023,13 @@
         "name": "responsive_audit"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true,
+          "title": "Report"
+        },
         "description": "Return session action timeline, artifacts, and recovery next steps.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2840,6 +3065,13 @@
         "name": "report"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Navigate"
+        },
         "description": "Navigate a target to a URL and wait for load. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2868,6 +3100,13 @@
         "name": "navigate"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Press"
+        },
         "description": "Send a key press to the page. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2896,6 +3135,13 @@
         "name": "press"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Wait for"
+        },
         "description": "Wait for text, selector stability, or other waitfor conditions.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2941,6 +3187,13 @@
         "name": "wait_for"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Cascade"
+        },
         "description": "Trace a computed CSS property back to the winning selector and source.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2967,6 +3220,13 @@
         "name": "cascade"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Components"
+        },
         "description": "Inspect React/Vue component tree hooks when available for a selector/@ref. Requires confirm: true because props/state can contain sensitive data.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2994,6 +3254,13 @@
         "name": "components"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Spawn debug browser"
+        },
         "description": "Launch an isolated debug browser profile. Requires confirm: true and user consent.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3034,6 +3301,13 @@
         "name": "spawn_debug_browser"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Record snapshot"
+        },
         "description": "Record a short temporal timeline of DOM/network/console activity.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3057,6 +3331,13 @@
         "name": "record_snapshot"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Session checkpoint"
+        },
         "description": "Capture a redacted session checkpoint for handoff/restore.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3084,6 +3365,13 @@
         "name": "session_checkpoint"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Table"
+        },
         "description": "Observe a bounded table snapshot, collect a virtualized table after confirm: true, or continue a private artifact. Selector and continue are mutually exclusive; collect requires a scroll container.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3132,6 +3420,13 @@
         "name": "table"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Run command"
+        },
         "description": "Escape hatch: run an allowlisted chrome-cdp-ex CLI command. Mutating commands require confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3144,7 +3439,7 @@
               "type": "array"
             },
             "command": {
-              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, target, open, use, current, forget, perceive, controls, overlay, snap, snapshot, summary, status, console, shot, screenshot, elshot, fullshot, scanshot, diff-shot, diffshot, click, verify-click, jsclick, clickxy, type, press, key, scroll, hover, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, forward, reload, viewport, resize, emulate, wait, waitfor, loadall, cascade, components, frame, frames, text, table, html, styles, net, netlog, cookies, qa, responsive-audit, visual-check, report, record, checkpoint, restore, record-actions, export-playwright, tab-group, broadcast, spawn-debug-browser, spawn, attach, stop, closetab, keepalive, mock, clock, throttle, inject",
+              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, target, open, use, current, forget, perceive, controls, overlay, snap, snapshot, summary, status, console, shot, screenshot, elshot, fullshot, scanshot, diff-shot, diffshot, click, verify-click, jsclick, clickxy, type, press, key, scroll, hover, drag, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, forward, reload, viewport, resize, emulate, wait, waitfor, loadall, cascade, components, frame, frames, text, table, html, styles, net, netlog, cookies, qa, responsive-audit, visual-check, report, record, checkpoint, restore, record-actions, export-playwright, tab-group, broadcast, spawn-debug-browser, spawn, attach, stop, closetab, keepalive, mock, clock, throttle, inject",
               "type": "string"
             },
             "confirm": {
@@ -3224,6 +3519,9 @@
       "package/docs/contracts/v2.18.0/package-entries.v1.json",
       "package/docs/contracts/v2.18.0/public-contracts.v1.json",
       "package/docs/contracts/v2.18.0/runtime-dispatch.v1.json",
+      "package/docs/contracts/v2.19.0/package-entries.v1.json",
+      "package/docs/contracts/v2.19.0/public-contracts.v1.json",
+      "package/docs/contracts/v2.19.0/runtime-dispatch.v1.json",
       "package/docs/daily-browser-cdp.md",
       "package/docs/examples/codex-killer-path.md",
       "package/experiment/codex-killer-path-demo-poster.png",
@@ -3240,6 +3538,7 @@
       "package/skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs",
@@ -3250,23 +3549,31 @@
       "package/skills/chrome-cdp-ex/scripts/lib/daemon-action-handlers.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/git-head.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/netlog.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/page-download.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/page-health.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/pdf-text.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/perception-model.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/redaction.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/runtime-dir.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/secrets.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/session-policy.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/source-maps.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/web-vitals.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs",
       "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs",
       "package/skills/chrome-cdp-ex/scripts/session.mjs"
     ],
-    "version": "2.18.0"
+    "version": "2.19.0"
   },
-  "productVersion": "2.18.0",
+  "productVersion": "2.19.0",
   "schema": "chrome-cdp-ex.public-contracts.v1",
   "schemas": [
     {
