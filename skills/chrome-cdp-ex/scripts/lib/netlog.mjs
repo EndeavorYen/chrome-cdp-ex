@@ -524,13 +524,68 @@ export function redactHeaderValue(name, value) {
 // redacted as JSON and keeps its prefix.
 const JSON_HIJACK_PREFIX_RE = /^(?:\)\]\}',?|while\s*\(\s*1\s*\)\s*;|for\s*\(\s*;\s*;\s*\)\s*;)[ \t]*\r?\n?/;
 
+// Also redacted as JSON (#513): a UTF-8 byte-order mark in front, JSONP
+// (`cb({...});`, `/**/ jQuery123(...)`), and NDJSON (every non-blank line is a
+// JSON object or array).
+const JSONP_HEAD_RE = /^\s*(?:\/\*\*\/\s*)?[A-Za-z_$][\w$.]{0,128}\s*\(\s*/;
+
 export function redactBodyText(text, { mimeType = '' } = {}) {
   const source = String(text ?? '');
-  const prefix = source.match(JSON_HIJACK_PREFIX_RE)?.[0] || '';
-  const json = redactJsonText(source.slice(prefix.length));
-  if (json) return `${prefix}${json.text}`;
+  const structured = redactStructuredBody(source);
+  if (structured != null) return structured;
   if (JSON_MIME_RE.test(String(mimeType || ''))) return redactSensitiveString(source);
   return redactSensitiveString(redactMarkupSecrets(source));
+}
+
+// The body redacted as JSON, or null when it is none of the JSON shapes.
+function redactStructuredBody(source) {
+  const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const body = source.slice(bom.length);
+  const prefix = body.match(JSON_HIJACK_PREFIX_RE)?.[0] || '';
+  const json = redactJsonText(body.slice(prefix.length));
+  if (json) return json.changed ? `${bom}${prefix}${json.text}` : source;
+  const jsonp = splitJsonp(body);
+  const inner = jsonp && redactJsonText(jsonp.json);
+  if (inner) return inner.changed ? `${bom}${jsonp.head}${inner.text}${jsonp.tail}` : source;
+  const ndjson = redactNdjson(body);
+  return ndjson == null ? null : `${bom}${ndjson}`;
+}
+
+function isJsWhitespace(char) {
+  return char !== undefined && char.trim() === '';
+}
+
+// `head(` JSON `)` `;`: the tail is found by walking back from the end, not by
+// an end-anchored regex, which would backtrack over a long whitespace run.
+function splitJsonp(body) {
+  const head = body.match(JSONP_HEAD_RE)?.[0];
+  if (!head) return null;
+  let end = body.length;
+  while (end > head.length && isJsWhitespace(body[end - 1])) end--;
+  if (body[end - 1] === ';') end--;
+  while (end > head.length && isJsWhitespace(body[end - 1])) end--;
+  if (end <= head.length || body[end - 1] !== ')') return null;
+  end--;
+  while (end > head.length && isJsWhitespace(body[end - 1])) end--;
+  return { head, json: body.slice(head.length, end), tail: body.slice(end) };
+}
+
+function redactNdjson(body) {
+  const parts = body.split(/(\r?\n)/);
+  let lines = 0;
+  let changed = false;
+  for (let i = 0; i < parts.length; i += 2) {
+    if (parts[i].trim() === '') continue;
+    const json = redactJsonText(parts[i]);
+    if (!json) return null;
+    lines++;
+    if (json.changed) {
+      parts[i] = json.text;
+      changed = true;
+    }
+  }
+  if (lines < 2) return null;
+  return changed ? parts.join('') : body;
 }
 
 export function redactHeaders(headers, { unsafeFull = false } = {}) {
