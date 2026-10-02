@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+## [2.19.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.18.0...v2.19.0) (2026-10-02)
+
+v2.19.0 makes the live session safer and more honest by default, and adds the capabilities agents
+asked for most. Background mode is now the default: commands no longer focus tabs or raise the
+browser, and a screenshot of a hidden tab fails fast with `Kind: hidden-tab` instead of hanging.
+Redaction now uses one token-wise classifier (it catches `access_token`, `client_secret`, camelCase
+keys, JWTs and nested JSON secrets), console capture is bounded, and `fill --secret NAME` keeps secrets
+out of the transcript. New: `drag`, `click --expect-download`, `netlog --id`, `status --vitals`,
+source-mapped stack frames, a bounded actionability wait with `Kind: disabled`, opt-in guardrails
+(`CDP_CONTENT_BOUNDARIES`, `CDP_ALLOWED_ORIGINS`, `CDP_DENY_ACTIONS`), and MCP image results,
+`structuredContent`, tool annotations and newline-delimited stdio framing. Receipts tell the truth in
+more places (dialogs answered, cancelled navigations, text-only changes, the first action of a fresh
+daemon), the tab daemon no longer crashes on a slow-scrolling `click @ref`, Electron WebGL pages can be
+captured, and CI now runs the full suite on Windows as well as Linux. The command catalog grows from 81
+to 82 commands (`drag`).
+
+### Behaviour Changes
+
+* **Behaviour change: background mode is the default**
+  ([#488](https://github.com/EndeavorYen/chrome-cdp-ex/issues/488)). Tab daemons no longer send
+  `Target.activateTarget` when they attach, and `open` creates its tab in a new unfocused window, so the
+  agent stops raising the browser over the user's work. `CDP_BACKGROUND=0` (also `false`, `no`, `off`)
+  or `CDP_FOREGROUND=1` restores the old behaviour, and `open --foreground` does it for one tab. A call
+  with the opt-out also activates a hidden tab before its command (waiting at most 300 ms), even when
+  the tab's daemon already runs in background mode; an explicit choice on `open` is kept for that tab
+  across daemon restarts (#441). The internal `_activate` request behind this is refused as a `batch`,
+  `flow`, `repeat` or `replay` step.
+  * A capture on a hidden tab (a background tab, or a minimized window) no longer waits out the 30 s
+    screenshot timeout and then falls back to `fromSurface:false`, which copies what the window shows,
+    which is another tab. In background mode `shot`, `elshot`, `scanshot`, `fullshot`, `annotshot`,
+    `diff-shot` and the `responsive-audit` / `qa` screenshots read `document.visibilityState` first. A
+    hidden tab gets one plain capture limited to 3 s, because Chrome renders frames for some hidden tabs
+    and not for others, so such a capture may fail. Without a frame the command fails with
+    `Kind: hidden-tab`. `Next:` reruns a capture command as `CDP_BACKGROUND=0 cdp <command> <target>`;
+    after `flow`, `repeat`, `replay` or `batch` it names the capture alone (`CDP_BACKGROUND=0 cdp shot
+    <target>`) and never replays steps that already ran. Visible tabs are unchanged.
+  * The `no-input-events` hint for a hidden tab names `CDP_BACKGROUND=0` for a background tab. Neither
+    mode raises a window that other windows cover (Windows does not let Chrome bring itself forward), so
+    covered windows behave as before. `docs/daily-browser-cdp.md` now launches the daily browser with
+    `--disable-backgrounding-occluded-windows`, which keeps a covered window rendering at some CPU cost.
+  * `spawn-debug-browser` passes `--disable-backgrounding-occluded-windows` by default
+    (`--allow-occlusion` drops it); relaunch hints treat that flag alone as the spawn default, not as
+    `--background`. The throttling flags and minimizing still need an explicit `--background` or
+    `CDP_BACKGROUND=1`, as before, and its next-command hint no longer prepends `CDP_BACKGROUND=1`.
+    `npm run smoke:live` launches its browser with `--disable-features=CalculateNativeWinOcclusion`, as
+    `spawn-debug-browser` does.
+
 ### Features
 
 * New `drag <target> <from sel|@ref> <to sel|@ref|x,y> [--steps N] [--html5|--pointer]` command and MCP `drag` tool
@@ -35,34 +82,6 @@
 
   The runtime directory is now resolved in one place, `scripts/lib/runtime-dir.mjs`, which the CLI and
   the MCP server share.
-* **Behaviour change: background mode is the default**
-  ([#488](https://github.com/EndeavorYen/chrome-cdp-ex/issues/488)). Tab daemons no longer send
-  `Target.activateTarget` when they attach, and `open` creates its tab in a new unfocused window, so the
-  agent stops raising the browser over the user's work. `CDP_BACKGROUND=0` (also `false`, `no`, `off`)
-  or `CDP_FOREGROUND=1` restores the old behaviour, and `open --foreground` does it for one tab. A call
-  with the opt-out also activates a hidden tab before its command (waiting at most 300 ms), even when
-  the tab's daemon already runs in background mode; an explicit choice on `open` is kept for that tab
-  across daemon restarts (#441). The internal `_activate` request behind this is refused as a `batch`,
-  `flow`, `repeat` or `replay` step.
-  * A capture on a hidden tab (a background tab, or a minimized window) no longer waits out the 30 s
-    screenshot timeout and then falls back to `fromSurface:false`, which copies what the window shows,
-    which is another tab. In background mode `shot`, `elshot`, `scanshot`, `fullshot`, `annotshot`,
-    `diff-shot` and the `responsive-audit` / `qa` screenshots read `document.visibilityState` first. A
-    hidden tab gets one plain capture limited to 3 s, because Chrome renders frames for some hidden tabs
-    and not for others, so such a capture may fail. Without a frame the command fails with
-    `Kind: hidden-tab`. `Next:` reruns a capture command as `CDP_BACKGROUND=0 cdp <command> <target>`;
-    after `flow`, `repeat`, `replay` or `batch` it names the capture alone (`CDP_BACKGROUND=0 cdp shot
-    <target>`) and never replays steps that already ran. Visible tabs are unchanged.
-  * The `no-input-events` hint for a hidden tab names `CDP_BACKGROUND=0` for a background tab. Neither
-    mode raises a window that other windows cover (Windows does not let Chrome bring itself forward), so
-    covered windows behave as before. `docs/daily-browser-cdp.md` now launches the daily browser with
-    `--disable-backgrounding-occluded-windows`, which keeps a covered window rendering at some CPU cost.
-  * `spawn-debug-browser` passes `--disable-backgrounding-occluded-windows` by default
-    (`--allow-occlusion` drops it); relaunch hints treat that flag alone as the spawn default, not as
-    `--background`. The throttling flags and minimizing still need an explicit `--background` or
-    `CDP_BACKGROUND=1`, as before, and its next-command hint no longer prepends `CDP_BACKGROUND=1`.
-    `npm run smoke:live` launches its browser with `--disable-features=CalculateNativeWinOcclusion`, as
-    `spawn-debug-browser` does.
 * `console`, `status` and action receipts print source-mapped frames for console errors, warnings and
   uncaught exceptions: `src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)` instead of an opaque
   bundle position. The daemon now keeps up to three frames per entry (it kept only the first, printed
@@ -113,11 +132,6 @@
   marked read unseen. The `status` synopsis gains `[--vitals]`, so the reviewed command catalog
   identity and the frozen CLI help bytes change
   ([#473](https://github.com/EndeavorYen/chrome-cdp-ex/issues/473)).
-* Opt-in guardrails for the live session, all off by default (output and daemon requests are
-  byte-identical without them). Defense-in-depth for agents, not a security boundary
-  ([#466](https://github.com/EndeavorYen/chrome-cdp-ex/issues/466)):
-  * `CDP_CONTENT_BOUNDARIES=1` wraps the output of `perceive`, `text`, `console`, `table` and `netlog`
-    in `--- PAGE CONTENT (untrusted) nonce=<16 hex> origin=<origin> ---` … `--- END PAGE CONTENT nonce=<same> ---`.
 * Opt-in guardrails for the live session, all off by default: without them, daemon requests and
   command output are unchanged, and the help card only gains one line naming the variables.
   Defense-in-depth for agents, not a security boundary; `scripts/session.mjs`, `scripts/download.mjs`
@@ -177,10 +191,6 @@
   and `chrome-cdp-ex.netlog-request.v1`. An unknown id is a usage error whose recovery is
   `cdp netlog <target>`. MCP `run_command` asks for confirmation before `--out` and `--unsafe-full`
   ([#467](https://github.com/EndeavorYen/chrome-cdp-ex/issues/467)).
-
-### Bug Fixes
-### Features
-
 * `fill <target> <sel|@ref> --secret NAME` types a secret without putting it on the command line. The
   CLI reads `CDP_SECRET_<NAME>`, or `NAME` from the dotenv-style file at `CDP_SECRETS_FILE` (refused on
   POSIX when group/other can read or write it), at call time and sends only the referenced values to
@@ -195,7 +205,7 @@
   available names only. The MCP `fill` tool takes `secret` instead of `text`; `type` refuses `--secret`
   ([#469](https://github.com/EndeavorYen/chrome-cdp-ex/issues/469)).
 
-### Bug fixes
+### Bug Fixes
 
 * Redaction reads JSON that is escaped one level deeper, and more netlog body shapes are redacted as JSON.
   - `redactSensitiveString` finds keys written `\"password\":` (JSON embedded in a JSON string) and values
@@ -281,7 +291,6 @@
   few milliseconds, and no cut (capture, redaction window, receipt or console line) splits a
   surrogate pair
   ([#459](https://github.com/EndeavorYen/chrome-cdp-ex/issues/459)).
-### Bug Fixes
 * On Linux and macOS, a second daemon for the same tab no longer takes over the first one's live
   socket. Two parallel commands for a tab with no daemon used to spawn two daemons; the second unlinked
   the first's socket and bound the path, leaving an attached orphan that `stop` could not see, and when
@@ -294,7 +303,6 @@
   replaced or removed exits within 5 s instead of lingering.
   Clients (`getOrStartTabDaemon`, `open`) no longer unlink the path before spawning. Windows named pipes
   are unchanged ([#458](https://github.com/EndeavorYen/chrome-cdp-ex/issues/458)).
-
 * `shot`, `elshot`, `responsive-audit` and `annotshot` capture an Electron page with a live WebGL
   canvas whenever a plain `Page.captureScreenshot` works
   ([#452](https://github.com/EndeavorYen/chrome-cdp-ex/issues/452)). Three causes:
@@ -397,7 +405,6 @@
   table-policy files build their unmutated baseline once, not once per mutation. Session-log tests
   write under `os.tmpdir()`, not a hard-coded `/tmp` (on Windows that means `<drive>:\tmp`). CI gains
   a `test-windows` job on `windows-latest`.
-
 * Attaching to a running browser on Linux now records its profile, exe and launch flags even when no
   remembered profile is behind that port, e.g. a browser chrome-cdp-ex did not spawn, or one attached
   after `cdp-last-endpoint.json` was deleted. Before, the record kept only the port, so a later
