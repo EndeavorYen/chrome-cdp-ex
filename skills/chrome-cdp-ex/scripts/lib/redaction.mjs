@@ -167,8 +167,11 @@ const BEARER_VALUE_RE = /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
 // prefix, optional key quote (`"access_token":`, or `\"access_token\":` in JSON
 // embedded in a JSON string, #511), key (may be %-encoded), separator. The
 // opening quote of a string is a prefix too, so a pair at the very start of a
-// JSON string value (`{"msg":"password: \"…\""}`) is found.
-const ASSIGNMENT_KEY_RE = /(^|[\s{[,;?&#"'])(\\?["']|)([A-Za-z0-9_.%-]+)\2(\s*[:=]\s*)/g;
+// JSON string value (`{"msg":"password: \"…\""}`) is found, except after `=`
+// or `(`: there it opens a CSS attribute value or a selector argument
+// (`[aria-label="Password: required"]`, `:has-text("PIN: confirm")`), and
+// recorded selectors must replay unchanged.
+const ASSIGNMENT_KEY_RE = /(^|[\s{[,;?&#]|(?<![=(])["'])(\\?["']|)([A-Za-z0-9_.%-]+)\2(\s*[:=]\s*)/g;
 // A bare (unquoted) value. Quoted values are read by scanQuotedValue.
 const BARE_VALUE_RE = /[^"'\s,;&}\])]+/y;
 // A quoted secret is read up to its real closing quote (#503): `\"` and line
@@ -226,22 +229,71 @@ function scanEscapedQuotedValue(text, start) {
   return { end: end < text.length && isHighSurrogate(text.charCodeAt(end - 1)) ? end + 1 : end, closed: false };
 }
 
-// The secret value starting at `valueStart` as `{ end, quote, closed }`, or null.
-// `quote` is the opening (and closing) sequence: `"`, `'`, `\"`, `\'` or empty.
-function secretValueSpan(text, valueStart) {
-  const first = text[valueStart];
-  if (first === '\\' && (text[valueStart + 1] === '"' || text[valueStart + 1] === '\'')) {
-    if (valueStart + 2 >= text.length) return null;
-    return { ...scanEscapedQuotedValue(text, valueStart), quote: `\\${text[valueStart + 1]}` };
+// The quoted value opening at `at` (`"`, `'`, `\"` or `\'`), or null.
+function quotedValueSpan(text, at) {
+  const first = text[at];
+  if (first === '\\' && (text[at + 1] === '"' || text[at + 1] === '\'')) {
+    if (at + 2 >= text.length) return null;
+    return { ...scanEscapedQuotedValue(text, at), quote: `\\${text[at + 1]}`, resumeAt: at + 1 };
   }
-  if (first !== '"' && first !== '\'') {
+  if (first !== '"' && first !== '\'') return null;
+  // A lone quote at the very end has no value to hide.
+  if (at + 1 >= text.length) return null;
+  return { ...scanQuotedValue(text, at), quote: first, resumeAt: at + 1 };
+}
+
+const MAX_GAP_BEFORE_QUOTED_VALUE = 64;
+
+function skipBlanks(text, at) {
+  const start = at;
+  while (at < text.length && at - start < MAX_GAP_BEFORE_QUOTED_VALUE && (text[at] === ' ' || text[at] === '\t')) at++;
+  return at;
+}
+
+// A value that turns out to be a key owns the quoted value after it:
+// `pin: password: "QZ7"` and `Auth: token="QZ7"` (a bare value ending in `:` or
+// `=`), or `pin: "secret":"QZ7"` (a closed quoted value, then `:` or `=`).
+// Without this, scanning resumes past the key and the quoted secret stays
+// visible. Each step is one more forward scan, never a rescan.
+function ownedQuotedValue(text, end, { separatorTaken }) {
+  let at = end;
+  if (!separatorTaken) {
+    at = skipBlanks(text, at);
+    if (text[at] !== ':' && text[at] !== '=') return null;
+    at++;
+  }
+  return quotedValueSpan(text, skipBlanks(text, at));
+}
+
+// The secret value starting at `valueStart` as `{ end, open, close, resumeAt }`,
+// or null. `open`/`close` are the quote sequences kept around `<redacted>`
+// (`"`, `'`, `\"`, `\'` or empty; `close` is empty when the value is left open).
+// Key scanning resumes at `resumeAt`: inside a quoted value, after a bare one.
+function secretValueSpan(text, valueStart) {
+  let span;
+  const quoted = quotedValueSpan(text, valueStart);
+  if (quoted) {
+    span = { end: quoted.end, open: quoted.quote, close: quoted.closed ? quoted.quote : '', resumeAt: quoted.resumeAt };
+  } else {
+    if (text[valueStart] === '"' || text[valueStart] === '\'') return null;
     BARE_VALUE_RE.lastIndex = valueStart;
     const bare = BARE_VALUE_RE.exec(text);
-    return bare ? { end: valueStart + bare[0].length, quote: '', closed: true } : null;
+    if (!bare) return null;
+    const end = valueStart + bare[0].length;
+    const owned = text[end - 1] === ':' || text[end - 1] === '='
+      ? ownedQuotedValue(text, end, { separatorTaken: true })
+      : null;
+    if (!owned) return { end, open: '', close: '', resumeAt: end };
+    span = { end: owned.end, open: '', close: owned.closed ? owned.quote : '', resumeAt: owned.resumeAt };
   }
-  // A lone quote at the very end has no value to hide.
-  if (valueStart + 1 >= text.length) return null;
-  return { ...scanQuotedValue(text, valueStart), quote: first };
+  // Follow `"secret":"QZ7"` chains while the last quoted value was closed.
+  while (span.close) {
+    const owned = ownedQuotedValue(text, span.end, { separatorTaken: false });
+    if (!owned) break;
+    span = { end: owned.end, open: span.open, close: owned.closed ? owned.quote : '', resumeAt: owned.resumeAt };
+  }
+  // A bare start keeps no quotes: `Session: <redacted> next`.
+  return span.open ? span : { ...span, close: '' };
 }
 
 // `#pin:checked`, `.token:hover`, `input.password:focus` are CSS selectors, not
@@ -266,8 +318,24 @@ function isCssSelectorColon(text, separator, keyEnd) {
 // lie past the bound; that next secret is still found and its span merged.
 // Key scanning only moves forward and resumes after a bare value, and two
 // scans for the same quote never overlap, so this stays linear.
+// Keys repeat (`pin: "pin: "…`, arrays of JSON records), so each distinct key is
+// classified once per call.
+const MAX_CACHED_KEY_CHARS = 128;
+const MAX_CACHED_KEYS = 1024;
+
 function redactSecretAssignments(text) {
   const spans = [];
+  const classified = new Map();
+  const isSecretKey = (rawKey, urlQuery) => {
+    if (rawKey.length > MAX_CACHED_KEY_CHARS) return isSensitiveKey(decodeKey(rawKey), { urlQuery });
+    const cacheKey = `${urlQuery ? 'q' : 'k'}${rawKey}`;
+    let secret = classified.get(cacheKey);
+    if (secret === undefined) {
+      secret = isSensitiveKey(decodeKey(rawKey), { urlQuery });
+      if (classified.size < MAX_CACHED_KEYS) classified.set(cacheKey, secret);
+    }
+    return secret;
+  };
   ASSIGNMENT_KEY_RE.lastIndex = 0;
   let match;
   while ((match = ASSIGNMENT_KEY_RE.exec(text)) !== null) {
@@ -278,7 +346,7 @@ function redactSecretAssignments(text) {
     if (prefix === '#' && !isEquals) continue;
     if (isCssSelectorColon(text, separator, match.index + prefix.length + keyQuote.length * 2 + rawKey.length)) continue;
     const urlQuery = isEquals && !keyQuote && (prefix === '?' || prefix === '&' || prefix === '#');
-    if (!isSensitiveKey(decodeKey(rawKey), { urlQuery })) {
+    if (!isSecretKey(rawKey, urlQuery)) {
       // Give back the whitespace after a non-secret key's separator: it is the prefix
       // the next key needs (`user: token=…`, `msg: password: "…"`).
       ASSIGNMENT_KEY_RE.lastIndex = match.index + whole.trimEnd().length;
@@ -286,14 +354,13 @@ function redactSecretAssignments(text) {
     }
     const span = secretValueSpan(text, valueStart);
     if (!span) continue;
-    const close = span.closed ? span.quote : '';
     const prev = spans[spans.length - 1];
     if (prev && valueStart < prev.end) {
-      if (span.end > prev.end) Object.assign(prev, { end: span.end, close });
+      if (span.end > prev.end) Object.assign(prev, { end: span.end, close: prev.open ? span.close : '' });
     } else {
-      spans.push({ start: valueStart, end: span.end, open: span.quote, close });
+      spans.push({ start: valueStart, end: span.end, open: span.open, close: span.close });
     }
-    ASSIGNMENT_KEY_RE.lastIndex = span.quote ? valueStart + 1 : span.end;
+    ASSIGNMENT_KEY_RE.lastIndex = span.resumeAt;
   }
   if (spans.length === 0) return text;
   let out = '';

@@ -1,7 +1,11 @@
+import { readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 process.env.NODE_ENV = 'test';
 
+const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const { redactSensitiveString, redactSensitiveValue, redactJsonText, REDACTED_VALUE: R } = await import('../skills/chrome-cdp-ex/scripts/lib/redaction.mjs');
 const { redactBodyText } = await import('../skills/chrome-cdp-ex/scripts/lib/netlog.mjs');
 
@@ -10,6 +14,17 @@ const PARTS = ['QZ7', 'XJ3', 'JQ9'];
 
 function expectNoSecret(text) {
   for (const part of PARTS) expect(text, text).not.toContain(part);
+}
+
+// Median of several runs, so one slow CI tick does not decide the result.
+function medianMs(fn, runs = 5) {
+  const times = [];
+  for (let i = 0; i < runs; i++) {
+    const start = performance.now();
+    fn();
+    times.push(performance.now() - start);
+  }
+  return times.sort((x, y) => x - y)[runs >> 1];
 }
 
 function timed(fn) {
@@ -134,6 +149,81 @@ describe('#513 NDJSON, JSONP and BOM bodies', () => {
   });
 });
 
+// #514 review.
+describe('#511 a bare secret value that is itself a key', () => {
+  it('redacts the quoted value the inner key owns', () => {
+    for (const text of [
+      '"pin: password: "QZ7 XJ3"',
+      `${BS}"pin: token="QZ7 XJ3"`,
+      'Auth: token="QZ7 XJ3"',
+      'Session: password: "QZ7 XJ3" next',
+      `{"msg":"pin: secret: ${BS}"QZ7 XJ3${BS}""}`,
+      "pin=api_key= 'QZ7 XJ3'",
+    ]) expectNoSecret(redactSensitiveString(text));
+    expect(redactSensitiveString('Session: password: "QZ7 XJ3" next')).toBe(`Session: ${R} next`);
+  });
+
+  it('redacts the value of a quoted key that a secret value swallowed', () => {
+    for (const text of [
+      '"pin: "secret":"QZ7\nXJ3"',
+      'pin: pin: "secret":"QZ7\nXJ3"',
+      `${BS}'pin: "secret": "QZ7 XJ3"`,
+      "pin: 'secret' = 'QZ7 XJ3'",
+    ]) expectNoSecret(redactSensitiveString(text));
+    expect(redactSensitiveString('pin: "secret":"QZ7"')).toBe(`pin: "${R}"`);
+    // A plain JSON pair after a secret is not swallowed.
+    expect(redactSensitiveString('{"pin":"1","user":"bob"}')).toBe(`{"pin":"${R}","user":"bob"}`);
+  });
+});
+
+describe('#511 quoted CSS selector text stays byte-identical', () => {
+  const SELECTORS = [
+    'button:has-text("PIN: confirm")',
+    '[aria-label="Password: required"]',
+    "input[placeholder='Token: paste here']",
+    'text=("Secret: none")',
+  ];
+
+  it('is not rewritten by the string rules', () => {
+    for (const selector of SELECTORS) {
+      expect(redactSensitiveString(selector), selector).toBe(selector);
+      expect(redactSensitiveString(`Target: ${selector}`), selector).toBe(`Target: ${selector}`);
+    }
+  });
+
+  it('survives the session log, record-actions and export-playwright', () => {
+    const logPath = join(tmpdir(), `cdp-511-sel-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
+    const state = T.createSessionState({ targetId: 'ABC511', sessionId: 'sid-511', logPath });
+    try {
+      T.initializeSessionLog(state);
+      for (const [index, selector] of SELECTORS.entries()) {
+        const result = T.createActionResult({
+          action: 'click',
+          target: { input: selector, resolvedBy: 'selector', label: selector, commandArgs: [selector] },
+          dispatch: { ok: true, method: 'mouse' },
+          settle: { ok: true, durationMs: 5 },
+          effects: { domDiff: '', console: [], network: [], navigation: null },
+          nextHint: null,
+        });
+        expect(JSON.parse(T.formatActionResultOutput(result, { format: 'json' })).target.input).toBe(selector);
+        T.appendSessionActionLog(state, result, { ts: Date.parse('2026-10-02T00:00:00.000Z') + index });
+      }
+      const log = readFileSync(logPath, 'utf8');
+      const records = JSON.parse(T.formatRecordActions(state, { format: 'json' }));
+      for (const selector of SELECTORS) expect(log).toContain(JSON.stringify(selector));
+      expect(records.actions.map(action => action.command)).toEqual(SELECTORS.map(selector => ['click', selector]));
+      expect(log).not.toContain(R);
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+
+  it('still redacts a pair that opens a JSON string value', () => {
+    expect(redactSensitiveString('{"msg":"password: QZ7"}')).toBe(`{"msg":"password: ${R}"}`);
+    expect(redactSensitiveString("['token: QZ7']")).toBe(`['token: ${R}']`);
+  });
+});
+
 describe('#511/#513 stay linear', () => {
   const SIZE = 256 * 1024;
   const cases = {
@@ -148,10 +238,11 @@ describe('#511/#513 stay linear', () => {
       const text = make();
       const small = text.slice(0, text.length / 4);
       redactSensitiveString(small);
-      const a = timed(() => redactSensitiveString(small));
-      const b = timed(() => redactSensitiveString(text));
-      expect(b.ms).toBeLessThan(500);
-      expect(b.ms).toBeLessThan(Math.max(40, a.ms * 10));
+      const a = medianMs(() => redactSensitiveString(small));
+      const b = medianMs(() => redactSensitiveString(text));
+      // 4x the input: linear is ~4x the time, quadratic ~16x.
+      expect(b).toBeLessThan(1000);
+      expect(b).toBeLessThan(Math.max(a * 8, 30));
     });
   }
 
