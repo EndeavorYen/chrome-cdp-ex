@@ -326,7 +326,8 @@ to 82 commands (`drag`).
   claiming a timeout ([#452](https://github.com/EndeavorYen/chrome-cdp-ex/issues/452)).
 * `responsive-audit` keeps the requested viewport as each entry's label. A mobile size without
   `<meta viewport>` used to be reported as its 980px layout viewport (`980x2120` for `390x844`); the
-  layout size now appears as `layout=980x2120` / `layoutViewport`.
+  layout size now appears as `layout=980x2120` / `layoutViewport`
+  ([#452](https://github.com/EndeavorYen/chrome-cdp-ex/issues/452)).
 * Windows: a CDP attach miss, `doctor` and `spawn-debug-browser --daily-profile` no longer run
   `chrome.exe --version` to learn the browser's major version. Chrome on Windows is a GUI program, so that
   call opened a real browser window (or handed the command line to the open browser) and blocked for the
