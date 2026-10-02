@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 process.env.NODE_ENV = 'test';
 
 const { redactSensitiveString, REDACTED_VALUE: R, MAX_QUOTED_VALUE_CHARS } = await import('../skills/chrome-cdp-ex/scripts/lib/redaction.mjs');
+const { scalingRatio } = await import('./linear-timing-helpers.mjs');
 
 // #503: a quoted secret was redacted only up to its first line break or
 // escaped quote, so the rest of the secret stayed visible.
@@ -10,17 +11,6 @@ const PARTS = ['QZ7', 'XJ3', 'JQ9'];
 
 function expectNoSecret(text) {
   for (const part of PARTS) expect(text, text).not.toContain(part);
-}
-
-// Median of several runs, so one slow CI tick does not decide the result.
-function medianMs(fn, runs = 5) {
-  const times = [];
-  for (let i = 0; i < runs; i++) {
-    const start = performance.now();
-    fn();
-    times.push(performance.now() - start);
-  }
-  return times.sort((x, y) => x - y)[runs >> 1];
 }
 
 function timed(fn) {
@@ -127,7 +117,8 @@ describe('#503 a quoted secret is redacted through its real closing quote', () =
 });
 
 describe('#503 quoted-value scanning stays linear', () => {
-  const SIZE = 64 * 1024;
+  // 256 KB keeps every timing well above timer and GC noise (#518).
+  const SIZE = 256 * 1024;
   const cases = {
     'unterminated quotes': () => 'pin: "'.repeat(SIZE / 6),
     'unterminated single quotes': () => "pin: '".repeat(SIZE / 6),
@@ -143,16 +134,13 @@ describe('#503 quoted-value scanning stays linear', () => {
     'tight double-quote chain': () => ' pin:"'.repeat(SIZE / 6),
   };
   for (const [name, make] of Object.entries(cases)) {
-    it(`redacts 64 KB of ${name} in linear time`, () => {
+    it(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, SIZE / 4);
-      // Warm up, then compare 16 KB against 64 KB: linear is ~4x, quadratic ~16x.
-      redactSensitiveString(small);
-      const a = medianMs(() => redactSensitiveString(small));
-      const b = medianMs(() => redactSensitiveString(text));
+      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text);
       // 4x the input: linear is ~4x the time, quadratic ~16x.
-      expect(b).toBeLessThan(500);
-      expect(b).toBeLessThan(Math.max(a * 8, 15));
+      expect(largeMs).toBeLessThan(500);
+      expect(largeMs < 15 || ratio < 8, `ratio ${ratio.toFixed(1)} at ${largeMs.toFixed(1)} ms`).toBe(true);
     });
   }
 
