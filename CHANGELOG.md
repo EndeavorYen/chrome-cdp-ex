@@ -11,6 +11,11 @@
   current Node (`npm_execpath` under `npm run`, else the npm bundled beside Node), with no shell, and a
   failed spawn or non-zero exit names the real cause
   ([#516](https://github.com/EndeavorYen/chrome-cdp-ex/issues/516)).
+* `node scripts/check-release-package.mjs` no longer crashes with
+  `Cannot read properties of undefined (reading 'trim')` when `tar` cannot start (for example none
+  on `PATH`). It now reports `Unable to list release package …: tar could not start: …` with the OS
+  error, and a tar that exits non-zero or is killed with no output reports the exit status or signal
+  ([#519](https://github.com/EndeavorYen/chrome-cdp-ex/issues/519)).
 
 ## [2.19.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.18.0...v2.19.0) (2026-10-02)
 
