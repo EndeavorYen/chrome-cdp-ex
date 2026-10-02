@@ -164,8 +164,11 @@ export function redactUrl(value) {
 const JWT_RE = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g;
 const AUTH_HEADER_VALUE_RE = /\b(Authorization\s*[:=]\s*(?:Bearer|Basic)\s+)([A-Za-z0-9._~+/=-]+)/gi;
 const BEARER_VALUE_RE = /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
-// prefix, optional key quote (`"access_token":`), key (may be %-encoded), separator.
-const ASSIGNMENT_KEY_RE = /(^|[\s{[,;?&#])(["']?)([A-Za-z0-9_.%-]+)\2(\s*[:=]\s*)/g;
+// prefix, optional key quote (`"access_token":`, or `\"access_token\":` in JSON
+// embedded in a JSON string, #511), key (may be %-encoded), separator. The
+// opening quote of a string is a prefix too, so a pair at the very start of a
+// JSON string value (`{"msg":"password: \"…\""}`) is found.
+const ASSIGNMENT_KEY_RE = /(^|[\s{[,;?&#"'])(\\?["']|)([A-Za-z0-9_.%-]+)\2(\s*[:=]\s*)/g;
 // A bare (unquoted) value. Quoted values are read by scanQuotedValue.
 const BARE_VALUE_RE = /[^"'\s,;&}\])]+/y;
 // A quoted secret is read up to its real closing quote (#503): `\"` and line
@@ -196,9 +199,41 @@ function scanQuotedValue(text, start) {
   return { end, closed: false };
 }
 
+// A quoted value inside a JSON (or JS) string, opened by `\"` or `\'` (#511):
+// `{"msg":"password: \"QZ7\""}`. Read it as the inner text it encodes: each
+// `\x` pair is one inner character, an inner backslash (`\\`) escapes the next
+// inner character, and an inner quote (`\"`) closes the value. A raw quote ends
+// the enclosing string, so the value ends there unterminated.
+function scanEscapedQuotedValue(text, start) {
+  const quote = text[start + 1];
+  const limit = Math.min(text.length, start + 2 + MAX_QUOTED_VALUE_CHARS);
+  let innerEscaped = false;
+  let i = start + 2;
+  while (i < limit) {
+    if (text[i] === '\\' && i + 1 < text.length) {
+      const inner = text[i + 1];
+      i += 2;
+      if (innerEscaped) innerEscaped = false;
+      else if (inner === '\\') innerEscaped = true;
+      else if (inner === quote) return { end: i, closed: true };
+      continue;
+    }
+    if (text[i] === quote) return { end: i, closed: false };
+    innerEscaped = false;
+    i++;
+  }
+  const end = Math.min(i, text.length);
+  return { end: end < text.length && isHighSurrogate(text.charCodeAt(end - 1)) ? end + 1 : end, closed: false };
+}
+
 // The secret value starting at `valueStart` as `{ end, quote, closed }`, or null.
+// `quote` is the opening (and closing) sequence: `"`, `'`, `\"`, `\'` or empty.
 function secretValueSpan(text, valueStart) {
   const first = text[valueStart];
+  if (first === '\\' && (text[valueStart + 1] === '"' || text[valueStart + 1] === '\'')) {
+    if (valueStart + 2 >= text.length) return null;
+    return { ...scanEscapedQuotedValue(text, valueStart), quote: `\\${text[valueStart + 1]}` };
+  }
   if (first !== '"' && first !== '\'') {
     BARE_VALUE_RE.lastIndex = valueStart;
     const bare = BARE_VALUE_RE.exec(text);
@@ -456,6 +491,16 @@ function preciseJsonParse(text) {
   ));
 }
 
+// A name/value pair names its secret in a value, not a key (#513):
+// `[{"name":"password","value":"…"}]`, HAR headers and form params,
+// `{"key":"api_key","value":…}`, `{"field":"csrf_token","value":…}`.
+const PAIR_NAME_KEYS = ['name', 'key', 'field'];
+
+function isSecretNameValuePair(node, isSensitive) {
+  if (!Object.hasOwn(node, 'value')) return false;
+  return PAIR_NAME_KEYS.some(nameKey => typeof node[nameKey] === 'string' && isSensitive(node[nameKey]));
+}
+
 export function redactSensitiveValue(value, { isSensitive = key => isSensitiveKey(key), parseJsonStrings = true } = {}) {
   let changed = false;
   const walk = (node, key, depth) => {
@@ -493,7 +538,14 @@ export function redactSensitiveValue(value, { isSensitive = key => isSensitiveKe
     }
     if (Array.isArray(node)) return node.map(item => walk(item, null, depth + 1));
     if (typeof node === 'object') {
-      return Object.fromEntries(Object.entries(node).map(([entryKey, entryValue]) => [entryKey, walk(entryValue, entryKey, depth + 1)]));
+      const secretPair = isSecretNameValuePair(node, isSensitive);
+      return Object.fromEntries(Object.entries(node).map(([entryKey, entryValue]) => {
+        if (secretPair && entryKey === 'value') {
+          changed = true;
+          return [entryKey, REDACTED_VALUE];
+        }
+        return [entryKey, walk(entryValue, entryKey, depth + 1)];
+      }));
     }
     return node;
   };
@@ -505,8 +557,11 @@ export function redactSensitiveValue(value, { isSensitive = key => isSensitiveKe
 // caller can fall back to the string rules. The output stays valid JSON: when a
 // value was hidden it is re-serialized (2-space indent if the input had line
 // breaks); otherwise the input comes back unchanged.
+// A leading UTF-8 byte-order mark is kept but not parsed (#513).
 export function redactJsonText(text, options = {}) {
-  const source = String(text ?? '');
+  const raw = String(text ?? '');
+  const bom = raw.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const source = raw.slice(bom.length);
   if (!looksLikeJsonText(source)) return null;
   let parsed;
   try {
@@ -515,8 +570,8 @@ export function redactJsonText(text, options = {}) {
     return null;
   }
   const { value, changed } = redactSensitiveValue(parsed, options);
-  if (!changed) return { text: source, changed: false };
-  return { text: JSON.stringify(value, null, /\n/.test(source.trim()) ? 2 : undefined), changed: true };
+  if (!changed) return { text: raw, changed: false };
+  return { text: `${bom}${JSON.stringify(value, null, /\n/.test(source.trim()) ? 2 : undefined)}`, changed: true };
 }
 
 // HTML and XML markup: `<input name="csrf_token" value="…">`, Rails
