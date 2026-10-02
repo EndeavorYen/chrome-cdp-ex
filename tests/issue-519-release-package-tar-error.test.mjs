@@ -10,22 +10,28 @@ const checkerPath = resolve(import.meta.dirname, '../scripts/check-release-packa
 const tempRoot = mkdtempSync(join(tmpdir(), 'cdp-519-'));
 afterAll(() => rmSync(tempRoot, { recursive: true, force: true }));
 
-// #519: a tar that could not start returned { error, status: null, stderr: null }, and the
-// checker crashed on `stderr.trim()` instead of naming the real cause.
+// #519: a tar that could not start returned { error, status: null } with no stdout/stderr
+// (undefined on Node 24, null on older Nodes), and the checker crashed on `stderr.trim()`
+// instead of naming the real cause.
 describe('#519 check-release-package reports why tar failed', () => {
-  it('reports a tar that cannot start', () => {
-    const spawn = () => ({ status: null, stdout: null, stderr: null, error: new Error('spawnSync tar ENOENT') });
+  it.each([null, undefined])('reports a tar that cannot start (output %s)', output => {
+    const spawn = () => ({ pid: 0, status: null, stdout: output, stderr: output, error: new Error('spawnSync tar ENOENT') });
     expect(listTarEntries('/x/pkg.tgz', { spawn })).toEqual({
       entries: [],
       error: 'tar could not start: spawnSync tar ENOENT',
     });
   });
 
+  it('does not call a started tar that hit maxBuffer one that could not start', () => {
+    const spawn = () => ({ pid: 4242, status: null, signal: 'SIGTERM', stdout: 'x', stderr: '', error: new Error('spawnSync tar ENOBUFS') });
+    expect(runTar('-tzf', '/x/pkg.tgz', { spawn }).error).toBe('tar failed: spawnSync tar ENOBUFS');
+  });
+
   it('falls back to the exit status or signal when tar printed nothing', () => {
     expect(runTar('-tzf', '/x/pkg.tgz', { spawn: () => ({ status: 2, stdout: null, stderr: null }) }).error)
       .toBe('tar exited with status 2');
-    expect(runTar('-tzf', '/x/pkg.tgz', { spawn: () => ({ status: null, signal: 'SIGKILL', stdout: null, stderr: null }) }).error)
-      .toBe('tar exited with status SIGKILL');
+    expect(runTar('-tzf', '/x/pkg.tgz', { spawn: () => ({ status: null, signal: 'SIGKILL', stdout: undefined, stderr: undefined }) }).error)
+      .toBe('tar was killed by SIGKILL');
     expect(runTar('-tzf', '/x/pkg.tgz', { spawn: () => ({ status: 2, stdout: '', stderr: 'tar: bad archive\n' }) }).error)
       .toBe('tar: bad archive');
   });

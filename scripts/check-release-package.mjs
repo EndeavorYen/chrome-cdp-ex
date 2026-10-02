@@ -128,14 +128,18 @@ function tarArchive(tarballPath) {
 }
 
 // Run tar on the archive and return its stdout or the reason it failed (#519). A tar that
-// cannot start (none on PATH) gives `error` with null status and output, so check that first.
+// cannot start (none on PATH) gives `error` with no status and no output, so check that first;
+// a started tar can also end in `error` (output over maxBuffer), which has a pid.
 export function runTar(flags, tarballPath, { entries = [], spawn = spawnSync } = {}) {
   const archive = tarArchive(tarballPath);
   const result = spawn('tar', [flags, archive.file, ...entries], { cwd: archive.cwd, encoding: 'utf8' });
-  if (result.error) return { stdout: '', error: `tar could not start: ${result.error.message}` };
+  if (result.error) {
+    return { stdout: '', error: `tar ${result.pid ? 'failed' : 'could not start'}: ${result.error.message}` };
+  }
   if (result.status !== 0) {
     const detail = String(result.stderr ?? '').trim();
-    return { stdout: '', error: detail || `tar exited with status ${result.status ?? result.signal}` };
+    const exit = result.status === null ? `was killed by ${result.signal}` : `exited with status ${result.status}`;
+    return { stdout: '', error: detail || `tar ${exit}` };
   }
   return { stdout: String(result.stdout ?? ''), error: null };
 }
