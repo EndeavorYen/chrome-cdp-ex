@@ -12,6 +12,17 @@ function expectNoSecret(text) {
   for (const part of PARTS) expect(text, text).not.toContain(part);
 }
 
+// Median of several runs, so one slow CI tick does not decide the result.
+function medianMs(fn, runs = 5) {
+  const times = [];
+  for (let i = 0; i < runs; i++) {
+    const start = performance.now();
+    fn();
+    times.push(performance.now() - start);
+  }
+  return times.sort((x, y) => x - y)[runs >> 1];
+}
+
 function timed(fn) {
   const start = performance.now();
   const value = fn();
@@ -137,10 +148,11 @@ describe('#503 quoted-value scanning stays linear', () => {
       const small = text.slice(0, SIZE / 4);
       // Warm up, then compare 16 KB against 64 KB: linear is ~4x, quadratic ~16x.
       redactSensitiveString(small);
-      const a = timed(() => redactSensitiveString(small));
-      const b = timed(() => redactSensitiveString(text));
-      expect(b.ms).toBeLessThan(250);
-      expect(b.ms).toBeLessThan(Math.max(20, a.ms * 10));
+      const a = medianMs(() => redactSensitiveString(small));
+      const b = medianMs(() => redactSensitiveString(text));
+      // 4x the input: linear is ~4x the time, quadratic ~16x.
+      expect(b).toBeLessThan(500);
+      expect(b).toBeLessThan(Math.max(a * 8, 15));
     });
   }
 

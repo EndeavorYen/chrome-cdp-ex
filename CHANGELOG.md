@@ -197,6 +197,18 @@
 
 ### Bug fixes
 
+* Redaction reads JSON that is escaped one level deeper, and more netlog body shapes are redacted as JSON.
+  - `redactSensitiveString` finds keys written `\"password\":` (JSON embedded in a JSON string) and values
+    opened by an escaped quote (`{"msg":"login password: \"QZ7\""}`), reading them as the inner text they
+    encode, so neither keeps the secret any more. The opening quote of a string now also starts a key, so a pair
+    at the very start of a JSON string value is found, except after `=` or `(`, so quoted CSS selector text
+    (`[aria-label="Password: required"]`, `:has-text("PIN: confirm")`) still replays unchanged. A secret value
+    that is itself a key (`Session: password: "QZ7"`, `pin: "secret":"QZ7"`) no longer leaves the quoted value
+    that key owns visible ([#511](https://github.com/EndeavorYen/chrome-cdp-ex/issues/511)).
+  - Netlog bodies: a name/value pair whose `name`, `key` or `field` is a secret key
+    (`[{"name":"password","value":"…"}]`, HAR headers and form params) has its `value` hidden, and NDJSON,
+    JSONP (`cb({...});`) and BOM-prefixed JSON are redacted structurally, keeping their line breaks, callback
+    and BOM ([#513](https://github.com/EndeavorYen/chrome-cdp-ex/issues/513)). Redaction stays linear.
 * `fill` no longer echoes a value typed into a field named like a secret. The typed-value check used
   a `\b` regex, and `_` is a word character, so `#api_token`, `[name=client_secret]` and `#accessToken`
   were not sensitive and the value showed in the text receipt, `fill.v1`, the session log and
