@@ -127,13 +127,22 @@ function tarArchive(tarballPath) {
   return { file: `./${basename(absolute)}`, cwd: dirname(absolute) };
 }
 
-export function listTarEntries(tarballPath) {
+// Run tar on the archive and return its stdout or the reason it failed (#519). A tar that
+// cannot start (none on PATH) gives `error` with null status and output, so check that first.
+export function runTar(flags, tarballPath, { entries = [], spawn = spawnSync } = {}) {
   const archive = tarArchive(tarballPath);
-  const listed = spawnSync('tar', ['-tzf', archive.file], { cwd: archive.cwd, encoding: 'utf8' });
-  if (listed.status !== 0) {
-    const detail = listed.stderr.trim() || `tar exited with status ${listed.status}`;
-    return { entries: [], error: detail };
+  const result = spawn('tar', [flags, archive.file, ...entries], { cwd: archive.cwd, encoding: 'utf8' });
+  if (result.error) return { stdout: '', error: `tar could not start: ${result.error.message}` };
+  if (result.status !== 0) {
+    const detail = String(result.stderr ?? '').trim();
+    return { stdout: '', error: detail || `tar exited with status ${result.status ?? result.signal}` };
   }
+  return { stdout: String(result.stdout ?? ''), error: null };
+}
+
+export function listTarEntries(tarballPath, { spawn } = {}) {
+  const listed = runTar('-tzf', tarballPath, { spawn });
+  if (listed.error) return { entries: [], error: listed.error };
   return {
     entries: listed.stdout.split('\n').map(line => line.trim()).filter(line => line && !line.endsWith('/')).sort(),
     error: null,
@@ -141,13 +150,8 @@ export function listTarEntries(tarballPath) {
 }
 
 function extractTarText(tarballPath, entry) {
-  const archive = tarArchive(tarballPath);
-  const extracted = spawnSync('tar', ['-xOzf', archive.file, entry], { cwd: archive.cwd, encoding: 'utf8' });
-  if (extracted.status !== 0) {
-    const detail = extracted.stderr.trim() || `tar exited with status ${extracted.status}`;
-    return { text: '', error: detail };
-  }
-  return { text: extracted.stdout, error: null };
+  const extracted = runTar('-xOzf', tarballPath, { entries: [entry] });
+  return { text: extracted.stdout, error: extracted.error };
 }
 
 function readmeTargets(readme) {
