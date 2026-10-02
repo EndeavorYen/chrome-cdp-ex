@@ -12,6 +12,7 @@ import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const cdpPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const pagePath = resolve(rootDir, 'scripts/smoke-page.html');
+const CDP_LIST_TIMEOUT_MS = 5000;
 
 const CFT_LAYOUTS = [
   'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
@@ -74,6 +75,17 @@ export function assertLiveBoundary(model, url) {
     targetPrefix: page.targetPrefix || null,
     url,
   };
+}
+
+// Why a `cdp list` spawn failed (#522). A timeout comes back as error ETIMEDOUT with status null
+// and empty stderr, and a child that cannot start has no stderr at all, so check `error` first.
+// A child that ran and then hit an error (output over maxBuffer) has a pid.
+export function describeCdpListFailure(result, timeoutMs) {
+  if (result.error?.code === 'ETIMEDOUT') return `cdp list timed out after ${timeoutMs} ms`;
+  if (result.error) return `cdp list ${result.pid ? 'failed' : 'could not run'}: ${result.error.message}`;
+  const detail = String(result.stderr ?? '').trim();
+  if (detail) return detail;
+  return result.status === null ? `cdp list was killed by ${result.signal}` : `cdp list exited ${result.status}`;
 }
 
 function delay(ms) {
@@ -169,9 +181,9 @@ export async function runDisposableLiveBoundary() {
           cwd: rootDir,
           env,
           encoding: 'utf8',
-          timeout: 5000,
+          timeout: CDP_LIST_TIMEOUT_MS,
         });
-        if (listed.status === 0) {
+        if (!listed.error && listed.status === 0) {
           try {
             const observation = assertLiveBoundary(JSON.parse(listed.stdout), url);
             return `Disposable live boundary OK: ${browserName}, ${observation.targetCount} target(s)`;
@@ -179,7 +191,7 @@ export async function runDisposableLiveBoundary() {
             lastError = error.message;
           }
         } else {
-          lastError = listed.stderr.trim() || `cdp list exited ${listed.status}`;
+          lastError = describeCdpListFailure(listed, CDP_LIST_TIMEOUT_MS);
         }
         await delay(150);
       }
