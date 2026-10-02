@@ -18,6 +18,11 @@ describe('#522 validation-live-boundary names why cdp list failed', () => {
     expect(describeCdpListFailure(result, 5000)).toMatch(/^cdp list could not run: .*ENOENT/);
   });
 
+  it('does not call a child that ran past maxBuffer one that could not run', () => {
+    const result = spawnSync(process.execPath, ['-e', 'process.stdout.write("x".repeat(4096))'], { encoding: 'utf8', maxBuffer: 64 });
+    expect(describeCdpListFailure(result, 5000)).toMatch(/^cdp list failed: .*ENOBUFS/);
+  });
+
   it('reports stderr, then the exit code or signal', () => {
     expect(describeCdpListFailure({ status: 1, stderr: 'No browser found\n' }, 5000)).toBe('No browser found');
     expect(describeCdpListFailure({ status: 3, stderr: '' }, 5000)).toBe('cdp list exited 3');

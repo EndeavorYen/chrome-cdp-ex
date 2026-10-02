@@ -79,9 +79,10 @@ export function assertLiveBoundary(model, url) {
 
 // Why a `cdp list` spawn failed (#522). A timeout comes back as error ETIMEDOUT with status null
 // and empty stderr, and a child that cannot start has no stderr at all, so check `error` first.
+// A child that ran and then hit an error (output over maxBuffer) has a pid.
 export function describeCdpListFailure(result, timeoutMs) {
   if (result.error?.code === 'ETIMEDOUT') return `cdp list timed out after ${timeoutMs} ms`;
-  if (result.error) return `cdp list could not run: ${result.error.message}`;
+  if (result.error) return `cdp list ${result.pid ? 'failed' : 'could not run'}: ${result.error.message}`;
   const detail = String(result.stderr ?? '').trim();
   if (detail) return detail;
   return result.status === null ? `cdp list was killed by ${result.signal}` : `cdp list exited ${result.status}`;
