@@ -8,23 +8,13 @@ process.env.NODE_ENV = 'test';
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const { redactSensitiveString, redactSensitiveValue, redactJsonText, REDACTED_VALUE: R } = await import('../skills/chrome-cdp-ex/scripts/lib/redaction.mjs');
 const { redactBodyText } = await import('../skills/chrome-cdp-ex/scripts/lib/netlog.mjs');
+const { scalingRatio } = await import('./linear-timing-helpers.mjs');
 
 const BS = '\\';
 const PARTS = ['QZ7', 'XJ3', 'JQ9'];
 
 function expectNoSecret(text) {
   for (const part of PARTS) expect(text, text).not.toContain(part);
-}
-
-// Median of several runs, so one slow CI tick does not decide the result.
-function medianMs(fn, runs = 5) {
-  const times = [];
-  for (let i = 0; i < runs; i++) {
-    const start = performance.now();
-    fn();
-    times.push(performance.now() - start);
-  }
-  return times.sort((x, y) => x - y)[runs >> 1];
 }
 
 function timed(fn) {
@@ -237,12 +227,10 @@ describe('#511/#513 stay linear', () => {
     it(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, text.length / 4);
-      redactSensitiveString(small);
-      const a = medianMs(() => redactSensitiveString(small));
-      const b = medianMs(() => redactSensitiveString(text));
+      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text, { capMs: 1000 });
       // 4x the input: linear is ~4x the time, quadratic ~16x.
-      expect(b).toBeLessThan(1000);
-      expect(b).toBeLessThan(Math.max(a * 8, 30));
+      expect(largeMs).toBeLessThan(1000);
+      expect(largeMs < 30 || ratio < 8, `ratio ${ratio.toFixed(1)} at ${largeMs.toFixed(1)} ms`).toBe(true);
     });
   }
 
