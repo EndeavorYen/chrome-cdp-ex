@@ -16,6 +16,10 @@
   on `PATH`). It now reports `Unable to list release package …: tar could not start: …` with the OS
   error, and a tar that exits non-zero or is killed with no output reports the exit status or signal
   ([#519](https://github.com/EndeavorYen/chrome-cdp-ex/issues/519)).
+* The disposable live-boundary validation (`scripts/validation-live-boundary.mjs`) now reports a
+  `cdp list` that ran past its 5 s limit as `cdp list timed out after 5000 ms` instead of
+  `cdp list exited null`, and a child that cannot start as `cdp list could not run: …` instead of
+  crashing on `stderr.trim()` ([#522](https://github.com/EndeavorYen/chrome-cdp-ex/issues/522)).
 
 ## [2.19.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.18.0...v2.19.0) (2026-10-02)
 
