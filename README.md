@@ -75,7 +75,7 @@ cd chrome-cdp-ex
 ## What it does
 
 - **See the page cheaply.** `perceive` prints the accessibility tree with `@ref` handles, layout hints and the controls that matter, bounded for tokens. `perceive --since-action` shows only what the last action changed. `text --auto` reads the main content; `shot`, `elshot`, `scanshot` and `responsive-audit` capture pixels, including Electron pages with live WebGL canvases.
-- **Act like a person, report like a test.** `click`, `fill`, `select`, `press`, `scroll`, `drag` and `dismiss-modal` send real input events. `click`, `fill` and `select` on a selector wait briefly for the target to be attached, visible and enabled; a click refuses to land on a covering element; and every action returns a receipt: what changed, any dialog it answered, any download it saved (`click --expect-download`), and the next command.
+- **Act like a person, report like a test.** `click`, `fill`, `press` and `drag` send real CDP input events; `select`, `scroll` and `dismiss-modal` cover the rest. `click` and `fill` on a selector wait briefly for the target to be attached, visible and enabled (`select`: attached and enabled), a click refuses to land on a covering element, and every action returns a receipt: what changed, any dialog it answered, any download it saved (`click --expect-download`), and the next command.
 - **Debug the live app.** `console` and `status` print source-mapped stack frames (`src/Foo.tsx:42:7`), `netlog --id N` shows one request's status, timing, headers and a bounded body, and `status --vitals` reports LCP, CLS, INP and long tasks.
 - **Drive it from any agent.** It is a Claude Code skill, a plain CLI any agent can shell out to, and a stdio MCP server. MCP results carry screenshots as image blocks, versioned JSON as `structuredContent`, and tool hints derived from the command catalog. See [INTEGRATIONS.md](INTEGRATIONS.md).
 
@@ -83,9 +83,9 @@ cd chrome-cdp-ex
 
 This runs against the browser you are logged into, so the defaults lean careful:
 
-- **Background by default.** Commands do not focus tabs or raise the browser over your work. A tab that is truly hidden (a background tab, a minimized window) fails fast with `Kind: hidden-tab` and a rerun hint instead of hanging. `CDP_BACKGROUND=0` restores the old activate-the-tab behaviour.
-- **Redacted by default.** Tokens in URLs (`access_token`, `client_secret`, signed URLs), auth headers, cookies, JWTs, secret-named form fields and nested JSON secrets are replaced with `<redacted>` in receipts, logs, `netlog` and reports. `--unsafe-full` is the explicit opt-out.
-- **Secrets stay out of the transcript.** `fill <target> <sel> --secret NAME` types a value from `CDP_SECRET_NAME` or `CDP_SECRETS_FILE`; output shows `<secret:NAME>`.
+- **Background by default.** Commands do not focus tabs or raise the browser over your work. A screenshot of a truly hidden tab (a background tab, a minimized window) that Chrome will not render fails within about 3 s with `Kind: hidden-tab` and a rerun hint instead of hanging; other commands on a hidden tab can drop input. `CDP_BACKGROUND=0` restores the old activate-the-tab behaviour. See [Background mode](docs/reference.md#background-mode).
+- **Redacted by default.** Tokens in URLs (`access_token`, `client_secret`, signed URLs), auth headers, cookie headers, JWTs, values typed into secret-named fields and nested JSON secrets are replaced with `<redacted>` in action receipts, `netlog`, `report`, `record-actions` and session logs. Not covered yet: `console` text, the `cookies` command, and the page URL printed by `perceive`, `status` and `list`. `--unsafe-full` lifts redaction on `netlog`, `checkpoint` and `components`.
+- **Secrets stay out of the transcript.** `fill <target> <sel> --secret NAME` types the value of `CDP_SECRET_<NAME>` (or `NAME` from `CDP_SECRETS_FILE`); output shows `<secret:NAME>`.
 - **Opt-in guardrails.** `CDP_CONTENT_BOUNDARIES=1` wraps page text in nonce-marked untrusted-content fences, `CDP_ALLOWED_ORIGINS` limits where navigation may go, and `CDP_DENY_ACTIONS` refuses chosen commands (and the commands that do the same job). They are defense-in-depth for agents, not a security boundary.
 
 ## Daily browser CDP
@@ -102,7 +102,7 @@ CDP_PORT=9333 ./bin/chrome-cdp list
 
 ## Platforms
 
-macOS, Linux, Windows and WSL2 (a Windows-side Node bridges the WSL↔Windows gap). CI runs the full test suite on Linux and Windows for every pull request.
+macOS, Linux, Windows and WSL2 (a Windows-side Node bridges the WSL↔Windows gap). CI runs the full test suite on Linux and Windows for every pull request to `main`.
 
 ## License
 
