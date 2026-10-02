@@ -179,6 +179,17 @@ import {
   scrubSecretValues,
 } from './lib/redaction.mjs';
 import {
+  buildNetlogListModel,
+  buildNetlogRequestModel,
+  createNetlogRequestStore,
+  formatNetlogListText,
+  formatNetlogRequestText,
+  parseNetlogArgs,
+  summarizeResponseBody,
+  unavailableBody,
+  writeNetlogBodyFile,
+} from './lib/netlog.mjs';
+import {
   COMMAND_SURFACE,
   SURVIVOR_COMMANDS,
   isCommandSurface,
@@ -1402,6 +1413,7 @@ function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRe
   function appendNetworkResponse(requestId, req, { status = null, type = req.type, size = 0, failed = false, errorText = null } = {}) {
     pendingReqs.delete(requestId);
     netReqBuf.push({
+      requestId,
       method: req.method,
       url: req.url,
       status,
@@ -1418,6 +1430,7 @@ function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRe
       const earlyStatus = networkStatusByRequest.announce(params.requestId);
       if (!shouldTrackActionNetworkRequest(params.type)) return;
       const req = {
+        requestId: params.requestId,
         method: params.request.method,
         url: params.request.url.substring(0, 200),
         type: params.type,
@@ -19103,29 +19116,62 @@ function filterNetlogEntries(entries = [], { lastNavigationTs = null, lookbackMs
   return list.filter(entry => Number(entry?.ts) >= since);
 }
 
-function parseNetlogArgs(args = []) {
-  const opts = { clear: false, unsafeFull: false };
-  for (const arg of args) {
-    if (arg === '--clear') opts.clear = true;
-    else if (arg === '--unsafe-full') opts.unsafeFull = true;
-    else throw new Error(`netlog: unknown argument ${arg}. Use --clear or --unsafe-full.`);
+// URLs are redacted by default (#455); --unsafe-full prints them verbatim.
+// Each request carries the short id from `requestStore` that `--id N` reads (#467).
+function netlogStr(netReqBuf, flag, options = {}) {
+  if (flag === '--clear') {
+    netReqBuf.clear();
+    options.requestStore?.clear();
+    return 'Network log cleared';
   }
-  return opts;
+  const model = buildNetlogListModel(filterNetlogEntries(netReqBuf.all(), options), {
+    idFor: requestId => options.requestStore?.idFor(requestId) ?? null,
+    detailFor: id => options.requestStore?.get(id) ?? null,
+    filters: options.filters,
+    unsafeFull: options.unsafeFull === true,
+    targetId: options.targetId,
+  });
+  return options.format === 'json' ? formatJson(model) : formatNetlogListText(model);
 }
 
-// URLs are redacted by default (#455); --unsafe-full prints them verbatim.
-function netlogStr(netReqBuf, flag, options = {}) {
-  if (flag === '--clear') { netReqBuf.clear(); return 'Network log cleared'; }
-  const unsafeFull = options.unsafeFull === true;
-  const entries = filterNetlogEntries(netReqBuf.all(), options);
-  if (entries.length === 0) return 'No network requests captured (tracking action-relevant requests; static assets are skipped)';
-  const lines = [`Network requests (${entries.length})${unsafeFull ? ' [unsafe-full: URLs not redacted]' : ''}:`];
-  for (const e of entries) {
-    const ago = Math.round((Date.now() - e.ts) / 1000);
-    const size = e.size > 1024 ? `${(e.size / 1024).toFixed(1)}KB` : `${e.size}B`;
-    lines.push(`  ${e.method} ${unsafeFull ? e.url : redactUrl(e.url)} → ${e.status} (${e.duration}ms, ${size}) ${ago}s ago`);
+// `netlog <target> --id N` (#467): stored request detail plus the response body,
+// read lazily. The body preview is bounded; `--out` writes the whole body (0600).
+async function netlogRequestStr(cdp, sid, requestStore, opts, { targetId = '', writeBodyFile = writeNetlogBodyFile } = {}) {
+  const detail = requestStore?.get(opts.id);
+  if (!detail) {
+    throw new Error(`netlog: no request #${opts.id} in this tab's log. Request ids come from \`cdp netlog <target>\`; older requests drop out of the bounded log.`);
   }
-  return lines.join('\n');
+  let body;
+  let file = null;
+  if (detail.state === 'failed') {
+    body = unavailableBody(`the request failed (${detail.errorText}), so there is no response body`);
+  } else {
+    try {
+      const result = await cdpDomains(cdp).Network.getResponseBody({ requestId: detail.requestId }, sid);
+      ({ model: body, file } = summarizeResponseBody(result, { mimeType: detail.mimeType, unsafeFull: opts.unsafeFull }));
+    } catch (error) {
+      const reason = String(error?.message || error || 'unknown error');
+      body = unavailableBody(detail.state === 'pending' ? `still loading: ${reason}` : `Chrome no longer holds it: ${reason}`);
+    }
+  }
+  let savedTo = null;
+  if (opts.out) {
+    if (!file) throw new Error(`netlog: --out has no body to save for request #${opts.id}: ${body.error}`);
+    writeBodyFile(opts.out, file.data, { overwrite: opts.overwrite, requestId: opts.id });
+    savedTo = { path: opts.out, bytes: file.data.length, redacted: file.redacted };
+  }
+  const model = buildNetlogRequestModel(detail, { body, unsafeFull: opts.unsafeFull, targetId, savedTo });
+  return opts.format === 'json' ? formatJson(model) : formatNetlogRequestText(model);
+}
+
+// The daemon may run in another working directory, so a relative `--out` is
+// resolved where the CLI was invoked.
+function absolutizeNetlogOutArg(args = [], cwd = process.cwd()) {
+  const next = [...args];
+  for (let i = 0; i < next.length - 1; i++) {
+    if (next[i] === '--out' && next[i + 1] && !String(next[i + 1]).startsWith('--')) next[i + 1] = resolve(cwd, String(next[i + 1]));
+  }
+  return next;
 }
 
 function parseHttpStatus(value, label = '--status') {
@@ -19642,6 +19688,7 @@ function appendPendingActionNetworkEntries(pendingReqs, netReqBuf, sinceTs, { no
     if (!req || req.actionEvidenceReported || req.ts < sinceTs) continue;
     req.actionEvidenceReported = true;
     netReqBuf.push({
+      requestId: req.requestId,
       method: req.method,
       url: req.url,
       status: 'pending',
@@ -25268,6 +25315,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const contentBoundaryNonce = createContentBoundaryNonce();
   const pendingReqs = session.pendingRequests; // requestId → {method, url, ts}
   const networkStatusByRequest = createEarlyResponseStatusStore(); // ExtraInfo statuses that arrived before their request
+  const netRequestStore = createNetlogRequestStore({ shouldTrack: shouldTrackActionNetworkRequest });
   let lastReadSeq = { console: 0, exception: 0 };
 
   // --- Ref system & perceive diff state ---
@@ -25311,6 +25359,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // --- Network request/response tracking ---
+  // Per-request detail behind `netlog --id N` (#467), fed by its own listeners.
+  for (const [event, handler] of Object.entries(netRequestStore.handlers)) cdp.onEvent(event, handler);
   const networkObserver = createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRequest });
   for (const [event, handler] of Object.entries(networkObserver)) cdp.onEvent(event, handler);
 
@@ -25936,9 +25986,16 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     netlog: async args => {
       const opts = parseNetlogArgs(args);
+      if (opts.id != null) {
+        return commandResult(await netlogRequestStr(cdp, sessionId, netRequestStore, opts, { targetId: session.targetId }), null);
+      }
       return commandResult(netlogStr(netReqBuf, opts.clear ? '--clear' : null, {
         lastNavigationTs: navBuf.all().at(-1)?.ts ?? null,
         unsafeFull: opts.unsafeFull,
+        format: opts.format,
+        filters: opts,
+        requestStore: netRequestStore,
+        targetId: session.targetId,
       }), null);
     },
     press: async args => {
@@ -28910,6 +28967,28 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         : 'The named cookie is not present. List cookies instead of claiming a delete.',
     };
   }
+  if ((cmd === 'netlog' || lower.includes('netlog:')) && lower.includes('no request #')) {
+    return {
+      kind: 'usage',
+      strategy: 'list-requests',
+      run: `cdp netlog ${target}`,
+      reason: 'That request id is not in this tab\'s network log. List the captured requests and use one of their #ids.',
+    };
+  }
+  if ((cmd === 'netlog' || lower.includes('netlog:')) && lower.includes('--out') && /request #\d+/.test(lower)) {
+    const requestId = lower.match(/request #(\d+)/)[1];
+    const noBody = lower.includes('has no body to save');
+    return {
+      kind: 'usage',
+      strategy: noBody ? 'inspect-request-without-out' : 'choose-out-path',
+      run: noBody
+        ? `cdp netlog ${target} --id ${requestId}`
+        : `cdp netlog ${target} --id ${requestId} --out <new absolute file path>`,
+      reason: noBody
+        ? 'This request has no response body to save (it failed, is still loading, or Chrome evicted it). Inspect it without --out.'
+        : '--out needs an absolute path in an existing directory that is not a symlink and does not exist yet (or pass --overwrite).',
+    };
+  }
   if (
     lower.includes('unknown option')
     || lower.includes('unknown argument')
@@ -30385,6 +30464,8 @@ async function main(options = {}) {
     cmdArgs[0] = cmdArgs.join(' '); // join in case of spaces in cookie string
   } else if (cmd === 'cookiedel') {
     if (!cmdArgs[0]) exitCliError('cookie name required', { cmd, targetPrefix, format: cliErrorFormat });
+  } else if (cmd === 'netlog') {
+    cmdArgs = absolutizeNetlogOutArg(cmdArgs);
   } else if (cmd === 'upload') {
     if (!cmdArgs[0] || !cmdArgs[1]) exitCliError('selector and file path(s) required', { cmd, targetPrefix, format: cliErrorFormat });
     // args[0] = selector, args[1] = comma-separated file paths (no join needed)
@@ -30614,7 +30695,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   checkpointCookieToSetCookieParams, isRestorableCheckpointCookie, cookiesForRestore,
   restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, parseNetlogArgs, filterNetlogEntries, netStr, checkpointSessionEvent, redactSensitiveArtifactValue,
+  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, netlogRequestStr, absolutizeNetlogOutArg, parseNetlogArgs, filterNetlogEntries, netStr, checkpointSessionEvent, redactSensitiveArtifactValue,
   javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
   shouldSkipActionPageEvaluate, formatDialogBlockedObserveText, observeAfterActionGuardingDialogs,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,

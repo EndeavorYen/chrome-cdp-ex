@@ -104,12 +104,22 @@ function decodeKey(rawKey) {
   }
 }
 
+// `code` is a generic word (`?code=US`), so it counts as a secret only in the
+// shape of an OAuth authorization response: a query that also carries `state=`.
+function isOAuthCodeQuery(parts) {
+  return parts.some(part => part.includes('=') && decodeKey(part.slice(0, part.indexOf('='))).toLowerCase() === 'state');
+}
+
 function redactQueryString(query) {
-  return String(query).split('&').map((part) => {
+  const parts = String(query).split('&');
+  const oauth = isOAuthCodeQuery(parts);
+  return parts.map((part) => {
     const eq = part.indexOf('=');
     if (eq <= 0) return part;
     const rawKey = part.slice(0, eq);
-    return isSensitiveKey(decodeKey(rawKey), { urlQuery: true }) ? `${rawKey}=${REDACTED_VALUE}` : part;
+    const key = decodeKey(rawKey);
+    const secret = isSensitiveKey(key, { urlQuery: true }) || (oauth && key.toLowerCase() === 'code');
+    return secret ? `${rawKey}=${REDACTED_VALUE}` : part;
   }).join('&');
 }
 
@@ -146,6 +156,12 @@ export function redactUrl(value) {
   return `${path}${query != null ? `?${redactQueryString(query)}` : ''}${fragment != null ? `#${fragment}` : ''}`;
 }
 
+// A JSON Web Token (`header.payload.signature`, both JSON parts base64url `{"…`)
+// is a bearer secret wherever it appears, whatever its key.
+// A match may start only where a base64url run starts: with `\b`, every `eyJ`
+// inside one long `[A-Za-z0-9_-]` run (`eyJ-eyJ-…`) was a new start that scanned
+// to the end of the run, which is quadratic on page-controlled text (#467 review).
+const JWT_RE = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g;
 const AUTH_HEADER_VALUE_RE = /\b(Authorization\s*[:=]\s*(?:Bearer|Basic)\s+)([A-Za-z0-9._~+/=-]+)/gi;
 const BEARER_VALUE_RE = /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
 // prefix, optional key quote (`"access_token":`), key (may be %-encoded), separator.
@@ -258,10 +274,15 @@ function redactSecretAssignments(text) {
 // it as a password was cut away (it may also be a port; the tail is hidden anyway).
 const URL_USERINFO_CUT_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)$/i;
 
+export function redactJwts(value) {
+  return String(value ?? '').replace(JWT_RE, REDACTED_VALUE);
+}
+
 // Pass `{ truncated: true }` when `value` is a cut-off prefix of a longer text.
 export function redactSensitiveString(value, { truncated = false } = {}) {
   const text = String(value ?? '');
   const redacted = text
+    .replace(JWT_RE, REDACTED_VALUE)
     .replace(AUTH_HEADER_VALUE_RE, `$1${REDACTED_VALUE}`)
     .replace(BEARER_VALUE_RE, `$1${REDACTED_VALUE}`)
     .replace(URL_USERINFO_RE, `$1${REDACTED_VALUE}$3`);
@@ -338,4 +359,125 @@ function scrubTruncatedPreviews(text, secret) {
     }
   }
   return from === 0 ? text : `${out}${text.slice(from)}`;
+}
+
+// Structural redaction for parsed JSON (#467): a sensitive key hides its whole
+// value (object, array or scalar), string leaves go through
+// redactSensitiveString, and a string that itself holds JSON is parsed and
+// redacted the same way (best effort). `changed` reports whether anything was
+// hidden, so a caller can keep the original bytes when nothing was.
+const MAX_STRUCTURAL_DEPTH = 64;
+
+function looksLikeJsonText(text) {
+  const trimmed = text.trim();
+  return (trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'));
+}
+
+// Keeps numbers that a double cannot hold (64-bit ids) byte-exact.
+function preciseJsonParse(text) {
+  if (typeof JSON.rawJSON !== 'function') return JSON.parse(text);
+  return JSON.parse(text, (key, value, context) => (
+    typeof value === 'number' && typeof context?.source === 'string' && String(value) !== context.source
+      ? JSON.rawJSON(context.source)
+      : value
+  ));
+}
+
+export function redactSensitiveValue(value, { isSensitive = key => isSensitiveKey(key), parseJsonStrings = true } = {}) {
+  let changed = false;
+  const walk = (node, key, depth) => {
+    if (key != null && isSensitive(key)) {
+      changed = true;
+      return REDACTED_VALUE;
+    }
+    if (node == null || typeof node === 'number' || typeof node === 'boolean') return node;
+    if (typeof node === 'string') {
+      if (parseJsonStrings && depth < MAX_STRUCTURAL_DEPTH && looksLikeJsonText(node)) {
+        try {
+          const parsed = preciseJsonParse(node);
+          const before = changed;
+          changed = false;
+          const redacted = walk(parsed, null, depth + 1);
+          const inner = changed;
+          changed = before || inner;
+          return inner ? JSON.stringify(redacted) : node;
+        } catch {
+          // Not JSON after all; fall through to the string rules.
+        }
+      }
+      const out = redactSensitiveString(node);
+      if (out !== node) changed = true;
+      return out;
+    }
+    if (typeof JSON.isRawJSON === 'function' && JSON.isRawJSON(node)) return node;
+    if (depth >= MAX_STRUCTURAL_DEPTH) {
+      // Too deep to walk safely: redact its text form instead.
+      const text = JSON.stringify(node);
+      const out = redactSensitiveString(text);
+      if (out === text) return node;
+      changed = true;
+      return out;
+    }
+    if (Array.isArray(node)) return node.map(item => walk(item, null, depth + 1));
+    if (typeof node === 'object') {
+      return Object.fromEntries(Object.entries(node).map(([entryKey, entryValue]) => [entryKey, walk(entryValue, entryKey, depth + 1)]));
+    }
+    return node;
+  };
+  const result = walk(value, null, 0);
+  return { value: result, changed };
+}
+
+// Redacts a JSON document as JSON. Returns null when `text` is not JSON, so the
+// caller can fall back to the string rules. The output stays valid JSON: when a
+// value was hidden it is re-serialized (2-space indent if the input had line
+// breaks); otherwise the input comes back unchanged.
+export function redactJsonText(text, options = {}) {
+  const source = String(text ?? '');
+  if (!looksLikeJsonText(source)) return null;
+  let parsed;
+  try {
+    parsed = preciseJsonParse(source);
+  } catch {
+    return null;
+  }
+  const { value, changed } = redactSensitiveValue(parsed, options);
+  if (!changed) return { text: source, changed: false };
+  return { text: JSON.stringify(value, null, /\n/.test(source.trim()) ? 2 : undefined), changed: true };
+}
+
+// HTML and XML markup: `<input name="csrf_token" value="…">`, Rails
+// `authenticity_token`, `<meta name="csrf-token" content="…">`, a password
+// input's value, and `<token>…</token>` elements. Best effort, regex only.
+// Linear on hostile text: a tag stops at the next `<`, and an attribute name can
+// start only where a name run starts.
+const MARKUP_TAG_RE = /<(input|meta)\b[^<>]*>/gi;
+const MARKUP_ATTR_RE = /(?<![\w:-])([\w:-]+)\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+)/g;
+const XML_ELEMENT_RE = /<([A-Za-z_][\w.:-]*)(\s[^<>]*)?>([^<]*)<\/\1\s*>/g;
+
+function attrValue(raw) {
+  return raw.startsWith('"') || raw.startsWith("'") ? raw.slice(1, -1) : raw;
+}
+
+export function redactMarkupSecrets(value) {
+  const text = String(value ?? '');
+  if (!text.includes('<')) return text;
+  return text
+    .replace(MARKUP_TAG_RE, (tag, tagName) => {
+      const attrs = {};
+      for (const match of tag.matchAll(MARKUP_ATTR_RE)) attrs[match[1].toLowerCase()] = attrValue(match[2]);
+      const name = attrs.name || attrs.property || attrs.id || '';
+      const isInput = tagName.toLowerCase() === 'input';
+      const secret = isSensitiveKey(name) || (isInput && String(attrs.type || '').toLowerCase() === 'password');
+      if (!secret) return tag;
+      const valueAttr = isInput ? 'value' : 'content';
+      return tag.replace(MARKUP_ATTR_RE, (attr, attrName, raw) => {
+        if (attrName.toLowerCase() !== valueAttr) return attr;
+        const quote = raw.startsWith('"') || raw.startsWith("'") ? raw[0] : '"';
+        return `${attrName}=${quote}${REDACTED_VALUE}${quote}`;
+      });
+    })
+    .replace(XML_ELEMENT_RE, (element, name, attrs = '', content) => (
+      content.trim() && isSensitiveKey(name.split(':').pop()) ? `<${name}${attrs}>${REDACTED_VALUE}</${name}>` : element
+    ));
 }

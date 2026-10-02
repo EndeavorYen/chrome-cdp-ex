@@ -249,7 +249,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |
 | `closetab` | `closetab <target>` | `mutation / mutation` |
-| `netlog` | `netlog <target> [--clear] [--unsafe-full]` | `conditional-mutation / conditional` |
+| `netlog` | `netlog <target> [--id N [--out file [--overwrite]]] [--type xhr,fetch] [--url text] [--status 4xx\|5xx\|failed] [--clear] [--unsafe-full] [--format json]` | `conditional-mutation / conditional` |
 | `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
 | `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
 | `record` | `record <target> [ms]` | `conditional-mutation / conditional` |
@@ -647,7 +647,7 @@ scripts/cdp.mjs back    <target>                       # navigate back in browse
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history
 scripts/cdp.mjs reload  <target>                       # reload current page
 scripts/cdp.mjs closetab <target> [--force]            # close a browser tab (refuses the last open tab unless --force)
-scripts/cdp.mjs netlog  <target> [--clear] [--unsafe-full]  # network request log (XHR/Fetch with status + timing; URL secrets redacted)
+scripts/cdp.mjs netlog  <target> [--id N] [--type|--url|--status] [--clear] [--unsafe-full]  # network request log with #ids; --id N: one request in detail (secrets redacted)
 scripts/cdp.mjs mock    <target> [add|clear]           # mock matching network requests in the live tab
 scripts/cdp.mjs clock   <target> [freeze|offset|reset] # override Date/time in the live tab
 scripts/cdp.mjs throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  # emulate network conditions
@@ -899,12 +899,24 @@ Defense-in-depth for agents, not a security boundary. Each variable is off unles
 ### Network request log
 
 ```bash
-scripts/cdp.mjs netlog <target>               # show captured XHR/Fetch/Document requests
-scripts/cdp.mjs netlog <target> --clear        # clear the log
-scripts/cdp.mjs netlog <target> --unsafe-full  # print URLs verbatim (secrets included)
+scripts/cdp.mjs netlog <target>                         # captured XHR/Fetch/Document requests, each with an #id
+scripts/cdp.mjs netlog <target> --status 4xx,5xx,failed  # only failing requests
+scripts/cdp.mjs netlog <target> --type fetch --url /api/ # filter by resource type and URL text
+scripts/cdp.mjs netlog <target> --id 12                 # one request: status, timing, headers, body preview
+scripts/cdp.mjs netlog <target> --id 12 --out body.json # also save the whole response body (new file, mode 0600)
+scripts/cdp.mjs netlog <target> --id 12 --out body.json --overwrite  # replace an existing file
+scripts/cdp.mjs netlog <target> --id 12 --format json   # chrome-cdp-ex.netlog-request.v1
+scripts/cdp.mjs netlog <target> --clear                 # clear the log
+scripts/cdp.mjs netlog <target> --unsafe-full           # print URLs, headers and bodies verbatim (secrets included)
 ```
 
-Tracks XHR, Fetch, and Document requests in the background with status codes, timing, and response sizes. Use for debugging API calls. Secret URL values (query, fragment, path `;jsessionid=`, userinfo password) are printed as `<redacted>` by default; keys such as `access_token`, `client_secret`, `session_id`, `accessToken`, `api_key` and `X-Amz-Signature` are matched token by token, so `pinned` or `cardinality` stay readable. `--unsafe-full` prints raw URLs, and MCP `run_command` asks for confirmation first.
+Tracks XHR, Fetch, Document and other action-relevant requests in the background (images, scripts, stylesheets, fonts, media and WebSockets are skipped) with status codes, timing, and response sizes. Use for debugging API calls. Each request has a short id (`#12`) that stays the same for the life of the tab daemon; a request seen `pending` by an action receipt and later finished is listed once. The list shows the last 100 tracked requests, cut to the latest navigation; detail is kept for the last 150 tracked requests.
+
+`--id N` prints method, URL, status and status text, resource type, MIME type, protocol, timing (total plus DNS, connect, TLS, send and wait/TTFB when Chrome reports them), `errorText` (with canceled, blocked and CORS reasons), initiator, redirects, request and response headers (up to 64 headers, 1024 characters per value; the raw `Cookie`/`Set-Cookie` headers come from Chrome's ExtraInfo events), and the response body. The body is read lazily with `Network.getResponseBody`: a text body is shown up to 4 KB, a binary body is summarised (size and MIME type), and a body Chrome no longer holds (evicted, or a page navigated away) or a request still loading is reported instead of failing. `--out <file>` writes the whole body; a text body is written redacted unless `--unsafe-full`, a binary body is written as bytes. The file is created with mode 0600 and never through a symlink; an existing file is refused unless `--overwrite`, which truncates it in place and resets it to 0600. A relative path resolves where the CLI runs for a top-level `cdp netlog`; inside `batch` or `flow` the command runs in the tab daemon, so `--out` there must be absolute. `--unsafe-full` lifts redaction, not the size bound: the printed body stays at 4 KB, and only `--out` holds the whole body. A request that failed at the network level, is still loading, or whose body Chrome evicted has no body, so `--out` fails for it. These `--out` failures and an unknown id are usage errors with a runnable next step (`cdp netlog <target> --id N`, or `cdp netlog <target>`).
+
+Filters combine (AND across flags, OR within a comma list): `--type xhr,fetch,document` (Chrome resource types, case-insensitive), `--url <text>` (case-insensitive substring of the URL as printed, so a redacted value cannot be probed), `--status 4xx|5xx|failed|pending|<code>`. `--format json` emits `chrome-cdp-ex.netlog.v1` for the list and `chrome-cdp-ex.netlog-request.v1` for one request.
+
+Secret URL values (query, fragment, path `;jsessionid=`, userinfo password) are printed as `<redacted>` by default; keys such as `access_token`, `client_secret`, `session_id`, `accessToken`, `api_key` and `X-Amz-Signature` are matched token by token, so `pinned` or `cardinality` stay readable. The same classifier redacts secret-named headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Auth-Token`, `X-CSRF-Token`, `X-Api-Key`, `X-Hub-Signature-256`, `X-Firebase-AppCheck`, …) while `Access-Control-*` headers stay readable. Inside other header values it redacts `key=value` and `Bearer …` secrets and any JWT (`eyJ….eyJ….…`); URL-valued headers (`Location`, `Referer`, `Link` targets) use the URL rules, and policy headers (`Permissions-Policy`, `Content-Security-Policy`, …) keep their directives and only lose secrets in URLs. In a URL, `code=` counts as a secret only next to `state=` (an OAuth authorization response); a plain `?code=US` stays readable. A JSON body is parsed and redacted structurally: a secret-named key hides its whole value (object, array or scalar), JSON held in a string is parsed the same way, JSON behind an anti-hijacking prefix (`)]}'`, `while(1);`, `for(;;);`) is redacted as JSON and keeps the prefix, and the result still parses (numbers too large for a double keep their digits). Other text bodies get markup rules (`<input name="csrf_token" value>`, Rails `authenticity_token`, `<meta name="csrf-token" content>`, password inputs, `<token>…</token>` elements) and then the `key=value` rules. Body redaction is best effort: multipart bodies, JavaScript source and unusual formats can still carry secrets. `--unsafe-full` prints raw URLs, headers and bodies; MCP `run_command` asks for confirmation before `--unsafe-full`, `--out` or `--clear`.
 
 ### Network mocking
 
@@ -1129,7 +1141,7 @@ scripts/cdp.mjs text <target> "main"              # scope to main content area
 
 ### Debugging API calls
 1. `perceive <target>` — check page state
-2. `netlog <target>` — see recent XHR/Fetch requests with status codes
+2. `netlog <target> --status 4xx,5xx,failed` — see failing XHR/Fetch requests, then `netlog <target> --id N` for status text, headers and the error body
 3. `mock <target> add "**/api/*" --status 503 --body '{"ok":false}'` — reproduce API failure or alternate UI states when relevant
 4. `clock <target> freeze --at 2020-01-02T03:04:05.000Z` or `clock <target> offset --ms 3600000` — reproduce time-sensitive UI when relevant
 5. `throttle <target> slow-3g` or `throttle <target> offline` — reproduce slow-network or offline behavior when relevant
