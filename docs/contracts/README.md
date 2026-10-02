@@ -1,8 +1,8 @@
 # Public contract fixtures
 
 This directory contains versioned, machine-readable compatibility baselines for
-chrome-cdp-ex. They protect public behavior for the published v2.19 CLI and MCP
-runtime. Published v2.18, v2.17, v2.16 and v2.15 fixtures remain immutable historical contracts.
+chrome-cdp-ex. They protect public behavior for the published v2.19.1 CLI and MCP
+runtime. Published v2.19.0, v2.18, v2.17, v2.16 and v2.15 fixtures remain immutable historical contracts.
 
 ## Ownership
 

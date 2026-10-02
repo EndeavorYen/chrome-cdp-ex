@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [2.19.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.19.0...v2.19.1) (2026-10-02)
+
+v2.19.1 is a maintenance release for the repository's own tooling. The command runtime, CLI and MCP
+surfaces are unchanged from v2.19.0. Three maintainer scripts that start child processes
+(`check-public-contracts`, `check-release-package`, `validation-live-boundary`) now report why a child
+could not start instead of crashing on `stderr.trim()`, `validation-live-boundary` reports a timed-out
+`cdp list` as a timeout, and `check-public-contracts --write` works on Windows without `--tarball`. The linear-time redaction tests no longer flake on
+busy CI runners.
+
 ### Bug Fixes
 
 * On Windows, `node scripts/check-public-contracts.mjs --version X --write` no longer crashes with
