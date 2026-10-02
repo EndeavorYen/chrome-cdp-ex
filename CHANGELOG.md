@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+* On Windows, `node scripts/check-public-contracts.mjs --version X --write` no longer crashes with
+  `Cannot read properties of undefined (reading 'trim')` when no `--tarball` is given. It spawned
+  `npm` without a shell; on Windows that is `npm.cmd`, which fails with ENOENT, and Node refuses to
+  spawn a `.cmd` file without a shell (CVE-2024-27980). It now runs npm's own `npm-cli.js` with the
+  current Node (`npm_execpath` under `npm run`, else the npm bundled beside Node), with no shell, and a
+  failed spawn or non-zero exit names the real cause
+  ([#516](https://github.com/EndeavorYen/chrome-cdp-ex/issues/516)).
+
 ## [2.19.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.18.0...v2.19.0) (2026-10-02)
 
 v2.19.0 makes the live session safer and more honest by default, and adds the capabilities agents

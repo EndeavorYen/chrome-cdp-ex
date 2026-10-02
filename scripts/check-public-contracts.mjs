@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, relative, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
@@ -396,6 +396,48 @@ function packageInventory(version, entries) {
   });
 }
 
+// How to run npm without a shell (#516). On Windows `npm` is `npm.cmd`: spawning `npm` with
+// shell:false fails with ENOENT, and Node refuses to spawn a .cmd file without a shell
+// (CVE-2024-27980). npm's own entry point is a plain JS file, so run it with this Node:
+// `npm_execpath` when invoked through `npm run`, else the npm bundled beside the Node binary.
+// Only when neither exists does it fall back to a bare `npm` (fine on POSIX). Only a file named
+// npm-cli.js counts: under `pnpm run` / `yarn run` npm_execpath is their CLI, whose `pack --json`
+// output is not npm's.
+export function resolveNpmInvocation({
+  env = process.env,
+  execPath = process.execPath,
+  exists = existsSync,
+} = {}) {
+  const candidates = [
+    env.npm_execpath,
+    join(dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dirname(execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && /(^|[\\/])npm-cli\.c?js$/i.test(candidate) && exists(candidate)) {
+      return { command: execPath, prefix: [candidate] };
+    }
+  }
+  return { command: 'npm', prefix: [] };
+}
+
+export function runNpm(args, { cwd, invocation = resolveNpmInvocation(), spawn = spawnSync } = {}) {
+  const result = spawn(invocation.command, [...invocation.prefix, ...args], {
+    cwd,
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+  });
+  if (result.error) {
+    throw new Error(`npm ${args[0]} could not start (${invocation.command}): ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || '').trim();
+    throw new Error(`npm ${args[0]} failed (exit ${result.status ?? result.signal})${detail ? `: ${detail}` : ''}`);
+  }
+  return String(result.stdout || '');
+}
+
 function writePackageInventory(rootDir, version, providedTarball = null) {
   const path = packageFixturePath(rootDir, version);
   mkdirSync(dirname(path), { recursive: true });
@@ -410,13 +452,8 @@ function writePackageInventory(rootDir, version, providedTarball = null) {
   try {
     if (!tarballPath) {
       temporaryRoot = mkdtempSync(join(tmpdir(), 'chrome-cdp-contract-pack-'));
-      const packed = spawnSync('npm', ['pack', '--json', '--pack-destination', temporaryRoot], {
-        cwd: rootDir,
-        encoding: 'utf8',
-        shell: false,
-      });
-      if (packed.status !== 0) throw new Error(packed.stderr.trim() || 'npm pack failed');
-      const result = JSON.parse(packed.stdout)[0];
+      const packed = runNpm(['pack', '--json', '--pack-destination', temporaryRoot], { cwd: rootDir });
+      const result = JSON.parse(packed)[0];
       tarballPath = join(temporaryRoot, result.filename);
     }
     const listed = listTarEntries(tarballPath);
