@@ -117,7 +117,7 @@ describe('#503 a quoted secret is redacted through its real closing quote', () =
 });
 
 describe('#503 quoted-value scanning stays linear', () => {
-  // 256 KB keeps every timing well above timer and GC noise (#518).
+  // 256 KB makes the 4x ratio meaningful on slow hosts; on fast ones the floor decides (#518).
   const SIZE = 256 * 1024;
   const cases = {
     'unterminated quotes': () => 'pin: "'.repeat(SIZE / 6),
@@ -137,7 +137,7 @@ describe('#503 quoted-value scanning stays linear', () => {
     it(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, SIZE / 4);
-      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text);
+      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text, { capMs: 500 });
       // 4x the input: linear is ~4x the time, quadratic ~16x.
       expect(largeMs).toBeLessThan(500);
       expect(largeMs < 15 || ratio < 8, `ratio ${ratio.toFixed(1)} at ${largeMs.toFixed(1)} ms`).toBe(true);

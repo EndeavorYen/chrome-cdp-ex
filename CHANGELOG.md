@@ -11,12 +11,6 @@
   current Node (`npm_execpath` under `npm run`, else the npm bundled beside Node), with no shell, and a
   failed spawn or non-zero exit names the real cause
   ([#516](https://github.com/EndeavorYen/chrome-cdp-ex/issues/516)).
-* The linear-time redaction tests (#503, #511) no longer fail on busy CI runners while the code is
-  linear. They compared medians of back-to-back batches, and load inflates a long run more than a
-  short one (it spans more scheduler time slices), so the 4x-input ratio drifted past 8x. They now
-  share one helper that interleaves small and large runs and compares the fastest of each, and
-  #503 measures 64 KB against 256 KB instead of 16 KB against 64 KB
-  ([#518](https://github.com/EndeavorYen/chrome-cdp-ex/issues/518)).
 
 ## [2.19.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.18.0...v2.19.0) (2026-10-02)
 

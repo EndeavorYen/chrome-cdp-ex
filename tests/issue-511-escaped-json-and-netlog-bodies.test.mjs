@@ -227,7 +227,7 @@ describe('#511/#513 stay linear', () => {
     it(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, text.length / 4);
-      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text);
+      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text, { capMs: 1000 });
       // 4x the input: linear is ~4x the time, quadratic ~16x.
       expect(largeMs).toBeLessThan(1000);
       expect(largeMs < 30 || ratio < 8, `ratio ${ratio.toFixed(1)} at ${largeMs.toFixed(1)} ms`).toBe(true);

@@ -33,7 +33,20 @@ describe('#518 scalingRatio', () => {
 
   it('pairs every small run with a large run', () => {
     const calls = [];
-    scalingRatio(input => calls.push(input), 's', 'L', 3);
+    scalingRatio(input => calls.push(input), 's', 'L', { pairs: 3 });
     expect(calls.join('')).toBe('sLsLsLsL');
+  });
+
+  it('stops at the first large run over capMs, so a quadratic fails fast', () => {
+    let largeRuns = 0;
+    const slowLarge = input => {
+      if (input !== 'L') return;
+      largeRuns++;
+      const until = performance.now() + 5;
+      while (performance.now() < until) { /* spin */ }
+    };
+    const { largeMs } = scalingRatio(slowLarge, 's', 'L', { capMs: 5 });
+    expect(largeMs).toBeGreaterThanOrEqual(5);
+    expect(largeRuns).toBe(2);
   });
 });
