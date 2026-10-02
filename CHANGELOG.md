@@ -156,6 +156,27 @@
   directory and is pruned with the tab's other artifacts. `npm run smoke:live` clicks a blob "Export CSV"
   button and checks the saved file's sha256. The flag is CLI-only; MCP clients use `run_command`
   ([#472](https://github.com/EndeavorYen/chrome-cdp-ex/issues/472)).
+* `netlog` shows one request in detail. The list gives each tracked request a short id (`#12`), shows
+  a network failure as `failed (net::ERR_…)` instead of `null`, lists a request seen `pending` and
+  later finished once, and shows the transferred size from `loadingFinished` instead of the bytes
+  counted at `responseReceived` (often `0B`). `netlog <target> --id 12` prints method, URL, status and status text, resource
+  type, timing (total, DNS, connect, TLS, send, wait), `errorText`, initiator, redirects, request and
+  response headers, and the response body read lazily with `Network.getResponseBody`. The body preview
+  stops at 4 KB, also with `--unsafe-full`; a binary body is summarised. `--out <file>` writes the whole
+  body to a new file with mode 0600, never through a symlink; an existing file needs `--overwrite`, and
+  inside `batch`/`flow` the path must be absolute. URLs, header values and body text go through the
+  shared redaction classifier: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`,
+  `X-*-Token`, `X-Api-Key`, `X-Hub-Signature*`, `X-Firebase-AppCheck` and other secret-named headers
+  print `<redacted>`, `Access-Control-*` headers stay readable, and policy and `Link` headers keep their
+  shape. JSON bodies are parsed and redacted structurally (a secret key hides its whole object or array,
+  JSON inside strings and JSON behind a `)]}'`/`while(1);` prefix are redacted too, and the output still parses); HTML csrf/authenticity tokens are
+  redacted; body redaction is best effort. Only `--unsafe-full` prints raw values. Everywhere the shared
+  redactor runs, a JWT is now redacted whatever its key, and a URL's `code=` is redacted when `state=`
+  is also present (OAuth authorization response). List filters: `--type xhr,fetch,document`, `--url <text>` (matched against the URL as
+  printed), `--status 4xx|5xx|failed|pending|<code>`. `--format json` emits `chrome-cdp-ex.netlog.v1`
+  and `chrome-cdp-ex.netlog-request.v1`. An unknown id is a usage error whose recovery is
+  `cdp netlog <target>`. MCP `run_command` asks for confirmation before `--out` and `--unsafe-full`
+  ([#467](https://github.com/EndeavorYen/chrome-cdp-ex/issues/467)).
 
 ### Bug Fixes
 

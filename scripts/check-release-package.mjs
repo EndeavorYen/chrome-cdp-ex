@@ -58,6 +58,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/git-head.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs',
+  'package/skills/chrome-cdp-ex/scripts/lib/netlog.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/page-download.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/page-health.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/pdf-text.mjs',
