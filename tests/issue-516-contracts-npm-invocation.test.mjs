@@ -25,11 +25,25 @@ describe('#516 check-public-contracts runs npm without a shell', () => {
     expect(invocation).toEqual({ command: NODE, prefix: [bundled] });
   });
 
-  it('ignores a non-JS npm_execpath and uses a bare npm only as the last resort', () => {
+  it('falls back to the npm of a POSIX install prefix (bin/node, lib/node_modules/npm)', () => {
+    const prefixed = join(join('/opt', 'node', 'bin'), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
     const invocation = resolveNpmInvocation({
-      env: { npm_execpath: '/usr/local/bin/pnpm' },
+      env: {},
       execPath: NODE,
-      exists: () => false,
+      exists: path => path === prefixed,
+    });
+    expect(invocation).toEqual({ command: NODE, prefix: [prefixed] });
+  });
+
+  it.each([
+    '/usr/local/bin/pnpm',
+    '/usr/lib/node_modules/pnpm/bin/pnpm.cjs',
+    '/usr/lib/node_modules/yarn/bin/yarn.js',
+  ])('ignores npm_execpath %s, which is not npm, and uses a bare npm only as the last resort', execpath => {
+    const invocation = resolveNpmInvocation({
+      env: { npm_execpath: execpath },
+      execPath: NODE,
+      exists: path => path === execpath,
     });
     expect(invocation).toEqual({ command: 'npm', prefix: [] });
   });

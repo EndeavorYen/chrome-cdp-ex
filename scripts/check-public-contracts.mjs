@@ -400,7 +400,9 @@ function packageInventory(version, entries) {
 // shell:false fails with ENOENT, and Node refuses to spawn a .cmd file without a shell
 // (CVE-2024-27980). npm's own entry point is a plain JS file, so run it with this Node:
 // `npm_execpath` when invoked through `npm run`, else the npm bundled beside the Node binary.
-// Only when neither exists does it fall back to a bare `npm` (fine on POSIX).
+// Only when neither exists does it fall back to a bare `npm` (fine on POSIX). Only a file named
+// npm-cli.js counts: under `pnpm run` / `yarn run` npm_execpath is their CLI, whose `pack --json`
+// output is not npm's.
 export function resolveNpmInvocation({
   env = process.env,
   execPath = process.execPath,
@@ -412,7 +414,7 @@ export function resolveNpmInvocation({
     join(dirname(execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
   ];
   for (const candidate of candidates) {
-    if (candidate && /\.c?js$/i.test(candidate) && exists(candidate)) {
+    if (candidate && /(^|[\\/])npm-cli\.c?js$/i.test(candidate) && exists(candidate)) {
       return { command: execPath, prefix: [candidate] };
     }
   }
