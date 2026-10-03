@@ -5,7 +5,7 @@
       "exitCode": 0,
       "id": "no-args-help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -14,7 +14,7 @@
       "exitCode": 0,
       "id": "help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -642,10 +642,10 @@
     },
     {
       "aliases": [],
-      "authorization": "standard",
+      "authorization": "conditional",
       "evidencePolicy": "none",
       "feedbackPolicy": null,
-      "kind": "read",
+      "kind": "conditional-mutation",
       "mutates": false,
       "name": "elshot",
       "needsTarget": true,
@@ -2367,7 +2367,7 @@
       "viewport",
       "visual-check"
     ],
-    "serverVersion": "2.19.1",
+    "serverVersion": "2.20.0",
     "supportedProtocolVersions": [
       "2025-06-18",
       "2024-11-05"
@@ -3525,6 +3525,9 @@
       "package/docs/contracts/v2.19.1/package-entries.v1.json",
       "package/docs/contracts/v2.19.1/public-contracts.v1.json",
       "package/docs/contracts/v2.19.1/runtime-dispatch.v1.json",
+      "package/docs/contracts/v2.20.0/package-entries.v1.json",
+      "package/docs/contracts/v2.20.0/public-contracts.v1.json",
+      "package/docs/contracts/v2.20.0/runtime-dispatch.v1.json",
       "package/docs/daily-browser-cdp.md",
       "package/docs/examples/codex-killer-path.md",
       "package/experiment/codex-killer-path-demo-poster.png",
@@ -3574,9 +3577,9 @@
       "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs",
       "package/skills/chrome-cdp-ex/scripts/session.mjs"
     ],
-    "version": "2.19.1"
+    "version": "2.20.0"
   },
-  "productVersion": "2.19.1",
+  "productVersion": "2.20.0",
   "schema": "chrome-cdp-ex.public-contracts.v1",
   "schemas": [
     {
