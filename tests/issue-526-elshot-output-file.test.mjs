@@ -71,6 +71,8 @@ describe('elshot output file (#526)', () => {
     expect(T.absolutizeElshotFileArg(['#f', '--format', 'text', 'text'], cwd)).toEqual(['#f', '--format', 'text', resolve(cwd, 'text')]);
     // A stray flag or a third positional is an error, not a file name.
     expect(() => T.parseElshotArgs(['#f', '-v'])).toThrow('elshot: unknown argument -v');
+    expect(() => T.parseElshotArgs(['#f', '--format', 'out.png'])).toThrow('elshot: --format must be text');
+    expect(() => T.parseElshotArgs(['#f', '--format'])).toThrow('elshot: --format must be text');
     expect(() => T.parseElshotArgs(['div', 'p', 'x.png'])).toThrow(/unexpected argument x\.png; quote a selector/);
   });
 

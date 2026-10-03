@@ -14630,6 +14630,7 @@ function parseElshotArgs(args = []) {
   for (let i = 0; i < args.length; i++) {
     const token = String(args[i] ?? '');
     if (token === '--format') {
+      if (String(args[i + 1] ?? '') !== 'text') throw new Error('elshot: --format must be text');
       i++;
       continue;
     }
