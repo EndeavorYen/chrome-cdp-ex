@@ -28,6 +28,12 @@ describe('CDP timeout recovery (#527)', () => {
     expect(recovery.run).toBe('cdp status 0334A718');
     expect(recovery.reason).toContain('Page.navigate');
 
+    expect(T.buildCliErrorRecovery('Timeout: Target.getTargets', { cmd: 'list' }))
+      .toMatchObject({ kind: 'timeout', strategy: 'run-doctor', run: 'cdp doctor' });
+    // A page error that only contains the shape is not a CDP timeout.
+    expect(T.buildCliErrorRecovery('Uncaught Error: upstream said Timeout: Api.load', { cmd: 'eval', targetPrefix: '0334A718' }).kind)
+      .not.toBe('timeout');
+
     const model = T.buildCliErrorModel(new Error('Timeout: Runtime.evaluate'), { cmd: 'eval', targetPrefix: '0334A718' });
     expect(model).toMatchObject({ command: 'eval', error: { message: 'Timeout: Runtime.evaluate' }, recovery: { kind: 'timeout' } });
   });
