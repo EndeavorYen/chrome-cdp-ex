@@ -14623,21 +14623,34 @@ function elementScreenshotClip(rect, scroll = {}, pad = 8) {
   };
 }
 
-// elshot <sel|@ref> [file] (#526): the first non-flag token after the selector is the output file.
+// elshot <sel|@ref> [file] [--format text] (#526): the first positional is the selector, the
+// second the output file. Any other flag or a third positional is an error, never a file name.
 function parseElshotArgs(args = []) {
-  const tokens = argsWithoutFormat(args);
-  const selector = tokens[0] || '';
-  const filePath = tokens.slice(1).find(t => typeof t === 'string' && t && !t.startsWith('--')) || null;
-  return { selector, filePath };
+  const positionals = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i] ?? '');
+    if (token === '--format') {
+      i++;
+      continue;
+    }
+    if (token.startsWith('-')) throw new Error(`elshot: unknown argument ${token}`);
+    positionals.push({ value: token, index: i });
+  }
+  if (positionals.length > 2) {
+    throw new Error(`elshot: unexpected argument ${positionals[2].value}; quote a selector with spaces (elshot <target> <sel|@ref> [file])`);
+  }
+  return {
+    selector: positionals[0]?.value || '',
+    filePath: positionals[1]?.value || null,
+    fileIndex: positionals[1]?.index ?? -1,
+  };
 }
 
 // The daemon keeps the working directory of the CLI that started it; send the file absolute (#526).
 function absolutizeElshotFileArg(args = [], cwd = process.cwd()) {
-  const { filePath } = parseElshotArgs(args);
-  if (!filePath) return [...args];
-  const index = args.indexOf(filePath, 1);
+  const { filePath, fileIndex } = parseElshotArgs(args);
   const next = [...args];
-  next[index] = resolve(cwd, filePath);
+  if (filePath) next[fileIndex] = resolve(cwd, filePath);
   return next;
 }
 
@@ -30734,7 +30747,11 @@ async function main(options = {}) {
   } else if (cmd === 'elshot') {
     const checkArgs = argsWithoutFormat(cmdArgs);
     if (!checkArgs[0]) exitCliError('CSS selector required', { cmd, targetPrefix, format: cliErrorFormat });
-    cmdArgs = absolutizeElshotFileArg(cmdArgs);
+    try {
+      cmdArgs = absolutizeElshotFileArg(cmdArgs);
+    } catch (error) {
+      exitCliError(error.message, { cmd, targetPrefix, format: cliErrorFormat });
+    }
   } else if (cmd === 'type') {
     const checkArgs = argsWithoutFormat(cmdArgs);
     if (!checkArgs[0]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });

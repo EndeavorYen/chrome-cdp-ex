@@ -49,11 +49,14 @@ describe('elshot output file (#526)', () => {
   it('T2: without a file keeps the runtime-dir default', async () => {
     mkdirSync(T.RUNTIME_DIR, { recursive: true });
     T.resetScreenshotTier();
-    const out = await T.elshotStr(elementCdp(), 'sid', '#f', TARGET_ID, new Map(), {});
-    const path = out.split('\n')[0];
-    expect(path).toBe(resolve(T.RUNTIME_DIR, 'elshot-526E15H0-_f.png'));
-    expect(existsSync(path)).toBe(true);
-    rmSync(path, { force: true });
+    const path = resolve(T.RUNTIME_DIR, 'elshot-526E15H0-_f.png');
+    try {
+      const out = await T.elshotStr(elementCdp(), 'sid', '#f', TARGET_ID, new Map(), {});
+      expect(out.split('\n')[0]).toBe(path);
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      rmSync(path, { force: true });
+    }
   });
 
   it('T3: the CLI sends an absolute file path and the daemon parses selector and file', () => {
@@ -61,15 +64,26 @@ describe('elshot output file (#526)', () => {
     expect(T.absolutizeElshotFileArg(['#f', 'out/panel.png'], cwd)).toEqual(['#f', resolve(cwd, 'out/panel.png')]);
     expect(T.absolutizeElshotFileArg(['#f'], cwd)).toEqual(['#f']);
     expect(T.absolutizeElshotFileArg(['@3', 'a.png', '--format', 'text'], cwd)).toEqual(['@3', resolve(cwd, 'a.png'), '--format', 'text']);
-    expect(T.parseElshotArgs(['#f', '/abs/panel.png'])).toEqual({ selector: '#f', filePath: '/abs/panel.png' });
-    expect(T.parseElshotArgs(['#f'])).toEqual({ selector: '#f', filePath: null });
-    expect(T.parseElshotArgs(['@3', '--format', 'text', 'x.png'])).toEqual({ selector: '@3', filePath: 'x.png' });
+    expect(T.parseElshotArgs(['#f', '/abs/panel.png'])).toEqual({ selector: '#f', filePath: '/abs/panel.png', fileIndex: 1 });
+    expect(T.parseElshotArgs(['#f'])).toEqual({ selector: '#f', filePath: null, fileIndex: -1 });
+    expect(T.parseElshotArgs(['@3', '--format', 'text', 'x.png'])).toEqual({ selector: '@3', filePath: 'x.png', fileIndex: 3 });
+    // The file is replaced at its own index, never at an earlier token with the same text.
+    expect(T.absolutizeElshotFileArg(['#f', '--format', 'text', 'text'], cwd)).toEqual(['#f', '--format', 'text', resolve(cwd, 'text')]);
+    // A stray flag or a third positional is an error, not a file name.
+    expect(() => T.parseElshotArgs(['#f', '-v'])).toThrow('elshot: unknown argument -v');
+    expect(() => T.parseElshotArgs(['div', 'p', 'x.png'])).toThrow(/unexpected argument x\.png; quote a selector/);
   });
 
   it('T4: MCP elshot needs confirm only when it names a file, like shot', () => {
     expect(argsRequireConfirm('elshot', ['ABCD1234', '#f'])).toBe(false);
     expect(argsRequireConfirm('elshot', ['ABCD1234', '#f', '/tmp/x.png'])).toBe(true);
     expect(argsRequireConfirm('elshot', ['ABCD1234'])).toBe(true);
+    expect(argsRequireConfirm('elshot', ['ABCD1234', '#f', '--format', 'text'])).toBe(false);
+    // Any shape the runtime could read as a file needs confirm, including a file named like a flag value.
+    for (const rest of [['text'], ['--format', 'text', 'text'], ['text', '--format'], ['--format', 'json'], ['-v']]) {
+      expect(argsRequireConfirm('elshot', ['ABCD1234', '#f', ...rest]), rest.join(' ')).toBe(true);
+    }
+    expect(argsRequireConfirm('elshot', ['ABCD1234', '--format', 'text'])).toBe(true);
     expect(argsRequireConfirm('shot', ['ABCD1234', '/tmp/x.png'])).toBe(true);
   });
 

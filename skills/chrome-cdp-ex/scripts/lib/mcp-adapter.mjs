@@ -216,10 +216,11 @@ export function argsRequireConfirm(commandName, args = []) {
       return args.slice(1).some(arg => !safeFlags.has(String(arg)));
     }
     if (command.name === 'elshot') {
-      // #526: <target> <sel|@ref> is a read; a third token is a file write, the same as shot <target> <file>.
-      if (!args[0] || !args[1]) return true;
-      const formatFlags = new Set(['--format', 'text']);
-      return args.slice(2).some(arg => !formatFlags.has(String(arg)));
+      // #526: only <target> <sel|@ref> [--format text] is a plain read; any other shape may name a
+      // file (a write, like shot <target> <file>), so it needs confirm.
+      if (!args[0] || !args[1] || String(args[1]).startsWith('-')) return true;
+      const rest = args.slice(2).map(String);
+      return !(rest.length === 0 || (rest.length === 2 && rest[0] === '--format' && rest[1] === 'text'));
     }
     if (command.name === 'fullshot') return args.length !== 1 || !args[0];
     return true;
