@@ -430,6 +430,9 @@ export function checkSkillGoldenPathContract(skill) {
   if (/\bstdio MCP\b|\bconfirm:\s*true\b|setup\.mjs\s+--for/i.test(text)) {
     failures.push('Always-loaded SKILL.md must not require MCP, setup.mjs --for, or confirm:true');
   }
+  if (!text.includes('viewport|resize') || !mentionsCommand(text, 'responsive-audit')) {
+    failures.push('Always-loaded SKILL.md must point at viewport|resize and responsive-audit for window size');
+  }
   return failures;
 }
 
@@ -449,6 +452,9 @@ export function checkDefaultHelpContract(help) {
   }
   if (text.includes('tab-group') && text.includes('broadcast') && text.includes('checkpoint')) {
     failures.push('Default cdp help must list survivors, not the full command catalog');
+  }
+  if (!text.includes('viewport|resize') || !mentionsCommand(text, 'responsive-audit')) {
+    failures.push('Default cdp help must point at viewport|resize and responsive-audit for window size');
   }
   return failures;
 }
