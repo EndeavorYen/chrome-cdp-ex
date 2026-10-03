@@ -159,8 +159,8 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
       COMMAND_SURFACE.commands,
       command => command.kind,
     )).map(([kind, commands]) => [kind, commands.length]))).toEqual({
-      read: 23,
-      'conditional-mutation': 8,
+      read: 22,
+      'conditional-mutation': 9,
       mutation: 33,
       'protected-mutation': 7,
       script: 3,
