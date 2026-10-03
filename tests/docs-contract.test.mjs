@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
-import { checkDocsContract, checkGrokBotSetupContract, SURVIVOR_COMMANDS, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
+import { checkDefaultHelpContract, checkDocsContract, checkGrokBotSetupContract, SURVIVOR_COMMANDS, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
 import { PK_324_CHART_FILES, PK_324_SCOREBOARD_FILE } from '../scripts/lib/pk-324-board.mjs';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
@@ -389,6 +389,10 @@ describe('Killer Path docs contract', () => {
     expect(card).toMatch(/\bresponsive-audit <target> --viewport WxH\b/);
     expect(skill).toMatch(/`viewport\|resize <target> WxH`/);
     expect(skill).toMatch(/`responsive-audit <target> --viewport WxH`/);
+    expect(checkDefaultHelpContract(card)).toEqual([]);
+    expect(checkDefaultHelpContract(card.replace(/^Window size:.*\n/m, ''))).toContain(
+      'Default cdp help must point at viewport|resize and responsive-audit for window size',
+    );
     expect(checkDocsContract({ readme, reference, selfImprovementLoop, skillCommands, killerPath,
       skill: skill.replaceAll('viewport|resize', 'size') }, [])).toContain(
       'Always-loaded SKILL.md must point at viewport|resize and responsive-audit for window size',
