@@ -40,7 +40,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `eval` | `eval <target> <expr>` | `script / raw-script` |
 | `eval64` | `eval64 <target> <base64>` | `script / raw-script` |
 | `call` | `call <target> <expr\|fn>` | `script / raw-script` |
-| `elshot` | `elshot <target> <sel\|@ref>` | `read / standard` |
+| `elshot` | `elshot <target> <sel\|@ref> [file]` | `conditional-mutation / conditional` |
 | `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
 | `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
 | `html` | `html <target> [selector]` | `read / standard` |

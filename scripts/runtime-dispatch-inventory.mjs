@@ -1485,7 +1485,7 @@ function collectTablePolicyAuthority(source, {
   const authorizationBindings = [
     "const tablePolicyMatches = command === 'table' && policy === 'conditional' && mutates === false;",
     'if (tablePolicyMatches) parseTableArgs(args);',
-    "['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)",
+    "['console', 'diff-shot', 'elshot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)",
     '|| tablePolicyMatches',
   ];
   if (authorizationBindings.some(binding => !authorizationSource.includes(binding))

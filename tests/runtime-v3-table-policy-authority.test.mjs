@@ -102,8 +102,8 @@ describe('Runtime v3 table policy authority wiring', { timeout: 60_000 }, () => 
       "const tablePolicyMatches = command === 'table' && policy === 'conditional' && mutates === false;",
       "const tablePolicyMatches = false && command === 'table' && policy === 'conditional' && mutates === false;",
     ).replace(
-      "['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot']",
-      "['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot', 'table']",
+      "['console', 'diff-shot', 'elshot', 'fullshot', 'netlog', 'record', 'shot']",
+      "['console', 'diff-shot', 'elshot', 'fullshot', 'netlog', 'record', 'shot', 'table']",
     ),
     () => source.replace(
       'mayHaveSideEffects: daemonRequestMayHaveSideEffects(req),',

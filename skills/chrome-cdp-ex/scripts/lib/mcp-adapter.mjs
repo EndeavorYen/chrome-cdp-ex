@@ -215,6 +215,12 @@ export function argsRequireConfirm(commandName, args = []) {
       const safeFlags = new Set(['--annotate', '-a', '--quiet', '-q', '--verbose', '-v']);
       return args.slice(1).some(arg => !safeFlags.has(String(arg)));
     }
+    if (command.name === 'elshot') {
+      // #526: <target> <sel|@ref> is a read; a third token is a file write, the same as shot <target> <file>.
+      if (!args[0] || !args[1]) return true;
+      const formatFlags = new Set(['--format', 'text']);
+      return args.slice(2).some(arg => !formatFlags.has(String(arg)));
+    }
     if (command.name === 'fullshot') return args.length !== 1 || !args[0];
     return true;
   }

@@ -196,7 +196,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `eval` | `eval <target> <expr>` | `script / raw-script` |
 | `eval64` | `eval64 <target> <base64>` | `script / raw-script` |
 | `call` | `call <target> <expr\|fn>` | `script / raw-script` |
-| `elshot` | `elshot <target> <sel\|@ref>` | `read / standard` |
+| `elshot` | `elshot <target> <sel\|@ref> [file]` | `conditional-mutation / conditional` |
 | `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
 | `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
 | `html` | `html <target> [selector]` | `read / standard` |
@@ -361,9 +361,11 @@ Use `snap` **only** after `perceive` has already given you layout context and yo
 ```bash
 scripts/cdp.mjs elshot <target> <selector>   # screenshot by CSS selector
 scripts/cdp.mjs elshot <target> @3           # screenshot by @ref from perceive
+scripts/cdp.mjs elshot <target> @3 out/panel.png  # write to a file (relative to your cwd)
 ```
 
 - Automatically scrolls the element into view and clips the capture to its bounding box
+- With no `[file]`, the PNG goes to the runtime dir (`elshot-<target>-<selector>.png`); through MCP, naming a file needs `confirm: true`, like `shot`
 - Adds 8px padding around the element for context
 - **No DPR confusion** — the clip is in CSS coordinates, handled by CDP
 - **No scroll position errors** — scrollIntoView + clip guarantees the right content

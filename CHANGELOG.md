@@ -14,6 +14,12 @@
   `eval --fire-and-forget` and poll steps; otherwise it names the method and runs `cdp status` (or
   `cdp doctor` with no target). A failure that is still unclassified now names its command
   ([#527](https://github.com/EndeavorYen/chrome-cdp-ex/issues/527)).
+### Features
+
+* `elshot <target> <sel|@ref> [file]` writes the element screenshot to `file`, like `shot`; a relative
+  path resolves against the caller's cwd, and with no file it still writes to the runtime dir. Through
+  MCP, an `elshot` that names a file needs `confirm: true`, so `elshot` is now
+  `conditional-mutation / conditional` ([#526](https://github.com/EndeavorYen/chrome-cdp-ex/issues/526)).
 
 ## [2.19.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.19.0...v2.19.1) (2026-10-02)
 
