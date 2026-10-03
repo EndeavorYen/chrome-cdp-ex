@@ -29423,12 +29423,31 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'The realistic mouse click dispatched but the link default action did not run.',
     };
   }
+  // #527: CdpClient.send rejects with `Timeout: <Domain.method>` when CDP never answers.
+  const cdpTimeoutMethod = String(message || '').match(/\bTimeout:\s+([A-Z][A-Za-z]*\.[a-z][A-Za-z]*)\s*$/m)?.[1];
+  if (cdpTimeoutMethod) {
+    if (['eval', 'eval64', 'call'].includes(cmd) && /^Runtime\.(?:evaluate|callFunctionOn)$/.test(cdpTimeoutMethod)) {
+      return {
+        kind: 'timeout',
+        strategy: 'poll-in-page',
+        run: `cdp eval ${target} --fire-and-forget "<start the work; store progress on window>"`,
+        then: `cdp eval ${target} "<read the progress from window>"`,
+        reason: `${cmd} waits at most ${TIMEOUT / 1000} s for its value or Promise. Start long work with eval --fire-and-forget, keep progress on window, then poll it with a short eval; the tab is still live.`,
+      };
+    }
+    return {
+      kind: 'timeout',
+      strategy: 'inspect-status',
+      run: `cdp status ${target}`,
+      reason: `CDP did not answer ${cdpTimeoutMethod} in time: the page may be busy (long task), blocked by a dialog, or hung. Check status before retrying.`,
+    };
+  }
   return lower.includes('target/document readiness mismatch') ? perceiveReadinessRecovery(target)
     : targetPrefix ? {
         kind: 'unknown',
         strategy: 'inspect-status',
         run: `cdp status ${targetPrefix}`,
-        reason: 'The failure was not classified; inspect the target status before retrying.',
+        reason: `The ${cmd ? `${cmd} ` : ''}failure was not classified; the Error line is the raw cause. Inspect the target status before retrying.`,
       }
     : {
         kind: 'unknown',
