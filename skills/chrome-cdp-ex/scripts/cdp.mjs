@@ -28143,6 +28143,7 @@ Flags (not product names): click --js is JS click; eval --b64 is base64.
 Unique off-screen click names scrollIntoView if off-screen.
 perceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.
 text --auto for what the page says.
+Window size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.
 
 Chrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.
 Electron: CDP_PORT=9333 (not 9222).

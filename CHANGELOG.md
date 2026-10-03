@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+* The default `cdp help` card and SKILL.md now point at `viewport|resize <target> WxH` and
+  `responsive-audit <target> --viewport WxH`. Both listed only the 20 survivor verbs, so an agent that
+  needed a phone-width or fixed-size page did not find them and worked around them with an injected
+  iframe ([#525](https://github.com/EndeavorYen/chrome-cdp-ex/issues/525)).
+
 ## [2.19.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.19.0...v2.19.1) (2026-10-02)
 
 v2.19.1 is a maintenance release for the repository's own tooling. The command runtime, CLI and MCP
