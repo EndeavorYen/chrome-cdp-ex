@@ -1,6 +1,6 @@
 {
   "schema": "chrome-cdp-ex.runtime-dispatch.v1",
-  "productVersion": "2.19.1",
+  "productVersion": "2.20.0",
   "counts": {
     "commands": 82,
     "aliases": 23,
@@ -98,7 +98,7 @@
       "daemonRequestMayHaveSideEffects",
       "isBatchParallelUnsafeCommand"
     ],
-    "sourceDigest": "sha256:a6da2ae4559d31aaae659b5a27383ffac7c288e0141f59dc7dc4730701ec543d",
+    "sourceDigest": "sha256:9841d8f417f49b152e385b70d31cba32a287da6782a8e9cc6d89b7f8b916d37e",
     "bindingDigest": "sha256:1f301cb835f880abaf7db52594689275d859f6ebc957a5d29cf72ae7bb4870aa",
     "artifactSourceDigest": "sha256:5a0297f10ad8a6a4ded915d74e3689b5c713b7e7744ece6ced175330f41a644b",
     "observation": {
@@ -291,8 +291,8 @@
       "labels": [
         "_daemon"
       ],
-      "line": 30041,
-      "endLine": 30041,
+      "line": 30103,
+      "endLine": 30103,
       "sourceDigest": "sha256:df93a092f2739c7dc2579f2a9eb0d3c3e45aa70c9aa93b3f32fd2b5fc4c3d627",
       "owner": "cli-direct"
     },
@@ -302,8 +302,8 @@
         "--help",
         "-h"
       ],
-      "line": 30062,
-      "endLine": 30064,
+      "line": 30124,
+      "endLine": 30126,
       "sourceDigest": "sha256:e4d0a37a4df5ce76b7bbd1e34a6eaed95a0e18669e21b66e0d43c4331860d341",
       "owner": "cli-direct"
     },
@@ -311,8 +311,8 @@
       "labels": [
         "help"
       ],
-      "line": 30065,
-      "endLine": 30073,
+      "line": 30127,
+      "endLine": 30135,
       "sourceDigest": "sha256:1f07ebfca6c2e3ae431ad16fe4ec189680d5af028a1217fd00edb5ce8c16c0c9",
       "owner": "cli-direct"
     },
@@ -322,8 +322,8 @@
         "ls",
         "tabs"
       ],
-      "line": 30076,
-      "endLine": 30096,
+      "line": 30138,
+      "endLine": 30158,
       "sourceDigest": "sha256:abcba93944bf45dfbb81a3bb03cf400a44f27822a1c4e0f0603a4beaa7390394",
       "owner": "cli-direct"
     },
@@ -332,8 +332,8 @@
         "tab-group",
         "tabgroup"
       ],
-      "line": 30099,
-      "endLine": 30160,
+      "line": 30161,
+      "endLine": 30222,
       "sourceDigest": "sha256:3e384558af84f119d56baf6b887b2aad4aab2d7d0019032a278c53d0d56d5ebf",
       "owner": "cli-direct"
     },
@@ -341,8 +341,8 @@
       "labels": [
         "broadcast"
       ],
-      "line": 30163,
-      "endLine": 30233,
+      "line": 30225,
+      "endLine": 30295,
       "sourceDigest": "sha256:96dcdf1e185147fffe90b6c512e1bea2ef0b4ae0e4bfa4fdd04f225237f6f210",
       "owner": "cli-direct"
     },
@@ -350,8 +350,8 @@
       "labels": [
         "target"
       ],
-      "line": 30236,
-      "endLine": 30255,
+      "line": 30298,
+      "endLine": 30317,
       "sourceDigest": "sha256:73dd3f3c09de5f93324eddad50c67253e6302153296530a79695266826ad25ab",
       "owner": "cli-direct"
     },
@@ -359,8 +359,8 @@
       "labels": [
         "open"
       ],
-      "line": 30258,
-      "endLine": 30397,
+      "line": 30320,
+      "endLine": 30459,
       "sourceDigest": "sha256:03ba4f34b6c2d51aa50f62861e6206deb5adc308b465f90d47c20aa0b653e10e",
       "owner": "cli-direct"
     },
@@ -368,8 +368,8 @@
       "labels": [
         "stop"
       ],
-      "line": 30400,
-      "endLine": 30416,
+      "line": 30462,
+      "endLine": 30478,
       "sourceDigest": "sha256:f0d891a57cb4ff1b3eb1abd9cd941cf7341267c4d329274d29eaed37504b7718",
       "owner": "cli-direct"
     },
@@ -378,8 +378,8 @@
         "doctor",
         "ready"
       ],
-      "line": 30419,
-      "endLine": 30428,
+      "line": 30481,
+      "endLine": 30490,
       "sourceDigest": "sha256:e871de3337d82bc8fbb0065e76a810bf5d1e5416e06d07bc9ae99ad8e6392aae",
       "owner": "cli-direct"
     },
@@ -388,8 +388,8 @@
         "spawn-debug-browser",
         "spawn"
       ],
-      "line": 30431,
-      "endLine": 30447,
+      "line": 30493,
+      "endLine": 30509,
       "sourceDigest": "sha256:8626c517b456e12dc70d347721eb78498d75a74c8acf8e0162f78f5e3744fe02",
       "owner": "cli-direct"
     },
@@ -398,8 +398,8 @@
         "attach",
         "use"
       ],
-      "line": 30449,
-      "endLine": 30487,
+      "line": 30511,
+      "endLine": 30549,
       "sourceDigest": "sha256:970d33b6cd07e5fe4d4e1970af43b2b9b0cdeaa0e6f9a3b9ebb00d68d12ba1fd",
       "owner": "cli-direct"
     },
@@ -407,8 +407,8 @@
       "labels": [
         "forget"
       ],
-      "line": 30489,
-      "endLine": 30505,
+      "line": 30551,
+      "endLine": 30567,
       "sourceDigest": "sha256:497fe04d1e215afd45168cb007916a30a6263eac054c6325b33ea2ea13b09b48",
       "owner": "cli-direct"
     },
@@ -416,8 +416,8 @@
       "labels": [
         "current"
       ],
-      "line": 30507,
-      "endLine": 30512,
+      "line": 30569,
+      "endLine": 30574,
       "sourceDigest": "sha256:b0e563a1d543e5c280dc15310be5e49ea8cbc6fff00096fe9f2b1be5f9e78646",
       "owner": "cli-direct"
     },
@@ -425,8 +425,8 @@
       "labels": [
         "wait"
       ],
-      "line": 30515,
-      "endLine": 30523,
+      "line": 30577,
+      "endLine": 30585,
       "sourceDigest": "sha256:35eb912d093091ea8f4d970fe1fb0f334ddd8075b1d6158cc8f31d66f6816555",
       "owner": "cli-direct"
     },
@@ -434,8 +434,8 @@
       "labels": [
         "eval"
       ],
-      "line": 30669,
-      "endLine": 30675,
+      "line": 30731,
+      "endLine": 30737,
       "sourceDigest": "sha256:ed827d7de79d85310df49a3e5b9c0c7ed18c0f3de30733b820f5923f3dc3f877",
       "owner": "target-argument-adapter"
     },
@@ -443,8 +443,8 @@
       "labels": [
         "eval64"
       ],
-      "line": 30675,
-      "endLine": 30679,
+      "line": 30737,
+      "endLine": 30741,
       "sourceDigest": "sha256:c42d38f5996ab292477ea585c368458c19382f852bdb5e048024e72cb92e8cf4",
       "owner": "target-argument-adapter"
     },
@@ -452,8 +452,8 @@
       "labels": [
         "call"
       ],
-      "line": 30679,
-      "endLine": 30683,
+      "line": 30741,
+      "endLine": 30745,
       "sourceDigest": "sha256:edd22e2c9703d8c3c7435609bbed810ceb28b974bf43395b165a1aa4bec6a936",
       "owner": "target-argument-adapter"
     },
@@ -461,8 +461,8 @@
       "labels": [
         "click"
       ],
-      "line": 30683,
-      "endLine": 30686,
+      "line": 30745,
+      "endLine": 30748,
       "sourceDigest": "sha256:fdac77cecfc20cac34bb755084f2d65226f4af32268ac978590bda8aa42c0e38",
       "owner": "target-argument-adapter"
     },
@@ -470,17 +470,17 @@
       "labels": [
         "elshot"
       ],
-      "line": 30686,
-      "endLine": 30689,
-      "sourceDigest": "sha256:7c225f078b3d1d06ff3bf1bcdc404e1fbf475a0bec9c17730b20bee1481aaced",
+      "line": 30748,
+      "endLine": 30756,
+      "sourceDigest": "sha256:bdcb008dd81ae0f47dda91c354b0ca48bc2e05e45e5bb71f394c6acb91f17d2c",
       "owner": "target-argument-adapter"
     },
     {
       "labels": [
         "type"
       ],
-      "line": 30689,
-      "endLine": 30693,
+      "line": 30756,
+      "endLine": 30760,
       "sourceDigest": "sha256:0b67f3a5c64f6eec204756d354d9b38366f8ec62726ada6b297913d873d084d7",
       "owner": "target-argument-adapter"
     },
@@ -488,8 +488,8 @@
       "labels": [
         "fill"
       ],
-      "line": 30693,
-      "endLine": 30697,
+      "line": 30760,
+      "endLine": 30764,
       "sourceDigest": "sha256:a3fe7e51e542700c9151d5fd8184cec84223f4605ec03b8986e4fbe3c3224781",
       "owner": "target-argument-adapter"
     },
@@ -497,8 +497,8 @@
       "labels": [
         "evalraw"
       ],
-      "line": 30697,
-      "endLine": 30701,
+      "line": 30764,
+      "endLine": 30768,
       "sourceDigest": "sha256:44c6694440f7af03201b2614887949a1d59504f60100a0dd940af47746543328",
       "owner": "target-argument-adapter"
     },
@@ -506,8 +506,8 @@
       "labels": [
         "cookieset"
       ],
-      "line": 30701,
-      "endLine": 30704,
+      "line": 30768,
+      "endLine": 30771,
       "sourceDigest": "sha256:b9a4455a40ddba9e2421dd405c4d01fd77e34c294e752d9a40440509341d8321",
       "owner": "target-argument-adapter"
     },
@@ -515,8 +515,8 @@
       "labels": [
         "cookiedel"
       ],
-      "line": 30704,
-      "endLine": 30706,
+      "line": 30771,
+      "endLine": 30773,
       "sourceDigest": "sha256:95b06f65d467c68d34cf3d1e4612dd8eccdce420dddc6b1c02a4c5f076ff1af7",
       "owner": "target-argument-adapter"
     },
@@ -524,8 +524,8 @@
       "labels": [
         "netlog"
       ],
-      "line": 30706,
-      "endLine": 30708,
+      "line": 30773,
+      "endLine": 30775,
       "sourceDigest": "sha256:95ee970a461bb0589cfdf651a6c3b6c5579f5d61b70bae5ae13e869b3482a3cd",
       "owner": "target-argument-adapter"
     },
@@ -533,8 +533,8 @@
       "labels": [
         "upload"
       ],
-      "line": 30708,
-      "endLine": 30711,
+      "line": 30775,
+      "endLine": 30778,
       "sourceDigest": "sha256:cdaa432606c4256f3b1ea7b49440665beb4faef88121149685ded4ae8ff8e5c9",
       "owner": "target-argument-adapter"
     },
@@ -542,8 +542,8 @@
       "labels": [
         "batch"
       ],
-      "line": 30711,
-      "endLine": 30714,
+      "line": 30778,
+      "endLine": 30781,
       "sourceDigest": "sha256:b109aafa3454f9f665cf422ddb5e53274f9da06ac43330297a682e12347a326b",
       "owner": "target-argument-adapter"
     },
@@ -551,8 +551,8 @@
       "labels": [
         "flow"
       ],
-      "line": 30714,
-      "endLine": 30719,
+      "line": 30781,
+      "endLine": 30786,
       "sourceDigest": "sha256:cc0c0f5aa84cf421e062dba9baa58e41a057e914486257673e69d49b8bfab8fe",
       "owner": "target-argument-adapter"
     },
@@ -560,8 +560,8 @@
       "labels": [
         "replay"
       ],
-      "line": 30719,
-      "endLine": 30728,
+      "line": 30786,
+      "endLine": 30795,
       "sourceDigest": "sha256:f6af51ff671341f2c3c9b58dbfe717087507b0faa6eae8ed40d8e52f26e19d2d",
       "owner": "target-argument-adapter"
     },
@@ -569,8 +569,8 @@
       "labels": [
         "restore"
       ],
-      "line": 30728,
-      "endLine": 30737,
+      "line": 30795,
+      "endLine": 30804,
       "sourceDigest": "sha256:6795d2988f8b7966581d8e2d67160c22bc4e507c706feaf69d960a3b98828666",
       "owner": "target-argument-adapter"
     },
@@ -579,33 +579,33 @@
         "nav",
         "navigate"
       ],
-      "line": 30739,
-      "endLine": 30742,
+      "line": 30806,
+      "endLine": 30809,
       "sourceDigest": "sha256:17e9d3d8f4f58904d345ca2189bf5f127dcf1aebf07e0a08ffe1b9237cfb0afc",
       "owner": "target-argument-adapter"
     }
   ],
   "mainSpine": {
-    "line": 30027,
-    "endLine": 30777,
-    "sourceDigest": "sha256:3a3d90146beef5f96938271b847ab61fe5805a40b6b1e15f7db65fbad5d9ea34"
+    "line": 30089,
+    "endLine": 30844,
+    "sourceDigest": "sha256:bbaa4e84ce24673e69c2658a7addd2ad271fb743731aa234c84d6d80769ef74d"
   },
   "daemonWrapper": {
-    "line": 26482,
-    "endLine": 26562,
+    "line": 26517,
+    "endLine": 26597,
     "preludeDigest": "sha256:400c98e8391ca1e7f8b1446229f10b5852f286e31e5312703b00f3344646547e",
     "envelopeDigest": "sha256:95d6267255882ba1b2754fee2e8ba1f39f604658951634b913b4f2422dd6928e",
     "defaultDigest": "sha256:9e77933b39eb82ad8116bae8bb4a4423a632d31b0d7193056c34e1415f71ed53",
     "applicationDispatchCalls": 1,
-    "applicationWiringDigest": "sha256:1a558a9a549d66888b198c76298e68c73b983a9970fb3d687b1f9ed3f31a08fb"
+    "applicationWiringDigest": "sha256:de6be4f167ec7caa1a0c56151c8478a811ccbce574906bc29c09c3e1e138eab9"
   },
   "daemonGroups": [
     {
       "labels": [
         "meta"
       ],
-      "line": 26523,
-      "endLine": 26527,
+      "line": 26558,
+      "endLine": 26562,
       "sourceDigest": "sha256:e19e83c5e0db92f5e10f2acf884711676e7be651cc1e3d3c0f8db21b5d94e8d9",
       "owner": "daemon-protocol",
       "commands": []
@@ -614,8 +614,8 @@
       "labels": [
         "list"
       ],
-      "line": 26528,
-      "endLine": 26532,
+      "line": 26563,
+      "endLine": 26567,
       "sourceDigest": "sha256:fdece4bcd3a65e5f100d1cb3dea00142dc1c01b3b576dc090fd3e85bc99d2bc8",
       "owner": "daemon-protocol",
       "commands": [
@@ -636,8 +636,8 @@
       "labels": [
         "list_raw"
       ],
-      "line": 26533,
-      "endLine": 26537,
+      "line": 26568,
+      "endLine": 26572,
       "sourceDigest": "sha256:4cd6fa0079669a162c4fb213119f0114ff4723ec42c9f7d60fdc6e3e4b1bcadb",
       "owner": "daemon-protocol",
       "commands": []
@@ -646,8 +646,8 @@
       "labels": [
         "_activate"
       ],
-      "line": 26538,
-      "endLine": 26541,
+      "line": 26573,
+      "endLine": 26576,
       "sourceDigest": "sha256:476f0e3d1993e594f30c4fe79a5adfb09e196ceadcbc6678bc032a0334164bf5",
       "owner": "daemon-protocol",
       "commands": []
@@ -656,8 +656,8 @@
       "labels": [
         "stop"
       ],
-      "line": 26542,
-      "endLine": 26542,
+      "line": 26577,
+      "endLine": 26577,
       "sourceDigest": "sha256:585896cde0544ce3d6e8f60280637873a42fac700024c63c85d72ffd1881a5ea",
       "owner": "daemon-protocol",
       "commands": [
@@ -678,8 +678,8 @@
       "labels": [
         "<default>"
       ],
-      "line": 26543,
-      "endLine": 26543,
+      "line": 26578,
+      "endLine": 26578,
       "sourceDigest": "sha256:9e77933b39eb82ad8116bae8bb4a4423a632d31b0d7193056c34e1415f71ed53",
       "owner": "unknown-command",
       "commands": []
@@ -689,25 +689,25 @@
     {
       "from": "batch",
       "to": "handleCommand",
-      "line": 26319,
+      "line": 26354,
       "sourceDigest": "sha256:72f40dd6aeb5a6846e9dd11152eefb35a4ed98bba80bfd6c5702f488adfe735c"
     },
     {
       "from": "flow",
       "to": "handleCommand",
-      "line": 26339,
+      "line": 26374,
       "sourceDigest": "sha256:81c1a2bf735390ed112c352c4a95eb2090c058927d2b4c98189f48f8ed6d9a0a"
     },
     {
       "from": "repeat",
       "to": "handleCommand",
-      "line": 26350,
+      "line": 26385,
       "sourceDigest": "sha256:bef1109434d561e4df663714339abda01c6a980854a4996711b25ac45231f373"
     },
     {
       "from": "replay",
       "to": "handleCommand",
-      "line": 26354,
+      "line": 26389,
       "sourceDigest": "sha256:5f937bce52e55acfccc817a0282861daa5c4055fbb073e0956574251dfeb8d74"
     }
   ],
