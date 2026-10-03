@@ -382,6 +382,19 @@ describe('Killer Path docs contract', () => {
     );
   });
 
+  it('points the card and SKILL.md at the leftover window-size verbs (#525)', async () => {
+    const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+    const card = T.helpStr();
+    expect(card).toMatch(/\bviewport\|resize <target> WxH\b/);
+    expect(card).toMatch(/\bresponsive-audit <target> --viewport WxH\b/);
+    expect(skill).toMatch(/`viewport\|resize <target> WxH`/);
+    expect(skill).toMatch(/`responsive-audit <target> --viewport WxH`/);
+    expect(checkDocsContract({ readme, reference, selfImprovementLoop, skillCommands, killerPath,
+      skill: skill.replaceAll('viewport|resize', 'size') }, [])).toContain(
+      'Always-loaded SKILL.md must point at viewport|resize and responsive-audit for window size',
+    );
+  });
+
   it('does not make unqualified PATH node the only SKILL.md invocation (#157)', () => {
     expect(skill).toMatch(/bin\/chrome-cdp|HERMES_HOME|process\.execPath/);
     expect(skill).toMatch(/If `node -v` is <22, use the Node 22 path printed by doctor/);
