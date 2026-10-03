@@ -29423,12 +29423,38 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'The realistic mouse click dispatched but the link default action did not run.',
     };
   }
+  // #527: CdpClient.send rejects with exactly `Timeout: <Domain.method>` when CDP never answers;
+  // the whole message must be that (after Error: wrappers), so page errors that merely contain it do not match.
+  const cdpTimeoutMethod = String(message || '').trim()
+    .match(/^(?:[A-Za-z]*Error:\s*)*Timeout:\s+([A-Z][A-Za-z]*\.[a-z][A-Za-z]*)$/)?.[1];
+  if (cdpTimeoutMethod) {
+    if (['eval', 'eval64', 'call'].includes(cmd) && /^Runtime\.(?:evaluate|callFunctionOn)$/.test(cdpTimeoutMethod)) {
+      return {
+        kind: 'timeout',
+        strategy: 'poll-in-page',
+        run: `cdp eval ${target} --fire-and-forget "<start the work; store progress on window>"`,
+        then: `cdp eval ${target} "<read the progress from window>"`,
+        reason: `${cmd} waits at most ${TIMEOUT / 1000} s for its value or Promise. Start long work with eval --fire-and-forget, keep progress on window, then poll it with a short eval; the tab is still live.`,
+      };
+    }
+    return targetPrefix ? {
+      kind: 'timeout',
+      strategy: 'inspect-status',
+      run: `cdp status ${targetPrefix}`,
+      reason: `CDP did not answer ${cdpTimeoutMethod} in time: the page may be busy (long task), blocked by a dialog, or hung. Check status before retrying.`,
+    } : {
+      kind: 'timeout',
+      strategy: 'run-doctor',
+      run: 'cdp doctor',
+      reason: `CDP did not answer ${cdpTimeoutMethod} in time: the browser may be busy or hung. Check browser setup before retrying.`,
+    };
+  }
   return lower.includes('target/document readiness mismatch') ? perceiveReadinessRecovery(target)
     : targetPrefix ? {
         kind: 'unknown',
         strategy: 'inspect-status',
         run: `cdp status ${targetPrefix}`,
-        reason: 'The failure was not classified; inspect the target status before retrying.',
+        reason: `The ${cmd ? `${cmd} ` : ''}failure was not classified; the Error line is the raw cause. Inspect the target status before retrying.`,
       }
     : {
         kind: 'unknown',

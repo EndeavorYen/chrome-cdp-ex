@@ -8,6 +8,12 @@
   `responsive-audit <target> --viewport WxH`. Both listed only the 20 survivor verbs, so an agent that
   needed a phone-width or fixed-size page did not find them and worked around them with an injected
   iframe ([#525](https://github.com/EndeavorYen/chrome-cdp-ex/issues/525)).
+* A CDP call that never answers (`Timeout: Runtime.evaluate` from an `eval` whose Promise outlives the
+  15 s limit, or `Timeout: <Domain.method>` from any other command) now prints `Kind: timeout` instead of
+  `Kind: unknown`. For `eval` / `eval64` / `call` it names the 15 s limit and gives runnable
+  `eval --fire-and-forget` and poll steps; otherwise it names the method and runs `cdp status` (or
+  `cdp doctor` with no target). A failure that is still unclassified now names its command
+  ([#527](https://github.com/EndeavorYen/chrome-cdp-ex/issues/527)).
 
 ## [2.19.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.19.0...v2.19.1) (2026-10-02)
 
