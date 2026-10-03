@@ -122,7 +122,7 @@ describe('Killer Path docs contract', () => {
       './bin/chrome-cdp list',
       '```',
       '',
-      'Pinned release: [v2.19.1](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.19.1) (`pi-chrome-cdp-2.19.1.tgz`).',
+      'Pinned release: [v2.20.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.20.0) (`pi-chrome-cdp-2.20.0.tgz`).',
       'From Chrome 136, the default profile cannot enable CDP. See [Daily browser CDP](docs/daily-browser-cdp.md).',
       'Grok Bot: [from-zero setup](docs/integrations/grok-bot.md).',
       'Measured jobs: [docs/pk-324-board.md](docs/pk-324-board.md).',
@@ -271,22 +271,22 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract(docs, [])).toEqual([]);
     expect(checkDocsContract({
       ...docs,
-      readme: `> **Unreleased candidate:** repository metadata is v2.19.1; install links remain pinned to published v2.19.0.\n${readme}`,
+      readme: `> **Unreleased candidate:** repository metadata is v2.20.0; install links remain pinned to published v2.19.1.\n${readme}`,
     }, [])).toContain(
-      'README.md must not keep the unreleased-candidate banner after v2.19.1 is published',
+      'README.md must not keep the unreleased-candidate banner after v2.20.0 is published',
     );
     expect(checkDocsContract({
       ...docs,
       readme: docs.readme
-        .replaceAll('v2.19.1', 'v2.19.0')
-        .replaceAll('pi-chrome-cdp-2.19.1.tgz', 'pi-chrome-cdp-2.19.0.tgz'),
+        .replaceAll('v2.20.0', 'v2.19.1')
+        .replaceAll('pi-chrome-cdp-2.20.0.tgz', 'pi-chrome-cdp-2.19.1.tgz'),
     }, [])).toEqual(expect.arrayContaining([
-      'README.md is missing the published release tag v2.19.1',
-      'README.md is missing the published release tarball pi-chrome-cdp-2.19.1.tgz',
+      'README.md is missing the published release tag v2.20.0',
+      'README.md is missing the published release tarball pi-chrome-cdp-2.20.0.tgz',
     ]));
     expect(checkDocsContract({
       ...docs,
-      changelog: changelog.replace('## [2.19.1]', '## [9.8.7]'),
+      changelog: changelog.replace('## [2.20.0]', '## [9.8.7]'),
     }, [])).toContain('README.md is missing the published release tag v9.8.7');
   });
 

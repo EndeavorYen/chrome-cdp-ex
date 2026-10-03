@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.20.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.19.1...v2.20.0) (2026-10-03)
+
+v2.20.0 lets `elshot` write the element screenshot where you ask, points the default help card at the
+viewport commands agents were missing, and classifies a CDP call that never answers as a timeout with
+runnable next steps. Through MCP, an `elshot` that names a file now needs `confirm: true`.
+
 ### Features
 
 * `elshot <target> <sel|@ref> [file]` writes the element screenshot to `file`, like `shot`; a relative
