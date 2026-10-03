@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Features
+
+* `elshot <target> <sel|@ref> [file]` writes the element screenshot to `file`, like `shot`; a relative
+  path resolves against the caller's cwd, and with no file it still writes to the runtime dir. Through
+  MCP, an `elshot` that names a file needs `confirm: true`, so `elshot` is now
+  `conditional-mutation / conditional`; like `shot`, it is no longer retried after a lost daemon reply
+  and runs one at a time in `batch --parallel`. A stray flag or a third positional (an unquoted
+  multi-word selector) is now an error instead of being ignored
+  ([#526](https://github.com/EndeavorYen/chrome-cdp-ex/issues/526)).
+
 ### Bug Fixes
 
 * The default `cdp help` card and SKILL.md now point at `viewport|resize <target> WxH` and

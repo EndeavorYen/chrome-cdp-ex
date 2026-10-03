@@ -14623,7 +14623,39 @@ function elementScreenshotClip(rect, scroll = {}, pad = 8) {
   };
 }
 
-async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
+// elshot <sel|@ref> [file] [--format text] (#526): the first positional is the selector, the
+// second the output file. Any other flag or a third positional is an error, never a file name.
+function parseElshotArgs(args = []) {
+  const positionals = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i] ?? '');
+    if (token === '--format') {
+      if (String(args[i + 1] ?? '') !== 'text') throw new Error('elshot: --format must be text');
+      i++;
+      continue;
+    }
+    if (token.startsWith('-')) throw new Error(`elshot: unknown argument ${token}`);
+    positionals.push({ value: token, index: i });
+  }
+  if (positionals.length > 2) {
+    throw new Error(`elshot: unexpected argument ${positionals[2].value}; quote a selector with spaces (elshot <target> <sel|@ref> [file])`);
+  }
+  return {
+    selector: positionals[0]?.value || '',
+    filePath: positionals[1]?.value || null,
+    fileIndex: positionals[1]?.index ?? -1,
+  };
+}
+
+// The daemon keeps the working directory of the CLI that started it; send the file absolute (#526).
+function absolutizeElshotFileArg(args = [], cwd = process.cwd()) {
+  const { filePath, fileIndex } = parseElshotArgs(args);
+  const next = [...args];
+  if (filePath) next[fileIndex] = resolve(cwd, filePath);
+  return next;
+}
+
+async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePath = null) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
@@ -14632,7 +14664,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
     const clip = elementScreenshotClip(r, scroll);
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png', clip });
     const prefix = (targetId || 'unknown').slice(0, 8);
-    const out = resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
+    const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
     writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
     const fb = fallback ? ' (fallback)' : '';
     return `${out}\nElement screenshot of <${r.tag}> "${r.text}" (${selector}) — ${Math.round(r.w)}×${Math.round(r.h)} CSS px${fb}`;
@@ -14667,7 +14699,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
 
   const prefix = (targetId || 'unknown').slice(0, 8);
   const selSafe = selector.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 30);
-  const out = resolve(RUNTIME_DIR, `elshot-${prefix}-${selSafe}.png`);
+  const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-${selSafe}.png`);
   writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
 
   const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${r.text}"`;
@@ -25849,7 +25881,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     cookies: () => cookiesStr(cdp, sessionId),
     'diff-shot': args => diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args)),
-    elshot: args => elshotStr(cdp, sessionId, args[0], targetId, refMap, refState),
+    elshot: args => {
+      const { selector, filePath } = parseElshotArgs(args);
+      return elshotStr(cdp, sessionId, selector, targetId, refMap, refState, filePath);
+    },
     'export-playwright': args => formatExportPlaywright(session, parseExportPlaywrightArgs(args)),
     frame: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
@@ -28551,7 +28586,7 @@ function authorizeDaemonApplicationCommand({ command, args = [], policy, mutates
     'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
-    || (['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)
+    || (['console', 'diff-shot', 'elshot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)
       && policy === 'conditional' && mutates === false)
     || tablePolicyMatches
     || (['batch', 'flow', 'repeat'].includes(command)
@@ -28809,7 +28844,7 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
     case 'key':
       return 'cdp help press';
     case 'elshot':
-      return `cdp elshot ${target} <selector|@ref>`;
+      return `cdp elshot ${target} <selector|@ref> [file]`;
     case 'eval':
       return 'cdp help eval';
     case 'eval64':
@@ -30713,6 +30748,11 @@ async function main(options = {}) {
   } else if (cmd === 'elshot') {
     const checkArgs = argsWithoutFormat(cmdArgs);
     if (!checkArgs[0]) exitCliError('CSS selector required', { cmd, targetPrefix, format: cliErrorFormat });
+    try {
+      cmdArgs = absolutizeElshotFileArg(cmdArgs);
+    } catch (error) {
+      exitCliError(error.message, { cmd, targetPrefix, format: cliErrorFormat });
+    }
   } else if (cmd === 'type') {
     const checkArgs = argsWithoutFormat(cmdArgs);
     if (!checkArgs[0]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
@@ -31018,7 +31058,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
   parseFormControlStateSnapshot, snapshotFormControlState,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr, buildTableCollectorBootstrapExpression,
-  parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
+  parseShotArgs, shotStr, elshotStr, parseElshotArgs, absolutizeElshotFileArg, RUNTIME_DIR, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
   isBackgroundMode, explicitBackgroundChoice, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
   foregroundActivationRequest, revealHiddenTab, REVEAL_POLL_TIMEOUT_MS, setBackgroundCaptureGuard, hiddenTabCaptureError,
