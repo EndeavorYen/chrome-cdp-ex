@@ -5227,12 +5227,12 @@ async function captureHiddenTabFrame(cdp, sid, params, hooks, inspectFrame) {
   const captureWithFocusEmulation = async (firstTimeout) => {
     let enabled = false;
     try {
+      enabled = true; // before the call: an enable that timed out may still have been applied
       try {
         await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: true }, sid);
-      } catch {
-        throw hiddenTabCaptureError(firstTimeout);
+      } catch (enableError) {
+        throw /target closed|detached|no (?:target|session) with/i.test(enableError?.message || '') ? enableError : hiddenTabCaptureError(firstTimeout || enableError);
       }
-      enabled = true;
       try {
         return await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
       } catch (retryError) {

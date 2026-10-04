@@ -107,3 +107,37 @@ describe('#535 pre-submit review fixes', () => {
     expect(cdp.focus).toBe(false);
   });
 });
+
+describe('#535 third-round review fixes', () => {
+  beforeEach(() => T.setBackgroundCaptureGuard(true));
+  afterEach(() => T.setBackgroundCaptureGuard(false));
+
+  it('a timeout on the shortcut path is still hidden-tab, and emulation is switched off', async () => {
+    const cdp = hiddenTabCdp({ renderWithFocus: false });
+    const tierState = { tier: 1, hiddenNeedsFocusEmulation: true };
+    const err = await T.captureScreenshot(cdp, 'sid', { format: 'png' }, { ...hooks, tierState }).then(() => null, e => e);
+    expect(err?.code).toBe('hidden_tab');
+    expect(cdp.focus).toBe(false);
+  });
+
+  it('a real error from enabling focus emulation (target closed) is thrown as itself', async () => {
+    const cdp = hiddenTabCdp();
+    const send = cdp.send.bind(cdp);
+    cdp.send = (method, params) => (method === 'Emulation.setFocusEmulationEnabled' && params.enabled
+      ? Promise.reject(new Error('Target closed'))
+      : send(method, params));
+    const err = await T.captureScreenshot(cdp, 'sid', { format: 'png' }, hooks).then(() => null, e => e);
+    expect(err?.message).toBe('Target closed');
+  });
+
+  it('a timed-out enable still gets the disable call', async () => {
+    const cdp = hiddenTabCdp();
+    const send = cdp.send.bind(cdp);
+    cdp.send = (method, params) => (method === 'Emulation.setFocusEmulationEnabled' && params.enabled
+      ? Promise.reject(new Error('Timeout: Emulation.setFocusEmulationEnabled'))
+      : send(method, params));
+    const err = await T.captureScreenshot(cdp, 'sid', { format: 'png' }, hooks).then(() => null, e => e);
+    expect(err?.code).toBe('hidden_tab');
+    expect(cdp.calls.filter(call => call.method === 'Emulation.setFocusEmulationEnabled').map(call => call.params.enabled)).toEqual([false]);
+  });
+});
