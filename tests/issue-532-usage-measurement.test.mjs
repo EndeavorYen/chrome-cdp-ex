@@ -124,3 +124,33 @@ describe('#532 docs', () => {
     expect(pkg.scripts['usage:report']).toBe('node scripts/usage-report.mjs');
   });
 });
+
+describe('#532 pre-submit review fixes', () => {
+  it('the invocation regex stays linear on a long run of option-like tokens', () => {
+    const text = `cdp ${'--ab '.repeat(40)}"`;
+    const started = Date.now();
+    expect(R.commandsFromShellText(text)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it('Codex exec_command ({cmd}) is counted', () => {
+    expect(R.usageFromCodexLine(JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'c1', arguments: JSON.stringify({ cmd: 'node cdp.mjs doctor' }) } }), {}))
+      .toEqual([{ command: 'doctor', dev: false, via: 'cli', id: 'c1#0' }]);
+  });
+
+  it('a call copied into a forked or resumed session file is counted once', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const codexDir = join(dir, 'codex');
+    mkdirSync(codexDir, { recursive: true });
+    const call = `${JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'shell_command', call_id: 'same-call', arguments: JSON.stringify({ command: 'node cdp.mjs list' }) } })}\n`;
+    writeFileSync(join(codexDir, 'a.jsonl'), call);
+    writeFileSync(join(codexDir, 'b.jsonl'), call);
+    const claudeDir = join(dir, 'claude');
+    mkdirSync(claudeDir, { recursive: true });
+    const use = `${JSON.stringify({ type: 'assistant', cwd: '/w', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'node cdp.mjs eval X 1' } }] } })}\n`;
+    writeFileSync(join(claudeDir, 'a.jsonl'), use + use);
+    const model = await R.buildUsageReport({ claudeDir, codexDir, usageFile: join(dir, 'none.jsonl'), since: null });
+    expect(model.commands.find(row => row.command === 'list').codex).toBe(1);
+    expect(model.commands.find(row => row.command === 'eval').claude).toBe(1);
+  });
+});

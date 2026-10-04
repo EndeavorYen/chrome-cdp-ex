@@ -27,7 +27,9 @@ function canonical(spelling) {
 // Every `cdp.mjs <cmd>`, `bin/chrome-cdp <cmd>` or bare `cdp <cmd>` invocation in one shell command
 // string. Value-less options before the command (`--verbose`) are skipped; a bare `cdp` inside a path or a
 // word does not count, and words that are not commands are dropped.
-const SHELL_INVOCATION = /(?:cdp\.mjs|\bchrome-cdp(?:-ex)?|(?<![\w./\\-])cdp)["']?\s+(?:--?[\w-]+\s+)*([a-z][\w-]*)/gi;
+// The option group starts with a word character so each token matches one way only: `[\w-]+` after
+// `--?` let `--ab` split two ways and backtracked exponentially on a long run of options (pre-submit).
+const SHELL_INVOCATION = /(?:cdp\.mjs|\bchrome-cdp(?:-ex)?|(?<![\w./\\-])cdp)["']?\s+(?:--?\w[\w-]*\s+)*([a-z][\w-]*)/gi;
 export function commandsFromShellText(text) {
   const found = [];
   for (const match of String(text || '').matchAll(SHELL_INVOCATION)) {
@@ -77,11 +79,12 @@ export function usageFromClaudeLine(line, { since = null } = {}) {
     if (item?.type !== 'tool_use') continue;
     const name = String(item.name || '');
     if (name === 'Bash' || name === 'PowerShell') {
-      for (const command of commandsFromShellText(item.input?.command)) found.push({ command, dev, via: 'cli' });
+      commandsFromShellText(item.input?.command)
+        .forEach((command, n) => found.push({ command, dev, via: 'cli', id: callKey(item.id, n) }));
     } else if (name.startsWith('mcp__')) {
       const [, server, tool] = name.split('__');
       const command = commandFromMcpCall(server, tool, item.input);
-      if (command) found.push({ command, dev, via: 'mcp' });
+      if (command) found.push({ command, dev, via: 'mcp', id: callKey(item.id, 0) });
     }
   }
   return found;
@@ -100,20 +103,28 @@ export function usageFromCodexLine(line, state = {}, { since = null } = {}) {
   const dev = isDevCwd(state.cwd);
   if (payload.type === 'function_call') {
     const args = parseJson(payload.arguments || '') || {};
-    const text = Array.isArray(args.command) ? args.command.join(' ') : args.command;
-    return commandsFromShellText(text).map(command => ({ command, dev, via: 'cli' }));
+    // shell_command carries {command}; exec_command carries {cmd}.
+    const raw = args.command ?? args.cmd;
+    const text = Array.isArray(raw) ? raw.join(' ') : raw;
+    return commandsFromShellText(text).map((command, n) => ({ command, dev, via: 'cli', id: callKey(payload.call_id, n) }));
   }
   if (payload.type === 'custom_tool_call' || payload.type === 'local_shell_call') {
     const text = typeof payload.input === 'string' ? payload.input : (payload.action?.command || []).join(' ');
-    return commandsFromShellText(text).map(command => ({ command, dev, via: 'cli' }));
+    return commandsFromShellText(text).map((command, n) => ({ command, dev, via: 'cli', id: callKey(payload.call_id, n) }));
   }
   // One record per MCP call: the `_end` event carries the invocation (`_begin` would double count).
   if (payload.type === 'mcp_tool_call_end') {
     const invocation = payload.invocation || {};
     const command = commandFromMcpCall(invocation.server, invocation.tool, invocation.arguments);
-    return command ? [{ command, dev, via: 'mcp' }] : [];
+    return command ? [{ command, dev, via: 'mcp', id: callKey(payload.call_id, 0) }] : [];
   }
   return [];
+}
+
+// A tool call's id plus the invocation's position in it. Codex forks and resumes copy earlier calls into
+// new session files, so the same call can be read twice; the report counts each key once.
+function callKey(callId, position) {
+  return callId ? `${callId}#${position}` : undefined;
 }
 
 // One CDP_USAGE_LOG line → [{ command, dev:false, via }].
@@ -131,10 +142,14 @@ export function emptyUsageReport() {
   return { schema: 'chrome-cdp-ex.usage-report.v1', rows, files: { counter: 0, claude: 0, codex: 0 } };
 }
 
-export function addUsage(report, source, uses) {
+export function addUsage(report, source, uses, seen = null) {
   for (const use of uses) {
     const row = report.rows.get(use.command);
     if (!row) continue;
+    if (seen && use.id) {
+      if (seen.has(use.id)) continue;
+      seen.add(use.id);
+    }
     if (use.dev && source !== 'counter') row.dev += 1;
     else row[source] += 1;
     if (use.via === 'mcp') row.mcp += 1;
@@ -229,14 +244,16 @@ export async function buildUsageReport(opts) {
     report.files.counter += 1;
     await eachLine(path, line => addUsage(report, 'counter', usageFromCounterLine(line, opts)));
   }
+  const seenClaude = new Set();
   for (const path of jsonlFiles(opts.claudeDir)) {
     report.files.claude += 1;
-    await eachLine(path, line => addUsage(report, 'claude', usageFromClaudeLine(line, opts)));
+    await eachLine(path, line => addUsage(report, 'claude', usageFromClaudeLine(line, opts), seenClaude));
   }
+  const seenCodex = new Set();
   for (const path of jsonlFiles(opts.codexDir)) {
     report.files.codex += 1;
     const state = {};
-    await eachLine(path, line => addUsage(report, 'codex', usageFromCodexLine(line, state, opts)));
+    await eachLine(path, line => addUsage(report, 'codex', usageFromCodexLine(line, state, opts), seenCodex));
   }
   return usageReportModel(report);
 }
