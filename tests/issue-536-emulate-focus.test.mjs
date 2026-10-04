@@ -65,6 +65,22 @@ describe('#536 emulate --focus', () => {
     expect(both).toMatchObject({ colorScheme: 'light', focus: true });
   });
 
+  it('T4: a --focus-only call sends no media change; a later media call keeps focus', async () => {
+    const cdp = recordingCdp();
+    const state = session();
+    await T.emulateStr(cdp, 'sid', state, ['dark'], { targetPrefix: 'ABCDEF01' });
+    cdp.calls.length = 0;
+    await T.emulateStr(cdp, 'sid', state, ['--focus'], { targetPrefix: 'ABCDEF01' });
+    expect(cdp.calls.map(call => call.method)).toEqual(['Emulation.setFocusEmulationEnabled']);
+    const json = JSON.parse(await T.emulateStr(cdp, 'sid', state, ['light', '--format', 'json'], { targetPrefix: 'ABCDEF01' }));
+    expect(json).toMatchObject({ colorScheme: 'light', focus: true });
+  });
+
+  it('off combined with a setting is an error, not a silent drop', () => {
+    expect(() => T.parseEmulateArgs(['--focus', 'off'])).toThrow(/off cannot be combined/);
+    expect(() => T.parseEmulateArgs(['off', 'dark'])).toThrow(/off cannot be combined/);
+  });
+
   it('T5: the synopsis and reference docs name --focus', () => {
     for (const path of ['../skills/chrome-cdp-ex/references/commands.md', '../docs/reference.md']) {
       expect(readFileSync(new URL(path, import.meta.url), 'utf8')).toMatch(/emulate <target> \[[^\]]*--focus/);

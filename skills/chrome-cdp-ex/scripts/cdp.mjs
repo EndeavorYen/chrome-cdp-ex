@@ -4774,6 +4774,11 @@ function parseEmulateArgs(args = []) {
       throw new Error(`emulate: unknown argument ${token}`);
     }
   }
+  // The last mode token used to win silently: `--focus off` dropped --focus, `off --focus` skipped the reset.
+  const hasOff = tokens.some(token => token === 'off' || token === 'reset' || token === 'clear');
+  if (hasOff && (opts.colorScheme != null || opts.reducedMotion != null || opts.focus != null)) {
+    throw new Error('emulate: off cannot be combined with a setting; run `emulate <target> off`, then set what you need');
+  }
   return opts;
 }
 
