@@ -343,7 +343,7 @@
       ],
       "line": 30697,
       "endLine": 30772,
-      "sourceDigest": "sha256:76f2fa83ea521e86c66ed8053f5480cebeed31231a984ed2ce81aa3eb8694012",
+      "sourceDigest": "sha256:6ff52bb8c5ede6fb7e75278e320a41f98643806ca19ee4dcf48b88d00fccb86b",
       "owner": "cli-direct"
     },
     {
@@ -588,7 +588,7 @@
   "mainSpine": {
     "line": 30561,
     "endLine": 31332,
-    "sourceDigest": "sha256:c721a52141521ab04e52e233f90b26cd896264925d067a0b913939992878b663"
+    "sourceDigest": "sha256:db9c1747cf23f8c058a94732d585e1a0ddd317a20fb15fb6d7f1967ebc53d2e3"
   },
   "daemonWrapper": {
     "line": 26900,

@@ -2270,7 +2270,7 @@ function classifyBrowserProfile(argv, { electron = false } = {}) {
   // switch (default profile) plus a start URL.
   const lastDir = list.filter(arg => arg.startsWith('--user-data-dir=')).at(-1);
   const profileDir = lastDir ? (lastDir.slice('--user-data-dir='.length) || null) : null;
-  if (electron) return { kind: 'other', profileDir, browser: null };
+  if (electron && !browserFromExecutable(list[0])) return { kind: 'other', profileDir, browser: null };
   const browser = browserFromExecutable(list[0]);
   const daily = !profileDir || isBrowserDefaultUserDataDir(profileDir) || isPersistentDailyProfileDir(profileDir);
   return { kind: daily ? 'daily' : 'isolated', profileDir, browser };
@@ -30707,7 +30707,7 @@ async function main(options = {}) {
       // #534: broadcast reuses tab daemons directly, so under CDP_ISOLATED_ONLY each member is checked
       // against its own endpoint and must be a tab of that checked browser.
       const assertIsolatedMember = isolatedOnlyEnabled() ? createIsolatedMemberGate() : null;
-      if (assertIsolatedMember) await assertIsolatedMember.prime();
+      if (assertIsolatedMember && group.members.some(member => !resolveTargetAlias(member)?.port)) await assertIsolatedMember.prime();
       const results = [];
       for (const member of group.members) {
         const entry = { target: member, targetPrefix: String(member).slice(0, 8), ok: false, result: null, error: null };

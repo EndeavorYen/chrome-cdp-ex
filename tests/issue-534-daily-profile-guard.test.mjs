@@ -110,10 +110,11 @@ describe('#534 CDP_ISOLATED_ONLY gate in getWsUrl', () => {
 
 describe('#534 doctor and open say when the profile is daily', () => {
   it('T5: doctor adds an advisory Profile check and a text line only for daily', async () => {
-    const daily = await T.checkBrowserProfile({ cdp: { status: 'OK', host: '127.0.0.1', port: '9222' }, inspectBrowserArgv: async () => argv.defaultProfile });
+    const noUserAgent = async () => '';
+    const daily = await T.checkBrowserProfile({ cdp: { status: 'OK', host: '127.0.0.1', port: '9222' }, inspectBrowserArgv: async () => argv.defaultProfile, readUserAgent: noUserAgent });
     expect(daily).toMatchObject({ label: 'Profile', status: 'WARN', severity: 'advisory', profileKind: 'daily' });
     expect(daily.detail).toMatch(/daily/);
-    const isolated = await T.checkBrowserProfile({ cdp: { status: 'OK', host: '127.0.0.1', port: '9333' }, inspectBrowserArgv: async () => argv.isolated });
+    const isolated = await T.checkBrowserProfile({ cdp: { status: 'OK', host: '127.0.0.1', port: '9333' }, inspectBrowserArgv: async () => argv.isolated, readUserAgent: noUserAgent });
     expect(isolated).toMatchObject({ label: 'Profile', status: 'OK', profileKind: 'isolated' });
     const skipped = await T.checkBrowserProfile({ cdp: { status: 'FAIL' }, inspectBrowserArgv: async () => { throw new Error('should not run'); } });
     expect(skipped.status).toBe('OK');
@@ -310,6 +311,11 @@ describe('#534 third pre-submit review fixes', () => {
     const opera = ['C:\\Program Files\\Opera\\opera.exe', '--remote-debugging-port=9333'];
     const refused = await wsUrlWith(opera).promise.then(() => null, e => e);
     expect(refused?.code).toBe('daily_profile_refused');
+  });
+
+  it('Low: an Electron/ User-Agent never turns a recognised browser executable into an app', () => {
+    expect(T.classifyBrowserProfile(argv.defaultProfile, { electron: true }).kind).toBe('daily');
+    expect(T.classifyBrowserProfile(argv.electron, { electron: true }).kind).toBe('other');
   });
 
   it('Low: the last --user-data-dir wins, as in Chromium', () => {
