@@ -154,3 +154,12 @@ describe('#532 pre-submit review fixes', () => {
     expect(model.commands.find(row => row.command === 'eval').claude).toBe(1);
   });
 });
+
+describe('#532 regex follow-ups', () => {
+  it('a long run of --chrome-cdp tokens stays fast, and `cdp.mjs -- list` counts', () => {
+    const started = Date.now();
+    expect(R.commandsFromShellText(`cdp ${'--chrome-cdp '.repeat(5000)}`)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(R.commandsFromShellText('node cdp.mjs -- list')).toEqual(['list']);
+  });
+});

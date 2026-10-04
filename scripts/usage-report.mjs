@@ -29,7 +29,9 @@ function canonical(spelling) {
 // word does not count, and words that are not commands are dropped.
 // The option group starts with a word character so each token matches one way only: `[\w-]+` after
 // `--?` let `--ab` split two ways and backtracked exponentially on a long run of options (pre-submit).
-const SHELL_INVOCATION = /(?:cdp\.mjs|\bchrome-cdp(?:-ex)?|(?<![\w./\\-])cdp)["']?\s+(?:--?\w[\w-]*\s+)*([a-z][\w-]*)/gi;
+// `chrome-cdp` may follow a path (`bin/chrome-cdp`) but not a word or `-`, so a `--chrome-cdp` option token
+// does not start a new scan; a bare `--` before the command (`cdp.mjs -- list`) is allowed.
+const SHELL_INVOCATION = /(?:cdp\.mjs|(?<![\w-])chrome-cdp(?:-ex)?|(?<![\w./\\-])cdp)["']?\s+(?:--?\w[\w-]*\s+)*(?:--\s+)?([a-z][\w-]*)/gi;
 export function commandsFromShellText(text) {
   const found = [];
   for (const match of String(text || '').matchAll(SHELL_INVOCATION)) {
