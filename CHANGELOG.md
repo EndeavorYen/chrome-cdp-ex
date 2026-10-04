@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Features
+
+* `emulate <target> --focus` makes a background or unfocused tab behave as focused. It turns on
+  `Emulation.setFocusEmulationEnabled`, so `document.hasFocus()` returns true and `element.focus()` fires
+  `focus`/`focusin`. `emulate <target> off` turns it off again. The text receipt prints a
+  `focus: emulated` line, and the JSON receipt gains a `focus` field
+  ([#536](https://github.com/EndeavorYen/chrome-cdp-ex/issues/536)).
+
 ### Bug Fixes
 
 Fixes from a Windows background-mode field report

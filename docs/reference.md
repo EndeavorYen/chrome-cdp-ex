@@ -85,7 +85,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `cookiedel` | `cookiedel <target> <name>` | `mutation / mutation` |
 | `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
 | `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
-| `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
+| `emulate` | `emulate <target> [dark\|light\|no-preference\|--focus\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
 | `text` | `text <target> [selector\|--auto]` | `read / standard` |
 | `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
@@ -354,6 +354,7 @@ Tree inspection works best with React/Vue dev builds or DevTools hooks. Producti
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> dark
 node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> reduced-motion reduce
+node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> --focus
 node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> off --format json
 ```
 
