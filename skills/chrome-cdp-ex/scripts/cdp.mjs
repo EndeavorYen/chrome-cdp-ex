@@ -2258,19 +2258,38 @@ function browserFromExecutable(exe) {
   return null;
 }
 
-// #534: what kind of profile the attached browser runs, from its command line.
+// #534: what kind of profile the attached endpoint runs, from its command line.
 // daily: the browser default (no --user-data-dir, or the platform default dir) or the persistent
-// chrome-cdp-ex daily dir. isolated: any other explicit dir. other: not a Chromium browser
-// (an Electron app). unknown: no command line to read.
-function classifyBrowserProfile(argv) {
+// chrome-cdp-ex daily dir. isolated: any other explicit dir. other: an Electron app (its /json/version
+// User-Agent says Electron/). unknown: no command line to read. Any other Chromium-family executable
+// (Opera, Yandex, Arc, ...) is a browser: an unrecognised name must not let a daily profile through.
+function classifyBrowserProfile(argv, { electron = false } = {}) {
   const list = Array.isArray(argv) ? argv.map(String) : [];
   if (!list.length) return { kind: 'unknown', profileDir: null, browser: null };
+  // Chromium uses the last --user-data-dir= and reads a bare `--user-data-dir DIR` as an empty
+  // switch (default profile) plus a start URL.
+  const lastDir = list.filter(arg => arg.startsWith('--user-data-dir=')).at(-1);
+  const profileDir = lastDir ? (lastDir.slice('--user-data-dir='.length) || null) : null;
+  if (electron) return { kind: 'other', profileDir, browser: null };
   const browser = browserFromExecutable(list[0]);
-  // Chromium reads a bare `--user-data-dir DIR` as an empty switch (default profile) plus a start URL.
-  const profileDir = list.some(arg => arg.startsWith('--user-data-dir=')) ? profileDirFromCommandLine(list) : null;
-  if (!browser) return { kind: 'other', profileDir, browser: null };
   const daily = !profileDir || isBrowserDefaultUserDataDir(profileDir) || isPersistentDailyProfileDir(profileDir);
   return { kind: daily ? 'daily' : 'isolated', profileDir, browser };
+}
+
+// The /json/version User-Agent of a CDP endpoint ('' when unreadable); Electron apps carry Electron/.
+async function readCdpUserAgent({ host, port, fetcher = fetch } = {}) {
+  try {
+    const res = await fetcher(`http://${host || DEFAULT_CDP_HOST}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+    if (!res?.ok) return '';
+    const info = await res.json();
+    return String(info?.['User-Agent'] || '');
+  } catch {
+    return '';
+  }
+}
+
+function isElectronUserAgent(userAgent) {
+  return /\bElectron\//.test(String(userAgent || ''));
 }
 
 function describeBrowserProfile(profile = {}) {
@@ -2280,7 +2299,7 @@ function describeBrowserProfile(profile = {}) {
       : `a daily profile (the ${profile.browser || 'browser'} default user-data-dir)`;
   }
   if (profile.kind === 'isolated') return `an isolated profile (${profile.profileDir})`;
-  if (profile.kind === 'other') return 'an app that is not a Chromium browser (such as Electron)';
+  if (profile.kind === 'other') return 'an Electron app, not a browser profile';
   return 'an unidentified profile (Browser.getBrowserCommandLine gave no command line)';
 }
 
@@ -2403,7 +2422,7 @@ function macCommandLineArgv(line, { exists = existsSync } = {}) {
     }
     // Not on disk (or not checkable): a leading part shaped like a daily or default dir still wins, so a
     // stray trailing word (-psn_…) cannot turn a daily profile into an "isolated" one.
-    for (let n = parts.length; n > 1; n--) {
+    for (let n = parts.length; n >= 1; n--) {
       const candidate = parts.slice(0, n).join(' ');
       if (isBrowserDefaultUserDataDir(candidate) || isPersistentDailyProfileDir(candidate)) {
         trailing.push(...parts.slice(n));
@@ -2429,21 +2448,30 @@ function createIsolatedMemberGate({
   baseEnv = process.env,
 } = {}) {
   const checked = new Map();
-  return async (alias, targetId) => {
+  const check = (alias) => {
     const env = aliasEnv(alias, baseEnv);
     const key = `${env.CDP_HOST || ''}|${env.CDP_PORT || ''}`;
     if (!checked.has(key)) {
-      checked.set(key, (async () => {
+      const pending = (async () => {
         const wsUrl = await gatedWsUrl({ env });
         const pages = await listPagesFor(wsUrl);
         return { endpoint: cdpEndpointFromWsUrl(wsUrl), ids: new Set((pages || []).map(page => page.targetId)) };
-      })());
+      })();
+      // A failure is not remembered: a transient error must not fail every later member.
+      pending.catch(() => checked.delete(key));
+      checked.set(key, pending);
     }
-    const gate = await checked.get(key);
-    if (!gate.ids.has(targetId)) {
-      throw new Error(`CDP_ISOLATED_ONLY=1: ${targetPrefixForDisplay(targetId)} is not a tab of the checked browser at ${gate.endpoint}; broadcast does not reuse its daemon.`);
+    return checked.get(key);
+  };
+  const gate = async (alias, targetId) => {
+    const result = await check(alias);
+    if (!result.ids.has(targetId)) {
+      throw new Error(`CDP_ISOLATED_ONLY=1: ${targetPrefixForDisplay(targetId)} is not a tab of the checked browser at ${result.endpoint}; broadcast does not reuse its daemon.`);
     }
   };
+  // The environment endpoint, checked before any member: a refusal there stays a Kind: policy error.
+  gate.prime = async () => { await check(null); };
+  return gate;
 }
 
 function dailyProfileRefusedError({ host, port, profile }) {
@@ -3800,7 +3828,10 @@ async function getWsUrl(options = {}) {
   const inspect = options.inspectBrowserArgv
     || (async endpoint => (await readBrowserArgvViaCdp({ wsUrl: url, connectWebSocket: options.connectWebSocket }))
       || readBrowserProcessArgv(endpoint));
-  const profile = classifyBrowserProfile(await inspect({ host, port }));
+  const readUserAgent = options.readUserAgent || (endpoint => readCdpUserAgent({ ...endpoint, fetcher: options.fetcher }));
+  const profile = classifyBrowserProfile(await inspect({ host, port }), {
+    electron: isElectronUserAgent(await readUserAgent({ host, port })),
+  });
   if (profile.kind === 'daily' || profile.kind === 'unknown') throw dailyProfileRefusedError({ host, port, profile });
   return url;
 }
@@ -24476,12 +24507,13 @@ async function runDoctorChecks(opts = {}) {
     cdp: reconciled,
     // An injected fetcher means a stubbed endpoint: do not look up a real process on that port.
     inspectBrowserArgv: opts.inspectBrowserArgv || (opts.fetcher ? async () => null : undefined),
+    readUserAgent: endpoint => readCdpUserAgent({ ...endpoint, fetcher: opts.fetcher || fetch }),
   }));
   return checks;
 }
 
 // #534: an advisory check, never blocking. WARN only when the attached browser runs a daily profile.
-async function checkBrowserProfile({ cdp = null, inspectBrowserArgv } = {}) {
+async function checkBrowserProfile({ cdp = null, inspectBrowserArgv, readUserAgent } = {}) {
   if (cdp?.status !== 'OK' || !cdp.port) {
     return { status: 'OK', label: 'Profile', detail: 'skipped until CDP is reachable', profileKind: null };
   }
@@ -24489,7 +24521,11 @@ async function checkBrowserProfile({ cdp = null, inspectBrowserArgv } = {}) {
   const inspect = inspectBrowserArgv || (target => readBrowserProcessArgv(target));
   let argv = null;
   try { argv = await inspect(endpoint); } catch {}
-  const profile = classifyBrowserProfile(argv);
+  let electron = false;
+  if (argv) {
+    try { electron = isElectronUserAgent(await (readUserAgent || readCdpUserAgent)(endpoint)); } catch {}
+  }
+  const profile = classifyBrowserProfile(argv, { electron });
   if (profile.kind !== 'daily') {
     return { status: 'OK', label: 'Profile', detail: describeBrowserProfile(profile), profileKind: profile.kind, profileDir: profile.profileDir };
   }
@@ -30671,6 +30707,7 @@ async function main(options = {}) {
       // #534: broadcast reuses tab daemons directly, so under CDP_ISOLATED_ONLY each member is checked
       // against its own endpoint and must be a tab of that checked browser.
       const assertIsolatedMember = isolatedOnlyEnabled() ? createIsolatedMemberGate() : null;
+      if (assertIsolatedMember) await assertIsolatedMember.prime();
       const results = [];
       for (const member of group.members) {
         const entry = { target: member, targetPrefix: String(member).slice(0, 8), ok: false, result: null, error: null };
@@ -31517,7 +31554,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
-  getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
+  getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, readCdpUserAgent, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
   detectChromiumMajorVersion, defaultProfileIgnoresRemoteDebugging,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,

@@ -16,17 +16,21 @@ const argv = {
   electron: ['C:\\Program Files\\Darkroom\\Darkroom.exe', '--remote-debugging-port=9229'],
 };
 
-const fetcherFor = port => async () => ({
+const fetcherFor = (port, userAgent = 'Mozilla/5.0 Chrome/154.0.0.0') => async () => ({
   ok: true,
   status: 200,
-  json: async () => ({ Browser: 'Chrome/154.0.0.0', webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/ABC` }),
+  json: async () => ({
+    Browser: 'Chrome/154.0.0.0',
+    'User-Agent': userAgent,
+    webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/ABC`,
+  }),
 });
 
-function wsUrlWith(args, env = { CDP_PORT: '9333', CDP_ISOLATED_ONLY: '1' }) {
+function wsUrlWith(args, env = { CDP_PORT: '9333', CDP_ISOLATED_ONLY: '1' }, userAgent = undefined) {
   const seen = [];
   const promise = T.getWsUrl({
     env,
-    fetcher: fetcherFor(env.CDP_PORT || '9222'),
+    fetcher: fetcherFor(env.CDP_PORT || '9222', userAgent),
     lastEndpoint: null,
     rememberEndpoint: () => {},
     inspectBrowserArgv: async (endpoint) => {
@@ -44,7 +48,8 @@ describe('#534 classifyBrowserProfile', () => {
     expect(T.classifyBrowserProfile(argv.persistentDaily).kind).toBe('daily');
     expect(T.classifyBrowserProfile(argv.persistentDailyPosix).kind).toBe('daily');
     expect(T.classifyBrowserProfile(argv.isolated)).toMatchObject({ kind: 'isolated', profileDir: 'C:\\Temp\\iso-533' });
-    expect(T.classifyBrowserProfile(argv.electron).kind).toBe('other');
+    // Electron is decided by its /json/version User-Agent, not by the executable name.
+    expect(T.classifyBrowserProfile(argv.electron, { electron: true }).kind).toBe('other');
     expect(T.classifyBrowserProfile([]).kind).toBe('unknown');
     expect(T.classifyBrowserProfile(null).kind).toBe('unknown');
   });
@@ -61,9 +66,9 @@ describe('#534 CDP_ISOLATED_ONLY gate in getWsUrl', () => {
     }
   });
 
-  it('T2: allows an isolated profile and a non-browser (Electron) target', async () => {
-    for (const args of [argv.isolated, argv.electron]) {
-      const { promise, seen } = wsUrlWith(args);
+  it('T2: allows an isolated profile and an Electron app (User-Agent Electron/)', async () => {
+    for (const [args, userAgent] of [[argv.isolated, undefined], [argv.electron, 'Mozilla/5.0 Darkroom/1.0 Chrome/120.0 Electron/28.1.0']]) {
+      const { promise, seen } = wsUrlWith(args, undefined, userAgent);
       await expect(promise).resolves.toBe('ws://127.0.0.1:9333/devtools/browser/ABC');
       expect(seen).toEqual([{ host: '127.0.0.1', port: '9333' }]);
     }
@@ -216,10 +221,10 @@ describe('#534 pre-submit review fixes', () => {
     expect(T.classifyBrowserProfile(second).kind).toBe('daily');
   });
 
-  it('Medium: only the executable name decides the browser, not an "edge" or "chrome" substring in the path', () => {
-    expect(T.classifyBrowserProfile(['C:\\Program Files\\Ledger Live\\Ledger Live.exe', '--remote-debugging-port=9229']).kind).toBe('other');
-    expect(T.classifyBrowserProfile(['C:\\Users\\hedge\\AppData\\Local\\slack\\slack.exe']).kind).toBe('other');
-    expect(T.classifyBrowserProfile(['/opt/mychrome-tools/app/electron']).kind).toBe('other');
+  it('Medium: an "edge" or "chrome" substring in a path does not name the browser', () => {
+    expect(T.classifyBrowserProfile(['C:\\Program Files\\Ledger Live\\Ledger Live.exe', '--remote-debugging-port=9229']).browser).toBeNull();
+    expect(T.classifyBrowserProfile(['C:\\Users\\hedge\\AppData\\Local\\slack\\slack.exe']).browser).toBeNull();
+    expect(T.classifyBrowserProfile(['/opt/mychrome-tools/app/electron']).browser).toBeNull();
     expect(T.classifyBrowserProfile(['/usr/bin/chromium-browser']).browser).toBe('chrome');
     expect(T.classifyBrowserProfile(['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge']).browser).toBe('edge');
     expect(T.classifyBrowserProfile(['C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe']).browser).toBe('brave');
@@ -291,5 +296,46 @@ describe('#534 second pre-submit review fixes', () => {
     await expect(gate(null, 'BBBB0000')).rejects.toThrow(/BBBB0000 is not a tab of the checked browser at 127\.0\.0\.1:9333/);
     await expect(gate({ port: 9222 }, 'AAAA0000')).rejects.toMatchObject({ code: 'daily_profile_refused' });
     expect(connections).toEqual(['9333', '9222']);
+  });
+});
+
+describe('#534 third pre-submit review fixes', () => {
+  it('High: an unrecognised Chromium browser (Opera, Yandex, Arc) with no Electron evidence is daily, not "other"', () => {
+    for (const exe of ['C:\\Program Files\\Opera\\opera.exe', 'C:\\Users\\me\\AppData\\Local\\Yandex\\YandexBrowser\\Application\\browser.exe', '/Applications/Arc.app/Contents/MacOS/Arc', '/usr/bin/yandex-browser-stable']) {
+      expect(T.classifyBrowserProfile([exe, '--remote-debugging-port=9222']).kind, exe).toBe('daily');
+    }
+  });
+
+  it('High: getWsUrl refuses an unrecognised browser on its default profile, but allows Electron', async () => {
+    const opera = ['C:\\Program Files\\Opera\\opera.exe', '--remote-debugging-port=9333'];
+    const refused = await wsUrlWith(opera).promise.then(() => null, e => e);
+    expect(refused?.code).toBe('daily_profile_refused');
+  });
+
+  it('Low: the last --user-data-dir wins, as in Chromium', () => {
+    expect(T.classifyBrowserProfile([CHROME, '--user-data-dir=C:/iso', '--user-data-dir=']).kind).toBe('daily');
+    expect(T.classifyBrowserProfile([CHROME, '--user-data-dir=', '--user-data-dir=C:/iso']).kind).toBe('isolated');
+  });
+
+  it('Medium: a failed member check is not cached, and prime keeps the refusal code', async () => {
+    let calls = 0;
+    const gate = T.createIsolatedMemberGate({
+      gatedWsUrl: async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error('ECONNRESET'), { code: 'ECONNRESET' });
+        return 'ws://127.0.0.1:9333/devtools/browser/X';
+      },
+      listPagesFor: async () => [{ targetId: 'AAAA0000' }],
+      baseEnv: { CDP_PORT: '9333' },
+    });
+    await expect(gate(null, 'AAAA0000')).rejects.toThrow(/ECONNRESET/);
+    await expect(gate(null, 'AAAA0000')).resolves.toBeUndefined();
+    expect(calls).toBe(2);
+    const refusing = T.createIsolatedMemberGate({
+      gatedWsUrl: async () => { throw Object.assign(new Error('refused'), { code: 'daily_profile_refused' }); },
+      listPagesFor: async () => [],
+      baseEnv: { CDP_PORT: '9222' },
+    });
+    await expect(refusing.prime()).rejects.toMatchObject({ code: 'daily_profile_refused' });
   });
 });
