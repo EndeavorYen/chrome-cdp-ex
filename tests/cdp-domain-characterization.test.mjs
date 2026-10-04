@@ -35,6 +35,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Emulation.clearDeviceMetricsOverride': 'page-mutation',
   'Emulation.setDeviceMetricsOverride': 'page-mutation',
   'Emulation.setEmulatedMedia': 'page-mutation',
+  'Emulation.setFocusEmulationEnabled': 'page-mutation',
   'Fetch.continueRequest': 'page-mutation',
   'Fetch.disable': 'page-mutation',
   'Fetch.enable': 'page-mutation',
@@ -425,8 +426,9 @@ describe('Phase 6 direct CDP characterization', () => {
     // #467 added netlogRequestStr → Network.getResponseBody.
     // #533 added restoreAuditViewport → Emulation.clearDeviceMetricsOverride, and moved the
     // setDeviceMetricsOverride call from viewportStr into applyViewportOverride.
-    expect(inventory).toHaveLength(166);
-    expect(digest).toBe('sha256:1e36277e7497534a4707bd85941237e4f43af838e2757996d36e9dcb922ba300');
+    // #536 added emulateStr → Emulation.setFocusEmulationEnabled (on, off).
+    expect(inventory).toHaveLength(168);
+    expect(digest).toBe('sha256:7a3cf501bbcdb504bd95dc877cfd71770d2e281d5c2e7ca3d08f4d7514bcb76d');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

@@ -241,7 +241,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `cookiedel` | `cookiedel <target> <name>` | `mutation / mutation` |
 | `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
 | `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
-| `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
+| `emulate` | `emulate <target> [dark\|light\|no-preference\|--focus\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
 | `text` | `text <target> [selector\|--auto]` | `read / standard` |
 | `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
@@ -645,6 +645,7 @@ scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
 scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
 scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (alias: resize; e.g. 375x812)
 scripts/cdp.mjs emulate <target> dark|light|off        # prefers-color-scheme / reduced-motion media features
+scripts/cdp.mjs emulate <target> --focus               # background tab behaves as focused: hasFocus() true, focus events fire (off clears it)
 scripts/cdp.mjs upload  <target> <selector> <paths> [--format json] # upload file(s) to input[type=file]
 scripts/cdp.mjs back    <target>                       # navigate back in browser history
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history

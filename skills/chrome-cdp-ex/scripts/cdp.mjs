@@ -4728,6 +4728,7 @@ function emptyEmulateState() {
     colorScheme: null,
     reducedMotion: null,
     features: [],
+    focus: false,
   };
 }
 
@@ -4738,6 +4739,7 @@ function parseEmulateArgs(args = []) {
     mode: 'status',
     colorScheme: null,
     reducedMotion: null,
+    focus: null,
   };
   const tokens = fopts.args;
   for (let i = 0; i < tokens.length; i++) {
@@ -4764,8 +4766,20 @@ function parseEmulateArgs(args = []) {
     } else if (token === 'reduce-motion') {
       opts.mode = 'set';
       opts.reducedMotion = 'reduce';
+    } else if (token === '--focus') {
+      // #536: Emulation.setFocusEmulationEnabled, so a background tab behaves as focused.
+      opts.mode = 'set';
+      opts.focus = true;
     } else {
       throw new Error(`emulate: unknown argument ${token}`);
+    }
+  }
+  // The last mode token used to win silently (`--focus off`, `off --focus`, `dark status`, `off status`).
+  const modes = ['off', 'status'].filter(word => tokens.some(token => (word === 'off' ? ['off', 'reset', 'clear'] : ['status', 'show']).includes(token)));
+  const hasSetting = opts.colorScheme != null || opts.reducedMotion != null || opts.focus != null;
+  for (const word of modes) {
+    if (hasSetting || modes.length > 1) {
+      throw new Error(`emulate: ${word} cannot be combined with another setting or mode; run \`emulate <target> ${word}\` on its own`);
     }
   }
   return opts;
@@ -4786,7 +4800,8 @@ function buildEmulateModel(state = emptyEmulateState(), { targetPrefix = null, n
     colorScheme: state.colorScheme || null,
     reducedMotion: state.reducedMotion || null,
     features,
-    active: features.length > 0,
+    focus: state.focus === true,
+    active: features.length > 0 || state.focus === true,
     nextCommand: nextCommand || (targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : null),
   };
 }
@@ -4801,6 +4816,7 @@ function formatEmulateText(model) {
   const lines = ['Emulation: active'];
   if (model.colorScheme) lines.push(`  prefers-color-scheme: ${model.colorScheme}`);
   if (model.reducedMotion) lines.push(`  prefers-reduced-motion: ${model.reducedMotion}`);
+  if (model.focus) lines.push('  focus: emulated (document.hasFocus() true, page reported visible)');
   if (model.nextCommand) lines.push(`Next: ${model.nextCommand}`);
   return lines.join('\n');
 }
@@ -4810,6 +4826,7 @@ async function emulateStr(cdp, sid, session, args = [], { targetPrefix = null } 
   session.emulate = session.emulate || emptyEmulateState();
   if (opts.mode === 'off') {
     await cdpDomains(cdp).Emulation.setEmulatedMedia( { features: [] }, sid);
+    if (session.emulate.focus) await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: false }, sid);
     session.emulate = emptyEmulateState();
   } else if (opts.mode === 'set') {
     const next = {
@@ -4821,7 +4838,14 @@ async function emulateStr(cdp, sid, session, args = [], { targetPrefix = null } 
     if (opts.colorScheme != null) next.colorScheme = opts.colorScheme;
     if (opts.reducedMotion != null) next.reducedMotion = opts.reducedMotion;
     next.features = buildEmulateFeatures(next);
-    await cdpDomains(cdp).Emulation.setEmulatedMedia( { features: next.features }, sid);
+    // A --focus-only call leaves the media features as they are.
+    if (opts.colorScheme != null || opts.reducedMotion != null) {
+      await cdpDomains(cdp).Emulation.setEmulatedMedia( { features: next.features }, sid);
+    }
+    if (opts.focus) {
+      await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: true }, sid);
+      next.focus = true;
+    }
     session.emulate = next;
   }
   const model = buildEmulateModel(session.emulate, {
@@ -29334,6 +29358,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     lower.includes('unknown option')
     || lower.includes('unknown argument')
     || lower.includes('unknown flag')
+    // #536: every `emulate:` parse error (a bad value, off/status with a setting) is a typing mistake.
+    || (cmd === 'emulate' && lower.startsWith('emulate:'))
   ) {
     return {
       kind: 'usage',
