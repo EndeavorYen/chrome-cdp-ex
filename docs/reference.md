@@ -508,8 +508,9 @@ Configuration:
 | `CDP_CONTENT_BOUNDARIES` | `1` wraps page output (`perceive`, `text`, `console`, `table`, `netlog`, `back`/`forward`, `nav`/`open --perceive`) in nonce-marked `PAGE CONTENT (untrusted)` blocks. Off by default. |
 | `CDP_ALLOWED_ORIGINS` | Comma-separated origins (`https://*.example.com` for subdomains). `nav`/`open`/`spawn-debug-browser --url` elsewhere fail with `Kind: policy`, commands do not run while the tab is elsewhere, and a command that navigates elsewhere fails after the fact. Unset by default. |
 | `CDP_DENY_ACTIONS` | Comma-separated command names that exit 1 with `Kind: policy`, with the commands that do the same job (`eval` also denies `eval64`/`call`/`inject --js`; any list denies `evalraw`), also as `batch`/`flow`/`repeat`/`replay`/`record --action` steps and MCP tool calls. Unset by default. |
+| `CDP_ISOLATED_ONLY` | `1` refuses to attach to a daily profile (the browser default user-data-dir or `chrome-cdp-ex/daily-*`) or to a browser whose command line cannot be read, with `Kind: policy`; auto-discovery then accepts isolated windows. `doctor` names a daily profile either way. Unset by default. |
 
-The last three are opt-in session guardrails: defense-in-depth for agents, not a security boundary. Details and limits: `skills/chrome-cdp-ex/references/commands.md` (Session guardrails).
+The last four are opt-in session guardrails: defense-in-depth for agents, not a security boundary. Details and limits: `skills/chrome-cdp-ex/references/commands.md` (Session guardrails).
 
 ### Background mode
 

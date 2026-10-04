@@ -1,0 +1,347 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+
+process.env.NODE_ENV = 'test';
+
+const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+
+const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+const argv = {
+  defaultProfile: [EDGE, '--remote-debugging-port=9222'],
+  platformDefaultDir: [CHROME, '--user-data-dir=C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\User Data'],
+  persistentDaily: [CHROME, '--user-data-dir=C:\\Users\\me\\AppData\\Local\\chrome-cdp-ex\\daily-chrome'],
+  persistentDailyPosix: ['/usr/bin/google-chrome', '--user-data-dir=/home/me/.config/chrome-cdp-ex/daily-chrome'],
+  isolated: [CHROME, '--headless=new', '--user-data-dir=C:\\Temp\\iso-533'],
+  electron: ['C:\\Program Files\\Darkroom\\Darkroom.exe', '--remote-debugging-port=9229'],
+};
+
+const fetcherFor = (port, userAgent = 'Mozilla/5.0 Chrome/154.0.0.0') => async () => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    Browser: 'Chrome/154.0.0.0',
+    'User-Agent': userAgent,
+    webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/ABC`,
+  }),
+});
+
+function wsUrlWith(args, env = { CDP_PORT: '9333', CDP_ISOLATED_ONLY: '1' }, userAgent = undefined) {
+  const seen = [];
+  const promise = T.getWsUrl({
+    env,
+    fetcher: fetcherFor(env.CDP_PORT || '9222', userAgent),
+    lastEndpoint: null,
+    rememberEndpoint: () => {},
+    inspectBrowserArgv: async (endpoint) => {
+      seen.push(endpoint);
+      return args;
+    },
+  });
+  return { promise, seen };
+}
+
+describe('#534 classifyBrowserProfile', () => {
+  it('T1: daily, isolated, other and unknown', () => {
+    expect(T.classifyBrowserProfile(argv.defaultProfile)).toMatchObject({ kind: 'daily', profileDir: null, browser: 'edge' });
+    expect(T.classifyBrowserProfile(argv.platformDefaultDir).kind).toBe('daily');
+    expect(T.classifyBrowserProfile(argv.persistentDaily).kind).toBe('daily');
+    expect(T.classifyBrowserProfile(argv.persistentDailyPosix).kind).toBe('daily');
+    expect(T.classifyBrowserProfile(argv.isolated)).toMatchObject({ kind: 'isolated', profileDir: 'C:\\Temp\\iso-533' });
+    // Electron is decided by its /json/version User-Agent, not by the executable name.
+    expect(T.classifyBrowserProfile(argv.electron, { electron: true }).kind).toBe('other');
+    expect(T.classifyBrowserProfile([]).kind).toBe('unknown');
+    expect(T.classifyBrowserProfile(null).kind).toBe('unknown');
+  });
+});
+
+describe('#534 CDP_ISOLATED_ONLY gate in getWsUrl', () => {
+  it('T2: refuses a daily or unidentified profile, naming host:port and the profile', async () => {
+    for (const args of [argv.defaultProfile, argv.persistentDaily, null]) {
+      const { promise } = wsUrlWith(args);
+      const err = await promise.then(() => null, e => e);
+      expect(err?.code, String(args)).toBe('daily_profile_refused');
+      expect(err.message).toContain('127.0.0.1:9333');
+      expect(err.message).toMatch(/CDP_ISOLATED_ONLY/);
+    }
+  });
+
+  it('T2: allows an isolated profile and an Electron app (User-Agent Electron/)', async () => {
+    for (const [args, userAgent] of [[argv.isolated, undefined], [argv.electron, 'Mozilla/5.0 Darkroom/1.0 Chrome/120.0 Electron/28.1.0']]) {
+      const { promise, seen } = wsUrlWith(args, undefined, userAgent);
+      await expect(promise).resolves.toBe('ws://127.0.0.1:9333/devtools/browser/ABC');
+      expect(seen).toEqual([{ host: '127.0.0.1', port: '9333' }]);
+    }
+  });
+
+  it('T2: without CDP_ISOLATED_ONLY nothing is inspected and a daily profile attaches', async () => {
+    const { promise, seen } = wsUrlWith(argv.defaultProfile, { CDP_PORT: '9333' });
+    await expect(promise).resolves.toBe('ws://127.0.0.1:9333/devtools/browser/ABC');
+    expect(seen).toEqual([]);
+  });
+
+  it('T3: auto-discovery accepts an isolated occupant instead of refusing it', async () => {
+    const env = { HOME: '/nonexistent-534', USERPROFILE: '/nonexistent-534', LOCALAPPDATA: '/nonexistent-534', CDP_ISOLATED_ONLY: '1' };
+    const isolatedDir = '/tmp/chrome-cdp-ex-chrome-debug-profile-9222';
+    const options = {
+      env,
+      fetcher: fetcherFor('9222'),
+      lastEndpoint: null,
+      rememberEndpoint: () => {},
+      inspectOccupantProfileDir: async () => isolatedDir,
+      inspectBrowserArgv: async () => ['/usr/bin/google-chrome', `--user-data-dir=${isolatedDir}`],
+    };
+    await expect(T.getWsUrl(options)).resolves.toBe('ws://127.0.0.1:9222/devtools/browser/ABC');
+    const { CDP_ISOLATED_ONLY, ...plain } = env;
+    void CDP_ISOLATED_ONLY;
+    const err = await T.getWsUrl({ ...options, env: plain }).then(() => null, e => e);
+    expect(err?.code).toBe('cdp_isolated_occupant');
+  });
+
+  it('T4: the CLI error is Kind policy with an isolated spawn as Next (ask first)', async () => {
+    const { promise } = wsUrlWith(argv.defaultProfile);
+    const err = await promise.then(() => null, e => e);
+    const out = T.formatCliError(err, { cmd: 'list' });
+    expect(out).toMatch(/Kind: policy/);
+    expect(out).toMatch(/Strategy: use-isolated-browser/);
+    expect(out.split('\n').at(-1)).toMatch(/^Next: cdp spawn-debug-browser \S+ --port 9333 --user-data-dir \S+.* \(ask first\) \(Kind: policy\)$/);
+  });
+});
+
+describe('#534 doctor and open say when the profile is daily', () => {
+  it('T5: doctor adds an advisory Profile check and a text line only for daily', async () => {
+    const noUserAgent = async () => '';
+    const daily = await T.checkBrowserProfile({ cdp: { status: 'OK', host: '127.0.0.1', port: '9222' }, inspectBrowserArgv: async () => argv.defaultProfile, readUserAgent: noUserAgent });
+    expect(daily).toMatchObject({ label: 'Profile', status: 'WARN', severity: 'advisory', profileKind: 'daily' });
+    expect(daily.detail).toMatch(/daily/);
+    const isolated = await T.checkBrowserProfile({ cdp: { status: 'OK', host: '127.0.0.1', port: '9333' }, inspectBrowserArgv: async () => argv.isolated, readUserAgent: noUserAgent });
+    expect(isolated).toMatchObject({ label: 'Profile', status: 'OK', profileKind: 'isolated' });
+    const skipped = await T.checkBrowserProfile({ cdp: { status: 'FAIL' }, inspectBrowserArgv: async () => { throw new Error('should not run'); } });
+    expect(skipped.status).toBe('OK');
+    const base = [
+      { label: 'Node', status: 'OK', detail: 'v24' },
+      { label: 'CDP', status: 'OK', detail: '127.0.0.1:9222' },
+    ];
+    expect(T.formatDoctorReport([...base, daily])).toMatch(/^Profile: .*daily/m);
+    expect(T.formatDoctorReport([...base, isolated])).not.toMatch(/^Profile:/m);
+  });
+
+  it('T5: open stays quiet (decision 2026-10-04: doctor only)', () => {
+    expect(T.buildOpenModel({ targetId: 'ABCDEF0123456789', url: 'https://example.com' })).not.toHaveProperty('browserProfile');
+  });
+});
+
+describe('#534 reading the browser command line from the OS process', () => {
+  const spawnFor = outputs => (command, args) => {
+    const key = command === 'powershell' ? 'powershell' : `${command} ${args.join(' ')}`;
+    const stdout = outputs[key];
+    return stdout == null ? { status: 1, stdout: '' } : { status: 0, stdout };
+  };
+
+  it('splits a Windows command line with quoted paths', () => {
+    expect(T.splitCommandLine('"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9491 --user-data-dir="C:\\Temp\\a b" about:blank'))
+      .toEqual(['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', '--remote-debugging-port=9491', '--user-data-dir=C:\\Temp\\a b', 'about:blank']);
+  });
+
+  it('T2: Windows asks PowerShell for the process listening on the port', () => {
+    const argvFound = T.readBrowserProcessArgv({
+      host: '127.0.0.1',
+      port: '9491',
+      platform: 'win32',
+      spawnSyncFn: spawnFor({ powershell: `"${CHROME}" --remote-debugging-port=9491 --user-data-dir=C:/Temp/iso-533 about:blank\r\n` }),
+    });
+    expect(argvFound).toEqual([CHROME, '--remote-debugging-port=9491', '--user-data-dir=C:/Temp/iso-533', 'about:blank']);
+    expect(T.classifyBrowserProfile(argvFound).kind).toBe('isolated');
+  });
+
+  it('T2: macOS keeps a spaced executable path together', () => {
+    const argvFound = T.readBrowserProcessArgv({
+      host: 'localhost',
+      port: 9222,
+      platform: 'darwin',
+      spawnSyncFn: spawnFor({
+        'lsof -nP -iTCP:9222 -sTCP:LISTEN -Fp': 'p4242\nfcwd\n',
+        'ps -ww -o command= -p 4242': '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222\n',
+      }),
+    });
+    expect(argvFound).toEqual(['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--remote-debugging-port=9222']);
+    expect(T.classifyBrowserProfile(argvFound)).toMatchObject({ kind: 'daily', browser: 'chrome' });
+  });
+
+  it('T2: Linux uses the /proc scan of the process that owns the LISTEN socket', () => {
+    const seenPorts = [];
+    const argvFound = T.readBrowserProcessArgv({
+      host: '127.0.0.1',
+      port: 9222,
+      platform: 'linux',
+      findLinuxProcess: wanted => {
+        seenPorts.push(wanted);
+        return { pid: 777, argv: ['/opt/google/chrome/chrome', '--remote-debugging-port=9222', '--user-data-dir=/home/me/.config/chrome-cdp-ex/daily-chrome'], profileDir: null };
+      },
+    });
+    expect(seenPorts).toEqual([9222]);
+    expect(T.classifyBrowserProfile(argvFound).kind).toBe('daily');
+  });
+
+  it('T2: the Linux scan returns the argv of a default-profile browser too', () => {
+    const owner = T.findListeningBrowserProcess(9222, {
+      platform: 'linux',
+      listPids: () => ['777'],
+      readArgv: () => ['/opt/google/chrome/chrome', '--remote-debugging-port=9222'],
+      readFile: () => '',
+      requireProfileDir: false,
+    });
+    expect(owner).toMatchObject({ pid: 777, profileDir: null });
+    expect(T.classifyBrowserProfile(owner.argv).kind).toBe('daily');
+  });
+
+  it('T2: a remote host or an unreadable process gives no command line (unknown)', () => {
+    const neverRun = () => { throw new Error('must not run'); };
+    expect(T.readBrowserProcessArgv({ host: '192.168.1.5', port: 9222, platform: 'win32', spawnSyncFn: neverRun })).toBeNull();
+    expect(T.readBrowserProcessArgv({ host: '127.0.0.1', port: 9222, platform: 'win32', spawnSyncFn: spawnFor({}) })).toBeNull();
+  });
+});
+
+describe('#534 docs', () => {
+  it('T6: CDP_ISOLATED_ONLY is documented with the other guardrails', () => {
+    for (const path of ['../skills/chrome-cdp-ex/references/commands.md', '../docs/reference.md', '../skills/chrome-cdp-ex/SKILL.md', '../README.md']) {
+      expect(readFileSync(new URL(path, import.meta.url), 'utf8'), path).toMatch(/CDP_ISOLATED_ONLY/);
+    }
+  });
+});
+
+describe('#534 pre-submit review fixes', () => {
+  it('High: a macOS daily dir with a space stays one --user-data-dir value', () => {
+    const daily = '/Users/u/Library/Application Support/chrome-cdp-ex/daily-chrome';
+    const line = `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=${daily} about:blank`;
+    const argvFound = T.macCommandLineArgv(line, { exists: path => path === daily });
+    expect(argvFound).toContain(`--user-data-dir=${daily}`);
+    expect(T.classifyBrowserProfile(argvFound)).toMatchObject({ kind: 'daily', profileDir: daily });
+    const defaultDir = '/Users/u/Library/Application Support/Google/Chrome';
+    const second = T.macCommandLineArgv(`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${defaultDir} --remote-debugging-port=9222`, { exists: () => false });
+    expect(T.classifyBrowserProfile(second).kind).toBe('daily');
+  });
+
+  it('Medium: an "edge" or "chrome" substring in a path does not name the browser', () => {
+    expect(T.classifyBrowserProfile(['C:\\Program Files\\Ledger Live\\Ledger Live.exe', '--remote-debugging-port=9229']).browser).toBeNull();
+    expect(T.classifyBrowserProfile(['C:\\Users\\hedge\\AppData\\Local\\slack\\slack.exe']).browser).toBeNull();
+    expect(T.classifyBrowserProfile(['/opt/mychrome-tools/app/electron']).browser).toBeNull();
+    expect(T.classifyBrowserProfile(['/usr/bin/chromium-browser']).browser).toBe('chrome');
+    expect(T.classifyBrowserProfile(['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge']).browser).toBe('edge');
+    expect(T.classifyBrowserProfile(['C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe']).browser).toBe('brave');
+  });
+
+  it('Low: the WebSocket is closed when Browser.getBrowserCommandLine times out', async () => {
+    let closed = 0;
+    const silent = { readyState: 1, send() {}, close() { closed += 1; } };
+    const argvRead = await T.readBrowserArgvViaCdp({ wsUrl: 'ws://127.0.0.1:1/devtools/browser/X', connectWebSocket: async () => silent });
+    expect(argvRead).toBeNull();
+    expect(closed).toBeGreaterThan(0);
+  });
+
+  it('broadcast and open readiness: the gate covers broadcast, readiness polls skip the lookup', () => {
+    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const broadcast = source.slice(source.indexOf("if (cmd === 'broadcast') {"), source.indexOf("if (cmd === 'broadcast') {") + 1200);
+    expect(broadcast).toMatch(/createIsolatedMemberGate/);
+    expect(source).not.toMatch(/getWsUrlFn = getWsUrl,/);
+  });
+});
+
+describe('#534 second pre-submit review fixes', () => {
+  it('High: every Chrome, Edge and Brave channel, plus Vivaldi, is a browser', () => {
+    for (const exe of [
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
+      '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev',
+      '/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta',
+      '/Applications/Microsoft Edge Dev.app/Contents/MacOS/Microsoft Edge Dev',
+      '/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary',
+      '/Applications/Brave Browser Beta.app/Contents/MacOS/Brave Browser Beta',
+      '/Applications/Brave Browser Nightly.app/Contents/MacOS/Brave Browser Nightly',
+      '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+      '/opt/vivaldi/vivaldi-bin',
+      '/usr/bin/microsoft-edge-stable',
+      '/usr/bin/brave-browser-stable',
+      'C:/Program Files/Google/Chrome SxS/Application/chrome.exe',
+    ]) {
+      expect(T.classifyBrowserProfile([exe]).kind, exe).toBe('daily');
+    }
+  });
+
+  it('Medium: the two-word --user-data-dir form means the default (daily) profile to Chromium', () => {
+    expect(T.classifyBrowserProfile([CHROME, '--user-data-dir', 'C:\\Temp\\iso']).kind).toBe('daily');
+  });
+
+  it('Medium: a stray trailing word does not hide a daily dir on macOS', () => {
+    const daily = '/Users/u/Library/Application Support/chrome-cdp-ex/daily-chrome';
+    const argvFound = T.macCommandLineArgv(`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${daily} -psn_0_123`, { exists: () => false });
+    expect(T.classifyBrowserProfile(argvFound)).toMatchObject({ kind: 'daily', profileDir: daily });
+  });
+
+  it('Medium: broadcast checks each member against its own endpoint and refuses tabs of other browsers', async () => {
+    const connections = [];
+    const gate = T.createIsolatedMemberGate({
+      gatedWsUrl: async ({ env }) => {
+        connections.push(env.CDP_PORT);
+        if (env.CDP_PORT === '9222') {
+          const err = new Error('CDP_ISOLATED_ONLY=1: refusing to attach to 127.0.0.1:9222');
+          err.code = 'daily_profile_refused';
+          throw err;
+        }
+        return `ws://127.0.0.1:${env.CDP_PORT}/devtools/browser/X`;
+      },
+      listPagesFor: async () => [{ targetId: 'AAAA0000' }],
+      baseEnv: { CDP_PORT: '9333' },
+    });
+    await expect(gate(null, 'AAAA0000')).resolves.toBeUndefined();
+    await expect(gate(null, 'BBBB0000')).rejects.toThrow(/BBBB0000 is not a tab of the checked browser at 127\.0\.0\.1:9333/);
+    await expect(gate({ port: 9222 }, 'AAAA0000')).rejects.toMatchObject({ code: 'daily_profile_refused' });
+    expect(connections).toEqual(['9333', '9222']);
+  });
+});
+
+describe('#534 third pre-submit review fixes', () => {
+  it('High: an unrecognised Chromium browser (Opera, Yandex, Arc) with no Electron evidence is daily, not "other"', () => {
+    for (const exe of ['C:\\Program Files\\Opera\\opera.exe', 'C:\\Users\\me\\AppData\\Local\\Yandex\\YandexBrowser\\Application\\browser.exe', '/Applications/Arc.app/Contents/MacOS/Arc', '/usr/bin/yandex-browser-stable']) {
+      expect(T.classifyBrowserProfile([exe, '--remote-debugging-port=9222']).kind, exe).toBe('daily');
+    }
+  });
+
+  it('High: getWsUrl refuses an unrecognised browser on its default profile, but allows Electron', async () => {
+    const opera = ['C:\\Program Files\\Opera\\opera.exe', '--remote-debugging-port=9333'];
+    const refused = await wsUrlWith(opera).promise.then(() => null, e => e);
+    expect(refused?.code).toBe('daily_profile_refused');
+  });
+
+  it('Low: an Electron/ User-Agent never turns a recognised browser executable into an app', () => {
+    expect(T.classifyBrowserProfile(argv.defaultProfile, { electron: true }).kind).toBe('daily');
+    expect(T.classifyBrowserProfile(argv.electron, { electron: true }).kind).toBe('other');
+  });
+
+  it('Low: the last --user-data-dir wins, as in Chromium', () => {
+    expect(T.classifyBrowserProfile([CHROME, '--user-data-dir=C:/iso', '--user-data-dir=']).kind).toBe('daily');
+    expect(T.classifyBrowserProfile([CHROME, '--user-data-dir=', '--user-data-dir=C:/iso']).kind).toBe('isolated');
+  });
+
+  it('Medium: a failed member check is not cached, and prime keeps the refusal code', async () => {
+    let calls = 0;
+    const gate = T.createIsolatedMemberGate({
+      gatedWsUrl: async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error('ECONNRESET'), { code: 'ECONNRESET' });
+        return 'ws://127.0.0.1:9333/devtools/browser/X';
+      },
+      listPagesFor: async () => [{ targetId: 'AAAA0000' }],
+      baseEnv: { CDP_PORT: '9333' },
+    });
+    await expect(gate(null, 'AAAA0000')).rejects.toThrow(/ECONNRESET/);
+    await expect(gate(null, 'AAAA0000')).resolves.toBeUndefined();
+    expect(calls).toBe(2);
+    const refusing = T.createIsolatedMemberGate({
+      gatedWsUrl: async () => { throw Object.assign(new Error('refused'), { code: 'daily_profile_refused' }); },
+      listPagesFor: async () => [],
+      baseEnv: { CDP_PORT: '9222' },
+    });
+    await expect(refusing.prime()).rejects.toMatchObject({ code: 'daily_profile_refused' });
+  });
+});

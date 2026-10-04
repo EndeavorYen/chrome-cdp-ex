@@ -216,7 +216,8 @@ function directCdpInventory(text) {
                   && argumentText === "JSON.stringify({ id: 1, method: 'Target.getTargets' })"
                 )
                 || (
-                  caller === 'inspectCdpOccupantProfileDirViaCdp'
+                  // #534 moved this one browser-level read from inspectCdpOccupantProfileDirViaCdp here.
+                  caller === 'readBrowserArgvViaCdp'
                   && argumentText === "JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' })"
                 )
               )

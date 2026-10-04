@@ -13820,7 +13820,7 @@ describe('runDoctorChecks', () => {
       fetcher,
     });
     expect(Array.isArray(checks)).toBe(true);
-    expect(checks).toHaveLength(8);
+    expect(checks).toHaveLength(9);
     expect(checks[0].label).toBe('Node');
     expect(checks[1].label).toBe('Skill install');
     expect(checks[2].label).toBe('Daemons');
@@ -13830,6 +13830,8 @@ describe('runDoctorChecks', () => {
     expect(checks[5].label).toBe('CDP');
     expect(checks[6].label).toBe('Tabs');
     expect(checks[7].label).toBe('Permission');
+    // #534: advisory profile check; a stubbed fetcher without a WebSocket transport skips the read.
+    expect(checks[8]).toMatchObject({ label: 'Profile', status: 'OK', profileKind: 'unknown' });
   });
 });
 
@@ -13907,7 +13909,7 @@ describe('doctorStr', () => {
     });
     expect(model.wizard.commands).toEqual(['cdp list']);
     expect(model.checks.map(check => check.label)).toEqual([
-      'Node', 'Skill install', 'Daemons', 'FD limit', 'Environment', 'CDP', 'Tabs', 'Permission',
+      'Node', 'Skill install', 'Daemons', 'FD limit', 'Environment', 'CDP', 'Tabs', 'Permission', 'Profile',
     ]);
     expect(model.nextSteps).toEqual(['cdp list']);
     expect(model.provenCommand).toBe('cdp list');
