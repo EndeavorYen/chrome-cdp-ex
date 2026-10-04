@@ -4,6 +4,16 @@
 
 ### Features
 
+* New opt-in guardrail `CDP_ISOLATED_ONLY=1`. Every fresh attach then refuses a daily profile with
+  `Kind: policy`, and it refuses a browser whose command line it cannot read. A daily profile is the browser
+  default user-data-dir or the persistent `chrome-cdp-ex/daily-*` dir. The recovery is an isolated
+  `spawn-debug-browser` (ask first). Auto-discovery accepts an isolated window instead of refusing it, and a
+  running tab daemon is not reused for listing. Chrome hides its command line from CDP without
+  `--enable-automation`, so the profile normally comes from the OS process listening on the port: PowerShell,
+  `lsof`/`ps`, or `/proc`, about 1–2 s. With or without the variable, `cdp doctor` prints a `Profile:` line
+  when the attached browser runs a daily profile
+  ([#534](https://github.com/EndeavorYen/chrome-cdp-ex/issues/534)).
+
 * `emulate <target> --focus` makes a background or unfocused tab behave as focused. It turns on
   `Emulation.setFocusEmulationEnabled`, so `document.hasFocus()` returns true and `element.focus()` fires
   `focus`/`focusin`. `emulate <target> off` turns it off again. The text receipt prints a
