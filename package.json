@@ -28,6 +28,7 @@
     "check:contracts": "node scripts/check-public-contracts.mjs --version 2.20.0",
     "setup": "node scripts/setup.mjs",
     "smoke:live": "node scripts/live-smoke.mjs",
+    "usage:report": "node scripts/usage-report.mjs",
     "benchmark:killer": "node scripts/benchmark-killer-path.mjs",
     "benchmark:mcp": "node scripts/benchmark-mcp-path.mjs",
     "benchmark:cli": "node scripts/benchmark-mcp-path.mjs --route cli",

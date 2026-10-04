@@ -4,6 +4,15 @@
 
 ### Features
 
+* Opt-in usage measurement ([#532](https://github.com/EndeavorYen/chrome-cdp-ex/issues/532)).
+  * `CDP_USAGE_LOG=1` appends `{ts, command, via: cli|mcp}` to `<runtime dir>/usage.jsonl`. The record holds
+    the canonical command name only, never its arguments. The file rotates above 1 MiB and stays on the machine.
+  * `npm run usage:report` prints per-command counts from that file and from local Claude Code and Codex
+    transcripts. Sessions in this repository are counted separately as `dev`. The report lists unused commands
+    and prints no transcript text.
+  * Decisions on each command (fold, re-card, deprecate, MCP scope) move to
+    [#544](https://github.com/EndeavorYen/chrome-cdp-ex/issues/544).
+
 * In background mode, a capture of a hidden tab (a background tab, or any tab of a minimized window) no
   longer gives up after one frameless attempt. It retries once with focus emulation on for that capture
   (`Emulation.setFocusEmulationEnabled`), then switches it off again. Focus emulation makes the document
