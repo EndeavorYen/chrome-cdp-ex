@@ -430,7 +430,7 @@ describe('Phase 6 direct CDP characterization', () => {
     // #536 added emulateStr → Emulation.setFocusEmulationEnabled (on, off).
     // #535 added captureHiddenTabFrame → focus emulation on, a retried capture, and focus emulation off.
     expect(inventory).toHaveLength(171);
-    expect(digest).toBe('sha256:85ee9d05001f077ddeecc2514d5fa5ce2cdc964fd7536ad0a7a718d475d6d64c');
+    expect(digest).toBe('sha256:e822415e20cf2e7104c329462269810e536dcc7b6c31183987e649721c1119ae');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

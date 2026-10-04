@@ -5220,27 +5220,46 @@ async function captureHiddenTabFrame(cdp, sid, params, hooks, inspectFrame) {
   const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
     ? Math.min(hooks.timeoutMs, HIDDEN_TAB_CAPTURE_TIMEOUT_MS)
     : HIDDEN_TAB_CAPTURE_TIMEOUT_MS;
-  let result;
-  let focusEmulated = false;
-  try {
-    result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
-  } catch (err) {
-    if (!String(err?.message || '').startsWith('Timeout:')) throw err;
-    // #535: a minimized window or background tab renders no frame, but focus emulation makes the document
-    // visible (live, Chrome 154: minimized capture timed out, then succeeded in ~0.1 s). Try once with it,
-    // never activating the tab, and switch it off again whatever happens.
+  const isTimeout = error => String(error?.message || '').startsWith('Timeout:');
+  // #535: a minimized window or background tab renders no frame, but focus emulation makes the document
+  // visible (live, Chrome 154: minimized capture timed out, then succeeded in ~0.1 s). Capture once with
+  // it, never activating the tab, and switch it off again whatever happens.
+  const captureWithFocusEmulation = async (firstTimeout) => {
     let enabled = false;
     try {
-      await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: true }, sid);
+      try {
+        await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: true }, sid);
+      } catch {
+        throw hiddenTabCaptureError(firstTimeout);
+      }
       enabled = true;
-      result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
-      focusEmulated = true;
-    } catch {
-      throw hiddenTabCaptureError(err);
+      try {
+        return await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
+      } catch (retryError) {
+        // Still no frame: the hidden-tab recovery applies. Anything else (target closed) is the real error.
+        throw isTimeout(retryError) ? hiddenTabCaptureError(retryError) : retryError;
+      }
     } finally {
       if (enabled) {
         try { await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: false }, sid); } catch {}
       }
+    }
+  };
+  let result;
+  let focusEmulated = false;
+  if (hooks.tierState?.hiddenNeedsFocusEmulation) {
+    // An earlier capture of this command (a scanshot segment, a responsive-audit size) needed it:
+    // skip the frameless wait instead of paying it per segment.
+    result = await captureWithFocusEmulation(null);
+    focusEmulated = true;
+  } else {
+    try {
+      result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
+    } catch (err) {
+      if (!isTimeout(err)) throw err;
+      result = await captureWithFocusEmulation(err);
+      focusEmulated = true;
+      if (hooks.tierState) hooks.tierState.hiddenNeedsFocusEmulation = true;
     }
   }
   const captured = {

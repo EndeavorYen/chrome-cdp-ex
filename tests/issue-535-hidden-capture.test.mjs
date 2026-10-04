@@ -75,3 +75,35 @@ describe('#535 hidden-tab capture in background mode', () => {
     }
   });
 });
+
+describe('#535 pre-submit review fixes', () => {
+  beforeEach(() => T.setBackgroundCaptureGuard(true));
+  afterEach(() => T.setBackgroundCaptureGuard(false));
+
+  it('Medium: once a hidden tab needed focus emulation, later captures in the same command skip the frameless wait', async () => {
+    const cdp = hiddenTabCdp();
+    const tierState = T.createScreenshotTierState();
+    await T.captureScreenshot(cdp, 'sid', { format: 'png' }, { ...hooks, tierState });
+    const first = cdp.calls.filter(call => call.method === 'Page.captureScreenshot').length;
+    expect(first).toBe(2);
+    cdp.calls.length = 0;
+    const second = await T.captureScreenshot(cdp, 'sid', { format: 'png' }, { ...hooks, tierState });
+    expect(second.focusEmulated).toBe(true);
+    expect(cdp.calls.filter(call => call.method === 'Page.captureScreenshot')).toHaveLength(1);
+    expect(cdp.focus).toBe(false);
+  });
+
+  it('Medium: a retry that fails for another reason (target closed) is not reported as hidden-tab', async () => {
+    const cdp = hiddenTabCdp();
+    const send = cdp.send.bind(cdp);
+    let captures = 0;
+    cdp.send = (method, params) => {
+      if (method === 'Page.captureScreenshot' && ++captures === 2) return Promise.reject(new Error('Target closed'));
+      return send(method, params);
+    };
+    const err = await T.captureScreenshot(cdp, 'sid', { format: 'png' }, hooks).then(() => null, e => e);
+    expect(err?.message).toBe('Target closed');
+    expect(err?.code).not.toBe('hidden_tab');
+    expect(cdp.focus).toBe(false);
+  });
+});
