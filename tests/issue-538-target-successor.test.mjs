@@ -82,6 +82,21 @@ describe('#538 a vanished prefix names its successor page', () => {
     const err = errorFrom(() => T.resolveLiveTargetBinding({ requested: '1667E1A4', livePages: [page(NEW)], lastSeenPages: [page(OLD)] }));
     const out = T.formatCliError(err, { cmd: 'fill', targetPrefix: '1667E1A4', args: ['#pw', ''] });
     expect(out.split('\n').at(-1)).toBe('Next: cdp fill B7BB111A "#pw" "" (Kind: target-resolution)');
+    const padded = T.formatCliError(err, { cmd: 'fill', targetPrefix: '1667E1A4', args: ['#x', ' ', '  hi '] });
+    expect(padded.split('\n').at(-1)).toBe("Next: cdp fill B7BB111A \"#x\" ' ' '  hi ' (Kind: target-resolution)");
+    const quoted = T.formatCliError(err, { cmd: 'fill', targetPrefix: '1667E1A4', args: ['#x', " it's "] });
+    expect(quoted.split('\n').at(-1)).toBe("Next: cdp fill B7BB111A \"#x\" ' it'\\''s ' (Kind: target-resolution)");
+  });
+
+  it('a New Tab page is never named as a successor', () => {
+    for (const url of ['chrome://newtab/', 'chrome://new-tab-page/', 'about:blank#x']) {
+      const err = errorFrom(() => T.resolveLiveTargetBinding({
+        requested: '1667E1A4',
+        livePages: [page(NEW, url, 'New Tab')],
+        lastSeenPages: [page(OLD, url, 'New Tab')],
+      }));
+      expect(err.code, url).toBeUndefined();
+    }
   });
 
   it('an alias error keeps its own message', () => {

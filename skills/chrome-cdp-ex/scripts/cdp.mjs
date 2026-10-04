@@ -29135,8 +29135,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
   }
   // #538: the prefix vanished but one live page has its last-seen URL and title: rerun on that page.
   if (err?.code === 'target_successor' && err.successorPrefix) {
-    // An empty argument (`fill <t> #pw ""` clears a field) is part of the command: keep it as "".
-    const rerun = ['cdp', cmd || 'perceive', err.successorPrefix, ...(args || []).map(arg => (arg === '' ? '""' : recoveryCommandArg(arg))).filter(Boolean)];
+    // An empty or space-padded argument (`fill <t> #pw ""`) is part of the command: quote it as typed.
+    const rerun = ['cdp', cmd || 'perceive', err.successorPrefix, ...(args || []).map(arg => (arg === '' ? '""' : String(arg).trim() !== String(arg) ? `'${String(arg).replace(/'/g, "'\\''")}'` : recoveryCommandArg(arg))).filter(Boolean)];
     return {
       kind: 'target-resolution',
       strategy: 'use-successor-target',

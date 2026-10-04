@@ -33,8 +33,8 @@ function uniqueLivePrefix(targetId, livePages) {
 function findSuccessorPage(requested, lastSeenPages, livePages) {
   const upper = String(requested || '').toUpperCase();
   const seen = (lastSeenPages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper));
-  // A blank tab looks like every other blank tab, so it never names a successor.
-  if (seen.length !== 1 || !seen[0].url || seen[0].url === 'about:blank') return null;
+  // A blank or New Tab page looks like every other one, so it never names a successor.
+  if (seen.length !== 1 || !seen[0].url || /^(?:about:blank(?:#.*)?|chrome:\/\/new-?tab(?:-page)?\/?)$/i.test(seen[0].url)) return null;
   const { url, title = '' } = seen[0];
   // Only reached when no live page matches the prefix, so every candidate is another page.
   const candidates = (livePages || []).filter(page => page?.url === url && (page?.title || '') === title);
