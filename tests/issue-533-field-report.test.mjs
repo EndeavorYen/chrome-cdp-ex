@@ -324,9 +324,54 @@ describe('#533 item 6: the last CLI error line carries the Kind', () => {
       .toBe('Next: CDP_BACKGROUND=0 cdp shot 1667E1A4 (Kind: hidden-tab)');
   });
 
+  it('T8: repeat whose condition never matched ends with a fresh Next, not a stale iteration one (pre-submit review)', async () => {
+    const failure = T.formatActionFailure(new Error('Named control not found: "x"'), {
+      action: 'click',
+      target: { targetId: FULL_ID, input: 'x' },
+    });
+    let call = 0;
+    const err = await T.repeatStr({
+      run: async () => (++call === 1 ? { ok: false, error: failure } : { ok: true, result: 'Clicked x' }),
+      probeCondition: async () => ({ matched: false, description: 'text "done"' }),
+    }, ['3', '--continue', '--until-text', 'done', 'click', 'x']).then(() => null, e => e);
+    expect(err.message).toMatch(/repeat: condition not satisfied after 3 iterations$/);
+    const out = T.formatCliError(err, { cmd: 'repeat', targetPrefix: '1667E1A4' });
+    const last = out.split('\n').at(-1);
+    expect(last).toMatch(/^Next: \S.* \(Kind: [a-z-]+\)$/);
+    expect(last).not.toBe(failure.split('\n').find(line => line.startsWith('Next:')) + ` (Kind: ${failure.match(/^Kind: (\S+)/m)[1]})`);
+  });
+
+  it('T8: a repeat halted by its first failure repeats that failure\'s Next and Kind', async () => {
+    const failure = T.formatActionFailure(new Error('Named control not found: "x"'), {
+      action: 'click',
+      target: { targetId: FULL_ID, input: 'x' },
+    });
+    const err = await T.repeatStr({ run: async () => ({ ok: false, error: failure }) }, ['2', 'click', 'x']).then(() => null, e => e);
+    const out = T.formatCliError(err, { cmd: 'repeat', targetPrefix: '1667E1A4' });
+    const stepNext = failure.split('\n').find(line => line.startsWith('Next:'));
+    expect(out.split('\n').at(-1)).toBe(`${stepNext} (Kind: ${failure.match(/^Kind: (\S+)/m)[1]})`);
+  });
+
+  it('T8: a Next with no Kind above it still gets a Kind, never one from an earlier step\'s output', async () => {
+    let step = 0;
+    const halted = await T.flowStr({
+      run: async () => (++step === 1
+        ? { ok: true, result: 'Page summary\nKind: page' }
+        : { ok: false, error: 'Error: boom\nNext: cdp status 1667E1A4' }),
+      settle: async () => '',
+    }, 'summary; click buy', { throwOnFailure: true }).then(() => null, e => e);
+    const last = T.formatCliError(halted, { cmd: 'flow', targetPrefix: '1667E1A4' }).split('\n').at(-1);
+    expect(last).toMatch(/^Next: cdp status 1667E1A4 \(Kind: [a-z-]+\)$/);
+    expect(last).not.toContain('(Kind: page)');
+  });
+
   it('T8: a classified failure without a Next line gets one', () => {
-    const out = T.formatCliError(new Error('Error: Element not found\nKind: not-found'), { cmd: 'click', targetPrefix: '1667E1A4' });
-    expect(out.split('\n').at(-1)).toMatch(/^Next: \S.* \(Kind: not-found\)$/);
+    // Defensive: no producer emits this today. The appended Next and its Kind come from one recovery,
+    // so the command and the Kind never disagree; the message's own Kind stays on its line.
+    const message = 'Error: Element not found\nKind: not-found';
+    const out = T.formatCliError(new Error(message), { cmd: 'click', targetPrefix: '1667E1A4' });
+    const recovery = T.buildCliErrorRecovery(message, { cmd: 'click', targetPrefix: '1667E1A4' });
+    expect(out.split('\n')).toEqual(['Error: Element not found', 'Kind: not-found', `Next: ${recovery.run} (Kind: ${recovery.kind})`]);
   });
 });
 

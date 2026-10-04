@@ -29678,23 +29678,24 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
     return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}${cliErrorKindSuffix(recovery)}`].join('\n');
   }
-  if (isClassifiedActionFailureText(message)) {
-    if (/^Next:/m.test(message)) return withKindOnLastNextLine(message);
-    // A classified failure with no command of its own still ends on a runnable Next line (T8).
-    const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
-    const kind = message.match(/^\s*Kind: (\S+)/m)?.[1] || recovery.kind;
-    return `${message}\nNext: ${recovery.run || recovery.ask}${cliErrorKindSuffix({ kind })}`;
-  }
+  const recoveryFor = () => buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
+  if (isClassifiedActionFailureText(message)) return withKindOnLastNextLine(message, recoveryFor);
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
-  if (/^Next:/m.test(message)) return withKindOnLastNextLine(lines.join('\n'));
+  if (/^Next:/m.test(message)) return withKindOnLastNextLine(lines.join('\n'), recoveryFor);
 
-  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
+  const recovery = recoveryFor();
   lines.push(...formatCliErrorRecovery(recovery));
-  // Same Next line as doctor: the command (marked when consent is needed), else what to ask the user.
-  lines.push(`Next: ${recovery.run
-    ? `${recovery.run}${recovery.consentRequired ? ' (ask first)' : ''}`
-    : (recovery.ask || recovery.run)}${cliErrorKindSuffix(recovery)}`);
+  lines.push(cliErrorNextLine(recovery));
   return lines.join('\n');
+}
+
+// Same Next line as doctor: the command (marked when consent is needed), else what to ask the user;
+// #533: the Kind rides on it, so `| tail -1` still says what kind of failure it was.
+function cliErrorNextLine(recovery) {
+  const command = recovery.run
+    ? `${recovery.run}${recovery.consentRequired ? ' (ask first)' : ''}`
+    : (recovery.ask || recovery.run);
+  return `Next: ${command}${cliErrorKindSuffix(recovery)}`;
 }
 
 // #533: the Kind rides on the last line, so `| tail -1` still says what kind of failure it was.
@@ -29702,18 +29703,35 @@ function cliErrorKindSuffix(recovery) {
   return recovery?.kind ? ` (Kind: ${recovery.kind})` : '';
 }
 
+// Lines a composite command (flow, repeat, replay) prints after a failed step's own Next: line.
+const HALT_TRAILER_RE = /^(?:(?:Flow|Replay) halted at |Repeat halted at iteration |Done: \d+ ok, \d+ failed$)/;
+// A step header that starts a failed step's block: `[2/3] …`, `[env 1/2] …`.
+const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
+
 // Text that arrives already formatted (a classified action failure, or a message with its own Next:)
-// keeps its lines. Its last Next: line gets the nearest Kind: line above it. When that Next: is not the
-// last line (a halted text flow ends with `Flow halted at step i/n`), it is repeated at the end, so
-// `| tail -1` still shows the command and the Kind.
-function withKindOnLastNextLine(text) {
+// keeps its lines and must still end with `Next: … (Kind: …)` (T8).
+// - The Kind is the failed block's own: an unindented `Kind:` line, or the first line of a
+//   `Recovery:` block, searched upwards from that Next: to the step header. Indented step output
+//   (`  Kind: page`) never counts. With none, the recovery classification gives it.
+// - When only halt trailers follow that Next: (`Flow halted at step i/n`, `Done: …`), it is the
+//   failure's command and is repeated as the last line. When anything else follows (`repeat:
+//   condition not satisfied`), that Next: is stale and a fresh recovery Next: is appended instead.
+function withKindOnLastNextLine(text, recoveryFor) {
   const lines = String(text).split('\n');
   const nextIndex = lines.findLastIndex(line => /^Next:/.test(line));
-  if (nextIndex < 0) return text;
-  const kindLine = lines.slice(0, nextIndex).findLast(line => /^\s*Kind: \S+/.test(line));
-  const kind = kindLine?.match(/Kind: (\S+)/)?.[1];
+  const trailers = nextIndex < 0 ? lines : lines.slice(nextIndex + 1);
+  if (nextIndex < 0 || !trailers.every(line => HALT_TRAILER_RE.test(line))) {
+    return [...lines, cliErrorNextLine(recoveryFor())].join('\n');
+  }
+  let kind = null;
+  for (let i = nextIndex - 1; i >= 0 && !kind; i--) {
+    kind = lines[i].match(/^Kind: (\S+)/)?.[1]
+      || (lines[i - 1] === 'Recovery:' ? lines[i].match(/^\s+Kind: (\S+)/)?.[1] : null);
+    if (STEP_HEADER_RE.test(lines[i])) break;
+  }
+  kind ||= recoveryFor().kind;
   const next = lines[nextIndex];
-  const nextWithKind = !kind || /\(Kind: [^)]+\)$/.test(next) ? next : `${next} (Kind: ${kind})`;
+  const nextWithKind = /\(Kind: [^)]+\)$/.test(next) ? next : `${next}${cliErrorKindSuffix({ kind })}`;
   if (nextIndex === lines.length - 1) {
     lines[nextIndex] = nextWithKind;
     return lines.join('\n');
