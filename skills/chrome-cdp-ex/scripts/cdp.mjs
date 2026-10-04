@@ -29704,8 +29704,10 @@ function cliErrorKindSuffix(recovery) {
   return recovery?.kind ? ` (Kind: ${recovery.kind})` : '';
 }
 
-// Lines a composite command (flow, repeat, replay) prints after a failed step's own Next: line.
-const HALT_TRAILER_RE = /^(?:(?:Flow|Replay) halted at |Repeat halted at iteration |Done: \d+ ok, \d+ failed(?:, \d+ skipped)?$)/;
+// Lines printed after a failure's own Next: line that do not replace it: a composite command's halt
+// summary (flow, repeat, replay), and the receipts a failed action appends (#460 answered dialogs,
+// #472 saved download or the download-behaviour warning).
+const HALT_TRAILER_RE = /^(?:(?:Flow|Replay) halted at |Repeat halted at iteration |Done: \d+ ok, \d+ failed(?:, \d+ skipped)?$|Dialog: |Downloaded "|Warning: could not set the browser's download behaviour )/;
 // A step header that starts a failed step's block: `[2/3] …`, `[env 1/2] …`.
 const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
 
@@ -29715,15 +29717,18 @@ const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
 //   `Recovery:` block, searched upwards from that Next: to the step header. Indented step output
 //   (`  Kind: page`) never counts. With none, the recovery classification of that block alone gives
 //   it, so an earlier step's output cannot decide it.
-// - When only halt trailers follow that Next: (`Flow halted at step i/n`, `Done: …`), it is the
-//   failure's command and is repeated as the last line. When anything else follows (`repeat:
-//   condition not satisfied`), that Next: is stale and a fresh recovery Next: is appended instead.
+// - When only trailers follow that Next: (`Flow halted at step i/n`, `Done: …`, `Dialog: …`,
+//   `Downloaded "…"`), it is the failure's command and is repeated as the last line. When anything
+//   else follows (`repeat: condition not satisfied`), that Next: is stale, and a fresh recovery Next:
+//   classified from the lines after it is appended instead.
 function withKindOnLastNextLine(text, recoveryFor) {
   const lines = String(text).split('\n');
   const nextIndex = lines.findLastIndex(line => /^Next:/.test(line));
   const trailers = nextIndex < 0 ? lines : lines.slice(nextIndex + 1);
-  if (nextIndex < 0 || !trailers.every(line => HALT_TRAILER_RE.test(line))) {
-    return [...lines, cliErrorNextLine(recoveryFor())].join('\n');
+  if (nextIndex < 0) return [...lines, cliErrorNextLine(recoveryFor())].join('\n');
+  if (!trailers.every(line => HALT_TRAILER_RE.test(line))) {
+    // That Next: is stale; the failure is in the lines after it, so classify those alone.
+    return [...lines, cliErrorNextLine(recoveryFor(trailers.join('\n')))].join('\n');
   }
   let kind = null;
   let blockStart = 0;

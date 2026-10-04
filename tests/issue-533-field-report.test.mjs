@@ -383,6 +383,42 @@ describe('#533 item 6: the last CLI error line carries the Kind', () => {
       .toBe('Next: cdp perceive 1667E1A4 -C -d 8 (Kind: selector)');
   });
 
+  describe('action failures with receipt lines after their Next (review B3)', () => {
+    const failure = () => T.formatActionFailure(new Error('Named control not found: "Delete"'), {
+      action: 'click',
+      target: { targetId: FULL_ID, input: 'Delete' },
+    });
+    // runActionWithFeedback throws [formatActionFailure, ...downloadReceiptLines, ...actionDialogLines].
+    for (const [label, receipts] of [
+      ['an answered dialog (#460)', ['Dialog: confirm "Really delete?" → accept']],
+      ['a saved download (#472)', ['Downloaded "report.csv" 1.2 KB sha256=abc → C:\\tmp\\report.csv']],
+      ['a download-behaviour warning (#472)', ['Warning: could not set the browser\'s download behaviour back to default (boom); downloads may keep going to C:\\tmp without a prompt until this tab\'s daemon disconnects (`cdp stop <target>`).']],
+    ]) {
+      it(`keeps the failure's own Next and Kind last after ${label}`, () => {
+        const text = failure();
+        const stepNext = text.split('\n').find(line => line.startsWith('Next:'));
+        const kind = text.match(/^Kind: (\S+)/m)[1];
+        const out = T.formatCliError(new Error([text, ...receipts].join('\n')), { cmd: 'click', targetPrefix: '1667E1A4' });
+        expect(out).toContain(receipts[0]);
+        expect(out.split('\n').at(-1)).toBe(`${stepNext} (Kind: ${kind})`);
+        expect(out).not.toContain('(Kind: unknown)');
+      });
+    }
+  });
+
+  it('T8: a fresh fallback Next is classified from the lines after the stale Next, not a stale iteration', async () => {
+    let call = 0;
+    const err = await T.repeatStr({
+      run: async () => (++call === 1
+        ? { ok: false, error: `${T.hiddenTabCaptureError().message}\nNext: CDP_BACKGROUND=0 cdp shot 1667E1A4` }
+        : { ok: true, result: 'Clicked x' }),
+      probeCondition: async () => ({ matched: false, description: 'text "done"' }),
+    }, ['3', '--continue', '--until-text', 'done', 'click', 'x']).then(() => null, e => e);
+    const last = T.formatCliError(err, { cmd: 'repeat', targetPrefix: '1667E1A4' }).split('\n').at(-1);
+    expect(last).toMatch(/^Next: \S.* \(Kind: [a-z-]+\)$/);
+    expect(last).not.toContain('hidden-tab');
+  });
+
   it('T8: a classified failure without a Next line gets one', () => {
     // Defensive: no producer emits this today. The appended Next and its Kind come from one recovery,
     // so the command and the Kind never disagree; the message's own Kind stays on its line.
