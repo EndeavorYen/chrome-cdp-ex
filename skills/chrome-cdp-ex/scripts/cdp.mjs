@@ -19944,8 +19944,9 @@ async function viewportStr(cdp, sid, size, { session = null } = {}) {
   const mobile = width <= 768 ? ' (mobile mode)' : '';
   // Applied when either the layout or the emulated screen matches: a desktop override (mobile:false)
   // keeps the real screen, and a mobile size without <meta viewport> keeps a 980px layout.
+  // Only a mobile override emulates the screen, so only then does a screen match prove anything.
   const layoutMatches = d.width === width && d.height === height;
-  const applied = layoutMatches || (d.screenWidth === width && d.screenHeight === height);
+  const applied = layoutMatches || (width <= 768 && d.screenWidth === width && d.screenHeight === height);
   if (!applied) return `Viewport: ${d.width}x${d.height} (DPR ${d.dpr})${mobile}; requested ${width}x${height}`;
   const layout = layoutMatches ? '' : `; layout ${d.width}x${d.height}`;
   return `Viewport: ${width}x${height} (DPR ${d.dpr})${mobile}${layout}`;
@@ -29677,7 +29678,13 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
     return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}${cliErrorKindSuffix(recovery)}`].join('\n');
   }
-  if (isClassifiedActionFailureText(message)) return withKindOnLastNextLine(message);
+  if (isClassifiedActionFailureText(message)) {
+    if (/^Next:/m.test(message)) return withKindOnLastNextLine(message);
+    // A classified failure with no command of its own still ends on a runnable Next line (T8).
+    const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
+    const kind = message.match(/^\s*Kind: (\S+)/m)?.[1] || recovery.kind;
+    return `${message}\nNext: ${recovery.run || recovery.ask}${cliErrorKindSuffix({ kind })}`;
+  }
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
   if (/^Next:/m.test(message)) return withKindOnLastNextLine(lines.join('\n'));
 
@@ -29696,15 +29703,22 @@ function cliErrorKindSuffix(recovery) {
 }
 
 // Text that arrives already formatted (a classified action failure, or a message with its own Next:)
-// keeps its lines; when it ends with a Next: line and names a Kind above it, that Kind joins the line.
+// keeps its lines. Its last Next: line gets the nearest Kind: line above it. When that Next: is not the
+// last line (a halted text flow ends with `Flow halted at step i/n`), it is repeated at the end, so
+// `| tail -1` still shows the command and the Kind.
 function withKindOnLastNextLine(text) {
   const lines = String(text).split('\n');
-  const last = lines.at(-1) || '';
-  if (!/^Next:/.test(last) || /\(Kind: [^)]+\)$/.test(last)) return text;
-  const kind = String(text).match(/^\s*Kind: (\S+)/m)?.[1];
-  if (!kind) return text;
-  lines[lines.length - 1] = `${last} (Kind: ${kind})`;
-  return lines.join('\n');
+  const nextIndex = lines.findLastIndex(line => /^Next:/.test(line));
+  if (nextIndex < 0) return text;
+  const kindLine = lines.slice(0, nextIndex).findLast(line => /^\s*Kind: \S+/.test(line));
+  const kind = kindLine?.match(/Kind: (\S+)/)?.[1];
+  const next = lines[nextIndex];
+  const nextWithKind = !kind || /\(Kind: [^)]+\)$/.test(next) ? next : `${next} (Kind: ${kind})`;
+  if (nextIndex === lines.length - 1) {
+    lines[nextIndex] = nextWithKind;
+    return lines.join('\n');
+  }
+  return [...lines, nextWithKind].join('\n');
 }
 
 function formatDaemonCommandError(err, options = {}) {

@@ -204,6 +204,13 @@ describe('#533 item 4: viewport reads the size back', () => {
     expect(out).toBe('Viewport: 1400x900 (DPR 1)');
   });
 
+  it('T5: a desktop size equal to the real screen does not count as applied when the layout differs', async () => {
+    // mobile:false does not emulate the screen, so a screen match proves nothing (pre-submit review).
+    const cdp = viewportCdp({ readBack: () => ({ w: 1042, h: 632 }), screen: () => ({ w: 1920, h: 1080 }) });
+    const out = await T.viewportStr(cdp, 'sid', '1920x1080');
+    expect(out).toBe('Viewport: 1042x632 (DPR 1); requested 1920x1080');
+  });
+
   it('records the override on the session for viewport, never for an audit sweep', async () => {
     const session = {};
     await T.viewportStr(viewportCdp(), 'sid', '1400x900', { session });
@@ -293,10 +300,33 @@ describe('#533 item 6: the last CLI error line carries the Kind', () => {
       .toBe('Next: cdp status 1667E1A4 (Kind: timeout)');
   });
 
-  it('T8: a message that already carries Next and a Kind line keeps Kind on its last line', () => {
-    const text = 'Error: Flow halted at step 2/2: boom\nRecovery:\n  Kind: hidden-tab\n  Run: CDP_BACKGROUND=0 cdp shot 1667E1A4\nNext: CDP_BACKGROUND=0 cdp shot 1667E1A4';
-    expect(T.formatCliError(new Error(text), { cmd: 'flow' }).split('\n').at(-1))
+  it('T8: a halted text flow ends with the failed step\'s Next and Kind (pre-submit review)', async () => {
+    const failure = T.formatActionFailure(new Error('Named control not found: "buy"'), {
+      action: 'click',
+      target: { targetId: FULL_ID, input: 'buy' },
+    });
+    const stepNext = failure.split('\n').find(line => line.startsWith('Next:'));
+    const stepKind = failure.match(/^Kind: (\S+)/m)[1];
+    const halted = await T.flowStr(
+      { run: async () => ({ ok: false, error: failure }), settle: async () => '' },
+      'click buy; summary',
+      { throwOnFailure: true },
+    ).then(() => null, e => e);
+    expect(halted.message.split('\n').at(-1)).toBe('Flow halted at step 1/2');
+    const out = T.formatCliError(halted, { cmd: 'flow', targetPrefix: '1667E1A4' });
+    expect(out.split('\n').at(-1)).toBe(`${stepNext} (Kind: ${stepKind})`);
+    expect(out).toContain('Flow halted at step 1/2');
+  });
+
+  it('T8: the Kind comes from the line nearest the last Next, not a Kind-looking line in the message', () => {
+    const text = 'Error: server said\nKind: fake-from-page\nRecovery:\n  Kind: hidden-tab\n  Run: CDP_BACKGROUND=0 cdp shot 1667E1A4\nNext: CDP_BACKGROUND=0 cdp shot 1667E1A4';
+    expect(T.formatCliError(new Error(text), { cmd: 'shot' }).split('\n').at(-1))
       .toBe('Next: CDP_BACKGROUND=0 cdp shot 1667E1A4 (Kind: hidden-tab)');
+  });
+
+  it('T8: a classified failure without a Next line gets one', () => {
+    const out = T.formatCliError(new Error('Error: Element not found\nKind: not-found'), { cmd: 'click', targetPrefix: '1667E1A4' });
+    expect(out.split('\n').at(-1)).toMatch(/^Next: \S.* \(Kind: not-found\)$/);
   });
 });
 
