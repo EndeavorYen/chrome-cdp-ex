@@ -289,7 +289,7 @@ function responseFor(method, params = {}) {
       }
       if (params.expression === 'document.readyState') return { result: { value: 'complete' } };
       if (String(params.expression).includes('window.innerWidth')) {
-        return { result: { value: JSON.stringify({ w: 390, h: 844, dpr: 3 }) } };
+        return { result: { value: JSON.stringify({ w: 390, h: 844, sw: 390, sh: 844, dpr: 3 }) } };
       }
       if (String(params.expression).includes('location.href') && String(params.expression).includes('readyState')) {
         return { result: { value: JSON.stringify({ url: 'https://example.test/fixture', readyState: 'complete' }) } };
@@ -367,7 +367,7 @@ function domainInvocations() {
     {
       domain: 'EmulationViewport',
       methods: ['Emulation.setDeviceMetricsOverride', 'Runtime.evaluate'],
-      callDigest: '7e8f02cb8496826978e299fba7dea6a721523e7104dafd5a646cf238f9a8c388',
+      callDigest: '4d003574bd0342412e056d659d98f2e68cddff850a6694ba4e7182e912d08c4c',
       result: 'Viewport: 390x844 (DPR 3) (mobile mode)',
       invoke: cdp => cdpTest.viewportStr(cdp, 'SESSION', '390x844'),
     },

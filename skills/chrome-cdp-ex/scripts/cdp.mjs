@@ -19909,9 +19909,15 @@ function appendPendingActionNetworkEntries(pendingReqs, netReqBuf, sinceTs, { no
   return count;
 }
 
+// width/height: the layout viewport (innerWidth/innerHeight). screenWidth/screenHeight: the screen,
+// which a mobile override sets even when a page without <meta viewport> lays out at 980px.
 async function readViewportDims(cdp, sid) {
-  const d = JSON.parse(await evalStr(cdp, sid, `JSON.stringify({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio})`));
-  return { width: Number(d.w), height: Number(d.h), dpr: Number(d.dpr) };
+  const d = JSON.parse(await evalStr(cdp, sid, `JSON.stringify({w:window.innerWidth,h:window.innerHeight,sw:screen.width,sh:screen.height,dpr:window.devicePixelRatio})`));
+  return {
+    width: Number(d.w), height: Number(d.h),
+    screenWidth: Number(d.sw), screenHeight: Number(d.sh),
+    dpr: Number(d.dpr),
+  };
 }
 
 // Sets the override without reading it back: audits that sweep sizes measure the page themselves.
@@ -19936,8 +19942,13 @@ async function viewportStr(cdp, sid, size, { session = null } = {}) {
   if (session) session.viewportOverride = { width, height };
   const d = await readViewportDims(cdp, sid);
   const mobile = width <= 768 ? ' (mobile mode)' : '';
-  const mismatch = d.width !== width || d.height !== height ? `; requested ${width}x${height}` : '';
-  return `Viewport: ${d.width}x${d.height} (DPR ${d.dpr})${mobile}${mismatch}`;
+  // Applied when either the layout or the emulated screen matches: a desktop override (mobile:false)
+  // keeps the real screen, and a mobile size without <meta viewport> keeps a 980px layout.
+  const layoutMatches = d.width === width && d.height === height;
+  const applied = layoutMatches || (d.screenWidth === width && d.screenHeight === height);
+  if (!applied) return `Viewport: ${d.width}x${d.height} (DPR ${d.dpr})${mobile}; requested ${width}x${height}`;
+  const layout = layoutMatches ? '' : `; layout ${d.width}x${d.height}`;
+  return `Viewport: ${width}x${height} (DPR ${d.dpr})${mobile}${layout}`;
 }
 
 async function cookieSetStr(cdp, sid, cookieStr) {
@@ -29666,9 +29677,9 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
     return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}${cliErrorKindSuffix(recovery)}`].join('\n');
   }
-  if (isClassifiedActionFailureText(message)) return message;
+  if (isClassifiedActionFailureText(message)) return withKindOnLastNextLine(message);
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
-  if (/^Next:/m.test(message)) return lines.join('\n');
+  if (/^Next:/m.test(message)) return withKindOnLastNextLine(lines.join('\n'));
 
   const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
   lines.push(...formatCliErrorRecovery(recovery));
@@ -29682,6 +29693,18 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
 // #533: the Kind rides on the last line, so `| tail -1` still says what kind of failure it was.
 function cliErrorKindSuffix(recovery) {
   return recovery?.kind ? ` (Kind: ${recovery.kind})` : '';
+}
+
+// Text that arrives already formatted (a classified action failure, or a message with its own Next:)
+// keeps its lines; when it ends with a Next: line and names a Kind above it, that Kind joins the line.
+function withKindOnLastNextLine(text) {
+  const lines = String(text).split('\n');
+  const last = lines.at(-1) || '';
+  if (!/^Next:/.test(last) || /\(Kind: [^)]+\)$/.test(last)) return text;
+  const kind = String(text).match(/^\s*Kind: (\S+)/m)?.[1];
+  if (!kind) return text;
+  lines[lines.length - 1] = `${last} (Kind: ${kind})`;
+  return lines.join('\n');
 }
 
 function formatDaemonCommandError(err, options = {}) {

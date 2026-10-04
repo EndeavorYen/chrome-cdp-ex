@@ -117,7 +117,9 @@ describe('#533 item 3: action diagnosis Next uses the target prefix', () => {
   });
 });
 
-function viewportCdp({ readBack = null } = {}) {
+// `readBack` overrides the layout viewport (innerWidth/innerHeight) and `screen` the emulated screen;
+// both default to the size last set, as on a page with <meta viewport>.
+function viewportCdp({ readBack = null, screen = null } = {}) {
   const calls = [];
   let current = { w: 1042, h: 632 };
   const cdp = {
@@ -137,7 +139,8 @@ function viewportCdp({ readBack = null } = {}) {
         const expr = String(params.expression || '');
         if (expr.includes('window.innerWidth')) {
           const dims = readBack ? readBack(current) : current;
-          return Promise.resolve({ result: { value: JSON.stringify({ ...dims, dpr: 1 }) } });
+          const shown = screen ? screen(current) : current;
+          return Promise.resolve({ result: { value: JSON.stringify({ ...dims, sw: shown.w, sh: shown.h, dpr: 1 }) } });
         }
         if (expr.includes('document.title')) {
           return Promise.resolve({ result: { value: JSON.stringify({ title: 'Darkroom', url: 'http://127.0.0.1:7860/', contentType: 'text/html' }) } });
@@ -179,20 +182,32 @@ describe('#533 item 4: viewport reads the size back', () => {
     expect(out).toBe('Viewport: 1400x900 (DPR 1)');
   });
 
-  it('T5: states both sizes when the page reports a different one', async () => {
-    const cdp = viewportCdp({ readBack: () => ({ w: 1400, h: 880 }) });
+  it('T5: states both sizes when the emulated screen differs from the request', async () => {
+    const size = { w: 1400, h: 880 };
+    const cdp = viewportCdp({ readBack: () => size, screen: () => size });
     const out = await T.viewportStr(cdp, 'sid', '1400x900');
-    expect(out).toContain('Viewport: 1400x880 (DPR 1)');
-    expect(out).toContain('requested 1400x900');
+    expect(out).toBe('Viewport: 1400x880 (DPR 1); requested 1400x900');
   });
 
-  it('records the override on the session only when a session is passed', async () => {
+  it('T5: a page without <meta viewport> reports its layout width, not a mismatch (review B1)', async () => {
+    // Live, Chrome 154 on about:blank: innerWidth=980 while screen.width=390 after `viewport 390x844`.
+    const cdp = viewportCdp({ readBack: () => ({ w: 980, h: 2121 }) });
+    const out = await T.viewportStr(cdp, 'sid', '390x844');
+    expect(out).toBe('Viewport: 390x844 (DPR 1) (mobile mode); layout 980x2121');
+    expect(out).not.toContain('requested');
+  });
+
+  it('T5: a desktop size whose screen stays the real one still reads as applied', async () => {
+    // Live, headless Chrome 154: after `viewport 1400x900` (mobile:false) screen stays 800x600.
+    const cdp = viewportCdp({ screen: () => ({ w: 800, h: 600 }) });
+    const out = await T.viewportStr(cdp, 'sid', '1400x900');
+    expect(out).toBe('Viewport: 1400x900 (DPR 1)');
+  });
+
+  it('records the override on the session for viewport, never for an audit sweep', async () => {
     const session = {};
     await T.viewportStr(viewportCdp(), 'sid', '1400x900', { session });
     expect(session.viewportOverride).toEqual({ width: 1400, height: 900 });
-    const other = {};
-    await T.viewportStr(viewportCdp(), 'sid', '390x844');
-    expect(other.viewportOverride).toBeUndefined();
   });
 });
 
@@ -217,7 +232,10 @@ describe('#533 item 5: responsive-audit restores and reports the viewport', () =
 
   it('T6/T7: with no session override it clears the override and says restored', async () => {
     const cdp = viewportCdp();
-    const out = await audit(cdp, sessionFor());
+    const session = sessionFor();
+    const out = await audit(cdp, session);
+    // The sweep's sizes are not a user override: the next audit must still clear, not reapply 390x844.
+    expect(session.viewportOverride).toBeUndefined();
     expect(cdp.calls.some(call => call.method === 'Emulation.clearDeviceMetricsOverride')).toBe(true);
     const lastOverride = cdp.calls.filter(call => call.method === 'Emulation.setDeviceMetricsOverride').at(-1);
     expect(`${lastOverride.params.width}x${lastOverride.params.height}`).toBe('390x844');
@@ -267,6 +285,18 @@ describe('#533 item 6: the last CLI error line carries the Kind', () => {
     expect(T.formatCliError(new Error('boom'), { cmd: 'eval', targetPrefix: '1667E1A4' }).split('\n').at(-1))
       .toMatch(/^Next: .*\(Kind: unknown\)$/);
     expect(T.formatCliError(new Error(''), {}).split('\n').at(-1)).toMatch(/^Next: .*\(Kind: unknown\)$/);
+  });
+
+  it('T8: a classified action failure passed through keeps Kind on its last line (review B2)', () => {
+    const classified = 'Error: Did not reach document bottom\nKind: timeout\nNext: cdp status 1667E1A4';
+    expect(T.formatCliError(new Error(classified), { cmd: 'scroll', targetPrefix: '1667E1A4' }).split('\n').at(-1))
+      .toBe('Next: cdp status 1667E1A4 (Kind: timeout)');
+  });
+
+  it('T8: a message that already carries Next and a Kind line keeps Kind on its last line', () => {
+    const text = 'Error: Flow halted at step 2/2: boom\nRecovery:\n  Kind: hidden-tab\n  Run: CDP_BACKGROUND=0 cdp shot 1667E1A4\nNext: CDP_BACKGROUND=0 cdp shot 1667E1A4';
+    expect(T.formatCliError(new Error(text), { cmd: 'flow' }).split('\n').at(-1))
+      .toBe('Next: CDP_BACKGROUND=0 cdp shot 1667E1A4 (Kind: hidden-tab)');
   });
 });
 

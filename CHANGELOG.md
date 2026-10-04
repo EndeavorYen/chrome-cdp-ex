@@ -18,16 +18,20 @@ Fixes from a Windows background-mode field report
   8-character target prefix, like other receipts, instead of the 32-character target id. When requests
   are still pending after the action (SSE, long poll), `Next:` suggests `cdp perceive <prefix>`. A
   failed request still suggests `cdp netlog <prefix>`.
-* **`viewport <target> WxH` reads the size back.** It prints `Viewport: WxH (DPR n)` as measured on the
-  page, adds `; requested WxH` when the page reports another size, and no longer prints
+* **`viewport <target> WxH` reads the size back.** It now prints `Viewport: WxH (DPR n)` once the page
+  confirms the size, either through its layout viewport or its screen, instead of
   `Viewport resized to …`.
+  * When the layout differs, it adds `; layout WxH`. A mobile size on a page without
+    `<meta viewport>` lays out at 980px.
+  * When neither matches, it prints the measured size and `; requested WxH`.
 * **`responsive-audit` and `qa` no longer leave a viewport override behind.** They clear the override,
   or reapply one set earlier in the session with `viewport`. Before, they re-set the original size as
   an override, which added `mobile` emulation at widths of 768 or less. `responsive-audit` also prints
   `Viewport restored to WxH` or `Viewport left at WxH (was WxH)`, and its JSON includes
   `viewportRestore`.
 * **CLI errors end with the Kind.** Every CLI error now ends with `Next: <command> (Kind: <kind>)`, so
-  `| tail -1` still shows the failure kind. MCP policy errors print the same last line.
+  `| tail -1` still shows the failure kind. This includes classified action failures, which also keep
+  `Kind:` on their second line. MCP policy errors print the same last line.
 * **Troubleshooting covers background-tab `eval` timeouts.** The new section explains why `eval`
   times out in a background tab: paint-tied promises such as `HTMLImageElement.decode()` and
   `requestAnimationFrame` may never settle, and timers are throttled. It gives the
