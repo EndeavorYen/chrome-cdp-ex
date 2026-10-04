@@ -42,6 +42,7 @@ const EXPECTED_METHODS = Object.freeze([
   'Emulation.clearDeviceMetricsOverride',
   'Emulation.setDeviceMetricsOverride',
   'Emulation.setEmulatedMedia',
+  'Emulation.setFocusEmulationEnabled',
   'Fetch.continueRequest',
   'Fetch.disable',
   'Fetch.enable',
