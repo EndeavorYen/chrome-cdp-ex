@@ -167,6 +167,19 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs stop <target>
 
 Use `--allow-stale-daemon` only for an intentional long-running daemon and only as a one-off bypass.
 
+## A prefix stops resolving while the tab is still open
+
+A target id can change without the tab closing. Chrome may give the tab a new target after a renderer swap or a cross-process navigation, and a failed load can trigger either. The old prefix then fails with `No live target matching prefix`.
+
+When the last page list (`pages.json`, written by `list` and by every target command) shows exactly one live page with the same URL and title, the error names that page and the recovery reruns your command on it:
+
+```
+Error: No live target matching prefix "1667E1A4". Target 1667E1A4 is gone; the same page (same URL and title) is now B7BB111A: http://127.0.0.1:7860/
+Next: cdp nav B7BB111A http://127.0.0.1:7860/ (Kind: target-resolution)
+```
+
+Scripts that run for a long time should not keep a fixed prefix. Resolve the target by URL each time with `cdp target --url <url>`, or check `cdp list` when a prefix stops working.
+
 ## Focused search poisons perceive
 
 If a search/typeahead is focused, `perceive` may dump suggestions instead of the article. Blur first (`press Escape`) or `perceive -s main`. Use `--keep-typeahead` only when inspecting the dropdown.

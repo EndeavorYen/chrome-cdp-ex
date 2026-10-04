@@ -3094,17 +3094,20 @@ function formatTabGroup(group, { format = 'text' } = {}) {
   ].filter(Boolean).join('\n');
 }
 
+// The page list the last target command or `list` wrote to pages.json; empty when missing or unreadable.
+function readCachedPages() {
+  if (!existsSync(PAGES_CACHE)) return [];
+  try {
+    const cached = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
+    return Array.isArray(cached) ? cached : cached.pages || [];
+  } catch {
+    return [];
+  }
+}
+
 function listKnownLiveTargetIds({
   listDaemons = listDaemonSockets,
-  readPages = () => {
-    if (!existsSync(PAGES_CACHE)) return [];
-    try {
-      const cached = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
-      return Array.isArray(cached) ? cached : cached.pages || [];
-    } catch {
-      return [];
-    }
-  },
+  readPages = readCachedPages,
 } = {}) {
   const ids = new Set();
   for (const daemon of listDaemons() || []) {
@@ -29130,6 +29133,17 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'The named alias is not saved. List tabs or inspect current aliases.',
     };
   }
+  // #538: the prefix vanished but one live page has its last-seen URL and title: rerun on that page.
+  if (err?.code === 'target_successor' && err.successorPrefix) {
+    // An empty or space-padded argument (`fill <t> #pw ""`) is part of the command: quote it as typed.
+    const rerun = ['cdp', cmd || 'perceive', err.successorPrefix, ...(args || []).map(arg => (arg === '' ? '""' : String(arg).trim() !== String(arg) ? `'${String(arg).replace(/'/g, "'\\''")}'` : recoveryCommandArg(arg))).filter(Boolean)];
+    return {
+      kind: 'target-resolution',
+      strategy: 'use-successor-target',
+      run: rerun.join(' '),
+      reason: 'Chrome gave this tab a new target id without closing it (a navigation or renderer swap). The same URL and title now live under the new prefix; update any script that keeps the old one.',
+    };
+  }
   if (
     lower.includes('target id required') ||
     lower.includes('no page list cached') ||
@@ -30816,17 +30830,28 @@ async function main(options = {}) {
     return finish(1);
   }
   const livePages = await livePagesForTargetCommand(targetAlias);
+  // #538: the previous page list remembers the URL and title last seen for a prefix that may be gone.
+  const lastSeenPages = readCachedPages();
   writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 });
   const requestedTargetId = targetAlias?.targetId || targetPrefix;
   const preliminaryMatches = livePages.filter(page => String(page.targetId || '').toUpperCase().startsWith(String(requestedTargetId).toUpperCase()));
   const preliminaryTargetId = preliminaryMatches.length === 1 ? preliminaryMatches[0].targetId : null;
   const daemonBinding = preliminaryTargetId ? await readDaemonBinding(preliminaryTargetId) : null;
-  let targetResolution = resolveLiveTargetBinding({
-    requested: targetPrefix,
-    livePages,
-    daemonBinding,
-    alias: targetAlias,
-  });
+  let targetResolution;
+  try {
+    targetResolution = resolveLiveTargetBinding({
+      requested: targetPrefix,
+      livePages,
+      daemonBinding,
+      alias: targetAlias,
+      lastSeenPages,
+    });
+  } catch (error) {
+    if (error?.code !== 'target_successor') throw error;
+    // The recovery reruns this command, with its arguments, on the successor page.
+    console.error(formatCliError(error, { cmd, targetPrefix, args: cmdArgs, format: cliErrorFormat }));
+    return finish(1);
+  }
   const targetId = targetResolution.resolvedTargetId;
 
   let rebound = false;

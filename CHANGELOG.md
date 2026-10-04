@@ -12,6 +12,15 @@
 
 ### Bug Fixes
 
+* When a target prefix stops resolving but the tab is still open (Chrome gave it a new target id),
+  the error names the replacement page. This happens only when exactly one live page has the URL and
+  title last seen for that prefix. The recovery reruns the same command on the new prefix, for example
+  `Next: cdp nav B7BB111A <url> (Kind: target-resolution)`. Troubleshooting now explains why a target id
+  can change and recommends `cdp target --url` for long scripts. Automatic re-binding is tracked in #540
+  ([#538](https://github.com/EndeavorYen/chrome-cdp-ex/issues/538)).
+
+### Bug Fixes
+
 Fixes from a Windows background-mode field report
 ([#533](https://github.com/EndeavorYen/chrome-cdp-ex/issues/533)):
 
