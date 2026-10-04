@@ -29678,7 +29678,8 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
     return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}${cliErrorKindSuffix(recovery)}`].join('\n');
   }
-  const recoveryFor = () => buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
+  // With `text`, classify that part alone: the err object still carries the whole message.
+  const recoveryFor = (text = null) => buildCliErrorRecovery(text ?? message, { cmd, targetPrefix, platform, err: text == null ? err : null, args });
   if (isClassifiedActionFailureText(message)) return withKindOnLastNextLine(message, recoveryFor);
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
   if (/^Next:/m.test(message)) return withKindOnLastNextLine(lines.join('\n'), recoveryFor);
@@ -29704,7 +29705,7 @@ function cliErrorKindSuffix(recovery) {
 }
 
 // Lines a composite command (flow, repeat, replay) prints after a failed step's own Next: line.
-const HALT_TRAILER_RE = /^(?:(?:Flow|Replay) halted at |Repeat halted at iteration |Done: \d+ ok, \d+ failed$)/;
+const HALT_TRAILER_RE = /^(?:(?:Flow|Replay) halted at |Repeat halted at iteration |Done: \d+ ok, \d+ failed(?:, \d+ skipped)?$)/;
 // A step header that starts a failed step's block: `[2/3] …`, `[env 1/2] …`.
 const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
 
@@ -29712,7 +29713,8 @@ const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
 // keeps its lines and must still end with `Next: … (Kind: …)` (T8).
 // - The Kind is the failed block's own: an unindented `Kind:` line, or the first line of a
 //   `Recovery:` block, searched upwards from that Next: to the step header. Indented step output
-//   (`  Kind: page`) never counts. With none, the recovery classification gives it.
+//   (`  Kind: page`) never counts. With none, the recovery classification of that block alone gives
+//   it, so an earlier step's output cannot decide it.
 // - When only halt trailers follow that Next: (`Flow halted at step i/n`, `Done: …`), it is the
 //   failure's command and is repeated as the last line. When anything else follows (`repeat:
 //   condition not satisfied`), that Next: is stale and a fresh recovery Next: is appended instead.
@@ -29724,12 +29726,16 @@ function withKindOnLastNextLine(text, recoveryFor) {
     return [...lines, cliErrorNextLine(recoveryFor())].join('\n');
   }
   let kind = null;
+  let blockStart = 0;
   for (let i = nextIndex - 1; i >= 0 && !kind; i--) {
     kind = lines[i].match(/^Kind: (\S+)/)?.[1]
       || (lines[i - 1] === 'Recovery:' ? lines[i].match(/^\s+Kind: (\S+)/)?.[1] : null);
-    if (STEP_HEADER_RE.test(lines[i])) break;
+    if (STEP_HEADER_RE.test(lines[i])) {
+      blockStart = i;
+      break;
+    }
   }
-  kind ||= recoveryFor().kind;
+  kind ||= recoveryFor(lines.slice(blockStart, nextIndex).join('\n')).kind;
   const next = lines[nextIndex];
   const nextWithKind = /\(Kind: [^)]+\)$/.test(next) ? next : `${next}${cliErrorKindSuffix({ kind })}`;
   if (nextIndex === lines.length - 1) {

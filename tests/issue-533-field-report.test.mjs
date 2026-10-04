@@ -365,6 +365,24 @@ describe('#533 item 6: the last CLI error line carries the Kind', () => {
     expect(last).not.toContain('(Kind: page)');
   });
 
+  it('T8: the fallback Kind classifies the failed block only, not an earlier step\'s output (pre-submit review)', async () => {
+    let step = 0;
+    const halted = await T.flowStr({
+      run: async () => (++step === 1
+        ? { ok: true, result: T.hiddenTabCaptureError().message }
+        : { ok: false, error: 'Error: boom\nNext: cdp status 1667E1A4' }),
+      settle: async () => '',
+    }, 'summary; click buy', { throwOnFailure: true }).then(() => null, e => e);
+    const last = T.formatCliError(halted, { cmd: 'flow', targetPrefix: '1667E1A4' }).split('\n').at(-1);
+    expect(last).toBe('Next: cdp status 1667E1A4 (Kind: unknown)');
+  });
+
+  it('T8: a halted replay summary counts as a halt trailer', () => {
+    const text = 'Replay: 1 action(s)\n[1/1] click x\n  ✗ Error: Named control not found\nKind: selector\nNext: cdp perceive 1667E1A4 -C -d 8\nReplay halted at step 1/1\nDone: 0 ok, 1 failed, 0 skipped';
+    expect(T.formatCliError(new Error(text), { cmd: 'replay', targetPrefix: '1667E1A4' }).split('\n').at(-1))
+      .toBe('Next: cdp perceive 1667E1A4 -C -d 8 (Kind: selector)');
+  });
+
   it('T8: a classified failure without a Next line gets one', () => {
     // Defensive: no producer emits this today. The appended Next and its Kind come from one recovery,
     // so the command and the Kind never disagree; the message's own Kind stays on its line.
