@@ -236,7 +236,60 @@ describe('#534 pre-submit review fixes', () => {
   it('broadcast and open readiness: the gate covers broadcast, readiness polls skip the lookup', () => {
     const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
     const broadcast = source.slice(source.indexOf("if (cmd === 'broadcast') {"), source.indexOf("if (cmd === 'broadcast') {") + 1200);
-    expect(broadcast).toMatch(/if \(isolatedOnlyEnabled\(\)\) await getWsUrl\(\);/);
+    expect(broadcast).toMatch(/createIsolatedMemberGate/);
     expect(source).not.toMatch(/getWsUrlFn = getWsUrl,/);
+  });
+});
+
+describe('#534 second pre-submit review fixes', () => {
+  it('High: every Chrome, Edge and Brave channel, plus Vivaldi, is a browser', () => {
+    for (const exe of [
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
+      '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev',
+      '/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta',
+      '/Applications/Microsoft Edge Dev.app/Contents/MacOS/Microsoft Edge Dev',
+      '/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary',
+      '/Applications/Brave Browser Beta.app/Contents/MacOS/Brave Browser Beta',
+      '/Applications/Brave Browser Nightly.app/Contents/MacOS/Brave Browser Nightly',
+      '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+      '/opt/vivaldi/vivaldi-bin',
+      '/usr/bin/microsoft-edge-stable',
+      '/usr/bin/brave-browser-stable',
+      'C:/Program Files/Google/Chrome SxS/Application/chrome.exe',
+    ]) {
+      expect(T.classifyBrowserProfile([exe]).kind, exe).toBe('daily');
+    }
+  });
+
+  it('Medium: the two-word --user-data-dir form means the default (daily) profile to Chromium', () => {
+    expect(T.classifyBrowserProfile([CHROME, '--user-data-dir', 'C:\\Temp\\iso']).kind).toBe('daily');
+  });
+
+  it('Medium: a stray trailing word does not hide a daily dir on macOS', () => {
+    const daily = '/Users/u/Library/Application Support/chrome-cdp-ex/daily-chrome';
+    const argvFound = T.macCommandLineArgv(`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${daily} -psn_0_123`, { exists: () => false });
+    expect(T.classifyBrowserProfile(argvFound)).toMatchObject({ kind: 'daily', profileDir: daily });
+  });
+
+  it('Medium: broadcast checks each member against its own endpoint and refuses tabs of other browsers', async () => {
+    const connections = [];
+    const gate = T.createIsolatedMemberGate({
+      gatedWsUrl: async ({ env }) => {
+        connections.push(env.CDP_PORT);
+        if (env.CDP_PORT === '9222') {
+          const err = new Error('CDP_ISOLATED_ONLY=1: refusing to attach to 127.0.0.1:9222');
+          err.code = 'daily_profile_refused';
+          throw err;
+        }
+        return `ws://127.0.0.1:${env.CDP_PORT}/devtools/browser/X`;
+      },
+      listPagesFor: async () => [{ targetId: 'AAAA0000' }],
+      baseEnv: { CDP_PORT: '9333' },
+    });
+    await expect(gate(null, 'AAAA0000')).resolves.toBeUndefined();
+    await expect(gate(null, 'BBBB0000')).rejects.toThrow(/BBBB0000 is not a tab of the checked browser at 127\.0\.0\.1:9333/);
+    await expect(gate({ port: 9222 }, 'AAAA0000')).rejects.toMatchObject({ code: 'daily_profile_refused' });
+    expect(connections).toEqual(['9333', '9222']);
   });
 });

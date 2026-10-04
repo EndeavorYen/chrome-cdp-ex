@@ -2242,28 +2242,32 @@ function isBrowserDefaultUserDataDir(profileDir) {
 
 // The persistent chrome-cdp-ex/daily-<browser> dir spawn-debug-browser keeps the user's logins in (#368).
 function isPersistentDailyProfileDir(profileDir) {
-  return /(?:^|\/)chrome-cdp-ex\/daily-[^/]+$/i.test(String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, ''));
+  return /(?:^|\/)chrome-cdp-ex\/daily-[a-z0-9_-]+$/i.test(String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, ''));
 }
 
-// #534: what kind of profile the attached browser runs, from Browser.getBrowserCommandLine.
-// daily: the browser default (no --user-data-dir, or the platform default dir) or the persistent
-// chrome-cdp-ex daily dir. isolated: any other explicit dir. other: not a Chromium browser
-// (an Electron app). unknown: no command line to read.
 // The browser an executable path runs, from its file name only: a folder or app named "hedge" or
-// "Ledger Live" is not Edge, and an Electron app under a "chrome-tools" folder is not Chrome.
+// "Ledger Live" is not Edge, and an Electron app under a "chrome-tools" folder is not Chrome. Every
+// release channel counts (Canary, Beta, Dev, Nightly, SxS, -stable), and so does Vivaldi.
 function browserFromExecutable(exe) {
   const name = String(exe || '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
-  if (name === 'msedge' || name === 'microsoft edge' || /^microsoft-edge(?:-beta|-dev)?$/.test(name)) return 'edge';
-  if (name === 'brave' || name === 'brave browser' || name === 'brave-browser') return 'brave';
-  if (/^(?:chrome|google chrome|google-chrome(?:-stable|-beta|-unstable)?|chromium|chromium-browser)$/.test(name)) return 'chrome';
+  const channel = '(?:[ -](?:stable|beta|dev|canary|nightly|unstable))?';
+  if (new RegExp(`^(?:msedge|microsoft edge${channel}|microsoft-edge${channel})$`).test(name)) return 'edge';
+  if (new RegExp(`^(?:brave|brave browser${channel}|brave-browser${channel})$`).test(name)) return 'brave';
+  if (/^vivaldi(?:-bin|-stable|-snapshot)?$/.test(name)) return 'vivaldi';
+  if (new RegExp(`^(?:chrome|google chrome${channel}|google-chrome${channel}|chromium|chromium-browser)$`).test(name)) return 'chrome';
   return null;
 }
 
+// #534: what kind of profile the attached browser runs, from its command line.
+// daily: the browser default (no --user-data-dir, or the platform default dir) or the persistent
+// chrome-cdp-ex daily dir. isolated: any other explicit dir. other: not a Chromium browser
+// (an Electron app). unknown: no command line to read.
 function classifyBrowserProfile(argv) {
   const list = Array.isArray(argv) ? argv.map(String) : [];
   if (!list.length) return { kind: 'unknown', profileDir: null, browser: null };
   const browser = browserFromExecutable(list[0]);
-  const profileDir = profileDirFromCommandLine(list);
+  // Chromium reads a bare `--user-data-dir DIR` as an empty switch (default profile) plus a start URL.
+  const profileDir = list.some(arg => arg.startsWith('--user-data-dir=')) ? profileDirFromCommandLine(list) : null;
   if (!browser) return { kind: 'other', profileDir, browser: null };
   const daily = !profileDir || isBrowserDefaultUserDataDir(profileDir) || isPersistentDailyProfileDir(profileDir);
   return { kind: daily ? 'daily' : 'isolated', profileDir, browser };
@@ -2397,10 +2401,49 @@ function macCommandLineArgv(line, { exists = existsSync } = {}) {
         return `${key}=${parts.slice(0, n).join(' ')}`;
       }
     }
+    // Not on disk (or not checkable): a leading part shaped like a daily or default dir still wins, so a
+    // stray trailing word (-psn_…) cannot turn a daily profile into an "isolated" one.
+    for (let n = parts.length; n > 1; n--) {
+      const candidate = parts.slice(0, n).join(' ');
+      if (isBrowserDefaultUserDataDir(candidate) || isPersistentDailyProfileDir(candidate)) {
+        trailing.push(...parts.slice(n));
+        return `${key}=${candidate}`;
+      }
+    }
     while (parts.length > 1 && /^[a-z][a-z0-9+.-]*:/i.test(parts.at(-1))) trailing.unshift(parts.pop());
     return `${key}=${parts.join(' ')}`;
   });
   return [...fixed, ...trailing];
+}
+
+// #534: broadcast's per-member gate. For each endpoint (the alias's port, else the environment), the
+// browser passes getWsUrl's CDP_ISOLATED_ONLY check once; a member must then be one of its tabs, so a
+// daemon left attached to another (daily) browser is never reused.
+function createIsolatedMemberGate({
+  gatedWsUrl = getWsUrl,
+  listPagesFor = async (wsUrl) => {
+    const cdp = new CDP();
+    await cdp.connect(wsUrl);
+    try { return await getPages(cdp); } finally { cdp.close(); }
+  },
+  baseEnv = process.env,
+} = {}) {
+  const checked = new Map();
+  return async (alias, targetId) => {
+    const env = aliasEnv(alias, baseEnv);
+    const key = `${env.CDP_HOST || ''}|${env.CDP_PORT || ''}`;
+    if (!checked.has(key)) {
+      checked.set(key, (async () => {
+        const wsUrl = await gatedWsUrl({ env });
+        const pages = await listPagesFor(wsUrl);
+        return { endpoint: cdpEndpointFromWsUrl(wsUrl), ids: new Set((pages || []).map(page => page.targetId)) };
+      })());
+    }
+    const gate = await checked.get(key);
+    if (!gate.ids.has(targetId)) {
+      throw new Error(`CDP_ISOLATED_ONLY=1: ${targetPrefixForDisplay(targetId)} is not a tab of the checked browser at ${gate.endpoint}; broadcast does not reuse its daemon.`);
+    }
+  };
 }
 
 function dailyProfileRefusedError({ host, port, profile }) {
@@ -30625,8 +30668,9 @@ async function main(options = {}) {
         compositeSteps: policyCompositeSteps,
       });
       if (broadcastBlocked) throw new Error(broadcastBlocked);
-      // #534: broadcast reuses tab daemons directly; check the attached profile once first.
-      if (isolatedOnlyEnabled()) await getWsUrl();
+      // #534: broadcast reuses tab daemons directly, so under CDP_ISOLATED_ONLY each member is checked
+      // against its own endpoint and must be a tab of that checked browser.
+      const assertIsolatedMember = isolatedOnlyEnabled() ? createIsolatedMemberGate() : null;
       const results = [];
       for (const member of group.members) {
         const entry = { target: member, targetPrefix: String(member).slice(0, 8), ok: false, result: null, error: null };
@@ -30647,6 +30691,7 @@ async function main(options = {}) {
             }
           }
           entry.targetPrefix = targetPrefixForDisplay(targetId);
+          if (assertIsolatedMember) await assertIsolatedMember(alias, targetId);
           const conn = await getOrStartTabDaemon(targetId, {
             env: aliasEnv(alias),
             ...runtimeIdentity,
@@ -31472,7 +31517,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
-  getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
+  getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
   detectChromiumMajorVersion, defaultProfileIgnoresRemoteDebugging,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
