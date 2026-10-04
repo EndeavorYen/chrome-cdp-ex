@@ -3320,6 +3320,26 @@ function formatTabGroup(group, { format = 'text' } = {}) {
   ].filter(Boolean).join('\n');
 }
 
+// #532: opt-in local usage counter. With CDP_USAGE_LOG set, each CLI or MCP run appends
+// {ts, command, via} to <runtime dir>/usage.jsonl — the canonical command name only, never arguments,
+// URLs or selectors. Internal and unknown names are skipped; the file rotates to usage.jsonl.1 above
+// USAGE_LOG_MAX_BYTES. Nothing leaves the machine; `npm run usage:report` reads it.
+const USAGE_LOG_MAX_BYTES = 1024 * 1024;
+function recordCommandUsage(spelling, {
+  env = process.env,
+  via = 'cli',
+  file = resolve(RUNTIME_DIR, 'usage.jsonl'),
+  now = Date.now,
+} = {}) {
+  if (!/^(1|true|yes|on)$/i.test(String(env?.CDP_USAGE_LOG || '').trim())) return;
+  const command = COMMAND_SURFACE.resolve(String(spelling || ''));
+  if (!command || command.name.startsWith('_')) return;
+  try {
+    if (existsSync(file) && statSync(file).size > USAGE_LOG_MAX_BYTES) renameSync(file, `${file}.1`);
+    appendFileSync(file, `${JSON.stringify({ ts: new Date(now()).toISOString(), command: command.name, via: via === 'mcp' ? 'mcp' : 'cli' })}\n`, { mode: 0o600 });
+  } catch {}
+}
+
 // The page list the last target command or `list` wrote to pages.json; empty when missing or unreadable.
 function readCachedPages() {
   if (!existsSync(PAGES_CACHE)) return [];
@@ -30524,7 +30544,7 @@ export async function executeCdpCli(command, { runMain = main, hostProcess = pro
   });
   let code = 0;
   try {
-    await runMain({ argv, process: cliProcess, console: cliConsole });
+    await runMain({ argv, process: cliProcess, console: cliConsole, usageVia: 'mcp' });
     code = Number(cliProcess.exitCode) || 0;
   } catch (error) {
     if (error instanceof CliExitSignal) {
@@ -30614,6 +30634,8 @@ async function main(options = {}) {
 
   // Daemon mode (internal)
   if (cmd === '_daemon') { await runDaemon(args[0], applicationPreflight); return; }
+  // #532: opt-in local usage counter (CDP_USAGE_LOG=1); command name only, never its arguments.
+  recordCommandUsage(cmd, { env: process.env, via: options.usageVia || 'cli' });
 
   // #466: opt-in session policy. Read on every run, refused before anything else when invalid.
   let sessionPolicy = null;
@@ -31595,7 +31617,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
-  getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, readCdpUserAgent, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
+  recordCommandUsage, USAGE_LOG_MAX_BYTES, getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, readCdpUserAgent, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
   detectChromiumMajorVersion, defaultProfileIgnoresRemoteDebugging,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
