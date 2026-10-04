@@ -5220,14 +5220,52 @@ async function captureHiddenTabFrame(cdp, sid, params, hooks, inspectFrame) {
   const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
     ? Math.min(hooks.timeoutMs, HIDDEN_TAB_CAPTURE_TIMEOUT_MS)
     : HIDDEN_TAB_CAPTURE_TIMEOUT_MS;
+  const isTimeout = error => String(error?.message || '').startsWith('Timeout:');
+  // #535: a minimized window or background tab renders no frame, but focus emulation makes the document
+  // visible (live, Chrome 154: minimized capture timed out, then succeeded in ~0.1 s). Capture once with
+  // it, never activating the tab, and switch it off again whatever happens.
+  const captureWithFocusEmulation = async (firstTimeout) => {
+    let enabled = false;
+    try {
+      enabled = true; // before the call: an enable that timed out may still have been applied
+      try {
+        await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: true }, sid);
+      } catch (enableError) {
+        throw /target closed|detached|no (?:target|session) with/i.test(enableError?.message || '') ? enableError : hiddenTabCaptureError(firstTimeout || enableError);
+      }
+      try {
+        return await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
+      } catch (retryError) {
+        // Still no frame: the hidden-tab recovery applies. Anything else (target closed) is the real error.
+        throw isTimeout(retryError) ? hiddenTabCaptureError(retryError) : retryError;
+      }
+    } finally {
+      if (enabled) {
+        try { await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: false }, sid); } catch {}
+      }
+    }
+  };
   let result;
-  try {
-    result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
-  } catch (err) {
-    if (String(err?.message || '').startsWith('Timeout:')) throw hiddenTabCaptureError(err);
-    throw err;
+  let focusEmulated = false;
+  if (hooks.tierState?.hiddenNeedsFocusEmulation) {
+    // An earlier capture of this command (a scanshot segment, a responsive-audit size) needed it:
+    // skip the frameless wait instead of paying it per segment.
+    result = await captureWithFocusEmulation(null);
+    focusEmulated = true;
+  } else {
+    try {
+      result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
+    } catch (err) {
+      if (!isTimeout(err)) throw err;
+      result = await captureWithFocusEmulation(err);
+      focusEmulated = true;
+      if (hooks.tierState) hooks.tierState.hiddenNeedsFocusEmulation = true;
+    }
   }
-  const captured = { data: result.data, fallback: false, method: 'captureScreenshot', tier: 1, hiddenTab: true };
+  const captured = {
+    data: result.data, fallback: false, method: 'captureScreenshot', tier: 1, hiddenTab: true,
+    ...(focusEmulated ? { focusEmulated: true } : {}),
+  };
   return { ...captured, retryCount: 0, sanity: await inspectFrame(captured) };
 }
 
@@ -5347,8 +5385,11 @@ function parseShotArgs(args) {
 }
 
 function formatScreenshotCaptureDiagnostics(capture = {}) {
-  const { fallback, method, retryCount = 0, sanity, firstFrameSanity, attempts = [] } = capture;
+  const { fallback, method, retryCount = 0, sanity, firstFrameSanity, attempts = [], focusEmulated = false } = capture;
   const lines = [];
+  if (focusEmulated) {
+    lines.push('(hidden tab captured with temporary focus emulation; the page saw visibilitychange and focus events while it ran)');
+  }
   if (fallback && retryCount === 0) {
     lines.push(attempts.length
       ? `(screenshot fallback method=${method}: ${attempts.map(a => `tier ${a.tier} ${a.message}`).join('; ')})`

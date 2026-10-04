@@ -180,16 +180,18 @@ describe('hidden-tab fast failure for captures', () => {
   });
   const captureCalls = cdp => cdp.send.mock.calls.filter(call => call[0] === 'Page.captureScreenshot');
 
-  it('fails with a hidden-tab error after one bounded attempt, with no fallback tier', async () => {
+  it('fails with a hidden-tab error after the bounded attempt and one focus-emulation retry (#535), with no fallback tier', async () => {
     T.setBackgroundCaptureGuard(true);
     const cdp = captureCdp();
     const error = await T.captureScreenshot(cdp, 'S1', { format: 'png' }).catch(e => e);
     expect(T.isHiddenTabCaptureError(error)).toBe(true);
     expect(error.message).toMatch(/visibilityState=hidden/);
     const calls = captureCalls(cdp);
-    expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toEqual({ format: 'png' });
-    expect(calls[0][3]).toBe(T.HIDDEN_TAB_CAPTURE_TIMEOUT_MS);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call[1]).toEqual({ format: 'png' });
+      expect(call[3]).toBe(T.HIDDEN_TAB_CAPTURE_TIMEOUT_MS);
+    }
     expect(T.HIDDEN_TAB_CAPTURE_TIMEOUT_MS).toBeLessThan(T.SCREENSHOT_TIMEOUT);
   });
 
