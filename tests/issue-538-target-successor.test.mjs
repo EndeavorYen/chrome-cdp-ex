@@ -57,6 +57,33 @@ describe('#538 a vanished prefix names its successor page', () => {
     expect(err.successorPrefix).toBe('B7BB111A0');
   });
 
+  it('a blank tab is never named as a successor', () => {
+    const blank = id => ({ targetId: id, url: 'about:blank', title: '' });
+    const err = errorFrom(() => T.resolveLiveTargetBinding({
+      requested: '1667E1A4',
+      livePages: [blank(NEW)],
+      lastSeenPages: [blank(OLD)],
+    }));
+    expect(err.code).toBeUndefined();
+  });
+
+  it('the successor URL in the error is redacted like other receipts', () => {
+    const secretUrl = 'http://127.0.0.1:7860/?token=SECRET123';
+    const err = errorFrom(() => T.resolveLiveTargetBinding({
+      requested: '1667E1A4',
+      livePages: [page(NEW, secretUrl)],
+      lastSeenPages: [page(OLD, secretUrl)],
+    }));
+    expect(err.code).toBe('target_successor');
+    expect(err.message).not.toContain('SECRET123');
+  });
+
+  it('T3: an empty-string argument survives in the rerun command', () => {
+    const err = errorFrom(() => T.resolveLiveTargetBinding({ requested: '1667E1A4', livePages: [page(NEW)], lastSeenPages: [page(OLD)] }));
+    const out = T.formatCliError(err, { cmd: 'fill', targetPrefix: '1667E1A4', args: ['#pw', ''] });
+    expect(out.split('\n').at(-1)).toBe('Next: cdp fill B7BB111A "#pw" "" (Kind: target-resolution)');
+  });
+
   it('an alias error keeps its own message', () => {
     const err = errorFrom(() => T.resolveLiveTargetBinding({
       requested: '@shop',

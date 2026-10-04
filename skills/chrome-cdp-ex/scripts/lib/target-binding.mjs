@@ -1,3 +1,5 @@
+import { redactUrl } from './redaction.mjs';
+
 const TARGET_RESOLUTION_SCHEMA = 'chrome-cdp-ex.target-resolution.v1';
 
 function matchingPages(requested, livePages) {
@@ -31,11 +33,11 @@ function uniqueLivePrefix(targetId, livePages) {
 function findSuccessorPage(requested, lastSeenPages, livePages) {
   const upper = String(requested || '').toUpperCase();
   const seen = (lastSeenPages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper));
-  if (seen.length !== 1 || !seen[0].url) return null;
+  // A blank tab looks like every other blank tab, so it never names a successor.
+  if (seen.length !== 1 || !seen[0].url || seen[0].url === 'about:blank') return null;
   const { url, title = '' } = seen[0];
-  const candidates = (livePages || []).filter(page => page?.url === url
-    && (page?.title || '') === title
-    && !String(page?.targetId || '').toUpperCase().startsWith(upper));
+  // Only reached when no live page matches the prefix, so every candidate is another page.
+  const candidates = (livePages || []).filter(page => page?.url === url && (page?.title || '') === title);
   return candidates.length === 1 ? candidates[0] : null;
 }
 
@@ -53,7 +55,7 @@ export function resolveLiveTargetBinding({ requested, livePages = [], daemonBind
     const successor = findSuccessorPage(rawRequested, lastSeenPages, livePages);
     if (successor) {
       const successorPrefix = uniqueLivePrefix(successor.targetId, livePages);
-      const error = new Error(`No live target matching prefix "${rawRequested}". Target ${rawRequested} is gone; the same page (same URL and title) is now ${successorPrefix}: ${successor.url}`);
+      const error = new Error(`No live target matching prefix "${rawRequested}". Target ${rawRequested} is gone; the same page (same URL and title) is now ${successorPrefix}: ${redactUrl(successor.url)}`);
       error.code = 'target_successor';
       error.successorTargetId = successor.targetId;
       error.successorPrefix = successorPrefix;
