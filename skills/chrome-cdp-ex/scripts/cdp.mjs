@@ -4774,10 +4774,13 @@ function parseEmulateArgs(args = []) {
       throw new Error(`emulate: unknown argument ${token}`);
     }
   }
-  // The last mode token used to win silently: `--focus off` dropped --focus, `off --focus` skipped the reset.
-  const hasOff = tokens.some(token => token === 'off' || token === 'reset' || token === 'clear');
-  if (hasOff && (opts.colorScheme != null || opts.reducedMotion != null || opts.focus != null)) {
-    throw new Error('emulate: off cannot be combined with a setting; run `emulate <target> off`, then set what you need');
+  // The last mode token used to win silently: `--focus off` dropped --focus, `off --focus` skipped the
+  // reset, and `dark status` dropped dark.
+  const hasSetting = opts.colorScheme != null || opts.reducedMotion != null || opts.focus != null;
+  for (const [word, spellings] of [['off', ['off', 'reset', 'clear']], ['status', ['status', 'show']]]) {
+    if (hasSetting && tokens.some(token => spellings.includes(token))) {
+      throw new Error(`emulate: ${word} cannot be combined with a setting; run \`emulate <target> ${word}\` on its own`);
+    }
   }
   return opts;
 }
@@ -29355,6 +29358,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     lower.includes('unknown option')
     || lower.includes('unknown argument')
     || lower.includes('unknown flag')
+    // #536: every `emulate:` parse error (a bad value, off/status with a setting) is a typing mistake.
+    || (cmd === 'emulate' && lower.startsWith('emulate:'))
   ) {
     return {
       kind: 'usage',

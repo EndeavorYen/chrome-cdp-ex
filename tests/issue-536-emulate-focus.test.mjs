@@ -76,9 +76,21 @@ describe('#536 emulate --focus', () => {
     expect(json).toMatchObject({ colorScheme: 'light', focus: true });
   });
 
-  it('off combined with a setting is an error, not a silent drop', () => {
+  it('off or status combined with a setting is an error, not a silent drop', () => {
     expect(() => T.parseEmulateArgs(['--focus', 'off'])).toThrow(/off cannot be combined/);
     expect(() => T.parseEmulateArgs(['off', 'dark'])).toThrow(/off cannot be combined/);
+    expect(() => T.parseEmulateArgs(['dark', 'status'])).toThrow(/status cannot be combined/);
+    expect(T.parseEmulateArgs(['status']).mode).toBe('status');
+    expect(T.parseEmulateArgs(['off', '--format', 'json']).mode).toBe('off');
+  });
+
+  it('emulate argument errors are usage errors that point at help', () => {
+    for (const args of [['off', 'dark'], ['--color-scheme', 'blue'], ['--bogus']]) {
+      let message = '';
+      try { T.parseEmulateArgs(args); } catch (error) { message = error.message; }
+      const recovery = T.buildCliErrorRecovery(message, { cmd: 'emulate', targetPrefix: 'ABCDEF01' });
+      expect(recovery, args.join(' ')).toMatchObject({ kind: 'usage', run: 'cdp help emulate' });
+    }
   });
 
   it('T5: the synopsis and reference docs name --focus', () => {
