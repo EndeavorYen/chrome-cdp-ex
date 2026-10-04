@@ -2249,10 +2249,20 @@ function isPersistentDailyProfileDir(profileDir) {
 // daily: the browser default (no --user-data-dir, or the platform default dir) or the persistent
 // chrome-cdp-ex daily dir. isolated: any other explicit dir. other: not a Chromium browser
 // (an Electron app). unknown: no command line to read.
+// The browser an executable path runs, from its file name only: a folder or app named "hedge" or
+// "Ledger Live" is not Edge, and an Electron app under a "chrome-tools" folder is not Chrome.
+function browserFromExecutable(exe) {
+  const name = String(exe || '').split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+  if (name === 'msedge' || name === 'microsoft edge' || /^microsoft-edge(?:-beta|-dev)?$/.test(name)) return 'edge';
+  if (name === 'brave' || name === 'brave browser' || name === 'brave-browser') return 'brave';
+  if (/^(?:chrome|google chrome|google-chrome(?:-stable|-beta|-unstable)?|chromium|chromium-browser)$/.test(name)) return 'chrome';
+  return null;
+}
+
 function classifyBrowserProfile(argv) {
   const list = Array.isArray(argv) ? argv.map(String) : [];
   if (!list.length) return { kind: 'unknown', profileDir: null, browser: null };
-  const browser = inferBrowserFromExe(list[0]);
+  const browser = browserFromExecutable(list[0]);
   const profileDir = profileDirFromCommandLine(list);
   if (!browser) return { kind: 'other', profileDir, browser: null };
   const daily = !profileDir || isBrowserDefaultUserDataDir(profileDir) || isPersistentDailyProfileDir(profileDir);
@@ -2281,7 +2291,10 @@ async function readBrowserArgvViaCdp({ host, port, wsUrl: knownWsUrl, connectWeb
     const wsUrl = knownWsUrl || `ws://${host || DEFAULT_CDP_HOST}:${port}/devtools/browser`;
     const ws = typeof connectWebSocket === 'function' ? await connectWebSocket(wsUrl) : new WebSocket(wsUrl);
     const argv = await new Promise((resolveWs, rejectWs) => {
-      const timer = setTimeout(() => rejectWs(new Error('timeout')), 1000);
+      const timer = setTimeout(() => {
+        try { ws.close(); } catch {}
+        rejectWs(new Error('timeout'));
+      }, 1000);
       ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' }));
       if (ws.readyState === 1) ws.onopen();
       ws.onmessage = (event) => {
@@ -2359,13 +2372,35 @@ function readBrowserProcessArgv({
   }
 }
 
-// ps prints an unquoted command line, and the executable path may hold spaces
-// (/Applications/Google Chrome.app/…): everything before the first --flag is the executable.
-function macCommandLineArgv(line) {
+// ps prints an unquoted command line, so spaces inside paths are lost: the executable
+// (/Applications/Google Chrome.app/…) is everything before the first --flag, and a flag value such as
+// --user-data-dir=~/Library/Application Support/… runs on to the next --flag. When a value carries
+// trailing positional words (a start URL), keep its longest leading part that exists on disk, else drop
+// trailing URL-like words.
+function macCommandLineArgv(line, { exists = existsSync } = {}) {
   const words = String(line).split(/\s+/).filter(Boolean);
   const firstFlag = words.findIndex(word => word.startsWith('--'));
   if (firstFlag <= 0) return words.length ? [words.join(' ')] : null;
-  return [words.slice(0, firstFlag).join(' '), ...words.slice(firstFlag)];
+  const argv = [words.slice(0, firstFlag).join(' ')];
+  for (const word of words.slice(firstFlag)) {
+    if (word.startsWith('--') || !argv.at(-1).startsWith('--') || !argv.at(-1).includes('=')) argv.push(word);
+    else argv[argv.length - 1] += ` ${word}`;
+  }
+  const trailing = [];
+  const fixed = argv.map((arg, index) => {
+    if (index === 0 || !arg.startsWith('--') || !arg.includes('=') || !arg.includes(' ')) return arg;
+    const [key, ...rest] = arg.split('=');
+    const parts = rest.join('=').split(' ');
+    for (let n = parts.length; n > 1; n--) {
+      if (exists(parts.slice(0, n).join(' '))) {
+        trailing.push(...parts.slice(n));
+        return `${key}=${parts.slice(0, n).join(' ')}`;
+      }
+    }
+    while (parts.length > 1 && /^[a-z][a-z0-9+.-]*:/i.test(parts.at(-1))) trailing.unshift(parts.pop());
+    return `${key}=${parts.join(' ')}`;
+  });
+  return [...fixed, ...trailing];
 }
 
 function dailyProfileRefusedError({ host, port, profile }) {
@@ -30080,7 +30115,8 @@ async function waitForOpenReady(targetId, {
   url = '',
   selector = null,
   createCdp = () => new CDP(),
-  getWsUrlFn = getWsUrl,
+  // The open path already passed the CDP_ISOLATED_ONLY gate; readiness polls skip the profile lookup.
+  getWsUrlFn = discoverWsUrl,
 } = {}) {
   const timeout = Math.min(Math.max(timeoutMs, 0), 300000);
   if (timeout <= 0) {
@@ -30136,7 +30172,8 @@ function openNavigationScript(url) {
 
 async function waitForOpenTargetUrl(targetId, url, timeoutMs = 1000, {
   createCdp = () => new CDP(),
-  getWsUrlFn = getWsUrl,
+  // The open path already passed the CDP_ISOLATED_ONLY gate; readiness polls skip the profile lookup.
+  getWsUrlFn = discoverWsUrl,
   now = Date.now,
   sleepFn = sleep,
 } = {}) {
@@ -30166,7 +30203,8 @@ async function waitForOpenTargetUrl(targetId, url, timeoutMs = 1000, {
 
 async function navigateOpenTarget(targetId, sp, url, {
   createCdp = () => new CDP(),
-  getWsUrlFn = getWsUrl,
+  // The open path already passed the CDP_ISOLATED_ONLY gate; readiness polls skip the profile lookup.
+  getWsUrlFn = discoverWsUrl,
   waitForOpenTargetUrlFn = waitForOpenTargetUrl,
   connectToSocketFn = connectToSocket,
   sendCommandFn = sendCommand,
@@ -30587,6 +30625,8 @@ async function main(options = {}) {
         compositeSteps: policyCompositeSteps,
       });
       if (broadcastBlocked) throw new Error(broadcastBlocked);
+      // #534: broadcast reuses tab daemons directly; check the attached profile once first.
+      if (isolatedOnlyEnabled()) await getWsUrl();
       const results = [];
       for (const member of group.members) {
         const entry = { target: member, targetPrefix: String(member).slice(0, 8), ok: false, result: null, error: null };
@@ -31432,7 +31472,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
-  getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
+  getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
   detectChromiumMajorVersion, defaultProfileIgnoresRemoteDebugging,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,

@@ -203,3 +203,40 @@ describe('#534 docs', () => {
     }
   });
 });
+
+describe('#534 pre-submit review fixes', () => {
+  it('High: a macOS daily dir with a space stays one --user-data-dir value', () => {
+    const daily = '/Users/u/Library/Application Support/chrome-cdp-ex/daily-chrome';
+    const line = `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=${daily} about:blank`;
+    const argvFound = T.macCommandLineArgv(line, { exists: path => path === daily });
+    expect(argvFound).toContain(`--user-data-dir=${daily}`);
+    expect(T.classifyBrowserProfile(argvFound)).toMatchObject({ kind: 'daily', profileDir: daily });
+    const defaultDir = '/Users/u/Library/Application Support/Google/Chrome';
+    const second = T.macCommandLineArgv(`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${defaultDir} --remote-debugging-port=9222`, { exists: () => false });
+    expect(T.classifyBrowserProfile(second).kind).toBe('daily');
+  });
+
+  it('Medium: only the executable name decides the browser, not an "edge" or "chrome" substring in the path', () => {
+    expect(T.classifyBrowserProfile(['C:\\Program Files\\Ledger Live\\Ledger Live.exe', '--remote-debugging-port=9229']).kind).toBe('other');
+    expect(T.classifyBrowserProfile(['C:\\Users\\hedge\\AppData\\Local\\slack\\slack.exe']).kind).toBe('other');
+    expect(T.classifyBrowserProfile(['/opt/mychrome-tools/app/electron']).kind).toBe('other');
+    expect(T.classifyBrowserProfile(['/usr/bin/chromium-browser']).browser).toBe('chrome');
+    expect(T.classifyBrowserProfile(['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge']).browser).toBe('edge');
+    expect(T.classifyBrowserProfile(['C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe']).browser).toBe('brave');
+  });
+
+  it('Low: the WebSocket is closed when Browser.getBrowserCommandLine times out', async () => {
+    let closed = 0;
+    const silent = { readyState: 1, send() {}, close() { closed += 1; } };
+    const argvRead = await T.readBrowserArgvViaCdp({ wsUrl: 'ws://127.0.0.1:1/devtools/browser/X', connectWebSocket: async () => silent });
+    expect(argvRead).toBeNull();
+    expect(closed).toBeGreaterThan(0);
+  });
+
+  it('broadcast and open readiness: the gate covers broadcast, readiness polls skip the lookup', () => {
+    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const broadcast = source.slice(source.indexOf("if (cmd === 'broadcast') {"), source.indexOf("if (cmd === 'broadcast') {") + 1200);
+    expect(broadcast).toMatch(/if \(isolatedOnlyEnabled\(\)\) await getWsUrl\(\);/);
+    expect(source).not.toMatch(/getWsUrlFn = getWsUrl,/);
+  });
+});
