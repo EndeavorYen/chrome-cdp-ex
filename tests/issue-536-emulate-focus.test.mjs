@@ -80,6 +80,8 @@ describe('#536 emulate --focus', () => {
     expect(() => T.parseEmulateArgs(['--focus', 'off'])).toThrow(/off cannot be combined/);
     expect(() => T.parseEmulateArgs(['off', 'dark'])).toThrow(/off cannot be combined/);
     expect(() => T.parseEmulateArgs(['dark', 'status'])).toThrow(/status cannot be combined/);
+    expect(() => T.parseEmulateArgs(['off', 'status'])).toThrow(/cannot be combined/);
+    expect(() => T.parseEmulateArgs(['show', 'reset'])).toThrow(/cannot be combined/);
     expect(T.parseEmulateArgs(['status']).mode).toBe('status');
     expect(T.parseEmulateArgs(['off', '--format', 'json']).mode).toBe('off');
   });

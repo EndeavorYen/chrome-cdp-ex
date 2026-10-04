@@ -4774,12 +4774,12 @@ function parseEmulateArgs(args = []) {
       throw new Error(`emulate: unknown argument ${token}`);
     }
   }
-  // The last mode token used to win silently: `--focus off` dropped --focus, `off --focus` skipped the
-  // reset, and `dark status` dropped dark.
+  // The last mode token used to win silently (`--focus off`, `off --focus`, `dark status`, `off status`).
+  const modes = ['off', 'status'].filter(word => tokens.some(token => (word === 'off' ? ['off', 'reset', 'clear'] : ['status', 'show']).includes(token)));
   const hasSetting = opts.colorScheme != null || opts.reducedMotion != null || opts.focus != null;
-  for (const [word, spellings] of [['off', ['off', 'reset', 'clear']], ['status', ['status', 'show']]]) {
-    if (hasSetting && tokens.some(token => spellings.includes(token))) {
-      throw new Error(`emulate: ${word} cannot be combined with a setting; run \`emulate <target> ${word}\` on its own`);
+  for (const word of modes) {
+    if (hasSetting || modes.length > 1) {
+      throw new Error(`emulate: ${word} cannot be combined with another setting or mode; run \`emulate <target> ${word}\` on its own`);
     }
   }
   return opts;
