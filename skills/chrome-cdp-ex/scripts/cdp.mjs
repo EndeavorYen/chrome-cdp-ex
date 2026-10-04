@@ -5221,13 +5221,32 @@ async function captureHiddenTabFrame(cdp, sid, params, hooks, inspectFrame) {
     ? Math.min(hooks.timeoutMs, HIDDEN_TAB_CAPTURE_TIMEOUT_MS)
     : HIDDEN_TAB_CAPTURE_TIMEOUT_MS;
   let result;
+  let focusEmulated = false;
   try {
     result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
   } catch (err) {
-    if (String(err?.message || '').startsWith('Timeout:')) throw hiddenTabCaptureError(err);
-    throw err;
+    if (!String(err?.message || '').startsWith('Timeout:')) throw err;
+    // #535: a minimized window or background tab renders no frame, but focus emulation makes the document
+    // visible (live, Chrome 154: minimized capture timed out, then succeeded in ~0.1 s). Try once with it,
+    // never activating the tab, and switch it off again whatever happens.
+    let enabled = false;
+    try {
+      await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: true }, sid);
+      enabled = true;
+      result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
+      focusEmulated = true;
+    } catch {
+      throw hiddenTabCaptureError(err);
+    } finally {
+      if (enabled) {
+        try { await cdpDomains(cdp).Emulation.setFocusEmulationEnabled( { enabled: false }, sid); } catch {}
+      }
+    }
   }
-  const captured = { data: result.data, fallback: false, method: 'captureScreenshot', tier: 1, hiddenTab: true };
+  const captured = {
+    data: result.data, fallback: false, method: 'captureScreenshot', tier: 1, hiddenTab: true,
+    ...(focusEmulated ? { focusEmulated: true } : {}),
+  };
   return { ...captured, retryCount: 0, sanity: await inspectFrame(captured) };
 }
 
@@ -5347,8 +5366,11 @@ function parseShotArgs(args) {
 }
 
 function formatScreenshotCaptureDiagnostics(capture = {}) {
-  const { fallback, method, retryCount = 0, sanity, firstFrameSanity, attempts = [] } = capture;
+  const { fallback, method, retryCount = 0, sanity, firstFrameSanity, attempts = [], focusEmulated = false } = capture;
   const lines = [];
+  if (focusEmulated) {
+    lines.push('(hidden tab captured with temporary focus emulation; the page saw visibilitychange and focus events while it ran)');
+  }
   if (fallback && retryCount === 0) {
     lines.push(attempts.length
       ? `(screenshot fallback method=${method}: ${attempts.map(a => `tier ${a.tier} ${a.message}`).join('; ')})`

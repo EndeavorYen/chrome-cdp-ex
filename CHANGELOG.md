@@ -4,6 +4,14 @@
 
 ### Features
 
+* In background mode, a capture of a hidden tab (a background tab, or any tab of a minimized window) no
+  longer gives up after one frameless attempt. It retries once with focus emulation on for that capture
+  (`Emulation.setFocusEmulationEnabled`), then switches it off again. Focus emulation makes the document
+  render without activating the tab: in a live check, a minimized window's capture first timed out, then
+  succeeded in about 0.1 s. The receipt notes that the page saw visibilitychange and focus events. Only
+  if that retry also fails does the command end with `Kind: hidden-tab`
+  ([#535](https://github.com/EndeavorYen/chrome-cdp-ex/issues/535)).
+
 * New opt-in guardrail `CDP_ISOLATED_ONLY=1`. Every fresh attach then refuses a daily profile with
   `Kind: policy`, and it refuses a browser whose command line it cannot read. A daily profile is the browser
   default user-data-dir or the persistent `chrome-cdp-ex/daily-*` dir. The recovery is an isolated

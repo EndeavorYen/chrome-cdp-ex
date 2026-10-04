@@ -428,8 +428,9 @@ describe('Phase 6 direct CDP characterization', () => {
     // #533 added restoreAuditViewport → Emulation.clearDeviceMetricsOverride, and moved the
     // setDeviceMetricsOverride call from viewportStr into applyViewportOverride.
     // #536 added emulateStr → Emulation.setFocusEmulationEnabled (on, off).
-    expect(inventory).toHaveLength(168);
-    expect(digest).toBe('sha256:7a3cf501bbcdb504bd95dc877cfd71770d2e281d5c2e7ca3d08f4d7514bcb76d');
+    // #535 added captureHiddenTabFrame → focus emulation on, a retried capture, and focus emulation off.
+    expect(inventory).toHaveLength(171);
+    expect(digest).toBe('sha256:85ee9d05001f077ddeecc2514d5fa5ce2cdc964fd7536ad0a7a718d475d6d64c');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
