@@ -186,7 +186,7 @@ describe('#345 skinny document-scroll-edge receipt', () => {
     });
     const text = T.formatActionResultOutput(result, { dispatchText: DISPATCH_TEXT });
     expect(result.outcome.status).toBe('attention');
-    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp console ${TARGET_ID} --errors`);
+    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp console ${TARGET_ID.slice(0, 8)} --errors`);
     expect(text).not.toMatch(/^Diagnosis:/m);
     expect(text).not.toMatch(/^Recovery hint:/m);
   });
@@ -247,7 +247,7 @@ describe('#345 skinny document-scroll-edge receipt', () => {
       dispatchText: 'Did not reach document bottom. scrollY: 100 / 5295 max (at-bottom: no)',
     });
     expect(result.outcome.status).toBe('failed');
-    expect(text).toBe(`Error: Did not reach document bottom\nKind: timeout\nNext: cdp status ${TARGET_ID}`);
+    expect(text).toBe(`Error: Did not reach document bottom\nKind: timeout\nNext: cdp status ${TARGET_ID.slice(0, 8)}`);
     expect(text).not.toBe(DISPATCH_TEXT);
     expect(text).not.toMatch(/Recovery hint:/);
   });

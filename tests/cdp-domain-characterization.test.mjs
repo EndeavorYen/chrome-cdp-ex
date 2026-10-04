@@ -32,6 +32,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'DOM.querySelectorAll': 'observation',
   'DOM.resolveNode': 'session-control',
   'DOM.setFileInputFiles': 'page-mutation',
+  'Emulation.clearDeviceMetricsOverride': 'page-mutation',
   'Emulation.setDeviceMetricsOverride': 'page-mutation',
   'Emulation.setEmulatedMedia': 'page-mutation',
   'Fetch.continueRequest': 'page-mutation',
@@ -287,6 +288,9 @@ function responseFor(method, params = {}) {
         return { result: { value: JSON.stringify({ title: 'Fixture', url: 'https://example.test/fixture', readyState: 'complete' }) } };
       }
       if (params.expression === 'document.readyState') return { result: { value: 'complete' } };
+      if (String(params.expression).includes('window.innerWidth')) {
+        return { result: { value: JSON.stringify({ w: 390, h: 844, sw: 390, sh: 844, dpr: 3 }) } };
+      }
       if (String(params.expression).includes('location.href') && String(params.expression).includes('readyState')) {
         return { result: { value: JSON.stringify({ url: 'https://example.test/fixture', readyState: 'complete' }) } };
       }
@@ -362,9 +366,9 @@ function domainInvocations() {
     },
     {
       domain: 'EmulationViewport',
-      methods: ['Emulation.setDeviceMetricsOverride'],
-      callDigest: 'c1137e0c2333e27b839cea599e14ed71aafcf777299ffb2d723537dee3cdf6f7',
-      result: 'Viewport resized to 390×844 (mobile mode)',
+      methods: ['Emulation.setDeviceMetricsOverride', 'Runtime.evaluate'],
+      callDigest: '4d003574bd0342412e056d659d98f2e68cddff850a6694ba4e7182e912d08c4c',
+      result: 'Viewport: 390x844 (DPR 3) (mobile mode)',
       invoke: cdp => cdpTest.viewportStr(cdp, 'SESSION', '390x844'),
     },
     {
@@ -419,8 +423,10 @@ describe('Phase 6 direct CDP characterization', () => {
     // #471 added dispatchDrag → Input.setInterceptDrags (on, off) and dispatchDragEventStep → Input.dispatchDragEvent.
     // #466 added readTargetUrl → Target.getTargets.
     // #467 added netlogRequestStr → Network.getResponseBody.
-    expect(inventory).toHaveLength(165);
-    expect(digest).toBe('sha256:9192883116b380dba63376df0d8f2f8a5075dbded529b6e643a8bb35d34ded7f');
+    // #533 added restoreAuditViewport → Emulation.clearDeviceMetricsOverride, and moved the
+    // setDeviceMetricsOverride call from viewportStr into applyViewportOverride.
+    expect(inventory).toHaveLength(166);
+    expect(digest).toBe('sha256:1e36277e7497534a4707bd85941237e4f43af838e2757996d36e9dcb922ba300');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
