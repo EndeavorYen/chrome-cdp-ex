@@ -1293,6 +1293,8 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
     priority: 'medium',
     verify: 'since-action',
     intents: [
+      // #533: pending requests are normal after a load (SSE, long poll); check the page first.
+      { key: 'next-or-perceive', reason: 'Requests still pending after a load are often long-lived (SSE, long poll); check the page first.' },
       { key: 'netlog', reason: 'Inspect failed or pending requests caused by the action.' },
       { key: 'since-action', reason: 'Verify what the action changed before retrying.' },
       { key: 'report', reason: 'Preserve the action timeline and diagnostics for handoff.' },

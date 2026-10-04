@@ -577,12 +577,15 @@ if (!['network-failure', 'network-pending'].includes(parsedDiagnosticAction.effe
 if (parsedDiagnosticAction.outcome?.status !== 'attention' || parsedDiagnosticAction.outcome?.needsAttention !== true) {
   throw new Error(`diagnostic action json should include an attention outcome:\n${diagnosticJsonOut}`);
 }
-const diagnosticActionTarget = parsedDiagnosticAction.target?.targetId || target;
-if (parsedDiagnosticAction.verdict?.status !== 'recover' || parsedDiagnosticAction.verdict?.primaryNextStep !== `cdp netlog ${diagnosticActionTarget}`) {
-  throw new Error(`diagnostic action json should include a recovery verdict:\n${diagnosticJsonOut}`);
+// #533: receipts name the 8-character prefix; a failed request points at netlog, a pending one at perceive.
+const diagnosticActionTarget = String(parsedDiagnosticAction.target?.targetId || target).slice(0, 8);
+const diagnosticNextVerb = parsedDiagnosticAction.effects?.diagnosis?.kind === 'network-pending' ? 'perceive' : 'netlog';
+const diagnosticNextCommand = `cdp ${diagnosticNextVerb} ${diagnosticActionTarget}`;
+if (parsedDiagnosticAction.verdict?.status !== 'recover' || parsedDiagnosticAction.verdict?.primaryNextStep !== diagnosticNextCommand) {
+  throw new Error(`diagnostic action json should include a recovery verdict (${diagnosticNextCommand}):\n${diagnosticJsonOut}`);
 }
-if (!parsedDiagnosticAction.effects?.diagnosis?.nextCommand?.includes('cdp netlog')) {
-  throw new Error(`diagnostic action json should include a netlog next command:\n${diagnosticJsonOut}`);
+if (parsedDiagnosticAction.effects?.diagnosis?.nextCommand !== diagnosticNextCommand) {
+  throw new Error(`diagnostic action json should include a ${diagnosticNextVerb} next command:\n${diagnosticJsonOut}`);
 }
 const diagnosticRecoveryCommands = parsedDiagnosticAction.effects?.diagnosis?.recovery?.commands?.map(entry => entry.command) || [];
 if (!diagnosticRecoveryCommands.some(command => command.includes('cdp netlog'))) {

@@ -39,6 +39,7 @@ const EXPECTED_METHODS = Object.freeze([
   'DOM.querySelectorAll',
   'DOM.resolveNode',
   'DOM.setFileInputFiles',
+  'Emulation.clearDeviceMetricsOverride',
   'Emulation.setDeviceMetricsOverride',
   'Emulation.setEmulatedMedia',
   'Fetch.continueRequest',

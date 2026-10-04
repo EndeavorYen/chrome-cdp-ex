@@ -22,7 +22,7 @@
       ],
       "exitCode": 1,
       "id": "unknown-command-suggestion",
-      "stderr": "Error: Unknown command: perceev\nDid you mean: perceive?\nRecovery:\n  Kind: usage\n  Strategy: suggest-command\n  Run: cdp perceive\n  Reason: Did you mean: perceive? Run `cdp help perceive` for usage.\nNext: cdp perceive",
+      "stderr": "Error: Unknown command: perceev\nDid you mean: perceive?\nRecovery:\n  Kind: usage\n  Strategy: suggest-command\n  Run: cdp perceive\n  Reason: Did you mean: perceive? Run `cdp help perceive` for usage.\nNext: cdp perceive (Kind: usage)",
       "stdout": ""
     },
     {
@@ -32,7 +32,7 @@
       ],
       "exitCode": 1,
       "id": "invalid-list-argument",
-      "stderr": "Error: list: unknown argument --bogus\nRecovery:\n  Kind: usage\n  Strategy: show-help\n  Run: cdp help list\n  Reason: The command received an unknown flag or argument. Print usage instead of probing doctor/status.\nNext: cdp help list",
+      "stderr": "Error: list: unknown argument --bogus\nRecovery:\n  Kind: usage\n  Strategy: show-help\n  Run: cdp help list\n  Reason: The command received an unknown flag or argument. Print usage instead of probing doctor/status.\nNext: cdp help list (Kind: usage)",
       "stdout": ""
     },
     {
@@ -43,7 +43,7 @@
       ],
       "exitCode": 1,
       "id": "invalid-format",
-      "stderr": "Error: format must be text or json\nRecovery:\n  Kind: unknown\n  Strategy: run-doctor\n  Run: cdp doctor\n  Reason: The failure was not classified; check browser setup and available targets.\nNext: cdp doctor",
+      "stderr": "Error: format must be text or json\nRecovery:\n  Kind: unknown\n  Strategy: run-doctor\n  Run: cdp doctor\n  Reason: The failure was not classified; check browser setup and available targets.\nNext: cdp doctor (Kind: unknown)",
       "stdout": ""
     },
     {
@@ -52,7 +52,7 @@
       ],
       "exitCode": 1,
       "id": "missing-target",
-      "stderr": "Error: target ID required. Run \"cdp list\" first.\nRecovery:\n  Kind: target-resolution\n  Strategy: rediscover-target\n  Run: cdp list  # if empty: cdp open https://example.com\n  Then: cdp open https://example.com\n  Reason: The requested tab target could not be resolved from the current page list.\nNext: cdp list  # if empty: cdp open https://example.com",
+      "stderr": "Error: target ID required. Run \"cdp list\" first.\nRecovery:\n  Kind: target-resolution\n  Strategy: rediscover-target\n  Run: cdp list  # if empty: cdp open https://example.com\n  Then: cdp open https://example.com\n  Reason: The requested tab target could not be resolved from the current page list.\nNext: cdp list  # if empty: cdp open https://example.com (Kind: target-resolution)",
       "stdout": ""
     }
   ],

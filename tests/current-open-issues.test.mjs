@@ -3642,6 +3642,12 @@ describe('issues #210-#217 open contracts', () => {
           current = { w: params.width, h: params.height };
           return Promise.resolve({});
         }
+        // #533: with no session viewport override the audit clears the override instead of re-setting one.
+        if (method === 'Emulation.clearDeviceMetricsOverride') {
+          sizes.push('clear');
+          current = { w: 1042, h: 632 };
+          return Promise.resolve({});
+        }
         if (method === 'Page.captureScreenshot') {
           throw new Error('Timeout: Page.captureScreenshot');
         }
@@ -3695,7 +3701,7 @@ describe('issues #210-#217 open contracts', () => {
       }, []);
       expect(out).toMatch(/Error: desktop screenshot:/);
       expect(sizes[0]).toBe('1440x900');
-      expect(sizes.at(-1)).toBe('1042x632');
+      expect(sizes.at(-1)).toBe('clear');
       expect(current).toEqual({ w: 1042, h: 632 });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -4879,6 +4885,12 @@ describe('issues #237-#239 open contracts', () => {
           current = { w: params.width, h: params.height };
           return Promise.resolve({});
         }
+        // #533: with no session viewport override the audit clears the override instead of re-setting one.
+        if (method === 'Emulation.clearDeviceMetricsOverride') {
+          sizes.push('clear');
+          current = { w: 1042, h: 632 };
+          return Promise.resolve({});
+        }
         if (method === 'Page.captureScreenshot') {
           return Promise.resolve({ data: TINY_PNG });
         }
@@ -4941,7 +4953,7 @@ describe('issues #237-#239 open contracts', () => {
       expect(model.schema).toBe('chrome-cdp-ex.responsive-audit.v1');
       expect(model.verdict).toBe('pass');
       expect(sizes[0]).toBe('800x600');
-      expect(sizes.at(-1)).toBe('1042x632');
+      expect(sizes.at(-1)).toBe('clear');
       expect(current).toEqual({ w: 1042, h: 632 });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -4964,6 +4976,12 @@ describe('issues #237-#239 open contracts', () => {
         if (method === 'Emulation.setDeviceMetricsOverride') {
           sizes.push(`${params.width}x${params.height}`);
           current = { w: params.width, h: params.height };
+          return Promise.resolve({});
+        }
+        // #533: with no session viewport override the audit clears the override instead of re-setting one.
+        if (method === 'Emulation.clearDeviceMetricsOverride') {
+          sizes.push('clear');
+          current = { w: 1042, h: 632 };
           return Promise.resolve({});
         }
         if (method === 'Page.captureScreenshot') {
@@ -5014,7 +5032,7 @@ describe('issues #237-#239 open contracts', () => {
         ['--viewport', '800x600'],
       )).rejects.toThrow(/Screenshot failed: all methods timed out|Timeout: Page\.captureScreenshot/);
       expect(sizes[0]).toBe('800x600');
-      expect(sizes.at(-1)).toBe('1042x632');
+      expect(sizes.at(-1)).toBe('clear');
       expect(current).toEqual({ w: 1042, h: 632 });
     } finally {
       rmSync(tmp, { recursive: true, force: true });

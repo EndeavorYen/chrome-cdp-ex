@@ -9498,7 +9498,8 @@ describe('formatCliError', () => {
   it('preserves already-classified action failures', () => {
     const out = formatCliError('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD');
 
-    expect(out).toBe('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD');
+    // #533: the lines pass through; the Kind also joins the last Next line for `| tail -1`.
+    expect(out).toBe('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD (Kind: overlay)');
   });
 
   it('builds a structured JSON handoff for top-level CLI errors', () => {

@@ -208,7 +208,7 @@ describe('#343 skinny document nav receipt', () => {
     });
     const text = T.formatActionResultOutput(result, { dispatchText: DISPATCH_TEXT });
     expect(result.outcome.status).toBe('attention');
-    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp console ${TARGET_ID} --errors`);
+    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp console ${TARGET_ID.slice(0, 8)} --errors`);
     expect(text).not.toMatch(/^Diagnosis:/m);
     expect(text).not.toMatch(/^Recovery hint:/m);
   });
