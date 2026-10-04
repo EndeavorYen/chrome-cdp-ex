@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+Fixes from a Windows background-mode field report
+([#533](https://github.com/EndeavorYen/chrome-cdp-ex/issues/533)):
+
+* **Lost browser connection names the endpoint.** When the browser goes away, the error now says which
+  endpoint went away. A connect that fails before the WebSocket opens prints
+  `WebSocket error: CDP connection to <host:port> was refused or closed …` instead of
+  `WebSocket error: error`. A socket that closes mid-command adds `[endpoint <host:port>]` to
+  `CDP websocket closed while waiting for <method>`. A command sent after the socket closed now fails
+  at once with that message. Before, it waited out the 15 s limit and reported `Timeout: <method>`,
+  because Node's WebSocket drops a send on a closed socket without an error.
+* **Receipt `Next:` lines use the target prefix.** An action receipt's diagnosis `Next:` now names the
+  8-character target prefix, like other receipts, instead of the 32-character target id. When requests
+  are still pending after the action (SSE, long poll), `Next:` suggests `cdp perceive <prefix>`. A
+  failed request still suggests `cdp netlog <prefix>`.
+* **`viewport <target> WxH` reads the size back.** It prints `Viewport: WxH (DPR n)` as measured on the
+  page, adds `; requested WxH` when the page reports another size, and no longer prints
+  `Viewport resized to …`.
+* **`responsive-audit` and `qa` no longer leave a viewport override behind.** They clear the override,
+  or reapply one set earlier in the session with `viewport`. Before, they re-set the original size as
+  an override, which added `mobile` emulation at widths of 768 or less. `responsive-audit` also prints
+  `Viewport restored to WxH` or `Viewport left at WxH (was WxH)`, and its JSON includes
+  `viewportRestore`.
+* **CLI errors end with the Kind.** Every CLI error now ends with `Next: <command> (Kind: <kind>)`, so
+  `| tail -1` still shows the failure kind. MCP policy errors print the same last line.
+* **Troubleshooting covers background-tab `eval` timeouts.** The new section explains why `eval`
+  times out in a background tab: paint-tied promises such as `HTMLImageElement.decode()` and
+  `requestAnimationFrame` may never settle, and timers are throttled. It gives the
+  `eval --fire-and-forget` and poll pattern.
+
 ## [2.20.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.19.1...v2.20.0) (2026-10-03)
 
 v2.20.0 lets `elshot` write the element screenshot where you ask, points the default help card at the

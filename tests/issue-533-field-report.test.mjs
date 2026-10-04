@@ -1,0 +1,281 @@
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+process.env.NODE_ENV = 'test';
+
+const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+
+const WS_URL = 'ws://127.0.0.1:3048/devtools/browser/abc';
+const FULL_ID = '1667E1A41DF4F9ED4DEBC30A498CCB8F';
+
+function installFakeWebSocket({ failBeforeOpen = false } = {}) {
+  const sockets = [];
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 3;
+    constructor(url) {
+      this.url = url;
+      this.readyState = FakeWebSocket.CONNECTING;
+      sockets.push(this);
+      queueMicrotask(() => {
+        if (failBeforeOpen) {
+          // Node's WebSocket error Event carries no message: only type 'error'.
+          this.onerror?.({ type: 'error' });
+          this.readyState = FakeWebSocket.CLOSED;
+          this.onclose?.({ type: 'close', code: 1006, reason: '' });
+          return;
+        }
+        this.readyState = FakeWebSocket.OPEN;
+        this.onopen?.({ type: 'open' });
+      });
+    }
+    send(data) {
+      // Like Node's WebSocket: a send on a closed socket is dropped silently, not thrown.
+      if (this.readyState !== FakeWebSocket.OPEN) return;
+      this.lastSent = data;
+    }
+    close(code = 1006, reason = '') {
+      if (this.readyState === FakeWebSocket.CLOSED) return;
+      this.readyState = FakeWebSocket.CLOSED;
+      this.onclose?.({ type: 'close', code, reason: String(reason) });
+    }
+  }
+  const previous = globalThis.WebSocket;
+  globalThis.WebSocket = FakeWebSocket;
+  return { sockets, restore() { globalThis.WebSocket = previous; } };
+}
+
+describe('#533 item 1: a lost browser names its endpoint', () => {
+  let fake;
+  afterEach(() => fake?.restore());
+
+  it('T1: a connect that fails before open names host:port and says refused or closed', async () => {
+    fake = installFakeWebSocket({ failBeforeOpen: true });
+    const cdp = new T.CDP();
+    const err = await cdp.connect(WS_URL).then(() => null, e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain('127.0.0.1:3048');
+    expect(err.message).toMatch(/refused or closed/);
+    expect(err.message).not.toMatch(/error: error/i);
+    // Still classified as a browser endpoint failure, not Kind: unknown.
+    expect(T.formatCliError(err, { cmd: 'list' })).toMatch(/Kind: browser-cdp/);
+  });
+
+  it('T2: a socket that closes after open names the endpoint on pending commands', async () => {
+    fake = installFakeWebSocket();
+    const cdp = new T.CDP();
+    await cdp.connect(WS_URL);
+    const pending = cdp.send('Page.navigate', { url: 'http://127.0.0.1:7860/' });
+    fake.sockets.at(-1).close(1006, '');
+    const err = await pending.then(() => null, e => e);
+    expect(err.message).toMatch(/CDP websocket closed while waiting for Page\.navigate/);
+    expect(err.message).toContain('127.0.0.1:3048');
+    expect(err.message).toMatch(/closed/);
+  });
+
+  it('T2: a send after the socket closed names the endpoint too', async () => {
+    fake = installFakeWebSocket();
+    const cdp = new T.CDP();
+    await cdp.connect(WS_URL);
+    fake.sockets.at(-1).close(1006, '');
+    const started = Date.now();
+    const err = await cdp.send('Runtime.evaluate', {}, undefined, 5_000).then(() => null, e => e);
+    // Rejected at once, not after the command timeout (live: `Timeout: Browser.getVersion` after 15 s).
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(err.message).toMatch(/CDP websocket closed while waiting for Runtime\.evaluate/);
+    expect(err.message).toContain('127.0.0.1:3048');
+  });
+});
+
+describe('#533 item 3: action diagnosis Next uses the target prefix', () => {
+  const actionResult = network => ({
+    action: 'nav',
+    target: { targetId: FULL_ID, input: 'http://127.0.0.1:7860/' },
+    dispatch: { ok: true },
+    settle: { ok: true },
+    effects: { networkDelta: network },
+  });
+
+  it('T3/T4: network-pending suggests perceive with the 8-character prefix', () => {
+    const diagnosis = T.createActionDiagnosis(actionResult({ pending: 2, entries: [] }));
+    expect(diagnosis.kind).toBe('network-pending');
+    expect(diagnosis.nextCommand).toBe('cdp perceive 1667E1A4');
+    // The JSON verdict's primary step comes from the first recovery command: it must agree with Next.
+    expect(diagnosis.recovery.commands[0].command).toBe('cdp perceive 1667E1A4');
+    expect(diagnosis.recovery.commands.map(entry => entry.command)).toContain('cdp netlog 1667E1A4');
+    expect(JSON.stringify(diagnosis)).not.toContain(FULL_ID);
+  });
+
+  it('T3/T4: network-failure still suggests netlog, with the prefix', () => {
+    const diagnosis = T.createActionDiagnosis(actionResult({ failures: 1, entries: [] }));
+    expect(diagnosis.kind).toBe('network-failure');
+    expect(diagnosis.nextCommand).toBe('cdp netlog 1667E1A4');
+    expect(JSON.stringify(diagnosis)).not.toContain(FULL_ID);
+  });
+});
+
+function viewportCdp({ readBack = null } = {}) {
+  const calls = [];
+  let current = { w: 1042, h: 632 };
+  const cdp = {
+    calls,
+    get current() { return current; },
+    send(method, params = {}) {
+      calls.push({ method, params });
+      if (method === 'Emulation.setDeviceMetricsOverride') {
+        current = { w: params.width, h: params.height };
+        return Promise.resolve({});
+      }
+      if (method === 'Emulation.clearDeviceMetricsOverride') {
+        current = { w: 1042, h: 632 };
+        return Promise.resolve({});
+      }
+      if (method === 'Runtime.evaluate') {
+        const expr = String(params.expression || '');
+        if (expr.includes('window.innerWidth')) {
+          const dims = readBack ? readBack(current) : current;
+          return Promise.resolve({ result: { value: JSON.stringify({ ...dims, dpr: 1 }) } });
+        }
+        if (expr.includes('document.title')) {
+          return Promise.resolve({ result: { value: JSON.stringify({ title: 'Darkroom', url: 'http://127.0.0.1:7860/', contentType: 'text/html' }) } });
+        }
+        if (expr.includes('overflowX') || expr.includes('clippedControls')) {
+          return Promise.resolve({
+            result: {
+              value: JSON.stringify({
+                url: 'http://127.0.0.1:7860/',
+                title: 'Darkroom',
+                viewport: `${current.w}x${current.h}`,
+                overflowX: false,
+                controlCount: 0,
+                controls: [],
+                clippedControls: [],
+                overlaps: [],
+              }),
+            },
+          });
+        }
+        return Promise.resolve({ result: { value: '{}' } });
+      }
+      if (method === 'Page.captureScreenshot') {
+        return Promise.resolve({ data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' });
+      }
+      return Promise.resolve({});
+    },
+    waitForEvent() {
+      return { promise: Promise.resolve({}), cancel() {} };
+    },
+  };
+  return cdp;
+}
+
+describe('#533 item 4: viewport reads the size back', () => {
+  it('T5: prints the read-back size and DPR', async () => {
+    const cdp = viewportCdp();
+    const out = await T.viewportStr(cdp, 'sid', '1400x900');
+    expect(out).toBe('Viewport: 1400x900 (DPR 1)');
+  });
+
+  it('T5: states both sizes when the page reports a different one', async () => {
+    const cdp = viewportCdp({ readBack: () => ({ w: 1400, h: 880 }) });
+    const out = await T.viewportStr(cdp, 'sid', '1400x900');
+    expect(out).toContain('Viewport: 1400x880 (DPR 1)');
+    expect(out).toContain('requested 1400x900');
+  });
+
+  it('records the override on the session only when a session is passed', async () => {
+    const session = {};
+    await T.viewportStr(viewportCdp(), 'sid', '1400x900', { session });
+    expect(session.viewportOverride).toEqual({ width: 1400, height: 900 });
+    const other = {};
+    await T.viewportStr(viewportCdp(), 'sid', '390x844');
+    expect(other.viewportOverride).toBeUndefined();
+  });
+});
+
+describe('#533 item 5: responsive-audit restores and reports the viewport', () => {
+  let tmp;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'cdp-533-'));
+    T.resetScreenshotTier();
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const sessionFor = () => T.createSessionState({
+    targetId: FULL_ID,
+    sessionId: 'sid',
+    logPath: join(tmp, 'session.jsonl'),
+    screenshotDir: join(tmp, 'shots'),
+  });
+  const audit = (cdp, session, extra = []) => T.responsiveAuditStr(
+    cdp, 'sid', session, FULL_ID, new T.RingBuffer(8), new T.RingBuffer(8),
+    ['--viewport', '1440x900', '--viewport', '390x844', ...extra],
+  );
+
+  it('T6/T7: with no session override it clears the override and says restored', async () => {
+    const cdp = viewportCdp();
+    const out = await audit(cdp, sessionFor());
+    expect(cdp.calls.some(call => call.method === 'Emulation.clearDeviceMetricsOverride')).toBe(true);
+    const lastOverride = cdp.calls.filter(call => call.method === 'Emulation.setDeviceMetricsOverride').at(-1);
+    expect(`${lastOverride.params.width}x${lastOverride.params.height}`).toBe('390x844');
+    expect(cdp.current).toEqual({ w: 1042, h: 632 });
+    expect(out).toContain('Viewport restored to 1042x632');
+  });
+
+  it('T6: with a session override it reapplies that override', async () => {
+    const cdp = viewportCdp();
+    const session = sessionFor();
+    await T.viewportStr(cdp, 'sid', '1400x900', { session });
+    cdp.calls.length = 0;
+    const out = await audit(cdp, session);
+    expect(cdp.calls.some(call => call.method === 'Emulation.clearDeviceMetricsOverride')).toBe(false);
+    const lastOverride = cdp.calls.filter(call => call.method === 'Emulation.setDeviceMetricsOverride').at(-1);
+    expect(`${lastOverride.params.width}x${lastOverride.params.height}`).toBe('1400x900');
+    expect(out).toContain('Viewport restored to 1400x900');
+  });
+
+  it('T7: says left at WxH when the read-back differs from the original', async () => {
+    let cleared = false;
+    const cdp = viewportCdp({ readBack: current => (cleared ? { w: 390, h: 844 } : current) });
+    const send = cdp.send.bind(cdp);
+    cdp.send = (method, params) => {
+      if (method === 'Emulation.clearDeviceMetricsOverride') cleared = true;
+      return send(method, params);
+    };
+    const out = await audit(cdp, sessionFor());
+    expect(out).toContain('Viewport left at 390x844');
+  });
+
+  it('T7: the JSON model carries the restore result', async () => {
+    const out = await audit(viewportCdp(), sessionFor(), ['--format', 'json']);
+    const model = JSON.parse(out);
+    expect(model.viewportRestore).toEqual({ status: 'restored', original: '1042x632', viewport: '1042x632' });
+  });
+});
+
+describe('#533 item 6: the last CLI error line carries the Kind', () => {
+  it('T8: hidden-tab keeps its kind under tail -1', () => {
+    const err = Object.assign(new Error('Tab is hidden (document.visibilityState=hidden): no frame'), { code: 'hidden_tab' });
+    const lines = T.formatCliError(err, { cmd: 'shot', targetPrefix: '1667E1A4' }).split('\n');
+    expect(lines.at(-1)).toMatch(/^Next: CDP_BACKGROUND=0 cdp shot 1667E1A4 .*\(Kind: hidden-tab\)$/);
+  });
+
+  it('T8: unknown failures and the empty-message path end with Next and Kind', () => {
+    expect(T.formatCliError(new Error('boom'), { cmd: 'eval', targetPrefix: '1667E1A4' }).split('\n').at(-1))
+      .toMatch(/^Next: .*\(Kind: unknown\)$/);
+    expect(T.formatCliError(new Error(''), {}).split('\n').at(-1)).toMatch(/^Next: .*\(Kind: unknown\)$/);
+  });
+});
+
+describe('#533 item 8: troubleshooting covers background-tab limits', () => {
+  it('T9: names decode(), requestAnimationFrame, timer throttling, and the fire-and-forget pattern', () => {
+    const doc = readFileSync(new URL('../skills/chrome-cdp-ex/references/troubleshooting.md', import.meta.url), 'utf8');
+    expect(doc).toMatch(/HTMLImageElement\.decode\(\)/);
+    expect(doc).toMatch(/requestAnimationFrame/);
+    expect(doc).toMatch(/throttl/i);
+    expect(doc).toMatch(/cdp eval <target> --fire-and-forget/);
+  });
+});

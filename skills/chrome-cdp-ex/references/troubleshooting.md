@@ -87,6 +87,19 @@ cdp eval <target> "document.visibilityState"
 
 The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
 
+## `eval` times out in a background tab
+
+A background or unfocused tab still runs scripts, but Chrome does not paint it and throttles its timers. Promises tied to painting, such as `HTMLImageElement.decode()` and `requestAnimationFrame`, may never settle, so an `eval` that awaits them ends with `Kind: timeout`. Timers run late: in one field session, a 200 ms page poll ran about once a second.
+
+Start the work without waiting on it, keep its progress on `window`, then read the progress back with a short `eval`:
+
+```bash
+cdp eval <target> --fire-and-forget "window.__job = { done: false }; img.decode().then(() => { window.__job.done = true; })"
+cdp eval <target> "JSON.stringify(window.__job)"
+```
+
+Bringing the window forward (or `CDP_BACKGROUND=0` for a background tab) lets painting resume.
+
 ## Click fails with `Kind: covered`
 
 The mouse `click` hit-tests the target's centre first. `covered` means another element is on top there, so a real

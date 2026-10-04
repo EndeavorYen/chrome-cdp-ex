@@ -625,6 +625,7 @@ export function formatPolicyFailureText(message, { targetPrefix = '' } = {}) {
   if (recovery.ask && recovery.ask !== recovery.run) lines.push(`  Ask: ${recovery.ask}`);
   if (recovery.then) lines.push(`  Then: ${recovery.then}`);
   if (recovery.reason) lines.push(`  Reason: ${recovery.reason}`);
-  lines.push(`Next: ${recovery.run || recovery.ask}`);
+  // Same last line as the CLI's formatCliError: Kind rides on it so `| tail -1` keeps it (#533).
+  lines.push(`Next: ${recovery.run || recovery.ask} (Kind: ${recovery.kind})`);
   return lines.join('\n');
 }

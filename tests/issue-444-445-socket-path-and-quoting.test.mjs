@@ -101,6 +101,6 @@ describe('#444 CLI recovery for an over-long socket path', () => {
     const err = daemonEndpointTooLongError(endpoint, { platform: 'linux' });
     const cli = T.formatCliError(err, { cmd: 'eval', targetPrefix: 'ABCDEF01', args: ['document.title'] });
     expect(cli).toMatch(/Kind: runtime-dir/);
-    expect(cli).toMatch(/^Next: XDG_RUNTIME_DIR=\/tmp\/cdp-rt cdp eval ABCDEF01 document\.title$/m);
+    expect(cli).toMatch(/^Next: XDG_RUNTIME_DIR=\/tmp\/cdp-rt cdp eval ABCDEF01 document\.title \(Kind: runtime-dir\)$/m);
   });
 });

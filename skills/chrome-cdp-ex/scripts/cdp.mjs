@@ -3989,7 +3989,12 @@ function getDisplayPrefixLength(targetIds) {
 // ---------------------------------------------------------------------------
 
 class CDP {
-  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = []; #opened = false;
+  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = []; #opened = false; #endpoint = '';
+
+  // #533: name the browser endpoint that went away, so a lost connection is not a bare "error".
+  #endpointSuffix() {
+    return this.#endpoint ? ` [endpoint ${this.#endpoint}]` : '';
+  }
 
   #failPending(select, createError) {
     for (const [id, entry] of [...this.#pending]) {
@@ -4008,7 +4013,7 @@ class CDP {
     ].filter(Boolean).join(', ');
     const suffix = detail ? ` (${detail})` : '';
     this.#failPending(null, entry =>
-      new Error(`CDP websocket closed while waiting for ${entry.method}${suffix}`)
+      new Error(`CDP websocket closed while waiting for ${entry.method}${suffix}${this.#endpointSuffix()}`)
     );
     for (const handler of this.#closeHandlers) handler();
   }
@@ -4023,6 +4028,7 @@ class CDP {
   }
 
   async connect(wsUrl) {
+    this.#endpoint = cdpEndpointFromWsUrl(wsUrl) || '';
     return new Promise((res, rej) => {
       this.#ws = new WebSocket(wsUrl);
       this.#ws.onopen = () => {
@@ -4031,11 +4037,16 @@ class CDP {
       };
       this.#ws.onerror = (e) => {
         if (!this.#opened) {
-          rej(new Error('WebSocket error: ' + (e.message || e.type)));
+          // Node's error Event has no message (only type 'error'); the cause, when present, is on e.error.
+          const cause = e?.message || e?.error?.cause?.code || e?.error?.message || '';
+          rej(new Error(
+            `WebSocket error: CDP connection to ${this.#endpoint || wsUrl} was refused or closed`
+            + `${cause && cause !== 'error' ? ` (${cause})` : ''}; the browser may have exited or stopped remote debugging.`,
+          ));
           return;
         }
         this.#failPending(null, entry =>
-          new Error(`CDP websocket closed while waiting for ${entry.method}`)
+          new Error(`CDP websocket closed while waiting for ${entry.method}${this.#endpointSuffix()}`)
         );
       };
       this.#ws.onclose = (event) => this.#failPendingOnClose(event);
@@ -4074,11 +4085,18 @@ class CDP {
       });
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
+      // #533: Node's WebSocket drops a send on a closed socket without throwing, so the command would
+      // wait out its timeout and report `Timeout:`. Say the connection closed, and where, at once.
+      if (this.#opened && this.#ws?.readyState !== 1) {
+        this.#pending.delete(id);
+        reject(new Error(`CDP websocket closed while waiting for ${method}${this.#endpointSuffix()}`));
+        return;
+      }
       try {
         this.#ws.send(JSON.stringify(msg));
       } catch {
         this.#pending.delete(id);
-        reject(new Error(`CDP websocket closed while waiting for ${method}`));
+        reject(new Error(`CDP websocket closed while waiting for ${method}${this.#endpointSuffix()}`));
         return;
       }
       timer = setTimeout(() => {
@@ -7361,7 +7379,8 @@ function actionDiagnosisSignals(actionResult = {}) {
 
 function createActionDiagnosis(actionResult = {}) {
   const effects = actionResult.effects || {};
-  const targetId = actionTargetCommandId(actionResult.target || {});
+  // #533: Next lines name the 8-character prefix like every other receipt, not the full target id.
+  const targetId = actionTargetCommandPrefix(actionResult.target || {});
   const targetInput = actionFailureInput(actionResult.target || effects.failure?.target || {});
   const signals = actionDiagnosisSignals(actionResult);
   const finish = (diagnosis) => ({
@@ -7435,7 +7454,8 @@ function createActionDiagnosis(actionResult = {}) {
       confidence: 'medium',
       source: 'network',
       reason: 'The action left network requests pending after the settle window.',
-      nextCommand: `cdp netlog ${targetId}`,
+      // #533: pending requests are normal after a load (SSE, long poll); check the page, not the network log.
+      nextCommand: `cdp perceive ${targetId}`,
     });
   }
 
@@ -8779,6 +8799,7 @@ function buildResponsiveAuditModel({
   page = {},
   console: consoleHealth = {},
   errors = [],
+  viewportRestore = null,
 } = {}) {
   const checks = viewports.map(entry => {
     const findings = normalizeResponsiveFindings(entry);
@@ -8825,6 +8846,7 @@ function buildResponsiveAuditModel({
     console: consoleHealth,
     viewports: checks,
     errors,
+    ...(viewportRestore ? { viewportRestore } : {}),
     verdict,
     summary: {
       pass: checks.filter(c => c.status === 'pass').length,
@@ -8857,6 +8879,8 @@ function formatResponsiveAuditReport(model) {
       `${vp.screenshot ? ` shot=${vp.screenshot}` : ''}` +
       `${vp.error ? ` error=${vp.error}` : ''}`);
   }
+  const restoreLine = formatViewportRestoreLine(model.viewportRestore);
+  if (restoreLine) lines.push(restoreLine);
   for (const error of model.errors || []) lines.push(`Error: ${error}`);
   if (model.nextSteps?.[0]) lines.push(`Next: ${model.nextSteps[0]}`);
   return lines.join('\n');
@@ -8879,6 +8903,7 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
   const errors = [];
   // One tier state for every viewport: a capture tier that timed out is not retried per size.
   const tierState = createScreenshotTierState();
+  let viewportRestore = null;
   try {
     let screenshotTimedOut = false;
     for (const size of opts.viewports) {
@@ -8890,7 +8915,7 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
           viewports.push(entry);
           continue;
         }
-        await viewportStr(cdp, sid, size);
+        await applyViewportOverride(cdp, sid, size);
         const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript({ maxControls: opts.maxControls }));
         // The page reports its layout viewport (a mobile size without <meta viewport> lays
         // out at 980px); keep the requested size as the entry's label (#452).
@@ -8928,12 +8953,15 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
       }
       viewports.push(entry);
     }
+    // #533: restore before the receipt is built, so the receipt can say where the viewport ended up.
+    viewportRestore = await restoreAuditViewport(cdp, sid, session, originalViewport);
     const model = buildResponsiveAuditModel({
       targetId,
       viewports,
       page: { title: page.title, url: page.url },
       console: consoleHealth,
       errors,
+      viewportRestore,
     });
     if (screenshotTimedOut) {
       const timeoutError = errors.find(msg => isScreenshotTimeoutError({ message: msg })) || errors[0];
@@ -8941,7 +8969,7 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
     }
     return opts.format === 'json' ? formatJson(model) : formatResponsiveAuditReport(model);
   } finally {
-    await restoreViewportSize(cdp, sid, originalViewport);
+    if (!viewportRestore) await restoreAuditViewport(cdp, sid, session, originalViewport);
   }
 }
 
@@ -9019,13 +9047,31 @@ async function captureViewportSize(cdp, sid) {
   }
 }
 
-async function restoreViewportSize(cdp, sid, size) {
-  if (!size) return null;
+// #533: put the viewport back the way the audit found it. A `viewport` override set earlier in this
+// session is reapplied; otherwise the override is cleared, so the audit leaves no override the user
+// never set. The read-back says whether the size matches the one captured before the audit.
+async function restoreAuditViewport(cdp, sid, session, original) {
   try {
-    return await viewportStr(cdp, sid, size);
-  } catch {
-    return null;
+    const override = session?.viewportOverride;
+    if (override?.width && override?.height) {
+      await applyViewportOverride(cdp, sid, `${override.width}x${override.height}`);
+    } else {
+      await cdpDomains(cdp).Emulation.clearDeviceMetricsOverride( {}, sid);
+    }
+    const viewport = await captureViewportSize(cdp, sid);
+    const status = !original || !viewport ? 'unknown' : viewport === original ? 'restored' : 'left';
+    return { status, original: original || null, viewport: viewport || null };
+  } catch (e) {
+    return { status: 'failed', original: original || null, viewport: null, error: e?.message || String(e) };
   }
+}
+
+function formatViewportRestoreLine(restore) {
+  if (!restore) return null;
+  if (restore.status === 'restored') return `Viewport restored to ${restore.viewport}`;
+  if (restore.status === 'left') return `Viewport left at ${restore.viewport} (was ${restore.original})`;
+  if (restore.status === 'failed') return `Viewport restore failed: ${restore.error}`;
+  return `Viewport reset to ${restore.viewport || 'unknown size'} (size before the audit unknown)`;
 }
 
 async function qaPageStr({
@@ -9065,7 +9111,7 @@ async function qaPageStr({
         continue;
       }
       try {
-        await viewportStr(cdp, sid, size);
+        await applyViewportOverride(cdp, sid, size);
         ensureSessionScreenshotDir(session);
         const path = nextSessionScreenshotPath(session, kind);
         const shot = await shotStr(cdp, sid, path, targetId, {
@@ -9151,7 +9197,7 @@ async function qaPageStr({
       text: () => formatQaPageReport(model),
     });
   } finally {
-    await restoreViewportSize(cdp, sid, originalViewport);
+    await restoreAuditViewport(cdp, sid, session, originalViewport);
   }
 }
 
@@ -19863,19 +19909,35 @@ function appendPendingActionNetworkEntries(pendingReqs, netReqBuf, sinceTs, { no
   return count;
 }
 
-async function viewportStr(cdp, sid, size) {
-  if (!size) {
-    const dims = await evalStr(cdp, sid, `JSON.stringify({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio})`);
-    const d = JSON.parse(dims);
-    return `Viewport: ${d.w}×${d.h} (DPR: ${d.dpr})`;
-  }
-  const match = size.match(/^(\d+)[x×](\d+)$/);
+async function readViewportDims(cdp, sid) {
+  const d = JSON.parse(await evalStr(cdp, sid, `JSON.stringify({w:window.innerWidth,h:window.innerHeight,dpr:window.devicePixelRatio})`));
+  return { width: Number(d.w), height: Number(d.h), dpr: Number(d.dpr) };
+}
+
+// Sets the override without reading it back: audits that sweep sizes measure the page themselves.
+async function applyViewportOverride(cdp, sid, size) {
+  const match = String(size || '').match(/^(\d+)[x×](\d+)$/);
   if (!match) throw new Error('Format: <width>x<height> (e.g. 375x812, 1280x720)');
   const width = parseInt(match[1]), height = parseInt(match[2]);
   await cdpDomains(cdp).Emulation.setDeviceMetricsOverride( {
     width, height, deviceScaleFactor: 0, mobile: width <= 768,
   }, sid);
-  return `Viewport resized to ${width}×${height}${width <= 768 ? ' (mobile mode)' : ''}`;
+  return { width, height };
+}
+
+// #533: the receipt states the size read back from the page, so an agent knows the override took
+// effect. `session`, when given, remembers the override so an audit can put it back afterwards.
+async function viewportStr(cdp, sid, size, { session = null } = {}) {
+  if (!size) {
+    const d = await readViewportDims(cdp, sid);
+    return `Viewport: ${d.width}×${d.height} (DPR: ${d.dpr})`;
+  }
+  const { width, height } = await applyViewportOverride(cdp, sid, size);
+  if (session) session.viewportOverride = { width, height };
+  const d = await readViewportDims(cdp, sid);
+  const mobile = width <= 768 ? ' (mobile mode)' : '';
+  const mismatch = d.width !== width || d.height !== height ? `; requested ${width}x${height}` : '';
+  return `Viewport: ${d.width}x${d.height} (DPR ${d.dpr})${mobile}${mismatch}`;
 }
 
 async function cookieSetStr(cdp, sid, cookieStr) {
@@ -26345,7 +26407,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     viewport: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = fopts.args[0]
-        ? await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts)
+        ? await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0], { session }), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts)
         : await viewportStr(cdp, sessionId);
       return commandResult(value, { kind: 'action-receipt' });
     },
@@ -29596,13 +29658,13 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
       'Retry safe: no',
       ...formatCliErrorRecovery(model.recovery),
       `Transport: ${model.diagnostics.transport.phase}/${model.diagnostics.transport.kind}: ${model.diagnostics.transport.message}`,
-      `Next: ${model.recovery.run}`,
+      `Next: ${model.recovery.run}${cliErrorKindSuffix(model.recovery)}`,
     ].join('\n');
   }
   const message = String(err?.message || err || '').trim();
   if (!message) {
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
-    return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}`].join('\n');
+    return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}${cliErrorKindSuffix(recovery)}`].join('\n');
   }
   if (isClassifiedActionFailureText(message)) return message;
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
@@ -29613,8 +29675,13 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
   // Same Next line as doctor: the command (marked when consent is needed), else what to ask the user.
   lines.push(`Next: ${recovery.run
     ? `${recovery.run}${recovery.consentRequired ? ' (ask first)' : ''}`
-    : (recovery.ask || recovery.run)}`);
+    : (recovery.ask || recovery.run)}${cliErrorKindSuffix(recovery)}`);
   return lines.join('\n');
+}
+
+// #533: the Kind rides on the last line, so `| tail -1` still says what kind of failure it was.
+function cliErrorKindSuffix(recovery) {
+  return recovery?.kind ? ` (Kind: ${recovery.kind})` : '';
 }
 
 function formatDaemonCommandError(err, options = {}) {
@@ -30960,7 +31027,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   waitForSearchListingHref, waitForSearchSubmitProbe, navigateSearchListingIssued,
   SEARCH_SUBMIT_PROBE_WAIT_MS,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
-  createSessionState, invalidateSessionRefs,
+  createSessionState, invalidateSessionRefs, createActionDiagnosis,
   classifyActionFailure, formatActionFailure,
   buildActionRecoveryPlan, buildNoChangeOutcomeRecommendation,
   isExpectedNoChange, overlaySelectorArg,
@@ -30969,7 +31036,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   stripLeftoverAxScrollNoChangeAxBodyChrome,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
-  captureViewportSize, restoreViewportSize,
+  captureViewportSize, restoreAuditViewport,
   qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
   diffShotScreenshotCaptureOptions,
   FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr, scanshotStr,
