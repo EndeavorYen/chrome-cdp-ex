@@ -274,12 +274,17 @@ describe('#549 session log keeps the exit reason', () => {
     expect(exitProcess).toHaveBeenCalledExactlyOnceWith(0);
 
     const source = readFileSync(CDP_SOURCE, 'utf8');
-    const runDaemon = source.slice(source.indexOf('async function runDaemon'), source.indexOf('function listenDaemonServer'));
+    const runStart = source.indexOf('async function runDaemon(');
+    const runDaemon = source.slice(runStart, source.indexOf('function listenDaemonServer', runStart));
+    expect(runDaemon.startsWith('async function runDaemon(')).toBe(true);
     expect(runDaemon).toMatch(/onIdle:\s*\(\)\s*=>\s*shutdown\(0,\s*\{\s*reason:\s*'idle-timeout'\s*\}\)/);
     expect(runDaemon).toMatch(/shutdown\(0,\s*\{\s*reason:\s*'signal',\s*signal:\s*'SIGTERM'\s*\}\)/);
     expect(runDaemon).toMatch(/shutdown\(0,\s*\{\s*reason:\s*'signal',\s*signal:\s*'SIGINT'\s*\}\)/);
-    expect(runDaemon).toMatch(/reason:\s*'exception'/);
+    expect(runDaemon).toMatch(/onCrash:\s*\(kind,\s*error\)\s*=>\s*exitLog\.current\?\.onCrash\(kind,\s*error\)/);
     expect(runDaemon).toMatch(/createDaemonEndpointLifecycle\(\{[\s\S]*?beforeExit:\s*info\s*=>\s*exitLog\.current\.beforeExit\(info\)/);
+    const exitLogStart = source.indexOf('function createDaemonExitLog(');
+    const exitLog = source.slice(exitLogStart, source.indexOf('\nfunction ', exitLogStart + 1));
+    expect(exitLog).toMatch(/reason:\s*'exception'/);
   });
 });
 
