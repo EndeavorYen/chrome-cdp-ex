@@ -14354,10 +14354,14 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 // Browser-side script for perceiveStr — extracted for readability and testability.
 // Collects page metadata, layout map, style hints, and cursor-interactive elements.
 // #561: the Interactive census counts a control only when it is rendered (it has a client rect, so no
-// display:none ancestor, closed <dialog>, hidden attribute or type=hidden) and visible.
+// display:none ancestor, closed <dialog>, hidden attribute or type=hidden) and visible. A native input
+// hidden behind a styled <label> (input{display:none}) is therefore not counted, as in the AX tree.
 function renderedInteractiveSource() {
   return `function renderedInteractive(el) {
     if (!el || typeof el.getClientRects !== 'function' || el.getClientRects().length === 0) return false;
+    // checkVisibility also catches a content-visibility:hidden ancestor (a closed <details>), which
+    // keeps its rects.
+    if (typeof el.checkVisibility === 'function') return el.checkVisibility({ visibilityProperty: true });
     let visibility = 'visible';
     try { visibility = String(getComputedStyle(el).visibility || 'visible'); } catch {}
     return visibility !== 'hidden' && visibility !== 'collapse';
