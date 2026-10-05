@@ -2,15 +2,26 @@ import { redactUrl } from './redaction.mjs';
 
 const TARGET_RESOLUTION_SCHEMA = 'chrome-cdp-ex.target-resolution.v1';
 
+// One entry per target id: a page list that names the same id twice still names one tab (#546).
+function distinctTargets(pages) {
+  const seen = new Set();
+  return pages.filter(page => {
+    const id = String(page?.targetId || '').toUpperCase();
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 function matchingPages(requested, livePages) {
   const upper = String(requested || '').toUpperCase();
-  return (livePages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper));
+  return distinctTargets((livePages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper)));
 }
 
 function matchingAliasPages(alias, livePages) {
   const wanted = String(alias?.targetId || '').toUpperCase();
   if (!wanted) return [];
-  const exact = (livePages || []).filter(page => String(page?.targetId || '').toUpperCase() === wanted);
+  const exact = distinctTargets((livePages || []).filter(page => String(page?.targetId || '').toUpperCase() === wanted));
   if (exact.length) return exact;
   return matchingPages(wanted, livePages);
 }
@@ -63,7 +74,13 @@ export function resolveLiveTargetBinding({ requested, livePages = [], daemonBind
     }
     throw new Error(`No live target matching prefix "${rawRequested}".`);
   }
-  if (matches.length > 1) throw new Error(`Live target prefix "${rawRequested}" is ambiguous (${matches.length} matches).`);
+  if (matches.length > 1) {
+    // Name each match, so a transient duplicate is visible rather than hidden (#546).
+    const named = matches.map(page => `${uniqueLivePrefix(page.targetId, matches)} ${page?.type || 'page'} ${redactUrl(page?.url || '')}`);
+    const error = new Error(`Live target prefix "${rawRequested}" is ambiguous (${matches.length} matches): ${named.join('; ')}`);
+    error.code = 'target_ambiguous';
+    throw error;
+  }
 
   const resolvedTargetId = matches[0].targetId;
   const boundTargetId = daemonBinding?.boundTargetId || daemonBinding?.targetId || null;
