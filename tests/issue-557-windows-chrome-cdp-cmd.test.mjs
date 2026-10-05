@@ -23,7 +23,7 @@ describe('#557 Windows chrome-cdp.cmd', () => {
     expect(skill).toContain('On Windows, PowerShell does not run that extensionless file: use `bin/chrome-cdp.cmd`');
   });
 
-  it('T3 cmd /c help exits 0 and prints usage', () => {
+  it.runIf(process.platform === 'win32')('T3 cmd /c help exits 0 and prints usage', () => {
     const cmd = resolve(root, 'skills/chrome-cdp-ex/bin/chrome-cdp.cmd');
     const res = spawnSync('cmd.exe', ['/c', cmd, 'help'], { encoding: 'utf8' });
     expect(res.status, res.stderr || res.error?.message).toBe(0);
