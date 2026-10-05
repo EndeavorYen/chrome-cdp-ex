@@ -226,6 +226,7 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
     withinPosition: raw.withinPosition ? String(raw.withinPosition) : null,
     dialog: raw.dialog === true,
     recentred: raw.recentred === true,
+    clipped: raw.clipped === true,
   };
   const arg = recoveryCommandArg(input);
   const jsClick = arg ? `cdp click ${targetId} ${arg} --js` : 'cdp help click';
@@ -241,6 +242,10 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
     hints: [
       ...(covering.dialog
         ? [`A dialog covers the target: close it with \`${dismiss}\`, then click again.`]
+        : []),
+      // #551: the target's own scroll container cuts it off at the click point.
+      ...(covering.clipped
+        ? ['The target is clipped by its scroll container: scroll that container until the target shows, then click again.']
         : []),
       `See what covers the target with \`${overlay}\`.`,
       `\`${jsClick}\` runs the target's click handler without hit-testing; use it when the cover is page layout (a fixed sidebar or sticky header), not a dialog the user must close first.`,
