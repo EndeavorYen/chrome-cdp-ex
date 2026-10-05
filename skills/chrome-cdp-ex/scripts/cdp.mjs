@@ -11997,7 +11997,9 @@ function clickPointHitFunctionSource() {
     };
     // The target, something inside it, or an ancestor (the target itself is not hit-testable,
     // e.g. pointer-events:none) receives the same event a user's click there would send.
-    if (!clipped && (composedContains(target, top) || composedContains(top, target))) return { covered: false };
+    // The target or something inside it is at the point: the browser itself says the click reaches it.
+    if (composedContains(target, top)) return { covered: false };
+    if (!clipped && composedContains(top, target)) return { covered: false };
     const label = typeof top.closest === 'function' ? top.closest('label') : null;
     if (!clipped && label && label.control === target) return { covered: false };
     const positionOf = node => {
@@ -12066,7 +12068,7 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     // #551: an ancestor that clips its overflow can hide the click point of a target that is inside
     // the viewport. Walk the containing-block chain: a fixed element escapes every ancestor, and an
     // absolute one escapes ancestors that are not positioned. html and body propagate their overflow
-    // to the viewport, so they never clip here. Transforms and contain are not modelled (fail open).
+    // to the viewport, so they never clip here.
     const ownerDoc = this.ownerDocument;
     const docElement = ownerDoc ? ownerDoc.documentElement : null;
     const docBody = ownerDoc ? ownerDoc.body : null;

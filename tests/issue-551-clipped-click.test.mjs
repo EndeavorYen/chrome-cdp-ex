@@ -12,7 +12,7 @@ function fakeDom({ innerWidth = 780, innerHeight = 900 } = {}) {
     getRootNode() { return doc; }
   }
   const doc = { nodeType: 9, hitAt: () => null, elementFromPoint(x, y) { return this.hitAt(x, y); } };
-  function el(tag, { id = '', className = '', text = '', parent = null, rect = null, overflow = 'visible', overflowY = null, position = 'static' } = {}) {
+  function el(tag, { id = '', className = '', text = '', parent = null, rect = null, overflow = 'visible', overflowY = null, position = 'static', transform = 'none' } = {}) {
     const node = Object.create(Node.prototype);
     Object.assign(node, {
       nodeType: 1,
@@ -25,6 +25,7 @@ function fakeDom({ innerWidth = 780, innerHeight = 900 } = {}) {
       _overflow: overflow,
       _overflowY: overflowY || overflow,
       _position: position,
+      _transform: transform,
       scrolls: 0,
       getAttribute: () => null,
       getBoundingClientRect() { return { ...this._rect }; },
@@ -39,7 +40,7 @@ function fakeDom({ innerWidth = 780, innerHeight = 900 } = {}) {
     document: doc,
     location: { href: 'file:///dialog.html' },
     Node,
-    getComputedStyle: node => ({ position: node._position || 'static', overflowX: node._overflow, overflowY: node._overflowY }),
+    getComputedStyle: node => ({ position: node._position || 'static', overflowX: node._overflow, overflowY: node._overflowY, transform: node._transform || 'none' }),
     Promise, Date, setTimeout, Math, Object, Reflect, String, Number, Array,
   };
   return { doc, el, context };
@@ -159,5 +160,37 @@ describe('#551 does not call a target clipped when it is not', () => {
     const value = await settledRect(dom.context, link);
     expect(link.scrolls).toBe(0);
     expect(value.hit).toEqual({ covered: false });
+  });
+});
+
+describe('#551 clip walk edge cases', () => {
+  it('a target the browser hits directly is never called clipped', async () => {
+    const page = dialogLayout({ overflow: 'hidden' });
+    page.doc.hitAt = () => page.button;
+    const value = await settledRect(page.context, page.button);
+    expect(value.hit).toEqual({ covered: false });
+  });
+
+  it('slotted content is clipped by the shadow-tree scroller it renders in', async () => {
+    const dom = fakeDom();
+    const host = dom.el('x-dialog', { rect: { x: 40, y: 60, width: 700, height: 800 } });
+    const scroller = dom.el('div', { overflow: 'auto', rect: { x: 60, y: 100, width: 660, height: 200 } });
+    const slot = dom.el('slot', { parent: scroller });
+    const button = dom.el('button', { text: 'Delete', parent: host, rect: { x: 80, y: 798, width: 60, height: 30 } });
+    button.assignedSlot = slot;
+    dom.doc.hitAt = () => host;
+    const value = await settledRect(dom.context, button);
+    expect(button.scrolls).toBeGreaterThanOrEqual(1);
+    expect(value.hit).toMatchObject({ covered: true, clipped: true });
+  });
+
+  it('a transformed overflow:hidden ancestor contains and clips an absolute child', async () => {
+    const dom = fakeDom();
+    const modal = dom.el('div', { className: 'modal', overflow: 'hidden', transform: 'translate(-50%, -50%)', rect: { x: 100, y: 100, width: 300, height: 200 } });
+    const inner = dom.el('div', { parent: modal });
+    const menu = dom.el('button', { text: 'Item', parent: inner, position: 'absolute', rect: { x: 120, y: 350, width: 80, height: 30 } });
+    dom.doc.hitAt = () => modal;
+    const value = await settledRect(dom.context, menu);
+    expect(value.hit).toMatchObject({ covered: true, clipped: true });
   });
 });
