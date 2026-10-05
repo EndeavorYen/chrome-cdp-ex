@@ -11402,10 +11402,11 @@ function playwrightStepFromCommand(action = {}) {
         : skip('missing coordinates');
     }
     case 'scroll': {
+      const scrollArgs = splitScrollEdgeArgs(args);
       let edge = null;
-      try { edge = parseScrollEdge(args[0], args[1]); } catch { edge = null; }
+      try { edge = parseScrollEdge(scrollArgs[0], scrollArgs[1]); } catch { edge = null; }
       let container = null;
-      try { container = parseScrollContainerArg(args.slice(2)); } catch { container = null; }
+      try { container = parseScrollContainerArg(scrollArgs.slice(2)); } catch { container = null; }
       if (edge === 'top' || edge === 'bottom') {
         if (container && !isPlaywrightPortableSelector(container)) {
           return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
@@ -11423,8 +11424,8 @@ function playwrightStepFromCommand(action = {}) {
           `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { Element.prototype.scrollTo.call(scrolling, { left: 0, top: ${edge === 'top' ? '0' : 'docMax'}, behavior: 'instant' }); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) Element.prototype.scrollTo.call(best, { top: ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}, behavior: 'instant' }); });`,
         ]);
       }
-      const direction = args[0] || '';
-      const amount = Number(args[1] || 500);
+      const direction = scrollArgs[0] || '';
+      const amount = Number(scrollArgs[1] || 500);
       const dirMap = { down: [0, amount], up: [0, -amount], left: [-amount, 0], right: [amount, 0] };
       let xy = dirMap[direction.toLowerCase()];
       if (!xy && direction.includes(',')) xy = direction.split(',').map(Number);
@@ -16695,6 +16696,15 @@ function documentScrollByJs(dx, dy) {
   return `Element.prototype.scrollBy.call(${DOCUMENT_SCROLLER_JS}, { left: ${dx}, top: ${dy}, behavior: 'instant' })`;
 }
 
+// #560: `scroll <t> "to top"` passes the edge phrase as one argument. Split it, so every positional
+// reader (edge parse, --scroll-container, receipts, export) sees `to` and the edge separately.
+function splitScrollEdgeArgs(args = []) {
+  const list = Array.isArray(args) ? args.map(arg => String(arg)) : [];
+  const words = String(list[0] || '').trim().split(/\s+/);
+  if (words.length < 2 || words[0].toLowerCase() !== 'to') return list;
+  return [...words, ...list.slice(1)];
+}
+
 function parseScrollEdge(direction, amount) {
   const first = String(direction || '').trim().toLowerCase();
   if (first !== 'to') return null;
@@ -21931,7 +21941,10 @@ async function recordStr(cdp, sid, args, refs) {
       }
       else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
-      else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], opts.actionArgs.slice(2));
+      else if (opts.action === 'scroll') {
+        const scrollArgs = splitScrollEdgeArgs(opts.actionArgs);
+        actionText = await scrollStr(cdp, sid, scrollArgs[0], scrollArgs[1], scrollArgs.slice(2));
+      }
       else if (opts.action === 'nav' || opts.action === 'navigate') actionText = await navStr(cdp, sid, opts.actionArgs[0]);
       else throw new Error(`record --action does not support: ${opts.action}`);
       events.push({ kind: 'action', summary: actionText.split('\n')[0], ts: Date.now() });
@@ -27004,6 +27017,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     scroll: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      fopts.args = splitScrollEdgeArgs(fopts.args);
       const value = await actionFeedback(
         'scroll',
         () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1], fopts.args.slice(2)),
@@ -31862,7 +31876,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
-  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, splitScrollEdgeArgs, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, webVitalsModel, clearObservationBuffers,
   selectConsoleEntries, locateObservedEntries,
