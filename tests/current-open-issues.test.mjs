@@ -414,30 +414,22 @@ describe('current open issue contracts', () => {
     expect(toolNames).toEqual(expect.arrayContaining([
       'doctor',
       'open_or_attach',
-      'select_target',
       'list_tabs',
       'perceive',
-      'controls',
-      'overlay',
       'screenshot',
       'click',
-      'verify_click',
       'dismiss_modal',
       'fill',
-      'viewport',
-      'qa_page',
-      'responsive_audit',
-      'report',
       'navigate',
       'press',
       'wait_for',
       'cascade',
-      'components',
       'spawn_debug_browser',
-      'record_snapshot',
-      'session_checkpoint',
       'run_command',
     ]));
+    for (const hidden of ['select_target', 'controls', 'overlay', 'verify_click', 'viewport', 'qa_page', 'responsive_audit', 'report', 'components', 'record_snapshot', 'session_checkpoint']) {
+      expect(toolNames, hidden).not.toContain(hidden);
+    }
     expect(createMcpInitializeResult().serverInfo.name).toBe('chrome-cdp-ex');
     expect(createMcpInitializeResult().serverInfo.version).toBe(packageJson.version);
     expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor', '--format', 'json']);
@@ -547,7 +539,9 @@ describe('current open issue contracts', () => {
     child.kill();
     expect(responses.map(response => response.id)).toEqual([1, 2]);
     expect(responses[0].result.protocolVersion).toBe('2025-06-18');
-    expect(responses[1].result.tools.map(tool => tool.name)).toContain('qa_page');
+    const toolNames = responses[1].result.tools.map(tool => tool.name);
+    expect(toolNames).toContain('perceive');
+    expect(toolNames).not.toContain('qa_page');
   });
 });
 
@@ -728,10 +722,8 @@ describe('issues #82-#87 contracts', () => {
 
 describe('issues #89-#91 contracts', () => {
   it('#89 maps new MCP tools for target selection and responsive audit', () => {
-    expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).toEqual(expect.arrayContaining([
-      'select_target',
-      'responsive_audit',
-    ]));
+    expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).not.toContain('select_target');
+    expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).not.toContain('responsive_audit');
     expect(buildMcpToolCommand('select_target', { url: 'http://127.0.0.1:8788', exact: true }))
       .toEqual(['target', '--url', 'http://127.0.0.1:8788', '--exact', '--format', 'json']);
     expect(() => buildMcpToolCommand('responsive_audit', { target: 'app' }))
@@ -1661,8 +1653,8 @@ describe('v2.11.0 review regressions', () => {
     const controls = MCP_TOOL_DEFINITIONS.find(tool => tool.name === 'controls');
     const report = MCP_TOOL_DEFINITIONS.find(tool => tool.name === 'report');
     expect(perceive.inputSchema.properties).toHaveProperty('adaptive');
-    expect(controls.inputSchema.properties).toHaveProperty('compact');
-    expect(report.inputSchema.properties).toHaveProperty('compact');
+    expect(controls).toBeUndefined();
+    expect(report).toBeUndefined();
   });
 
   it('registers key/resize/tabs aliases and suggests near-miss unknown commands (#126/#129)', () => {

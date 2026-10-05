@@ -10,6 +10,7 @@ import { createTableArtifactStore } from '../skills/chrome-cdp-ex/scripts/lib/ta
 import { parseTableArgs } from '../skills/chrome-cdp-ex/scripts/lib/table-contract.mjs';
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
+import { buildMcpToolCommand } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 
 const { __test__: cdpTest } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -923,7 +924,7 @@ describe('collection command semantics', () => {
     expect(continued).toContain('ROW-0001');
   });
 
-  it.skipIf(process.platform === 'win32')('preserves collect JSON through CLI capture and confirmed MCP run_command', async () => {
+  it.skipIf(process.platform === 'win32')('preserves collect JSON through CLI capture and the confirmed table tool', async () => {
     const fixture = mountRecycledTableFixture({
       logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
     });
@@ -953,6 +954,11 @@ describe('collection command semantics', () => {
         });
       },
     });
+    expect(() => buildMcpToolCommand('run_command', {
+      command: 'table',
+      args: ['ABC12345', '#orders', '--collect', '--scroll-container', '#viewport', '--format', 'json'],
+      confirm: true,
+    })).toThrow(/not allowlisted/);
     const sent = [];
     const handle = createMcpRequestHandler({
       runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
@@ -963,10 +969,12 @@ describe('collection command semantics', () => {
       id: 160,
       method: 'tools/call',
       params: {
-        name: 'run_command',
+        name: 'table',
         arguments: {
-          command: 'table',
-          args: ['ABC12345', '#orders', '--collect', '--scroll-container', '#viewport', '--format', 'json'],
+          target: 'ABC12345',
+          selector: '#orders',
+          collect: true,
+          scrollContainer: '#viewport',
           confirm: true,
         },
       },
@@ -982,7 +990,7 @@ describe('collection command semantics', () => {
     });
   });
 
-  it.skipIf(process.platform === 'win32')('preserves collect text through CLI capture and confirmed MCP run_command', async () => {
+  it.skipIf(process.platform === 'win32')('preserves collect text through CLI capture and the confirmed table tool', async () => {
     const fixture = mountRecycledTableFixture({
       logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
     });
@@ -1018,10 +1026,12 @@ describe('collection command semantics', () => {
       id: 161,
       method: 'tools/call',
       params: {
-        name: 'run_command',
+        name: 'table',
         arguments: {
-          command: 'table',
-          args: ['ABC12345', '#orders', '--collect', '--scroll-container', '#viewport'],
+          target: 'ABC12345',
+          selector: '#orders',
+          collect: true,
+          scrollContainer: '#viewport',
           confirm: true,
         },
       },

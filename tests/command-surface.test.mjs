@@ -9,6 +9,7 @@ import {
   MCP_RESOURCE_TEMPLATES,
   MCP_RUN_COMMAND_ALLOWLIST,
   MCP_TOOL_DEFINITIONS,
+  SURVIVOR_COMMANDS,
   defineCommandSurface,
   defineMcpSurface,
   projectCliCommands,
@@ -252,10 +253,10 @@ describe('MCP surface catalog', () => {
     expect(() => defineMcpSurface(oversizedSchemaArray)).toThrow(/array limit/);
   });
 
-  it('validates the shipped 27-tool, three-resource, ordered 84-spelling surface', () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(27);
+  it('validates the served 14-tool, three-resource, ordered 27-spelling survivor surface', () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(14);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
-    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(84);
+    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(27);
     expect(Object.isFrozen(MCP_TOOL_DEFINITIONS[0].inputSchema)).toBe(true);
     expect(Object.isFrozen(MCP_TOOL_DEFINITIONS[0].inputSchema.properties)).toBe(true);
     expect(Object.isFrozen(MCP_RESOURCE_TEMPLATES[0])).toBe(true);
@@ -263,7 +264,9 @@ describe('MCP surface catalog', () => {
     expect(MCP_TOOL_DEFINITIONS.find(tool => tool.name === 'run_command')
       .inputSchema.properties.confirm.description)
       .toContain('sensitive, raw, composite, or writes to a caller-selected destination');
-    expect(COMMAND_SURFACE.commands.filter(command => command.mcp.toolName).map(command => command.mcp.toolName).sort())
+    expect(COMMAND_SURFACE.commands
+      .filter(command => SURVIVOR_COMMANDS.includes(command.name) && command.mcp.toolName)
+      .map(command => command.mcp.toolName).sort())
       .toEqual(MCP_TOOL_DEFINITIONS.map(tool => tool.name).filter(name => name !== 'run_command').sort());
   });
 

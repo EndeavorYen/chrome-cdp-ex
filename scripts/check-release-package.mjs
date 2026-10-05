@@ -35,6 +35,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/docs/contracts/v2.20.0/public-contracts.v1.json',
   'package/docs/contracts/v2.20.0/package-entries.v1.json',
   'package/docs/contracts/v2.20.0/runtime-dispatch.v1.json',
+  'package/docs/contracts/v2.20.0/survivor-synopsis.v1.json',
   'package/docs/daily-browser-cdp.md',
   'package/docs/examples/codex-killer-path.md',
   'package/experiment/codex-killer-path-demo-poster.png',

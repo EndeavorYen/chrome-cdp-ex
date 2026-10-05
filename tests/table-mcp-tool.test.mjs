@@ -9,7 +9,6 @@ import {
   MCP_TOOL_MAPPER_BY_NAME,
 } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import { buildMcpToolCommand } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
-import { parseTableRunCommandArgs } from '../skills/chrome-cdp-ex/scripts/lib/table-contract.mjs';
 
 const TOKEN = 'ct1.0123456789abcdef0123456789abcdef.0';
 const HONEST_SUMMARY = 'Bounded table observation with completeness, explicit virtual collection, and private continuation; fixed ceilings and MCP collect confirmation';
@@ -26,16 +25,10 @@ function handlerWith(executeCli) {
   };
 }
 
-function semantics(command) {
-  const parsed = parseTableRunCommandArgs(command.slice(1));
-  const { argv: _argv, ...request } = parsed.request;
-  return { target: parsed.target, request };
-}
-
 describe('first-class MCP table tool', () => {
-  it('owns one table tool on the 27-tool, three-resource surface', () => {
+  it('keeps the table mapper while the served surface is the survivor card', () => {
     expect(COMMAND_SURFACE.commands).toHaveLength(82);
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(27);
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(14);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
     expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(27);
     expect(COMMAND_SURFACE.resolve('table')).toMatchObject({
@@ -43,7 +36,7 @@ describe('first-class MCP table tool', () => {
       aliases: [],
       help: { summary: HONEST_SUMMARY },
     });
-    expect(MCP_TOOL_DEFINITIONS.filter(tool => tool.name === 'table')).toHaveLength(1);
+    expect(MCP_TOOL_DEFINITIONS.filter(tool => tool.name === 'table')).toHaveLength(0);
     expect(MCP_TOOL_DEFINITIONS.filter(tool => tool.name === 'run_command')).toHaveLength(1);
     expect(MCP_TOOL_MAPPER_BY_NAME.table).toBe('table');
   });
@@ -102,39 +95,24 @@ describe('first-class MCP table tool', () => {
     })).toContain('--collect');
   });
 
-  it('converges first-class and run_command onto the same parsed request', () => {
-    const observeTool = buildMcpToolCommand('table', { target: 'fixture', selector: '#grid' });
-    const observeRun = buildMcpToolCommand('run_command', {
+  it('keeps the table tool and refuses table through the survivor run_command allowlist', () => {
+    expect(buildMcpToolCommand('table', { target: 'fixture', selector: '#grid' })[0]).toBe('table');
+    expect(() => buildMcpToolCommand('run_command', {
       command: 'table',
       args: ['fixture', '#grid', '--format', 'json'],
-    });
-    expect(semantics(observeTool)).toEqual(semantics(observeRun));
-
-    const collectTool = buildMcpToolCommand('table', {
-      target: 'fixture',
-      selector: '#grid',
-      collect: true,
-      scrollContainer: '.viewport',
-      loadMore: '#more',
-      rowKeyColumn: 2,
-      confirm: true,
-    });
-    const collectRun = buildMcpToolCommand('run_command', {
+    })).toThrow(/not allowlisted/);
+    expect(() => buildMcpToolCommand('run_command', {
       command: 'table',
       args: [
         'fixture', '#grid', '--collect', '--scroll-container', '.viewport',
         '--load-more', '#more', '--row-key-column', '2', '--format', 'json',
       ],
       confirm: true,
-    });
-    expect(semantics(collectTool)).toEqual(semantics(collectRun));
-
-    const continueTool = buildMcpToolCommand('table', { target: 'fixture', continue: TOKEN });
-    const continueRun = buildMcpToolCommand('run_command', {
+    })).toThrow(/not allowlisted/);
+    expect(() => buildMcpToolCommand('run_command', {
       command: 'table',
       args: ['fixture', '--continue', TOKEN, '--format', 'json'],
-    });
-    expect(semantics(continueTool)).toEqual(semantics(continueRun));
+    })).toThrow(/not allowlisted/);
   });
 });
 

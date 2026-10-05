@@ -339,7 +339,7 @@ function booleanSchema(description, extra = {}) {
 }
 
 /** Allowlisted CLI commands for the MCP run_command escape hatch. */
-export const MCP_RUN_COMMAND_ALLOWLIST = Object.freeze([
+const MCP_RUN_COMMAND_ALLOWLIST_INPUT = Object.freeze([
   'help', 'doctor', 'ready', 'list', 'tabs', 'ls', 'target', 'open', 'use', 'current', 'forget',
   'perceive', 'controls', 'overlay', 'snap', 'snapshot', 'summary', 'status', 'console',
   'shot', 'screenshot', 'elshot', 'fullshot', 'scanshot', 'diff-shot', 'diffshot',
@@ -385,7 +385,7 @@ export const MCP_RESOURCE_TEMPLATES = Object.freeze(MCP_RESOURCE_RECORDS_INPUT.m
   mimeType: resource.mimeType,
 })));
 
-export const MCP_TOOL_DEFINITIONS = Object.freeze([
+const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
   {
     name: 'doctor',
     description: 'Run chrome-cdp-ex readiness diagnostics and return structured setup guidance.',
@@ -794,7 +794,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
       type: 'object',
       required: ['command'],
       properties: {
-        command: stringSchema(`Allowlisted CLI command name. One of: ${MCP_RUN_COMMAND_ALLOWLIST.join(', ')}`),
+        command: stringSchema(`Allowlisted CLI command name. One of: ${MCP_RUN_COMMAND_ALLOWLIST_INPUT.join(', ')}`),
         args: {
           type: 'array',
           items: { type: 'string' },
@@ -883,7 +883,7 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"forward","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"full-perceive","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Runtime"],"help":{"synopsis":"forward <target>","summary":"Navigate forward in browser history","order":65,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"reload","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"state-change","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Runtime"],"help":{"synopsis":"reload <target>","summary":"Reload current page and clear console/exception/navigation buffers","order":66,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"closetab","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Target"],"help":{"synopsis":"closetab <target>","summary":"Close a browser tab","order":67,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
-  {"name":"netlog","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["Network"],"help":{"synopsis":"netlog <target> [--id N [--out file [--overwrite]]] [--type xhr,fetch] [--url text] [--status 4xx|5xx|failed] [--clear] [--unsafe-full] [--format json]","summary":"Network request log with #ids and filters; --id N shows status, timing, headers and a bounded body. Secrets redacted unless --unsafe-full","order":68,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"netlog","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["Network"],"help":{"synopsis":"netlog <target> [--id N [--body] [--out file [--overwrite]]] [--type xhr,fetch] [--url text] [--status 4xx|5xx|failed] [--clear] [--unsafe-full] [--format json]","summary":"Network request log with #ids and filters; --id N shows status, timing and headers. The body is omitted until --body. Secrets redacted unless --unsafe-full","order":68,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"inject","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"state-change","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Runtime"],"help":{"synopsis":"inject <target> <flag> [content]","summary":"Live CSS/JS injection with tracking and removal","order":69,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"cascade","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["DOM","CSS"],"help":{"synopsis":"cascade <target> <sel|@ref> [prop] [--format json]","summary":"CSS origin tracing — shows which rules apply, source file + line","order":70,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"cascade","mapper":"cascade"}},
   {"name":"record","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["DOM","Runtime","Page"],"help":{"synopsis":"record <target> [ms]","summary":"Record a short timeline of DOM/console/network/navigation events","order":71,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"record_snapshot","mapper":"record-snapshot"}},
@@ -922,6 +922,50 @@ for (const name of SURVIVOR_COMMANDS) {
   if (!COMMAND_SURFACE.resolve(name)) fail('survivors', `unknown survivor ${name}`);
 }
 
+const SURVIVOR_NAME_SET = new Set(SURVIVOR_COMMANDS);
+
+function isSurvivorAllowlistSpelling(spelling) {
+  if (spelling === 'help') return true;
+  const command = COMMAND_SURFACE.resolve(spelling);
+  return Boolean(command && SURVIVOR_NAME_SET.has(command.name));
+}
+
+// #554: the served MCP list is the survivor card plus the run_command hatch and help.
+// The input arrays keep the historical catalog so leftover handlers stay in the tree.
+export const MCP_RUN_COMMAND_ALLOWLIST = Object.freeze(
+  MCP_RUN_COMMAND_ALLOWLIST_INPUT.filter(isSurvivorAllowlistSpelling),
+);
+
+const SURVIVOR_TOOL_NAMES = new Set(
+  COMMAND_SURFACE.commands
+    .filter(command => SURVIVOR_NAME_SET.has(command.name) && command.mcp.toolName)
+    .map(command => command.mcp.toolName),
+);
+
+function withSurvivorRunCommandDescription(tool) {
+  if (tool.name !== 'run_command') return tool;
+  const command = tool.inputSchema.properties.command;
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...tool.inputSchema.properties,
+        command: {
+          ...command,
+          description: `Allowlisted CLI command name. One of: ${MCP_RUN_COMMAND_ALLOWLIST.join(', ')}`,
+        },
+      },
+    },
+  };
+}
+
+export const MCP_TOOL_DEFINITIONS = Object.freeze(
+  MCP_TOOL_DEFINITIONS_INPUT
+    .filter(tool => tool.name === 'run_command' || SURVIVOR_TOOL_NAMES.has(tool.name))
+    .map(withSurvivorRunCommandDescription),
+);
+
 const VALIDATED_MCP_SURFACE = defineMcpSurface({
   tools: MCP_TOOL_DEFINITIONS,
   resources: MCP_RESOURCE_RECORDS_INPUT,
@@ -936,6 +980,7 @@ function validateSurfaceConsistency(commandSurface, mcpSurface) {
     fail('mcp.tools', 'must contain exactly one run_command escape hatch');
   }
   const commandToolNames = commandSurface.commands
+    .filter(command => SURVIVOR_NAME_SET.has(command.name))
     .map(command => command.mcp.toolName)
     .filter(Boolean);
   const declaredToolNames = mcpSurface.tools
@@ -963,6 +1008,7 @@ function validateSurfaceConsistency(commandSurface, mcpSurface) {
     }
   }
   for (const command of commandSurface.commands) {
+    if (!SURVIVOR_NAME_SET.has(command.name) && command.name !== 'help') continue;
     if ((command.mcp.exposure === 'run-command' || command.mcp.exposure === 'tool-and-run-command')
         && !declaredAllowlist.has(command.name)) {
       fail('mcp.runCommandAllowlist', `is missing canonical command ${command.name}`);
@@ -990,8 +1036,8 @@ function surfaceDigest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export const COMMAND_SURFACE_IDENTITY = 'b5816ea64292714c28eac7d8b931d2245fbdfcb18723052150841b730e0cb725';
-export const MCP_SURFACE_IDENTITY = 'c32f08c1846f7e5e157d2788f2107875a2617611a06cc478dd38db5a3f7fbb27';
+export const COMMAND_SURFACE_IDENTITY = 'cbb3d71222df277950afe93110283d054b2e2b3f99ef4e7050f00f0f87a4a64a';
+export const MCP_SURFACE_IDENTITY = '3a906cccd2ff90e8eafa943f98a691692b73fa514a517b4785a35c73369a3d97';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }

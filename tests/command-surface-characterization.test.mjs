@@ -77,9 +77,9 @@ describe('Phase 6 command-surface characterization', () => {
       }
     }
     const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
-    expect(Buffer.byteLength(catalogHelp)).toBe(27062);
+    expect(Buffer.byteLength(catalogHelp)).toBe(27089);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:82424bc19c3793dde2df8af3e48db5f2cae1432bb8abc4d4f276ec69732cc32e');
+      .toBe('sha256:eeb7634c4b1b873a957bb8b197283277d0318d05b2f7689041eb8f792bff5af0');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
@@ -90,9 +90,6 @@ describe('Phase 6 command-surface characterization', () => {
       lastHelpPosition = synopsisPosition;
     }
     expect(cdpTest.helpStr()).toBe(cdpTest.renderCardHelp(COMMAND_SURFACE));
-    expect(cdpTest.helpStr().trim()).toBe(contract.cliCases.find(entry => entry.id === 'help').stdout);
-    expect(contract.cliCases.find(entry => entry.id === 'no-args-help').stdout)
-      .toBe(cdpTest.helpStr().trim());
     for (const name of SURVIVOR_COMMANDS) {
       expect(cdpTest.helpStr(), name).toContain(COMMAND_SURFACE.resolve(name).help.synopsis);
     }
@@ -121,27 +118,41 @@ describe('Phase 6 command-surface characterization', () => {
   it('freezes every MCP tool, resource, allowlist entry, valid mapping, and invalid boundary', () => {
     expect(createHash('sha256').update(JSON.stringify(MCP_SURFACE)).digest('hex'))
       .toBe(MCP_SURFACE_IDENTITY);
-    // The fixture freezes the served tools/list entries: catalog definitions plus derived annotations (#465).
-    expect(canonicalizeContract(MCP_TOOLS)).toEqual(contract.mcp.tools);
+    // #554: the served tools/list is the survivor card. The historical fixture keeps the full catalog.
     expect(MCP_TOOLS.map(({ annotations: _annotations, ...tool }) => tool)).toEqual(MCP_TOOL_DEFINITIONS);
-    expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name))
-      .toEqual(contract.mcp.tools.map(tool => tool.name));
+    expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).toEqual([
+      'doctor', 'list_tabs', 'open_or_attach', 'perceive', 'screenshot', 'click',
+      'dismiss_modal', 'fill', 'navigate', 'press', 'wait_for', 'cascade',
+      'spawn_debug_browser', 'run_command',
+    ]);
+    const fixtureTools = Object.fromEntries(contract.mcp.tools.map(tool => [tool.name, tool]));
+    for (const tool of MCP_TOOLS) {
+      if (tool.name === 'run_command') {
+        expect(tool.inputSchema.properties.command.description)
+          .toBe(`Allowlisted CLI command name. One of: ${MCP_RUN_COMMAND_ALLOWLIST.join(', ')}`);
+        continue;
+      }
+      expect(canonicalizeContract(tool), tool.name).toEqual(canonicalizeContract(fixtureTools[tool.name]));
+    }
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
-    expect([...MCP_RUN_COMMAND_ALLOWLIST].sort()).toEqual(contract.mcp.runCommandAllowlist);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:a562e45031381e8554ec7c21ad2a8786a1d84b1dcafb0dc4f8fc9372af194d61');
+      .toBe('sha256:5f3f71b39581f492d0f353bcbb235d5931b71617aba0b15d672663d558f4eb4c');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))
-      .toBe('sha256:724a7edc2acaaae366f209c41b8e5c7fd3795970ebe864e823a8d45d1be3d828');
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(27);
+      .toBe('sha256:bbd2a42dbe7d2c99b5c88abc862ed73b2f3e651e7cdb803ef327a1f7eff9042a');
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(14);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
-    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(84);
+    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(27);
     expect(MCP_RESOURCE_RECORDS.map(resource => resource.mapper)).toEqual([
       'doctor-status', 'session-report', 'session-screenshot-latest',
     ]);
     expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(27);
     for (const fixture of contract.mcp.mappingCases) {
+      if (fixture.tool === 'run_command' && !MCP_RUN_COMMAND_ALLOWLIST.includes(fixture.args?.command)) {
+        expect(() => buildMcpToolCommand(fixture.tool, fixture.args), fixture.id).toThrow(/not allowlisted/);
+        continue;
+      }
       expect(buildMcpToolCommand(fixture.tool, fixture.args), fixture.id).toEqual(fixture.command);
     }
     const mapperIdentities = Object.fromEntries(MCP_TOOL_DEFINITIONS.map(tool => [
@@ -151,22 +162,14 @@ describe('Phase 6 command-surface characterization', () => {
     expect(mapperIdentities).toEqual({
       cascade: ['cascade'],
       click: ['click'],
-      components: ['components'],
-      controls: ['controls'],
       dismiss_modal: ['dismiss-modal'],
       doctor: ['doctor'],
-      drag: ['drag'],
       fill: ['fill'],
       list_tabs: ['list-tabs'],
       navigate: ['navigate'],
       open_or_attach: ['open-attach-alias', 'open-new-tab'],
-      overlay: ['overlay'],
       perceive: ['perceive', 'perceive-cards'],
       press: ['press'],
-      qa_page: ['qa-page'],
-      record_snapshot: ['record-snapshot'],
-      report: ['report'],
-      responsive_audit: ['responsive-audit'],
       run_command: [
         'run-command-read',
         'run-command-mutation',
@@ -175,41 +178,23 @@ describe('Phase 6 command-surface characterization', () => {
         'run-command-table-continue',
       ],
       screenshot: ['screenshot'],
-      select_target: ['select-target'],
-      session_checkpoint: ['session-checkpoint', 'session-checkpoint-unsafe'],
       spawn_debug_browser: ['spawn-debug-browser'],
-      table: ['table-observe', 'table-collect', 'table-continue'],
-      verify_click: ['verify-click'],
-      viewport: ['viewport-read', 'viewport-set'],
       wait_for: ['wait-for-text', 'wait-for-any', 'wait-for-stable'],
     });
     expect(Object.freeze({
       cascade: 'tool:cascade',
       click: 'tool:click',
-      components: 'tool:components',
-      controls: 'tool:controls',
       dismiss_modal: 'tool:dismiss-modal',
       doctor: 'tool:doctor',
-      drag: 'tool:drag',
       fill: 'tool:fill',
       list_tabs: 'tool:list-tabs',
       navigate: 'tool:navigate',
       open_or_attach: 'tool:open-or-attach',
-      overlay: 'tool:overlay',
       perceive: 'tool:perceive',
       press: 'tool:press',
-      qa_page: 'tool:qa-page',
-      record_snapshot: 'tool:record-snapshot',
-      report: 'tool:report',
-      responsive_audit: 'tool:responsive-audit',
       run_command: 'tool:run-command',
       screenshot: 'tool:screenshot',
-      select_target: 'tool:select-target',
-      session_checkpoint: 'tool:session-checkpoint',
       spawn_debug_browser: 'tool:spawn-debug-browser',
-      table: 'tool:table',
-      verify_click: 'tool:verify-click',
-      viewport: 'tool:viewport',
       wait_for: 'tool:wait-for',
     })).toEqual(Object.fromEntries(MCP_TOOL_DEFINITIONS.map(tool => [
       tool.name,
@@ -230,6 +215,11 @@ describe('Phase 6 command-surface characterization', () => {
       const invoke = fixture.kind === 'resource'
         ? () => buildMcpResourceCommand(fixture.uri)
         : () => buildMcpToolCommand(fixture.tool, fixture.args);
+      const spelling = fixture.args?.command;
+      if (fixture.tool === 'run_command' && spelling && !MCP_RUN_COMMAND_ALLOWLIST.includes(spelling)) {
+        expect(invoke, fixture.id).toThrow(/not allowlisted/);
+        continue;
+      }
       expect(invoke, fixture.id).toThrow(fixture.error);
     }
   });

@@ -24,9 +24,9 @@ function timed(fn) {
   return { value, ms: performance.now() - start };
 }
 
-// #467: `netlog` lists each tracked request with a short id, and
-// `netlog <target> --id N` prints its status, timing, headers and a bounded
-// response body, redacted by default.
+// #467 / #555: `netlog` lists each tracked request with a short id.
+// `netlog <target> --id N` prints status, timing and headers. The body stays
+// omitted until `--body`. `--out` writes the file without echoing the body.
 
 const TARGET = 'ABC46700';
 const SECRETS = ['tok-url-123', 'Bearer-secret-456', 'sess-cookie-789', 'set-cookie-abc', 'x-auth-def', 'api-key-ghi', 'body-token-jkl'];
@@ -176,7 +176,10 @@ describe('#467 netlog request ids and filters', () => {
   });
 
   it('parses and validates arguments', () => {
-    expect(parseNetlogArgs([])).toEqual({ clear: false, unsafeFull: false, format: 'text', id: null, out: null, overwrite: false, types: [], url: null, status: [] });
+    expect(parseNetlogArgs([])).toEqual({ clear: false, unsafeFull: false, includeBody: false, format: 'text', id: null, out: null, overwrite: false, types: [], url: null, status: [] });
+    expect(parseNetlogArgs(['--id', '7', '--body'])).toMatchObject({ id: 7, includeBody: true });
+    expect(() => parseNetlogArgs(['--body'])).toThrow(/--body requires --id/);
+    expect(() => parseNetlogArgs(['--clear', '--id', '1', '--body'])).toThrow(/cannot be combined/);
     expect(parseNetlogArgs(['--id', '#12', '--out', 'body.json', '--format', 'json'])).toMatchObject({ id: 12, out: 'body.json', format: 'json' });
     expect(parseNetlogArgs(['--id', '7'])).toMatchObject({ id: 7 });
     expect(() => parseNetlogArgs(['--id', 'abc'])).toThrow(/--id requires a request number/);
@@ -193,11 +196,33 @@ describe('#467 netlog request ids and filters', () => {
 });
 
 describe('#467 netlog --id request detail', () => {
-  it('a failed fetch shows its status, timing, initiator and JSON error body; secrets are redacted', async () => {
+  it('T1 default --id omits access_token, a nested JSON-string secret, and an escaped-quote secret', async () => {
+    const { store } = fakeTraffic();
+    const body = [
+      '{"access_token":"BODY-ACCESS-TOKEN-555",',
+      '"wrapped":"{\\"token\\":\\"NESTED-SECRET-511\\"}",',
+      '"msg":"\\"ESCAPED-QUOTE-SECRET-503"}',
+    ].join('');
+    const secrets = ['BODY-ACCESS-TOKEN-555', 'NESTED-SECRET-511', 'ESCAPED-QUOTE-SECRET-503'];
+    const cdp = fakeCdp({ r2: { body, base64Encoded: false } });
+    const text = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2']), { targetId: TARGET });
+    const model = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--format', 'json']), { targetId: TARGET }));
+    for (const secret of secrets) {
+      expect(text, secret).not.toContain(secret);
+      expect(JSON.stringify(model), secret).not.toContain(secret);
+    }
+    expect(text).toContain('Status: 200');
+    expect(text).toContain('Body: omitted (pass --body to include the redacted body)');
+    expect(model.body).toMatchObject({ omitted: true });
+    expect(model.body.text).toBeUndefined();
+    expect(cdp.calls).toEqual([]);
+  });
+
+  it('a failed fetch shows its status, timing and initiator; the body stays omitted until --body', async () => {
     const { store } = fakeTraffic();
     const cdp = fakeCdp({ r1: ERROR_BODY });
     const text = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '1']), { targetId: TARGET });
-    expect(cdp.calls).toEqual([['Network.getResponseBody', { requestId: 'r1' }, 'SESSION']]);
+    expect(cdp.calls).toEqual([]);
     expect(text).toContain('Request #1');
     expect(text).toContain('POST https://app.example/api/items?page=2&access_token=<redacted>');
     expect(text).toContain('Status: 500 Internal Server Error');
@@ -211,10 +236,15 @@ describe('#467 netlog --id request detail', () => {
     expect(text).toContain('Set-Cookie: <redacted>');
     expect(text).toContain('Access-Control-Allow-Credentials: true');
     expect(text).toContain('Location: https://app.example/next?token=<redacted>');
-    expect(text).toContain('"error":"database unavailable"');
-    expect(text).toContain('secrets redacted');
+    expect(text).toContain('Body: omitted (pass --body to include the redacted body)');
+    expect(text).not.toContain('"error":"database unavailable"');
     expect(text).toContain(`Next: cdp netlog ${TARGET}`);
     expectNoSecrets(text);
+    const withBody = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '1', '--body']), { targetId: TARGET });
+    expect(cdp.calls).toEqual([['Network.getResponseBody', { requestId: 'r1' }, 'SESSION']]);
+    expect(withBody).toContain('"error":"database unavailable"');
+    expect(withBody).toContain('secrets redacted');
+    expectNoSecrets(withBody);
   });
 
   it('--format json emits chrome-cdp-ex.netlog-request.v1, redacted by default', async () => {
@@ -230,19 +260,30 @@ describe('#467 netlog --id request detail', () => {
       response: { status: 500, statusText: 'Internal Server Error', mimeType: 'application/json', encodedDataLength: 321 },
       error: null,
       timing: { startedAt: '2023-11-14T22:13:20.000Z', totalMs: 123, waitMs: 50 },
-      body: { available: true, kind: 'text', truncated: false, redacted: true, savedTo: null },
+      body: { omitted: true, savedTo: null, savedBytes: null, savedRedacted: null },
     });
+    expect(model.body.text).toBeUndefined();
     expect(model.request.headers.Cookie).toBe('<redacted>');
     expect(model.response.headers['Set-Cookie']).toBe('<redacted>');
-    expect(JSON.parse(model.body.text)).toEqual({ error: 'database unavailable', access_token: '<redacted>' });
     expectNoSecrets(JSON.stringify(model));
+    const withBody = JSON.parse(await T.netlogRequestStr(fakeCdp({ r1: ERROR_BODY }), 'SESSION', store, parseNetlogArgs(['--id', '1', '--body', '--format', 'json']), { targetId: TARGET }));
+    expect(withBody.body).toMatchObject({ available: true, kind: 'text', truncated: false, redacted: true, savedTo: null });
+    expect(withBody.nextSteps).toContain(`cdp netlog ${TARGET} --id 1 --body --unsafe-full  # raw body, headers and URL`);
+    expect(JSON.parse(withBody.body.text)).toEqual({ error: 'database unavailable', access_token: '<redacted>' });
+    expectNoSecrets(JSON.stringify(withBody));
   });
 
-  it('--unsafe-full prints raw headers, URL and body', async () => {
+  it('--unsafe-full prints raw headers and URL; the body still needs --body', async () => {
     const { store } = fakeTraffic();
     const text = await T.netlogRequestStr(fakeCdp({ r1: ERROR_BODY }), 'SESSION', store, parseNetlogArgs(['--id', '1', '--unsafe-full']), { targetId: TARGET });
-    expect(text).toContain('[unsafe-full');
-    for (const secret of SECRETS) expect(text).toContain(secret);
+    expect(text).toContain('[unsafe-full: headers and URL not redacted]');
+    expect(text).toContain('Body: omitted (pass --body to include the redacted body)');
+    for (const secret of SECRETS) {
+      if (secret === 'body-token-jkl') expect(text).not.toContain(secret);
+      else expect(text).toContain(secret);
+    }
+    const raw = await T.netlogRequestStr(fakeCdp({ r1: ERROR_BODY }), 'SESSION', store, parseNetlogArgs(['--id', '1', '--body', '--unsafe-full']), { targetId: TARGET });
+    for (const secret of SECRETS) expect(raw).toContain(secret);
   });
 
   it('bounds the body preview and --out writes the full body with mode 0600', async () => {
@@ -254,15 +295,22 @@ describe('#467 netlog --id request detail', () => {
     const out = join(dir, 'body.json');
     const cdp = fakeCdp({ r2: { body: big, base64Encoded: false } });
 
-    const preview = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--format', 'json']), { targetId: TARGET }));
+    const omitted = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--format', 'json']), { targetId: TARGET }));
+    expect(omitted.body).toMatchObject({ omitted: true });
+    expect(omitted.body.text).toBeUndefined();
+    expect(omitted.nextSteps[0]).toBe(`cdp netlog ${TARGET}`);
+    expect(cdp.calls).toEqual([]);
+    const preview = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--body', '--format', 'json']), { targetId: TARGET }));
     expect(preview.body).toMatchObject({ kind: 'text', bytes: big.length, truncated: true });
     expect(Buffer.byteLength(preview.body.text)).toBeLessThanOrEqual(NETLOG_BODY_PREVIEW_BYTES);
     expect(preview.nextSteps[0]).toBe(`cdp netlog ${TARGET} --id 2 --out <file>`);
-    const previewText = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2']), { targetId: TARGET });
+    const previewText = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--body']), { targetId: TARGET });
     expect(previewText).toContain(`first ${preview.body.shownBytes} shown`);
     expect(previewText.length).toBeLessThan(NETLOG_BODY_PREVIEW_BYTES + 2000);
 
     const saved = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--out', out]), { targetId: TARGET });
+    expect(saved).toContain('Body: omitted (pass --body to include the redacted body)');
+    expect(saved).not.toContain('body-token-jkl');
     const written = readFileSync(out, 'utf8');
     expect(JSON.parse(written).rows).toHaveLength(800);
     expect(written).not.toContain('body-token-jkl');
@@ -273,7 +321,7 @@ describe('#467 netlog --id request detail', () => {
     // An existing file is refused unless --overwrite; --unsafe-full keeps the 4 KB preview.
     await expect(T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--out', out, '--unsafe-full']), { targetId: TARGET }))
       .rejects.toThrow(/already exists; pass --overwrite/);
-    const raw = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--out', out, '--overwrite', '--unsafe-full', '--format', 'json']), { targetId: TARGET }));
+    const raw = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--body', '--out', out, '--overwrite', '--unsafe-full', '--format', 'json']), { targetId: TARGET }));
     expect(Buffer.byteLength(raw.body.text)).toBeLessThanOrEqual(NETLOG_BODY_PREVIEW_BYTES);
     expect(raw.body).toMatchObject({ truncated: true, savedBytes: big.length, savedRedacted: false });
     expect(readFileSync(out, 'utf8')).toBe(big);
@@ -297,7 +345,7 @@ describe('#467 netlog --id request detail', () => {
     tempDirs.push(dir);
     const out = join(dir, 'nested.json');
     const cdp = fakeCdp({ r1: { body, base64Encoded: false } });
-    const model = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '1', '--format', 'json', '--out', out]), { targetId: TARGET }));
+    const model = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '1', '--body', '--format', 'json', '--out', out]), { targetId: TARGET }));
     for (const shown of [model.body.text, readFileSync(out, 'utf8')]) {
       for (const leak of leaks) expect(shown, leak).not.toContain(leak);
       const parsed = JSON.parse(shown);
@@ -334,9 +382,13 @@ describe('#467 netlog --id request detail', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cdp-467-'));
     tempDirs.push(dir);
     const out = join(dir, 'blob.bin');
-    const text = await T.netlogRequestStr(fakeCdp({ r2: { body: bytes.toString('base64'), base64Encoded: true } }), 'SESSION', store, parseNetlogArgs(['--id', '2', '--out', out]), { targetId: TARGET });
-    expect(text).toContain('Body: binary body, 7 bytes (application/octet-stream)');
+    const cdp = fakeCdp({ r2: { body: bytes.toString('base64'), base64Encoded: true } });
+    const text = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--out', out]), { targetId: TARGET });
+    expect(text).toContain('Body: omitted (pass --body to include the redacted body)');
+    expect(text).toContain(`Saved body: ${out}`);
     expect(readFileSync(out)).toEqual(bytes);
+    const shown = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '2', '--body']), { targetId: TARGET });
+    expect(shown).toContain('Body: binary body, 7 bytes (application/octet-stream)');
   });
 
   it('a network failure reports errorText and no body; --out then fails', async () => {
@@ -345,7 +397,10 @@ describe('#467 netlog --id request detail', () => {
     const text = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '3']), { targetId: TARGET });
     expect(text).toContain('Status: failed');
     expect(text).toContain('Error: net::ERR_CONNECTION_REFUSED');
-    expect(text).toContain('Body: not available (the request failed (net::ERR_CONNECTION_REFUSED), so there is no response body)');
+    expect(text).toContain('Body: omitted (pass --body to include the redacted body)');
+    expect(cdp.calls).toEqual([]);
+    const withBody = await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '3', '--body']), { targetId: TARGET });
+    expect(withBody).toContain('Body: not available (the request failed (net::ERR_CONNECTION_REFUSED), so there is no response body)');
     expect(cdp.calls).toEqual([]);
     await expect(T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '3', '--out', 'x.bin']), { targetId: TARGET }))
       .rejects.toThrow(/--out has no body to save for request #3/);
@@ -353,11 +408,20 @@ describe('#467 netlog --id request detail', () => {
 
   it('a body Chrome no longer holds is reported, not thrown', async () => {
     const { store } = fakeTraffic();
-    const model = JSON.parse(await T.netlogRequestStr(fakeCdp(), 'SESSION', store, parseNetlogArgs(['--id', '4', '--format', 'json']), { targetId: TARGET }));
+    const cdp = fakeCdp();
+    const omitted = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '4', '--format', 'json']), { targetId: TARGET }));
+    expect(omitted.body).toMatchObject({ omitted: true });
+    expect(omitted.body.error).toBeUndefined();
+    expect(cdp.calls).toEqual([]);
+    const model = JSON.parse(await T.netlogRequestStr(cdp, 'SESSION', store, parseNetlogArgs(['--id', '4', '--body', '--format', 'json']), { targetId: TARGET }));
     expect(model.body).toMatchObject({ available: false, error: 'Chrome no longer holds it: No resource with given identifier found' });
     expect(model.response).toMatchObject({ status: 404, statusText: 'Not Found' });
     store.handlers['Network.requestWillBeSent']({ requestId: 'r6', type: 'Fetch', request: { method: 'GET', url: 'https://app.example/slow', headers: {} } });
-    const pending = JSON.parse(await T.netlogRequestStr(fakeCdp(), 'SESSION', store, parseNetlogArgs(['--id', '5', '--format', 'json']), { targetId: TARGET }));
+    const pendingCdp = fakeCdp();
+    const pendingOmitted = JSON.parse(await T.netlogRequestStr(pendingCdp, 'SESSION', store, parseNetlogArgs(['--id', '5', '--format', 'json']), { targetId: TARGET }));
+    expect(pendingOmitted).toMatchObject({ state: 'pending', response: null, body: { omitted: true } });
+    expect(pendingCdp.calls).toEqual([]);
+    const pending = JSON.parse(await T.netlogRequestStr(pendingCdp, 'SESSION', store, parseNetlogArgs(['--id', '5', '--body', '--format', 'json']), { targetId: TARGET }));
     expect(pending).toMatchObject({ state: 'pending', response: null, body: { available: false, error: 'still loading: No resource with given identifier found' } });
   });
 
@@ -602,6 +666,7 @@ describe('#467 CLI and MCP surfaces', () => {
   it('MCP run_command asks for confirmation before --out and --unsafe-full only', () => {
     expect(argsRequireConfirm('netlog', [TARGET])).toBe(false);
     expect(argsRequireConfirm('netlog', [TARGET, '--id', '3', '--format', 'json'])).toBe(false);
+    expect(argsRequireConfirm('netlog', [TARGET, '--id', '3', '--body'])).toBe(false);
     expect(argsRequireConfirm('netlog', [TARGET, '--status', '5xx', '--type', 'fetch'])).toBe(false);
     expect(argsRequireConfirm('netlog', [TARGET, '--id', '3', '--out', '/tmp/x.json'])).toBe(true);
     expect(argsRequireConfirm('netlog', [TARGET, '--id', '3', '--unsafe-full'])).toBe(true);

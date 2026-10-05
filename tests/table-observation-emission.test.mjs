@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { executeCdpCli } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
+import { buildMcpToolCommand } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { attachTargetResolutionDiagnostics } from '../skills/chrome-cdp-ex/scripts/lib/target-binding.mjs';
 
 const { __test__: cdpTest } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -210,8 +211,12 @@ describe('bounded table observation public emission', () => {
     });
   });
 
-  it('keeps exact final JSON parity through direct CLI capture and MCP run_command', async () => {
+  it('keeps exact final JSON parity through direct CLI capture and the table tool', async () => {
     const { output } = tableObservationPayload();
+    expect(() => buildMcpToolCommand('run_command', {
+      command: 'table',
+      args: ['ABC12345', '#grid', '--format', 'json'],
+    })).toThrow(/not allowlisted/);
     const direct = await executeCdpCli(['table', 'ABC12345', '#grid', '--format', 'json'], {
       runMain: async ({ console, process }) => {
         cdpTest.emitTargetCommandResponse({ ok: true, result: output }, {
@@ -234,8 +239,8 @@ describe('bounded table observation public emission', () => {
       id: 151,
       method: 'tools/call',
       params: {
-        name: 'run_command',
-        arguments: { command: 'table', args: ['ABC12345', '#grid', '--format', 'json'] },
+        name: 'table',
+        arguments: { target: 'ABC12345', selector: '#grid' },
       },
     });
 
@@ -251,7 +256,7 @@ describe('bounded table observation public emission', () => {
   it.each([
     { name: 'trailing empty cell', cells: ['A', ''], canonical: 'A\t' },
     { name: 'empty row', cells: [], canonical: '' },
-  ])('preserves a complete $name through direct CLI and MCP transport', async fixture => {
+  ])('preserves a complete $name through direct CLI and the table tool', async fixture => {
     const direct = await executeCdpCli(['table', 'ABC12345'], {
       runMain: async ({ console, process }) => {
         const result = await cdpTest.tableObservationStr(rootTableCdp(fixture.cells), 'sid1', {
@@ -275,7 +280,7 @@ describe('bounded table observation public emission', () => {
       jsonrpc: '2.0',
       id: 152,
       method: 'tools/call',
-      params: { name: 'run_command', arguments: { command: 'table', args: ['ABC12345'] } },
+      params: { name: 'table', arguments: { target: 'ABC12345' } },
     });
 
     expect(direct.code).toBe(0);
