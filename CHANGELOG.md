@@ -8,8 +8,9 @@
   * `CDP_USAGE_LOG=1` appends `{ts, command, via: cli|mcp}` to `<runtime dir>/usage.jsonl`. The record holds
     the canonical command name only, never its arguments. The file rotates above 1 MiB and stays on the machine.
   * `npm run usage:report` prints per-command counts from that file and from local Claude Code and Codex
-    transcripts. Sessions in this repository are counted separately as `dev`. The report lists unused commands
-    and prints no transcript text.
+    transcripts. Sessions in this repository are counted separately as `dev`. `--since` lists unused commands
+    for that one cutoff and prints no transcript text. With no flags, the report compares `7d` and `30d`
+    (see the entry below).
   * Decisions on each command (fold, re-card, deprecate, MCP scope) move to
     [#544](https://github.com/EndeavorYen/chrome-cdp-ex/issues/544).
 
