@@ -25003,14 +25003,40 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile), background: Boolean(opts.background), headless: Boolean(opts.headless) };
 }
 
+function spawnOutputChunk(chunk) {
+  return Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+}
+
 function captureSpawnOutput(child, maxBytes = 4096) {
-  const output = { stdout: '', stderr: '' };
+  const output = { stdout: '', stderr: '', stdoutOmitted: false, stderrOmitted: false };
   for (const key of ['stdout', 'stderr']) {
     const stream = child?.[key];
     if (!stream?.on) continue;
-    try { stream.setEncoding?.('utf8'); } catch {}
+    const chunks = [];
+    let size = 0;
     stream.on('data', chunk => {
-      output[key] = (output[key] + String(chunk)).slice(-maxBytes);
+      const buf = spawnOutputChunk(chunk);
+      chunks.push(buf);
+      size += buf.length;
+      while (size > maxBytes && chunks.length) {
+        const extra = size - maxBytes;
+        if (chunks[0].length <= extra) {
+          size -= chunks[0].length;
+          chunks.shift();
+        } else {
+          chunks[0] = chunks[0].subarray(extra);
+          size = maxBytes;
+          break;
+        }
+      }
+      const joined = Buffer.concat(chunks, size);
+      try {
+        output[key] = new TextDecoder('utf-8', { fatal: true }).decode(joined);
+        output[`${key}Omitted`] = false;
+      } catch {
+        output[key] = '';
+        output[`${key}Omitted`] = true;
+      }
     });
   }
   return output;
@@ -25026,6 +25052,104 @@ function spawnOutputHandoffText(output, readiness) {
   return [output?.stdout, output?.stderr, readiness?.stdout, readiness?.stderr]
     .filter(Boolean)
     .join('\n');
+}
+
+function devToolsActivePortPath(profileDir) {
+  return pathApiForRoot(profileDir).resolve(String(profileDir), 'DevToolsActivePort');
+}
+
+function portFromDevToolsActivePortText(text) {
+  const line = String(text || '').split(/\r?\n/, 1)[0].trim();
+  return /^\d+$/.test(line) ? line : null;
+}
+
+function otherRememberedPorts(record, profileDir, requestedPort) {
+  const want = cdpProfileKey(profileDir);
+  const requested = String(requestedPort);
+  const ports = [];
+  const add = (port, dir) => {
+    if (!dir || cdpProfileKey(dir) !== want) return;
+    const value = port == null || port === '' ? '' : String(port);
+    if (!/^\d+$/.test(value) || value === requested || ports.includes(value)) return;
+    ports.push(value);
+  };
+  add(record?.port, record?.profileDir);
+  for (const item of record?.history || []) add(item.port, item.profileDir);
+  return ports;
+}
+
+async function liveOtherProfilePort(plan, {
+  fetcher,
+  remembered,
+  fs,
+  inspectOccupantProfileDir,
+  connectWebSocket,
+} = {}) {
+  const candidates = otherRememberedPorts(remembered, plan.profileDir, plan.port);
+  try {
+    const read = fs?.readFileSync;
+    const text = typeof read === 'function' ? read(devToolsActivePortPath(plan.profileDir), 'utf8') : '';
+    const filePort = portFromDevToolsActivePortText(text);
+    if (filePort && filePort !== String(plan.port) && !candidates.includes(filePort)) candidates.push(filePort);
+  } catch {}
+  for (const port of candidates) {
+    let answered = false;
+    try {
+      const res = await fetcher(`http://${plan.host}:${port}/json/version`, { signal: AbortSignal.timeout(500) });
+      answered = Boolean(res?.ok);
+    } catch {
+      answered = false;
+    }
+    if (!answered) continue;
+    let occupant = null;
+    try {
+      occupant = await resolveOccupantProfileDir({
+        host: plan.host,
+        port,
+        remembered,
+        inspectOccupantProfileDir,
+        connectWebSocket,
+      });
+    } catch {
+      occupant = null;
+    }
+    if (occupant && cdpProfileKey(occupant) !== cdpProfileKey(plan.profileDir)) continue;
+    return port;
+  }
+  return null;
+}
+
+function profileInUseSpawnError(plan, { livePort = null } = {}) {
+  const message = livePort
+    ? `spawn-debug-browser: profile ${plan.profileDir} is already open on port ${livePort}. Pass --profile-dir <other> for a second browser.`
+    : `spawn-debug-browser: profile ${plan.profileDir} was absorbed by an existing browser session. Pass --profile-dir <other> for a second browser.`;
+  const err = new Error(message);
+  err.code = 'cdp_profile_in_use';
+  err.host = plan.host;
+  err.port = plan.port;
+  err.profileDir = plan.profileDir;
+  if (livePort) err.livePort = String(livePort);
+  err.cdpRecovery = livePort
+    ? {
+      kind: 'profile-in-use',
+      strategy: 'use-live-port',
+      run: `CDP_PORT=${livePort} cdp list`,
+      ask: 'Pass --profile-dir <other> for a second browser.',
+      reason: `Profile ${plan.profileDir} is already open on port ${livePort}.`,
+    }
+    : {
+      kind: 'profile-in-use',
+      strategy: 'use-other-profile',
+      run: `cdp spawn-debug-browser ${plan.browser} --port ${plan.port} --profile-dir <other>`,
+      reason: 'The browser exited 0 and handed the launch to an existing session. A second browser needs a different profile directory.',
+    };
+  return err;
+}
+
+function readinessIsProfileHandoff(output, readiness) {
+  if (!readiness?.exited || (readiness.exitCode !== 0 && readiness.exitCode !== '0')) return false;
+  if (output?.stdoutOmitted) return true;
+  return isExistingBrowserSessionHandoff(spawnOutputHandoffText(output, readiness));
 }
 
 function isDefaultBrowserProfileDir(plan, extras = {}) {
@@ -25193,7 +25317,7 @@ async function probeTcpPort({ host = DEFAULT_CDP_HOST, port, timeoutMs = 500, co
 
 async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const platform = deps.platform || process.platform;
-  const fs = deps.fs || { existsSync, mkdirSync, readdirSync };
+  const fs = deps.fs || { existsSync, mkdirSync, readdirSync, readFileSync };
   const launcher = deps.spawn || spawn;
   const probePort = deps.probeTcpPort || probeTcpPort;
   const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
@@ -25270,6 +25394,19 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       await quitter(plan, { platform, fs });
     }
   }
+  if (!opts.dailyProfile) {
+    const remembered = typeof deps.readLastCdpEndpoint === 'function'
+      ? deps.readLastCdpEndpoint()
+      : (process.env.NODE_ENV === 'test' ? null : readLastCdpEndpoint());
+    const livePort = await liveOtherProfilePort(plan, {
+      fetcher,
+      remembered,
+      fs,
+      inspectOccupantProfileDir: deps.inspectOccupantProfileDir,
+      connectWebSocket: deps.connectWebSocket,
+    });
+    if (livePort) throw profileInUseSpawnError(plan, { livePort });
+  }
   let child = null;
   let output = null;
   let readiness = null;
@@ -25295,6 +25432,9 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
         continue;
       }
       throw new Error(formatDailyDefaultProfileCdpFailure(plan, handoffText));
+    }
+    if (!opts.dailyProfile && readinessIsProfileHandoff(output, readiness)) {
+      throw profileInUseSpawnError(plan);
     }
     break;
   }
