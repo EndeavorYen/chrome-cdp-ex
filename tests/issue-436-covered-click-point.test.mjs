@@ -288,9 +288,9 @@ describe('#436 covered click failure is classified with an executable Next', () 
     expect(failure).toMatchObject({
       kind: 'covered',
       dispatched: false,
-      nextCommand: `cdp click ${TARGET_ID} "#loop-attack" --js`,
+      nextCommand: `cdp click ${TARGET_ID.slice(0, 8)} "#loop-attack" --js`,
     });
-    expect(failure.hints.join('\n')).toContain(`cdp overlay ${TARGET_ID} "#loop-attack"`);
+    expect(failure.hints.join('\n')).toContain(`cdp overlay ${TARGET_ID.slice(0, 8)} "#loop-attack"`);
     expect(failure.covering).toMatchObject({ by: COVERED_HIT.by, within: '<ASIDE.sidebar>' });
   });
 
@@ -300,8 +300,8 @@ describe('#436 covered click failure is classified with an executable Next', () 
       target: { targetId: TARGET_ID, input: '@12' },
     });
     expect(failure.kind).toBe('covered');
-    expect(failure.nextCommand).toBe(`cdp dismiss-modal ${TARGET_ID}`);
-    expect(failure.hints.join('\n')).toContain(`cdp click ${TARGET_ID} @12 --js`);
+    expect(failure.nextCommand).toBe(`cdp dismiss-modal ${TARGET_ID.slice(0, 8)}`);
+    expect(failure.hints.join('\n')).toContain(`cdp click ${TARGET_ID.slice(0, 8)} @12 --js`);
   });
 
   it('classifies from the message prefix even when the page text looks like another failure', () => {
@@ -314,7 +314,7 @@ describe('#436 covered click failure is classified with an executable Next', () 
     expect(text.split('\n')).toEqual([
       'Error: click point (551, 218) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation> "load:1". The mouse click was not sent: it would land on the covering element.',
       'Kind: covered',
-      `Next: cdp click ${TARGET_ID} "#loop-attack" --js`,
+      `Next: cdp click ${TARGET_ID.slice(0, 8)} "#loop-attack" --js`,
     ]);
   });
 
@@ -343,7 +343,7 @@ describe('#436 covered click failure is classified with an executable Next', () 
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toMatch(/^Error: click point \(551, 218\) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation>/);
     expect(err.message).toMatch(/^Kind: covered$/m);
-    expect(err.message).toMatch(new RegExp(`^Next: cdp click ${TARGET_ID} "#loop-attack" --js$`, 'm'));
+    expect(err.message).toMatch(new RegExp(`^Next: cdp click ${TARGET_ID.slice(0, 8)} "#loop-attack" --js$`, 'm'));
     expect(cdp.calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toEqual([]);
   });
 });

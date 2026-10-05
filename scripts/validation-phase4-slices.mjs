@@ -832,11 +832,14 @@ function validateStep(id, stdout, {
   }
   if (id === 'shot') return assertPrivatePngArtifact(stdout.split('\n')[0], artifactRoot);
   if (id === 'elshot') {
-    const lines = stdout.split('\n');
-    if (!stdout.slice(lines[0].length + 1).startsWith('Element screenshot of <SECTION>#auth-panel')) {
+    const marker = ' -> ';
+    const at = stdout.lastIndexOf(marker);
+    const label = at === -1 ? '' : stdout.slice(0, at);
+    const path = at === -1 ? '' : stdout.slice(at + marker.length).trim();
+    if (!label.startsWith('Element screenshot of <SECTION>#auth-panel') || !path) {
       throw new Error(`elshot fixture output is invalid: ${JSON.stringify(stdout)}`);
     }
-    return assertPrivatePngArtifact(lines[0], artifactRoot);
+    return assertPrivatePngArtifact(path, artifactRoot);
   }
   if (id === 'fullshot') {
     const lines = stdout.split('\n');

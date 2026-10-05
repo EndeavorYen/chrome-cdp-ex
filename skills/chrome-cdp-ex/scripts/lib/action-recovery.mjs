@@ -14,6 +14,14 @@ export function actionFailureTargetId(target = {}) {
   return target?.targetId || target?.id || target?.target || '<target>';
 }
 
+// #559: printed recovery commands name a tab the way `list` does: a target id becomes its
+// 8-character prefix. Aliases (@name), short prefixes and the placeholder pass through.
+export function actionFailureCommandTarget(target = {}) {
+  const id = String(actionFailureTargetId(target) || '');
+  if (id.startsWith('@') || id === '<target>') return id;
+  return id.slice(0, 8);
+}
+
 export function actionFailureInput(target = {}) {
   return target?.input || target?.label || target?.selector || '';
 }
@@ -22,10 +30,9 @@ export function actionTargetCommandId(target = {}) {
   return actionFailureTargetId(target);
 }
 
+// One rule for every printed command (#559): a full hex id becomes its prefix, an alias stays whole.
 export function actionTargetCommandPrefix(target = {}) {
-  const id = String(actionTargetCommandId(target) || '');
-  if (!id || id === '<target>') return '<target>';
-  return id.slice(0, 8);
+  return actionFailureCommandTarget(target) || '<target>';
 }
 
 export function isPdfViewerActionTarget(target = {}) {
@@ -226,6 +233,7 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
     withinPosition: raw.withinPosition ? String(raw.withinPosition) : null,
     dialog: raw.dialog === true,
     recentred: raw.recentred === true,
+    clipped: raw.clipped === true,
   };
   const arg = recoveryCommandArg(input);
   const jsClick = arg ? `cdp click ${targetId} ${arg} --js` : 'cdp help click';
@@ -241,6 +249,10 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
     hints: [
       ...(covering.dialog
         ? [`A dialog covers the target: close it with \`${dismiss}\`, then click again.`]
+        : []),
+      // #551: the target's own scroll container cuts it off at the click point.
+      ...(covering.clipped
+        ? ['The target is clipped by its scroll container: scroll that container until the target shows, then click again.']
         : []),
       `See what covers the target with \`${overlay}\`.`,
       `\`${jsClick}\` runs the target's click handler without hit-testing; use it when the cover is page layout (a fixed sidebar or sticky header), not a dialog the user must close first.`,
@@ -410,7 +422,7 @@ export function classifyActionFailure(err, context = {}) {
 function classifyActionFailureKind(err, { action = 'action', target = {} } = {}) {
   const originalMessage = actionFailureMessage(err);
   const lower = originalMessage.toLowerCase();
-  const targetId = actionFailureTargetId(target);
+  const targetId = actionFailureCommandTarget(target);
   const input = actionFailureInput(target);
   const frameRef = String(input).match(/^(@f\d+):\d+$/)?.[1] || null;
   const perceiveCommand = frameRef

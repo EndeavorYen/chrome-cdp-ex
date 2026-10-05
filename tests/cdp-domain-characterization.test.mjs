@@ -429,8 +429,9 @@ describe('Phase 6 direct CDP characterization', () => {
     // setDeviceMetricsOverride call from viewportStr into applyViewportOverride.
     // #536 added emulateStr → Emulation.setFocusEmulationEnabled (on, off).
     // #535 added captureHiddenTabFrame → focus emulation on, a retried capture, and focus emulation off.
-    expect(inventory).toHaveLength(171);
-    expect(digest).toBe('sha256:e822415e20cf2e7104c329462269810e536dcc7b6c31183987e649721c1119ae');
+    // #547 added elshotRefLabel → Runtime.callFunctionOn, a read-only label read for the elshot receipt.
+    expect(inventory).toHaveLength(172);
+    expect(digest).toBe('sha256:d6c98b545c9c5cc1d73d80eae3e5e1ebd6c421a7f5c02626595f310f3dc41c27');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

@@ -191,7 +191,7 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
     const failure = classifyActionFailure(err, { action: 'click', target });
     expect(failure).toMatchObject({ kind: 'disabled', dispatched: false });
     // `:not(:disabled)` alone would also match an aria-disabled control, so Next requires both.
-    const enabled = `cdp waitfor ${TARGET_ID} '#submit:not(:disabled):not([aria-disabled="true"])'`;
+    const enabled = `cdp waitfor ${TARGET_ID.slice(0, 8)} '#submit:not(:disabled):not([aria-disabled="true"])'`;
     expect(failure.nextCommand).toBe(enabled);
     expect(failure.disabled).toMatchObject({ reason: 'disabled attribute', matches: 1 });
     expect(failure.hints.join('\n')).toMatch(/browser does not deliver it to a disabled form control/);
@@ -211,7 +211,7 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
     const err = await T.clickStr(cdp, 'sid', 'form button', new Map(), {}, { waitMs: 0 }).catch(e => e);
     expect(err.actionDisabled.matches).toBe(2);
     const failure = classifyActionFailure(err, { action: 'click', target: { input: 'form button', targetId: TARGET_ID } });
-    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID} -C -d 8`);
+    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID.slice(0, 8)} -C -d 8`);
     expect(failure.hints.join('\n')).toMatch(/matches 2 elements and click uses the first/);
     expect(failure.hints.join('\n')).not.toMatch(/waitfor/);
   });
@@ -236,11 +236,11 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
     expect(aria.message).toBe('<DIV> "Archive" is disabled (aria-disabled="true"); the click was not sent.');
     const ariaFailure = classifyActionFailure(aria, { action: 'click', target: { input: '[role=button]', targetId: TARGET_ID } });
     expect(ariaFailure.nextCommand)
-      .toBe(`cdp waitfor ${TARGET_ID} '[role=button]:not(:disabled):not([aria-disabled="true"])'`);
+      .toBe(`cdp waitfor ${TARGET_ID.slice(0, 8)} '[role=button]:not(:disabled):not([aria-disabled="true"])'`);
     // aria-disabled is not enforced by browsers: the hints name the deliberate escape and do not
     // claim that a JS click would be ignored.
     const ariaHints = ariaFailure.hints.join('\n');
-    expect(ariaHints).toContain(`cdp click ${TARGET_ID} "[role=button]" --js`);
+    expect(ariaHints).toContain(`cdp click ${TARGET_ID.slice(0, 8)} "[role=button]" --js`);
     expect(ariaHints).toMatch(/not enforced by the browser/);
     expect(ariaHints).not.toMatch(/ignores it|does not deliver/);
     const inner = await T.clickStr(cdp, 'sid', '#inner', new Map(), {}, { waitMs: 0 }).catch(e => e);
@@ -309,7 +309,7 @@ describe('#468 @ref click checks disabled without waiting', () => {
     expect(err.message).toBe('<BUTTON> "Delete" (@7) is disabled (disabled attribute); the click was not sent.');
     const failure = classifyActionFailure(err, { action: 'click', target: { input: '@7', targetId: TARGET_ID } });
     expect(failure.kind).toBe('disabled');
-    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID} -C -d 8`);
+    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID.slice(0, 8)} -C -d 8`);
   });
 
   it('still refuses a disabled @ref when the scroll settle timed out (#464 fallback)', async () => {
@@ -371,8 +371,8 @@ describe('#468 click --pointer gives the same Kind: disabled', () => {
     expect(err.message).toBe('<BUTTON> "Archive" is disabled (aria-disabled="true"); the click was not sent.');
     const failure = classifyActionFailure(err, { action: 'click', target: { input: '#archive', targetId: TARGET_ID } });
     expect(failure.kind).toBe('disabled');
-    expect(failure.nextCommand).toBe(`cdp waitfor ${TARGET_ID} '#archive:not(:disabled):not([aria-disabled="true"])'`);
-    expect(failure.hints.join(' ')).toContain(`cdp click ${TARGET_ID} "#archive" --js`);
+    expect(failure.nextCommand).toBe(`cdp waitfor ${TARGET_ID.slice(0, 8)} '#archive:not(:disabled):not([aria-disabled="true"])'`);
+    expect(failure.hints.join(' ')).toContain(`cdp click ${TARGET_ID.slice(0, 8)} "#archive" --js`);
   });
 
   it('reports a native disabled reason and the match count', async () => {
@@ -384,7 +384,7 @@ describe('#468 click --pointer gives the same Kind: disabled', () => {
       action: 'click',
       target: { input: '#save', targetId: TARGET_ID },
     });
-    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID} -C -d 8`);
+    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID.slice(0, 8)} -C -d 8`);
   });
 });
 

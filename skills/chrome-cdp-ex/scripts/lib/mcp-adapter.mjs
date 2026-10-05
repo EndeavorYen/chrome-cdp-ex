@@ -596,6 +596,18 @@ function readCappedRegularFile(path, maxBytes, notBeforeMs) {
   }
 }
 
+// `shot` prints the PNG path as the whole first line. `elshot` prints one line and puts the
+// path after the last ` -> ` (#547). A label that itself contains ` -> ` still leaves the path last.
+function screenshotPathFromStdout(stdout) {
+  const line = String(stdout ?? '').split(/\r?\n/, 1)[0].trim();
+  const marker = ' -> ';
+  if (line.startsWith('Element screenshot of ')) {
+    const at = line.lastIndexOf(marker);
+    if (at !== -1) return line.slice(at + marker.length).trim();
+  }
+  return line;
+}
+
 /**
  * The image block for a screenshot command's output file, a text note saying why it was left
  * out, or null when the command is not a screenshot command that succeeded. Only a fresh PNG
@@ -608,7 +620,7 @@ export function mcpImageContent(command, result, {
 } = {}) {
   const owner = COMMAND_SURFACE.resolve(command?.[0]);
   if (!owner || !MCP_IMAGE_COMMANDS.has(owner.name) || result.code !== 0) return null;
-  const path = result.stdout.split(/\r?\n/, 1)[0].trim();
+  const path = screenshotPathFromStdout(result.stdout);
   if (!path) return null;
   if (!isAbsolute(path)) {
     // A caller `path` such as `out.png` is printed as given; other first lines are not paths.
