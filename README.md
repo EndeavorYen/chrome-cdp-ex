@@ -43,7 +43,7 @@ From a checkout or unpacked release:
 ./bin/chrome-cdp stop
 ```
 
-`click`, `fill`, and `press` print a one-line receipt with URL, outcome, and next command. A failed action prints `Error:`, a `Kind:` (for example `covered`, `disabled`, `stale-ref`) and a runnable `Next:`, and exits 1.
+`click`, `fill`, and `press` print a one-line receipt with the node addressed, the URL, and the next command. Exit 0 means the CDP call finished and those observations were printed. A failed action prints `Error:`, a `Kind:` (for example `covered`, `disabled`, `stale-ref`) and a runnable `Next:`, and exits 1.
 
 If `node -v` is older than 22, doctor prints a Node 22 path that `./bin/chrome-cdp` re-execs.
 
@@ -75,8 +75,8 @@ cd chrome-cdp-ex
 ## What it does
 
 - **See the page cheaply.** `perceive` prints the accessibility tree with `@ref` handles, layout hints and the controls that matter, bounded for tokens. `perceive --since-action` shows only what the last action changed. `text --auto` reads the main content; `shot`, `elshot`, `scanshot` and `responsive-audit` capture pixels, including Electron pages with live WebGL canvases.
-- **Act like a person, report like a test.** `click`, `fill`, `press` and `drag` send real CDP input events; `select`, `scroll` and `dismiss-modal` cover the rest. `click` and `fill` on a selector wait briefly for the target to be attached, visible and enabled (`select`: attached and enabled), a click refuses to land on a covering element, and every action returns a receipt: what changed, any dialog it answered, any download it saved (`click --expect-download`), and the next command.
-- **Debug the live app.** `console` and `status` print source-mapped stack frames (`src/Foo.tsx:42:7`), `netlog --id N` shows one request's status, timing, headers and a bounded body, and `status --vitals` reports LCP, CLS, INP and long tasks.
+- **Act like a person, report like a test.** `click`, `fill`, `press` and `drag` send real CDP input events; `select`, `scroll` and `dismiss-modal` cover the rest. `click` and `fill` on a selector wait briefly for the target to be attached, visible and enabled (`select`: attached and enabled), a click refuses to land on a covering element, and every action returns a receipt: the node addressed, the node at the point when a click hit-tests, any dialog it answered, any download it saved (`click --expect-download`), and the next command.
+- **Debug the live app.** `console` and `status` print source-mapped stack frames (`src/Foo.tsx:42:7`), `netlog --id N` shows one request's status, timing, and headers. The body is omitted until `--body`. `status --vitals` reports LCP, CLS, INP and long tasks.
 - **Drive it from any agent.** It is a Claude Code skill, a plain CLI any agent can shell out to, and a stdio MCP server. MCP results carry screenshots as image blocks, versioned JSON as `structuredContent`, and tool hints derived from the command catalog. See [INTEGRATIONS.md](INTEGRATIONS.md).
 
 ## Safe on your real browser

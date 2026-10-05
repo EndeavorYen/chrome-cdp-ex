@@ -218,7 +218,7 @@ describe('#430 click receipts suggest perceive --since-action, not list', () => 
     const text = T.formatActionResultOutput(clickResult({ domDiff: '+   [StaticText] Saved' }), {
       dispatchText: 'Clicked <BUTTON> "Save"',
     });
-    expect(text).toBe(`Clicked <BUTTON> "Save". Outcome: changed. Next: cdp perceive ${PREFIX} --since-action`);
+    expect(text).toBe(`Clicked <BUTTON> "Save". Next: cdp perceive ${PREFIX} --since-action`);
   });
 
   it('an unobserved named click (report-only) prints no outcome word and Next perceive --since-action', () => {
@@ -243,7 +243,8 @@ describe('#430 click receipts suggest perceive --since-action, not list', () => 
     const text = T.formatActionResultOutput(clickResult({ domDiff: noChange }), {
       dispatchText: 'Clicked <BUTTON> "Noop"',
     });
-    expect(text).toMatch(/^Clicked <BUTTON> "Noop"\. Outcome: no-change\. Next: cdp perceive /);
+    expect(text).toMatch(/^Clicked <BUTTON> "Noop"\. Next: cdp perceive /);
+    expect(text).not.toMatch(/Outcome:/);
     expect(text).not.toMatch(/cdp list/);
   });
 
@@ -255,14 +256,14 @@ describe('#430 click receipts suggest perceive --since-action, not list', () => 
     const text = T.formatActionResultOutput(result, {
       dispatchText: 'JS-clicked <A> "Next page"\nURL: http://127.0.0.1/two',
     });
-    expect(text).toBe(`JS-clicked <A> "Next page"\nURL: http://127.0.0.1/two. Outcome: changed. Next: cdp perceive ${PREFIX} -C -d 8`);
+    expect(text).toBe(`JS-clicked <A> "Next page"\nURL: http://127.0.0.1/two. Next: cdp perceive ${PREFIX} -C -d 8`);
   });
 
   it('keeps Next: cdp list only when the receipt has no target to perceive', () => {
     const text = T.formatActionResultOutput(clickResult({ domDiff: '+   [StaticText] Saved', targetId: null }), {
       dispatchText: 'Clicked <BUTTON> "Save"',
     });
-    expect(text).toBe('Clicked <BUTTON> "Save". Outcome: changed. Next: cdp list');
+    expect(text).toBe('Clicked <BUTTON> "Save". Next: cdp list');
   });
 
   it('other skinny actions (fill) also stop suggesting list when the target is known', () => {

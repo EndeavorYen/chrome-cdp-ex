@@ -8309,19 +8309,8 @@ function formatFailedDispatchText(result = {}) {
 
 const CLICK_OUTCOME_WORD_ACTIONS = new Set(['click', 'jsclick']);
 
-// #430: a one-word outcome on click receipts, only from evidence the click path already
-// collected (settle-diff AX change or a followed navigation). Unobserved named clicks
-// (report-only, outcome `dispatched`) print no word rather than a guess.
-function clickOutcomeWord(result = {}) {
-  if (!CLICK_OUTCOME_WORD_ACTIONS.has(String(result.action || '').toLowerCase())) return '';
-  // #437: "→ opened new tab …" already states the outcome; `changed` would read as this tab.
-  if (result.outcome?.evidence === 'new-tab') return '';
-  // #472: the `Downloaded "…"` line states the outcome.
-  if (result.outcome?.evidence === 'download') return '';
-  const status = result.outcome?.status;
-  return status === 'changed' || status === 'no-change' ? status : '';
-}
-
+// #553: the default receipt names what was addressed and the next command.
+// It does not claim the page changed. The full diagnostic path still prints Outcome.
 function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}) {
   if (result.dispatch?.ok === false || result.effects?.failure?.kind) {
     return formatFailedDispatchText(result);
@@ -8331,8 +8320,7 @@ function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}
   const next = defaultMutatingNextCommand(result, { dispatchText });
   const one = outcome.replace(/\.+$/, '');
   if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return one;
-  const word = clickOutcomeWord(result);
-  return word ? `${one}. Outcome: ${word}. Next: ${next}` : `${one}. Next: ${next}`;
+  return `${one}. Next: ${next}`;
 }
 
 function formatActionText(result, { compact = false, full = false, dispatchText = '' } = {}) {
@@ -19673,33 +19661,38 @@ function netlogStr(netReqBuf, flag, options = {}) {
   return options.format === 'json' ? formatJson(model) : formatNetlogListText(model);
 }
 
-// `netlog <target> --id N` (#467): stored request detail plus the response body,
-// read lazily. The body preview is bounded; `--out` writes the whole body (0600).
+// `netlog <target> --id N` (#467, #555): stored request detail. The response body
+// is fetched only for `--body` or `--out`. `--out` writes the file and does not
+// echo the body unless `--body` is also set.
 async function netlogRequestStr(cdp, sid, requestStore, opts, { targetId = '', writeBodyFile = writeNetlogBodyFile } = {}) {
   const detail = requestStore?.get(opts.id);
   if (!detail) {
     throw new Error(`netlog: no request #${opts.id} in this tab's log. Request ids come from \`cdp netlog <target>\`; older requests drop out of the bounded log.`);
   }
-  let body;
+  const includeBody = opts.includeBody === true;
+  const wantFetch = includeBody || Boolean(opts.out);
+  let body = null;
   let file = null;
-  if (detail.state === 'failed') {
-    body = unavailableBody(`the request failed (${detail.errorText}), so there is no response body`);
-  } else {
-    try {
-      const result = await cdpDomains(cdp).Network.getResponseBody({ requestId: detail.requestId }, sid);
-      ({ model: body, file } = summarizeResponseBody(result, { mimeType: detail.mimeType, unsafeFull: opts.unsafeFull }));
-    } catch (error) {
-      const reason = String(error?.message || error || 'unknown error');
-      body = unavailableBody(detail.state === 'pending' ? `still loading: ${reason}` : `Chrome no longer holds it: ${reason}`);
+  if (wantFetch) {
+    if (detail.state === 'failed') {
+      body = unavailableBody(`the request failed (${detail.errorText}), so there is no response body`);
+    } else {
+      try {
+        const result = await cdpDomains(cdp).Network.getResponseBody({ requestId: detail.requestId }, sid);
+        ({ model: body, file } = summarizeResponseBody(result, { mimeType: detail.mimeType, unsafeFull: opts.unsafeFull }));
+      } catch (error) {
+        const reason = String(error?.message || error || 'unknown error');
+        body = unavailableBody(detail.state === 'pending' ? `still loading: ${reason}` : `Chrome no longer holds it: ${reason}`);
+      }
     }
   }
   let savedTo = null;
   if (opts.out) {
-    if (!file) throw new Error(`netlog: --out has no body to save for request #${opts.id}: ${body.error}`);
+    if (!file) throw new Error(`netlog: --out has no body to save for request #${opts.id}: ${body?.error || 'the body was not fetched'}`);
     writeBodyFile(opts.out, file.data, { overwrite: opts.overwrite, requestId: opts.id });
     savedTo = { path: opts.out, bytes: file.data.length, redacted: file.redacted };
   }
-  const model = buildNetlogRequestModel(detail, { body, unsafeFull: opts.unsafeFull, targetId, savedTo });
+  const model = buildNetlogRequestModel(detail, { body, unsafeFull: opts.unsafeFull, targetId, savedTo, includeBody });
   return opts.format === 'json' ? formatJson(model) : formatNetlogRequestText(model);
 }
 

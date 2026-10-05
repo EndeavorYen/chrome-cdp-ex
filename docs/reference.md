@@ -93,7 +93,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |
 | `closetab` | `closetab <target>` | `mutation / mutation` |
-| `netlog` | `netlog <target> [--id N [--out file [--overwrite]]] [--type xhr,fetch] [--url text] [--status 4xx\|5xx\|failed] [--clear] [--unsafe-full] [--format json]` | `conditional-mutation / conditional` |
+| `netlog` | `netlog <target> [--id N [--body] [--out file [--overwrite]]] [--type xhr,fetch] [--url text] [--status 4xx\|5xx\|failed] [--clear] [--unsafe-full] [--format json]` | `conditional-mutation / conditional` |
 | `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
 | `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
 | `record` | `record <target> [ms]` | `conditional-mutation / conditional` |
@@ -410,7 +410,7 @@ Receipt surfaces:
 | Session JSONL / action log | Audit, replay, and debugging | Full receipt, including recovery metadata and unchanged delta channels. |
 | Action JSON | Agent handoff immediately after one command | Compact receipt with dispatch, settlement semantics, signal-bearing deltas, recovery hint, and executable next steps. |
 | Report JSON | Session handoff | Smaller receipt with event identity, settlement summary, outcome, blocking signals, recovery hint, and compact delta details. |
-| Text output | Human quick read | Outcome, receipt status, blocking signals, recovery hint, settle line, and high-signal evidence samples. When a one-line `click` / `jsclick` / `fill` / `press` / `select` / `scroll` / `nav` receipt has no diagnosis-specific Next, it suggests the same tab (`perceive <target> --since-action`, or `perceive <target> -C -d 8` after a navigation; `list` only without a target); click receipts add `Outcome: changed` / `Outcome: no-change` when observed. A click on a link that opens another tab (`target=_blank`, a named target, or `<base target>`) reports `→ opened new tab <prefix> <url>`, exits 0, and its Next is `perceive <new-prefix> -C -d 8`; it fails with `Kind: no-navigation` only when neither this tab navigated nor a tab opened. A failed action prints `Error:` / `Kind:` / `Next:` and exits 1. |
+| Text output | Human quick read | Outcome, receipt status, blocking signals, recovery hint, settle line, and high-signal evidence samples. When a one-line `click` / `jsclick` / `fill` / `press` / `select` / `scroll` / `nav` receipt has no diagnosis-specific Next, it suggests the same tab (`perceive <target> --since-action`, or `perceive <target> -C -d 8` after a navigation; `list` only without a target); the one-line receipt does not print an Outcome word. Full diagnostic text and action JSON still carry outcome. A click on a link that opens another tab (`target=_blank`, a named target, or `<base target>`) reports `→ opened new tab <prefix> <url>`, exits 0, and its Next is `perceive <new-prefix> -C -d 8`; it fails with `Kind: no-navigation` only when neither this tab navigated nor a tab opened. A failed action prints `Error:` / `Kind:` / `Next:` and exits 1. |
 
 For token-bound handoffs, add `--compact` to mutating action JSON and report JSON:
 

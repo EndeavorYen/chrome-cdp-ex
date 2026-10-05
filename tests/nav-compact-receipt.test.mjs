@@ -175,7 +175,7 @@ describe('#343 skinny document nav receipt', () => {
       effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
     });
     const text = T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked #save' });
-    expect(text).toBe('Clicked #save. Outcome: changed. Next: cdp perceive ABC123 --since-action');
+    expect(text).toBe('Clicked #save. Next: cdp perceive ABC123 --since-action');
     expect(text).not.toMatch(/^Outcome:/m);
     expect(text).not.toMatch(/^Receipt:/m);
     expect(text).not.toMatch(/^Verdict:/m);

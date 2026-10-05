@@ -153,9 +153,12 @@ describe('MCP Tier-1 + run_command + resources', () => {
   it('exposes Tier-1 tools and maps them to CLI', () => {
     const names = MCP_TOOL_DEFINITIONS.map(tool => tool.name);
     expect(names).toEqual(expect.arrayContaining([
-      'navigate', 'press', 'wait_for', 'cascade', 'components',
-      'spawn_debug_browser', 'record_snapshot', 'session_checkpoint', 'table', 'run_command',
+      'navigate', 'press', 'wait_for', 'cascade', 'spawn_debug_browser', 'run_command',
     ]));
+    expect(names).not.toContain('components');
+    expect(names).not.toContain('table');
+    expect(names).not.toContain('record_snapshot');
+    expect(names).not.toContain('session_checkpoint');
     expect(buildMcpToolCommand('navigate', { target: 'app', url: 'https://example.com', confirm: true }))
       .toEqual(['nav', 'app', 'https://example.com', '--format', 'json']);
     expect(buildMcpToolCommand('press', { target: 'app', key: 'Enter', confirm: true }))
@@ -195,52 +198,35 @@ describe('MCP Tier-1 + run_command + resources', () => {
       ['tab-group', ['create', 'saved']],
       ['tab-group', ['--format', 'json', 'create', 'saved']],
       ['tab-group', ['--format', 'text', '--format', 'json', 'list']],
+      ['tab-group', ['list']],
       ['loadall', ['app', '.more']],
       ['record', ['app', '--action', 'click', '@1']],
       ['keepalive', ['app', '60000']],
       ['console', ['app', '--clear']],
+      ['console', ['app', '--errors']],
       ['netlog', ['app', '--clear']],
       ['diff-shot', ['app', '--reset']],
-      ['shot', ['app', '/tmp/explicit.png']],
       ['fullshot', ['app', '/tmp/explicit-full.png']],
+      ['table', ['app', '#grid']],
+      ['checkpoint', ['app', '--unsafe-full']],
+      ['batch', ['app', 'eval raw']],
     ]) {
       expect(() => buildMcpToolCommand('run_command', { command, args }), command)
-        .toThrow(/confirm: true/);
+        .toThrow(/not allowlisted/);
     }
-    expect(buildMcpToolCommand('run_command', { command: 'tab-group', args: ['list'] }))
-      .toEqual(['tab-group', 'list']);
-    expect(buildMcpToolCommand('run_command', {
-      command: 'tab-group', args: ['--format', 'json', 'show', 'saved'],
-    })).toEqual(['tab-group', '--format', 'json', 'show', 'saved']);
-    expect(buildMcpToolCommand('run_command', { command: 'console', args: ['app', '--errors'] }))
-      .toEqual(['console', 'app', '--errors']);
+    expect(() => buildMcpToolCommand('run_command', { command: 'shot', args: ['app', '/tmp/explicit.png'] }))
+      .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('run_command', { command: 'shot', args: ['app', '--annotate'] }))
       .toEqual(['shot', 'app', '--annotate']);
-    expect(buildMcpToolCommand('run_command', { command: 'table', args: ['app', '#grid'] }))
-      .toEqual(['table', 'app', '#grid']);
-    expect(buildMcpToolCommand('run_command', {
-      command: 'table', args: ['app', '--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'],
-    })).toEqual(['table', 'app', '--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json']);
     expect(() => buildMcpToolCommand('run_command', {
-      command: 'table', args: ['app', '#grid', '--collect', '--scroll-container', '.viewport'],
-    })).toThrow(/confirm: true/);
-    expect(buildMcpToolCommand('run_command', {
-      command: 'table',
-      args: ['app', '#grid', '--collect', '--scroll-container', '.viewport'],
-      confirm: true,
-    })).toEqual(['table', 'app', '#grid', '--collect', '--scroll-container', '.viewport']);
+      command: 'table', args: ['app', '#grid', '--collect', '--scroll-container', '.viewport'], confirm: true,
+    })).toThrow(/not allowlisted/);
     expect(() => buildMcpToolCommand('run_command', {
       command: 'table', args: ['app', '#one', '#two'], confirm: true,
-    })).toThrow(/at most one.*selector/);
-    expect(buildMcpToolCommand('run_command', {
-      command: 'use', args: ['app', '--name', 'saved'], confirm: true,
-    })).toEqual(['use', 'app', '--name', 'saved']);
-    expect(() => buildMcpToolCommand('run_command', { command: 'batch', args: ['app', 'eval raw'] }))
-      .toThrow(/not allowlisted/);
+    })).toThrow(/not allowlisted/);
     expect(() => buildMcpToolCommand('run_command', {
-      command: 'checkpoint',
-      args: ['app', '--unsafe-full'],
-    })).toThrow(/confirm: true/);
+      command: 'use', args: ['app', '--name', 'saved'], confirm: true,
+    })).toThrow(/not allowlisted/);
     expect(() => buildMcpToolCommand('session_checkpoint', {
       target: 'app',
       unsafeFull: true,

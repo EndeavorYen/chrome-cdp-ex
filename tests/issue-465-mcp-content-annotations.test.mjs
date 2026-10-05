@@ -126,10 +126,13 @@ describe('#465 tool annotations come from the command authorization catalog', ()
     expect(byName.screenshot.readOnlyHint).toBe(false);
     expect(byName.list_tabs.title).toBe('List tabs');
     // Page-reading tools return untrusted web content, so they are open-world.
-    for (const name of ['perceive', 'controls', 'overlay', 'cascade', 'wait_for', 'list_tabs', 'select_target']) {
+    for (const name of ['perceive', 'cascade', 'wait_for', 'list_tabs']) {
       expect(byName[name].openWorldHint, name).toBe(true);
     }
-    expect(byName.report.openWorldHint).toBe(false);
+    expect(byName.controls).toBeUndefined();
+    expect(byName.overlay).toBeUndefined();
+    expect(byName.select_target).toBeUndefined();
+    expect(byName.report).toBeUndefined();
   });
 
   it('gives run_command the widest hints of its allowlist', async () => {
@@ -211,16 +214,19 @@ describe('#465 screenshot tools return an image content block', () => {
     }
   }));
 
-  it('attaches images for run_command screenshot spellings (shot alias, elshot, fullshot)', withRuntimeDir(async runtimeDir => {
+  it('attaches images for allowlisted screenshot spellings and refuses fullshot', withRuntimeDir(async runtimeDir => {
     const path = join(runtimeDir, 'elshot-ABCDEF12-ref3.png');
     writeFileSync(path, TINY_PNG);
-    for (const command of ['screenshot', 'elshot', 'fullshot']) {
+    for (const command of ['screenshot', 'elshot']) {
       const reply = await harness(shotOutput(path), { runtimeDir })
         .call('run_command', { command, args: ['ABCDEF12', '@3'], confirm: true });
       expect(reply.result.content[1], command).toEqual({
         type: 'image', data: TINY_PNG.toString('base64'), mimeType: 'image/png',
       });
     }
+    const denied = await harness(shotOutput(path), { runtimeDir })
+      .call('run_command', { command: 'fullshot', args: ['ABCDEF12', '@3'], confirm: true });
+    expect(JSON.stringify(denied)).toMatch(/not allowlisted/);
   }));
 
   it('returns only text with a note when the PNG is over the inline cap', withRuntimeDir(async runtimeDir => {

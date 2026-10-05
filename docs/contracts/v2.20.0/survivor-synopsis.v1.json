@@ -1,0 +1,85 @@
+{
+  "schema": "chrome-cdp-ex.survivor-synopsis.v1",
+  "commands": {
+    "doctor": {
+      "synopsis": "doctor / ready [--format json]",
+      "summary": "One-call diagnostics: Node version, skill install path,"
+    },
+    "list": {
+      "synopsis": "list|tabs|ls [--format json]",
+      "summary": "List open pages (shows unique target prefixes)"
+    },
+    "open": {
+      "synopsis": "open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]",
+      "summary": "Open a new tab (default: about:blank)"
+    },
+    "nav": {
+      "synopsis": "nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]",
+      "summary": "Navigate to URL and wait for load completion"
+    },
+    "perceive": {
+      "synopsis": "perceive <target> [flags] [--format json]",
+      "summary": "Full page perception with @ref indices + coordinates"
+    },
+    "text": {
+      "synopsis": "text <target> [selector|--auto]",
+      "summary": "Clean visible text — optional CSS selector to scope"
+    },
+    "click": {
+      "synopsis": "click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]",
+      "summary": "Click by CSS selector, @ref, or accessible name"
+    },
+    "fill": {
+      "synopsis": "fill <target> <sel|@ref> <txt|--secret NAME> [--format json]",
+      "summary": "Clear field and type text (for form filling)"
+    },
+    "press": {
+      "synopsis": "press|key <target> <key> [--format json]",
+      "summary": "Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)"
+    },
+    "select": {
+      "synopsis": "select <target> <selector> <val> [--format json]",
+      "summary": "Select an option in a <select> element by value"
+    },
+    "scroll": {
+      "synopsis": "scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]",
+      "summary": "Scroll page (down/up/left/right or x,y offset; default 500px; to top/bottom for the window document or nested overflow)"
+    },
+    "eval": {
+      "synopsis": "eval <target> <expr>",
+      "summary": "Evaluate JS expression"
+    },
+    "inject": {
+      "synopsis": "inject <target> <flag> [content]",
+      "summary": "Live CSS/JS injection with tracking and removal"
+    },
+    "cascade": {
+      "synopsis": "cascade <target> <sel|@ref> [prop] [--format json]",
+      "summary": "CSS origin tracing — shows which rules apply, source file + line"
+    },
+    "waitfor": {
+      "synopsis": "waitfor <target> <selector> [ms]",
+      "summary": "Wait for element (default 10s, max 5min)"
+    },
+    "dismiss-modal": {
+      "synopsis": "dismiss-modal <target>",
+      "summary": "Close common dialog/modal patterns safely (close button, then Escape) —"
+    },
+    "elshot": {
+      "synopsis": "elshot <target> <sel|@ref> [file]",
+      "summary": "Element screenshot: captures element by CSS selector or @ref"
+    },
+    "shot": {
+      "synopsis": "shot <target> [file|--annotate]",
+      "summary": "Viewport screenshot; --annotate (-a) overlays @ref labels"
+    },
+    "spawn-debug-browser": {
+      "synopsis": "spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]",
+      "summary": "Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222)."
+    },
+    "stop": {
+      "synopsis": "stop [target] [--format json]",
+      "summary": "Stop daemon(s) and report stopped targets, remaining sessions, or explicit no-op"
+    }
+  }
+}
