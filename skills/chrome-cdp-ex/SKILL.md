@@ -7,7 +7,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 
 Your eyes and hands on the user's live Chrome browser or Electron app through the Chrome DevTools Protocol (CDP). It connects to the browser they already have open, preserving tabs, cookies, login state, and current page state. Use Playwright only when the user explicitly wants a fresh isolated test browser.
 
-Prefer `$SKILL_DIR/bin/chrome-cdp` for an installed skill, repo-root `./bin/chrome-cdp` from a checkout, `process.execPath`, or `$HERMES_HOME/node/bin/node`. If `node -v` is <22, use the Node 22 path printed by doctor.
+Prefer `$SKILL_DIR/bin/chrome-cdp` for an installed skill, repo-root `./bin/chrome-cdp` from a checkout, `process.execPath`, or `$HERMES_HOME/node/bin/node`. On Windows, PowerShell does not run that extensionless file: use `bin/chrome-cdp.cmd` in the same directory. If `node -v` is <22, use the Node 22 path printed by doctor.
 
 ## 5-step golden path
 
