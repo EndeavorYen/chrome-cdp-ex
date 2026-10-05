@@ -25176,15 +25176,15 @@ async function liveOtherProfilePort(plan, {
       answered = false;
     }
     if (!answered) continue;
+    // Identify the occupant from the live process only. The remembered record is what is being
+    // checked, so it is not evidence of who holds the port now.
     let occupant = null;
     try {
-      occupant = await resolveOccupantProfileDir({
-        host: plan.host,
-        port,
-        remembered,
-        inspectOccupantProfileDir,
-        connectWebSocket,
-      });
+      if (typeof inspectOccupantProfileDir === 'function') {
+        occupant = await inspectOccupantProfileDir({ host: plan.host, port, remembered });
+      } else if (process.env.NODE_ENV !== 'test' || typeof connectWebSocket === 'function') {
+        occupant = await inspectCdpOccupantProfileDirViaCdp({ host: plan.host, port, connectWebSocket });
+      }
     } catch {
       occupant = null;
     }

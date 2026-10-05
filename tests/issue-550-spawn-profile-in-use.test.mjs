@@ -79,6 +79,7 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
         history: [{ port: '9333', profileDir: PROFILE }],
       }),
       fetcher: answering('9333'),
+      readBrowserProcessArgv: () => [EXE, '--remote-debugging-port=9333', `--user-data-dir=${PROFILE}`],
     });
     expect(launched).toEqual([]);
     expect(text).toContain(`profile ${PROFILE} is already open on port 9333`);
@@ -124,6 +125,42 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
       readLastCdpEndpoint: () => null,
       fetcher: answering('9333'),
       readBrowserProcessArgv: () => ['/opt/SomeApp/someapp', '--remote-debugging-port=9333'],
+    });
+    expect(caught).toBeNull();
+    expect(launched).toEqual(['spawn']);
+  });
+
+  it('T9 still launches when a remembered port of this profile is now held by an unidentified process', async () => {
+    const { launched, caught } = await spawnChrome({}, {
+      readLastCdpEndpoint: () => ({
+        port: '9333',
+        profileDir: PROFILE,
+        history: [{ port: '9333', profileDir: PROFILE }],
+      }),
+      fetcher: answering('9333'),
+      readBrowserProcessArgv: () => ['/opt/SomeApp/someapp', '--remote-debugging-port=9333'],
+    });
+    expect(caught).toBeNull();
+    expect(launched).toEqual(['spawn']);
+  });
+
+  it('T10 still launches when the OS command line names a different profile', async () => {
+    const { launched, caught } = await spawnChrome({}, {
+      fs: fsFor({ portText: '9333\n/devtools/browser\n' }),
+      readLastCdpEndpoint: () => null,
+      fetcher: answering('9333'),
+      readBrowserProcessArgv: () => [EXE, '--remote-debugging-port=9333', '--user-data-dir=/other/profile'],
+    });
+    expect(caught).toBeNull();
+    expect(launched).toEqual(['spawn']);
+  });
+
+  it('T11 still launches when reading the OS command line throws', async () => {
+    const { launched, caught } = await spawnChrome({}, {
+      fs: fsFor({ portText: '9333\n/devtools/browser\n' }),
+      readLastCdpEndpoint: () => null,
+      fetcher: answering('9333'),
+      readBrowserProcessArgv: () => { throw new Error('powershell unavailable'); },
     });
     expect(caught).toBeNull();
     expect(launched).toEqual(['spawn']);
