@@ -1316,9 +1316,8 @@ miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
 When a successful one-line receipt has no diagnosis-specific Next, it points at the same tab: `perceive
 <target> --since-action` after an in-page action, `perceive <target> -C -d 8`
 after `nav` or a click that navigated the tab, and `list` only when the receipt
-has no target. `click` / `jsclick` receipts add `Outcome: changed` or
-`Outcome: no-change` when the settle-diff or a followed navigation observed it;
-unobserved named clicks print no outcome word.
+has no target. The one-line receipt does not print an Outcome word. The full
+diagnostic text and action JSON still carry outcome.
 Short of the navigating href is FAIL.
 
 A link that opens another browsing context (`target="_blank"`, a named target

@@ -268,6 +268,7 @@ describe('#467 netlog --id request detail', () => {
     expectNoSecrets(JSON.stringify(model));
     const withBody = JSON.parse(await T.netlogRequestStr(fakeCdp({ r1: ERROR_BODY }), 'SESSION', store, parseNetlogArgs(['--id', '1', '--body', '--format', 'json']), { targetId: TARGET }));
     expect(withBody.body).toMatchObject({ available: true, kind: 'text', truncated: false, redacted: true, savedTo: null });
+    expect(withBody.nextSteps).toContain(`cdp netlog ${TARGET} --id 1 --body --unsafe-full  # raw body, headers and URL`);
     expect(JSON.parse(withBody.body.text)).toEqual({ error: 'database unavailable', access_token: '<redacted>' });
     expectNoSecrets(JSON.stringify(withBody));
   });

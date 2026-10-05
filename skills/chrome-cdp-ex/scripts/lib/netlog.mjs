@@ -693,7 +693,7 @@ export function buildNetlogRequestModel(detail, { body = null, unsafeFull = fals
   if (includeBody && body?.available && body.truncated && !savedTo) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --out <file>`);
   nextSteps.push(`cdp netlog ${target}`);
   if (!includeBody) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --body  # include the redacted body`);
-  else if (!unsafeFull) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --unsafe-full  # raw headers, URL and body`);
+  else if (!unsafeFull) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --body --unsafe-full  # raw body, headers and URL`);
   return {
     schema: NETLOG_REQUEST_SCHEMA,
     targetId: targetId || null,
