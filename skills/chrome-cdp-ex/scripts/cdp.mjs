@@ -156,6 +156,7 @@ import {
 import {
   attachTargetResolutionDiagnostics,
   completeTargetResolution,
+  distinctTargets,
   resolveLiveTargetBinding,
 } from './lib/target-binding.mjs';
 import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
@@ -3048,6 +3049,44 @@ function selectLivePagesForAliasResolution({
   return discoveredPages;
 }
 
+// #546: a page list taken right after location.reload() can hold two matches for one tab for a
+// moment. Discover again (up to 3 more times, 250 ms apart) before an ambiguous prefix fails.
+async function resolvePageCommandTarget({
+  targetPrefix,
+  targetAlias = null,
+  lastSeenPages = [],
+  discover = livePagesForTargetCommand,
+  readBinding = readDaemonBinding,
+  onPages = () => {},
+  attempts = 4,
+  delayMs = 250,
+  wait = sleep,
+} = {}) {
+  const requestedTargetId = String(targetAlias?.targetId || targetPrefix).toUpperCase();
+  for (let attempt = 1; ; attempt++) {
+    const livePages = distinctTargets(await discover(targetAlias));
+    onPages(livePages);
+    const preliminaryIds = new Set(livePages
+      .map(page => String(page.targetId || ''))
+      .filter(id => id.toUpperCase().startsWith(requestedTargetId)));
+    const preliminaryTargetId = preliminaryIds.size === 1 ? [...preliminaryIds][0] : null;
+    const daemonBinding = preliminaryTargetId ? await readBinding(preliminaryTargetId) : null;
+    try {
+      const targetResolution = resolveLiveTargetBinding({
+        requested: targetPrefix,
+        livePages,
+        daemonBinding,
+        alias: targetAlias,
+        lastSeenPages,
+      });
+      return { livePages, targetResolution };
+    } catch (error) {
+      if (error?.code !== 'target_ambiguous' || attempt >= attempts) throw error;
+      await wait(delayMs);
+    }
+  }
+}
+
 async function livePagesForTargetCommand(targetAlias, {
   discoverPages = discoverLivePagesForTargetResolution,
   env = process.env,
@@ -4455,11 +4494,13 @@ function cdpDomains(cdp) {
 async function getPages(cdp) {
   const { targetInfos } = await cdpDomains(cdp).Target.getTargets();
   // Keep regular page targets, including about:blank so agents always have a
-  // usable handle. Skip chrome://, edge://, and devtools:// internal pages.
-  return targetInfos.filter(t => t.type === 'page'
+  // usable handle. Skip chrome://, edge://, and devtools:// internal pages. One entry per
+  // target id: a list that names one tab twice is still one tab (#546). The first copy is kept;
+  // which copy is fresher right after a reload is not known.
+  return distinctTargets(targetInfos.filter(t => t.type === 'page'
     && !t.url.startsWith('chrome://')
     && !t.url.startsWith('edge://')
-    && !t.url.startsWith('devtools://'));
+    && !t.url.startsWith('devtools://')));
 }
 
 function formatPageList(pages, browserInfo = null, opts = {}) {
@@ -27659,7 +27700,8 @@ async function discoverLivePagesForTargetResolution({
       ...(connect ? { connect } : {}),
       ...(request ? { request } : {}),
     });
-    if (pages) return pages;
+    // A daemon started before #546 can still return one id twice from list_raw.
+    if (pages) return distinctTargets(pages);
   }
   const openCdp = connectCdp || (async (wsUrl) => {
     const cdp = new CDP();
@@ -31441,23 +31483,17 @@ async function main(options = {}) {
     console.error(formatCliError(unknownAliasError(targetPrefix), { cmd, format: cliErrorFormat }));
     return finish(1);
   }
-  const livePages = await livePagesForTargetCommand(targetAlias);
   // #538: the previous page list remembers the URL and title last seen for a prefix that may be gone.
   const lastSeenPages = readCachedPages();
-  writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 });
-  const requestedTargetId = targetAlias?.targetId || targetPrefix;
-  const preliminaryMatches = livePages.filter(page => String(page.targetId || '').toUpperCase().startsWith(String(requestedTargetId).toUpperCase()));
-  const preliminaryTargetId = preliminaryMatches.length === 1 ? preliminaryMatches[0].targetId : null;
-  const daemonBinding = preliminaryTargetId ? await readDaemonBinding(preliminaryTargetId) : null;
+  let livePages;
   let targetResolution;
   try {
-    targetResolution = resolveLiveTargetBinding({
-      requested: targetPrefix,
-      livePages,
-      daemonBinding,
-      alias: targetAlias,
+    ({ livePages, targetResolution } = await resolvePageCommandTarget({
+      targetPrefix,
+      targetAlias,
       lastSeenPages,
-    });
+      onPages: livePages => writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 }),
+    }));
   } catch (error) {
     if (error?.code !== 'target_successor') throw error;
     // The recovery reruns this command, with its arguments, on the successor page.
@@ -31828,7 +31864,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   enableDaemonDomains,
   getOrStartTabDaemon,
   suggestCommands, unknownCommandMessage, editDistance, commandUsageTemplate,
-  resolveLiveTargetBinding, completeTargetResolution, attachTargetResolutionDiagnostics,
+  resolveLiveTargetBinding, resolvePageCommandTarget, completeTargetResolution, attachTargetResolutionDiagnostics,
   buildExactTargetSupervisorCandidates,
   cdpRuntimeIdentity,
   // 3y-mud feedback additions
