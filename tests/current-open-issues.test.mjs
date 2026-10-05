@@ -4592,7 +4592,7 @@ describe('issues #227-#231 open contracts', () => {
       },
       onActionResult: (result) => { captured = result; },
       format: { format: 'text', qa: true },
-    })).rejects.toThrow(/Kind: no-navigation\nNext: cdp jsclick 1D366978FULL a/);
+    })).rejects.toThrow(/Kind: no-navigation\nNext: cdp jsclick 1D366978 a/);
 
     expect(captured.dispatch.ok).toBe(false);
     const qa = T.formatActionResultOutput(captured, { qa: true });
@@ -11982,8 +11982,12 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
       src.indexOf('Resolve against live discovery before trusting daemon or cache state'),
       src.indexOf('let rebound = false'),
     );
-    expect(targetCmd).toMatch(/await livePagesForTargetCommand\(targetAlias/);
+    // #546: the page command resolves through resolvePageCommandTarget, whose discovery is
+    // livePagesForTargetCommand.
+    expect(targetCmd).toMatch(/await resolvePageCommandTarget\(\{\s*targetPrefix,\s*targetAlias,/);
     expect(targetCmd).not.toMatch(/function livePagesForTargetCommand/);
+    expect(targetCmd).not.toMatch(/\bdiscover\s*:/);
+    expect(src).toMatch(/async function resolvePageCommandTarget\(\{[\s\S]{0,200}discover = livePagesForTargetCommand,/);
     expect(targetCmd).not.toMatch(/targetAlias\?\.port[\s\S]{0,200}cachedPages/);
   });
 });

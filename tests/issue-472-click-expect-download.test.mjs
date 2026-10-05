@@ -517,7 +517,7 @@ describe('#472 receipts', () => {
       download: { kind: 'timeout', phase: 'begin', timeoutMs: 30000 },
     });
     const timeoutText = await runClick({ dispatch: async () => { throw timeoutError; }, effects: {} }).catch(e => e.message);
-    expect(timeoutText).toMatch(/^Error: click --expect-download: no download started within 30000 ms of the click\nKind: timeout\nNext: cdp perceive ABCDEF1234567890 --since-action/);
+    expect(timeoutText).toMatch(/^Error: click --expect-download: no download started within 30000 ms of the click\nKind: timeout\nNext: cdp perceive ABCDEF12 --since-action/);
 
     const canceled = Object.assign(new Error('click --expect-download: the browser canceled the download "report.csv"'), { download: { kind: 'canceled' } });
     const failure = T.classifyActionFailure(canceled, { action: 'click', target: { targetId: 'ABCDEF1234567890', input: '#export' } });

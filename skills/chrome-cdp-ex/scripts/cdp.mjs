@@ -156,6 +156,7 @@ import {
 import {
   attachTargetResolutionDiagnostics,
   completeTargetResolution,
+  distinctTargets,
   resolveLiveTargetBinding,
 } from './lib/target-binding.mjs';
 import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
@@ -3064,6 +3065,44 @@ function selectLivePagesForAliasResolution({
   return discoveredPages;
 }
 
+// #546: a page list taken right after location.reload() can hold two matches for one tab for a
+// moment. Discover again (up to 3 more times, 250 ms apart) before an ambiguous prefix fails.
+async function resolvePageCommandTarget({
+  targetPrefix,
+  targetAlias = null,
+  lastSeenPages = [],
+  discover = livePagesForTargetCommand,
+  readBinding = readDaemonBinding,
+  onPages = () => {},
+  attempts = 4,
+  delayMs = 250,
+  wait = sleep,
+} = {}) {
+  const requestedTargetId = String(targetAlias?.targetId || targetPrefix).toUpperCase();
+  for (let attempt = 1; ; attempt++) {
+    const livePages = distinctTargets(await discover(targetAlias));
+    onPages(livePages);
+    const preliminaryIds = new Set(livePages
+      .map(page => String(page.targetId || ''))
+      .filter(id => id.toUpperCase().startsWith(requestedTargetId)));
+    const preliminaryTargetId = preliminaryIds.size === 1 ? [...preliminaryIds][0] : null;
+    const daemonBinding = preliminaryTargetId ? await readBinding(preliminaryTargetId) : null;
+    try {
+      const targetResolution = resolveLiveTargetBinding({
+        requested: targetPrefix,
+        livePages,
+        daemonBinding,
+        alias: targetAlias,
+        lastSeenPages,
+      });
+      return { livePages, targetResolution };
+    } catch (error) {
+      if (error?.code !== 'target_ambiguous' || attempt >= attempts) throw error;
+      await wait(delayMs);
+    }
+  }
+}
+
 async function livePagesForTargetCommand(targetAlias, {
   discoverPages = discoverLivePagesForTargetResolution,
   env = process.env,
@@ -4513,11 +4552,13 @@ function cdpDomains(cdp) {
 async function getPages(cdp) {
   const { targetInfos } = await cdpDomains(cdp).Target.getTargets();
   // Keep regular page targets, including about:blank so agents always have a
-  // usable handle. Skip chrome://, edge://, and devtools:// internal pages.
-  return targetInfos.filter(t => t.type === 'page'
+  // usable handle. Skip chrome://, edge://, and devtools:// internal pages. One entry per
+  // target id: a list that names one tab twice is still one tab (#546). The first copy is kept;
+  // which copy is fresher right after a reload is not known.
+  return distinctTargets(targetInfos.filter(t => t.type === 'page'
     && !t.url.startsWith('chrome://')
     && !t.url.startsWith('edge://')
-    && !t.url.startsWith('devtools://'));
+    && !t.url.startsWith('devtools://')));
 }
 
 function formatPageList(pages, browserInfo = null, opts = {}) {
@@ -8643,6 +8684,8 @@ function actionObservationPerceiveOpts(targetId, extra = {}) {
   return {
     ...extra,
     cards: false,
+    // An action settle must not renumber the refs from the agent's last perceive (#548).
+    preserveRefs: true,
     targetPrefix: extra.targetPrefix || targetPrefixForDisplay(targetId),
   };
 }
@@ -11417,10 +11460,11 @@ function playwrightStepFromCommand(action = {}) {
         : skip('missing coordinates');
     }
     case 'scroll': {
+      const scrollArgs = splitScrollEdgeArgs(args);
       let edge = null;
-      try { edge = parseScrollEdge(args[0], args[1]); } catch { edge = null; }
+      try { edge = parseScrollEdge(scrollArgs[0], scrollArgs[1]); } catch { edge = null; }
       let container = null;
-      try { container = parseScrollContainerArg(args.slice(2)); } catch { container = null; }
+      try { container = parseScrollContainerArg(scrollArgs.slice(2)); } catch { container = null; }
       if (edge === 'top' || edge === 'bottom') {
         if (container && !isPlaywrightPortableSelector(container)) {
           return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
@@ -11438,8 +11482,8 @@ function playwrightStepFromCommand(action = {}) {
           `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { Element.prototype.scrollTo.call(scrolling, { left: 0, top: ${edge === 'top' ? '0' : 'docMax'}, behavior: 'instant' }); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) Element.prototype.scrollTo.call(best, { top: ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}, behavior: 'instant' }); });`,
         ]);
       }
-      const direction = args[0] || '';
-      const amount = Number(args[1] || 500);
+      const direction = scrollArgs[0] || '';
+      const amount = Number(scrollArgs[1] || 500);
       const dirMap = { down: [0, amount], up: [0, -amount], left: [-amount, 0], right: [amount, 0] };
       let xy = dirMap[direction.toLowerCase()];
       if (!xy && direction.includes(',')) xy = direction.split(',').map(Number);
@@ -11982,7 +12026,7 @@ function linkFrameNamePageExpression(el) {
 // pointer-events:none layers. Open shadow roots are walked to the deepest element; a closed one
 // stops at its host, which then counts as an ancestor of the target.
 function clickPointHitFunctionSource() {
-  return `function clickPointHit(target, rect) {
+  return `function clickPointHit(target, rect, clip = null) {
     if (!target || target.nodeType !== 1) return null;
     const doc = target.ownerDocument;
     if (!doc || typeof doc.elementFromPoint !== 'function') return null;
@@ -11997,6 +12041,9 @@ function clickPointHitFunctionSource() {
       top = inner;
     }
     if (!top) return null;
+    // #551: a point outside the target's clip-visible rect (a scroll container cuts it off) does not
+    // reach the target, even when an ancestor such as the container's <dialog> is what is there.
+    const clipped = Boolean(clip) && (x < clip.left || y < clip.top || x >= clip.right || y >= clip.bottom);
     const composedParent = node => {
       const parent = node.parentNode;
       return parent && parent.nodeType === 11 && parent.host ? parent.host : parent;
@@ -12009,9 +12056,11 @@ function clickPointHitFunctionSource() {
     };
     // The target, something inside it, or an ancestor (the target itself is not hit-testable,
     // e.g. pointer-events:none) receives the same event a user's click there would send.
-    if (composedContains(target, top) || composedContains(top, target)) return { covered: false };
+    // The target or something inside it is at the point: the browser itself says the click reaches it.
+    if (composedContains(target, top)) return { covered: false };
+    if (!clipped && composedContains(top, target)) return { covered: false };
     const label = typeof top.closest === 'function' ? top.closest('label') : null;
-    if (label && label.control === target) return { covered: false };
+    if (!clipped && label && label.control === target) return { covered: false };
     const positionOf = node => {
       try { return getComputedStyle(node).position || ''; } catch { return ''; }
     };
@@ -12043,7 +12092,9 @@ function clickPointHitFunctionSource() {
       byPosition: positionOf(top),
       within: layer && layer.node !== top ? describe(layer.node, false) : null,
       withinPosition: layer ? layer.position : null,
-      dialog,
+      // A clipped target's own container (an ancestor at the point) is not a dialog to dismiss.
+      dialog: clipped && composedContains(top, target) ? false : dialog,
+      ...(clipped ? { clipped: true } : {}),
     };
   }`;
 }
@@ -12073,9 +12124,71 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       const rect = this.getBoundingClientRect();
       return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
     };
+    // #551: an ancestor that clips its overflow can hide the click point of a target that is inside
+    // the viewport. Walk the containing-block chain: a fixed element escapes every ancestor, and an
+    // absolute one escapes ancestors that are not positioned. html and body propagate their overflow
+    // to the viewport, so they never clip here.
+    const ownerDoc = this.ownerDocument;
+    const docElement = ownerDoc ? ownerDoc.documentElement : null;
+    const docBody = ownerDoc ? ownerDoc.body : null;
+    const styleOf = node => { try { return getComputedStyle(node); } catch { return null; } };
+    const escapeMode = position => (position === 'fixed' || position === 'absolute' ? position : 'flow');
+    const clippingAncestors = [];
+    // body's overflow reaches the viewport only while html's is visible on both axes.
+    const htmlStyle = docElement ? styleOf(docElement) : null;
+    const bodyPropagates = !htmlStyle
+      || (String(htmlStyle.overflowX || 'visible') === 'visible' && String(htmlStyle.overflowY || 'visible') === 'visible');
+    // transform, filter and contain make an element the containing block of fixed/absolute children.
+    const containsOutOfFlow = style => Boolean(style) && (
+      (style.transform && style.transform !== 'none')
+      || (style.filter && style.filter !== 'none')
+      || /paint|layout|strict|content/.test(String(style.contain || '')));
+    let mode = escapeMode(String(styleOf(this)?.position || 'static'));
+    // Slotted content is clipped by the shadow tree it is rendered in: follow assignedSlot first.
+    const nextUp = node => node.assignedSlot || node.parentNode;
+    for (let node = nextUp(this), guard = 0; node && mode !== 'fixed' && guard < 4096; guard++) {
+      if (node.nodeType === 11 && node.host) { node = node.host; continue; }
+      if (node.nodeType !== 1) break;
+      const style = styleOf(node);
+      const position = String(style?.position || 'static');
+      const containingBlock = mode === 'flow' || position !== 'static' || containsOutOfFlow(style);
+      const display = String(style?.display || '');
+      const propagates = node === docElement || (node === docBody && bodyPropagates);
+      // overflow does not apply to display:contents or inline boxes.
+      if (containingBlock && !propagates && style && display !== 'contents' && display !== 'inline') {
+        const clipX = String(style.overflowX || 'visible') !== 'visible';
+        const clipY = String(style.overflowY || 'visible') !== 'visible';
+        if (clipX || clipY) clippingAncestors.push({ node, clipX, clipY });
+      }
+      if (containingBlock) mode = containsOutOfFlow(style) && position === 'static' ? 'flow' : escapeMode(position);
+      node = nextUp(node);
+    }
+    // Overflow clips at the padding box, inside borders and scrollbars.
+    const clipBox = () => {
+      const box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+      for (const { node, clipX, clipY } of clippingAncestors) {
+        const r = node.getBoundingClientRect();
+        const left = r.x + (Number(node.clientLeft) || 0);
+        const top = r.y + (Number(node.clientTop) || 0);
+        const width = Number(node.clientWidth) > 0 ? Number(node.clientWidth) : r.width;
+        const height = Number(node.clientHeight) > 0 ? Number(node.clientHeight) : r.height;
+        if (clipX) { box.left = Math.max(box.left, left); box.right = Math.min(box.right, left + width); }
+        if (clipY) { box.top = Math.max(box.top, top); box.bottom = Math.min(box.bottom, top + height); }
+      }
+      return box;
+    };
+    // Visible: the whole rect is in the viewport (as before), and the click point is inside every
+    // clipping ancestor. A target larger than its clipping parent passes when its centre shows.
+    const insideClip = rect => {
+      if (!(rect.x >= 0 && rect.y >= 0 && rect.x + rect.w <= window.innerWidth && rect.y + rect.h <= window.innerHeight)) return false;
+      if (!clippingAncestors.length) return true;
+      const box = clipBox();
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      return cx >= box.left && cy >= box.top && cx < box.right && cy < box.bottom;
+    };
     const initial = readRect();
-    const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
-      initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
+    const fullyVisible = insideClip(initial);
     if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     // One budget for every settle pass (including the hit-test re-centre), kept below the
     // caller's REF_RESOLVE_TIMEOUT so the CDP call returns instead of timing out (#464).
@@ -12100,8 +12213,7 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
           Math.abs(current.w - previous.w),
           Math.abs(current.h - previous.h),
         );
-        const currentVisible = current.x >= 0 && current.y >= 0 &&
-          current.x + current.w <= window.innerWidth && current.y + current.h <= window.innerHeight;
+        const currentVisible = insideClip(current);
         previous = current;
         stableSamples = movement < 0.5 ? stableSamples + 1 : 0;
         if (currentVisible && stableSamples >= 2) break;
@@ -12112,11 +12224,11 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     let previous = await settle(maxSamples);${hitTest ? `
     ${clickPointHitFunctionSource()}
     ${actionabilityFunctionSource()}
-    let hit = clickPointHit(this, previous);
+    let hit = clickPointHit(this, previous, clipBox());
     if (hit && hit.covered && fullyVisible) {
       this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       previous = await settle(60);
-      hit = clickPointHit(this, previous);
+      hit = clickPointHit(this, previous, clipBox());
       if (hit && hit.covered) hit.recentred = true;
     }` : ''}
     return {
@@ -13778,11 +13890,26 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   const currTreeStart = currHeaderEnd >= 0 ? currHeaderEnd + 1 : 5;
   const prevTree = prev.slice(prevTreeStart).map(stripPerceiveIdentityChrome);
   const currTree = curr.slice(currTreeStart).map(stripPerceiveIdentityChrome);
-  // Line-level diff with StaticText noise filtering.
-  const prevSet = new Set(prevTree);
-  const currSet = new Set(currTree);
-  const removed = prevTree.filter(l => !currSet.has(l));
-  const added = currTree.filter(l => !prevSet.has(l));
+  // Line-level diff with StaticText noise filtering. A ref number is not page identity: an action
+  // settle keeps numbers (#548) and a later perceive renumbers, so lines compare without `@N`.
+  // Reported lines keep their refs.
+  const refFreeKey = line => line.replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
+  // Count each key, so one of two identical lines going away is still reported.
+  const unmatched = (lines, other) => {
+    const left = new Map();
+    for (const line of other) left.set(refFreeKey(line), (left.get(refFreeKey(line)) || 0) + 1);
+    return lines.filter(line => {
+      const key = refFreeKey(line);
+      const count = left.get(key) || 0;
+      if (count > 0) {
+        left.set(key, count - 1);
+        return false;
+      }
+      return true;
+    });
+  };
+  const removed = unmatched(prevTree, currTree);
+  const added = unmatched(currTree, prevTree);
   const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
   const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
   const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
@@ -14000,8 +14127,11 @@ function formatRefRect(rect) {
 
 // Pure tree-building logic extracted from perceiveStr for testability.
 // Takes raw AX nodes + page metadata, returns enriched tree lines and ref node IDs.
+// Highest numeric ref a ref map has handed out; it survives refMap.clear() (#548).
+const REF_HIGH_WATER = Symbol('refHighWater');
+
 function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
-  const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null } = opts;
+  const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null, preserveRefs = false } = opts;
   // opts.adaptive + opts.consoleErrors are used by the --last auto / --adaptive budget path
   // opts.cursorInteractive is accepted so -C ranking shares this path with last/adaptive.
 
@@ -14032,9 +14162,23 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const rowCellIdx = new Map();
   const dataRowIdx = new Map();
 
-  // Clear and rebuild ref map
-  refMap.clear();
+  // Clear and rebuild ref map. An action settle (preserveRefs) keeps the number each node already
+  // has, so a ref the agent read still names the same element; a new node gets a number above every
+  // number handed out before, never a freed one (#548).
+  const preservedRefByNode = new Map();
   let refCounter = 0;
+  if (preserveRefs) {
+    refCounter = refMap[REF_HIGH_WATER] || 0;
+    for (const [ref, backendNodeId] of refMap) {
+      if (!Number.isInteger(ref)) continue;
+      // A node listed twice keeps each of its numbers, lowest first.
+      if (!preservedRefByNode.has(backendNodeId)) preservedRefByNode.set(backendNodeId, []);
+      preservedRefByNode.get(backendNodeId).push(ref);
+      if (ref > refCounter) refCounter = ref;
+    }
+    for (const refs of preservedRefByNode.values()) refs.sort((a, b) => a - b);
+  }
+  refMap.clear();
   const refNodeIds = [];
   const pendingContentRefs = [];
   const pendingRestRefs = [];
@@ -14076,10 +14220,12 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
   function assignInteractiveRef(node) {
     if (!node.backendDOMNodeId) return null;
-    refCounter++;
-    refMap.set(refCounter, node.backendDOMNodeId);
-    refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
-    return refCounter;
+    let ref = (preservedRefByNode.get(node.backendDOMNodeId) || []).find(kept => !refMap.has(kept));
+    if (ref == null) ref = ++refCounter;
+    refMap.set(ref, node.backendDOMNodeId);
+    refMap[REF_HIGH_WATER] = Math.max(refMap[REF_HIGH_WATER] || 0, ref);
+    refNodeIds.push({ ref, backendDOMNodeId: node.backendDOMNodeId });
+    return ref;
   }
 
   function childRegion(ctx, counts) {
@@ -14758,6 +14904,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     last,
     adaptive,
     cursorInteractive,
+    preserveRefs: opts.preserveRefs === true,
     consoleErrors: errors + exceptions,
     targetPrefix: opts.targetPrefix || '<target>',
   });
@@ -15048,6 +15195,35 @@ function elementScreenshotClip(rect, scroll = {}, pad = 8) {
   };
 }
 
+// Click's nameOf rule: collapse whitespace, then keep 80 characters. No ellipsis (#547).
+function elshotReceiptLabel(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim().substring(0, 80);
+}
+
+function formatElshotReceipt(desc, { w, h, clip = null, fallback = false, path }) {
+  const fb = fallback ? ' (fallback)' : '';
+  const clipText = clip
+    ? ` (clip: ${Math.round(clip.width)}×${Math.round(clip.height)} with padding)`
+    : '';
+  return `Element screenshot of ${desc} — ${Math.round(w)}×${Math.round(h)} CSS px${clipText}${fb} -> ${path}`;
+}
+
+// resolveRef's text is already cut at 80 before whitespace collapse. Read the full
+// aria-label, title, or textContent here so elshot cuts after collapse (#547).
+async function elshotRefLabel(cdp, sid, refMap, ref, refState) {
+  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const read = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId,
+    functionDeclaration: `function() {
+      /* elshot-label */
+      return (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80);
+    }`,
+    returnByValue: true,
+  }, sid, REF_RESOLVE_TIMEOUT);
+  if (read.exceptionDetails) throw new Error(runtimeExceptionMessage(read.exceptionDetails));
+  return String(read.result?.value ?? '');
+}
+
 // elshot <sel|@ref> [file] [--format text] (#526): the first positional is the selector, the
 // second the output file. Any other flag or a third positional is an error, never a file name.
 function parseElshotArgs(args = []) {
@@ -15084,6 +15260,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
+    const label = await elshotRefLabel(cdp, sid, refMap, selector, refState);
     await sleep(100);
     const scroll = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ x: window.scrollX, y: window.scrollY })'));
     const clip = elementScreenshotClip(r, scroll);
@@ -15091,8 +15268,12 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
     const prefix = (targetId || 'unknown').slice(0, 8);
     const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
     writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
-    const fb = fallback ? ' (fallback)' : '';
-    return `${out}\nElement screenshot of <${r.tag}> "${r.text}" (${selector}) — ${Math.round(r.w)}×${Math.round(r.h)} CSS px${fb}`;
+    return formatElshotReceipt(`<${r.tag}> "${elshotReceiptLabel(label)}" (${selector})`, {
+      w: r.w,
+      h: r.h,
+      fallback,
+      path: out,
+    });
   }
   // Scroll element into view and get its bounding rect
   const expr = `
@@ -15106,7 +15287,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
         x: rect.x, y: rect.y, w: rect.width, h: rect.height,
         scrollX: window.scrollX, scrollY: window.scrollY,
         tag: el.tagName, id: el.id,
-        text: el.textContent.trim().substring(0, 60)
+        text: (el.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80)
       };
     })()
   `;
@@ -15127,9 +15308,8 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
   const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-${selSafe}.png`);
   writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
 
-  const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${r.text}"`;
-  const fb = fallback ? ' (fallback)' : '';
-  return `${out}\nElement screenshot of ${desc} — ${Math.round(r.w)}×${Math.round(r.h)} CSS px (clip: ${Math.round(clip.width)}×${Math.round(clip.height)} with padding)${fb}`;
+  const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${elshotReceiptLabel(r.text)}"`;
+  return formatElshotReceipt(desc, { w: r.w, h: r.h, clip, fallback, path: out });
 }
 
 // Attach a no-op rejection handler now and return the same promise for a later await.
@@ -15732,8 +15912,10 @@ function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
     : String(hit.by || '<unknown>');
   const within = hit.within ? ` (inside position:${hit.withinPosition} ${hit.within})` : '';
   const recentred = hit.recentred ? ' even after scrolling it to the viewport centre' : '';
+  // #551: the target's scroll container cuts it off at the click point.
+  const clipped = hit.clipped ? ' is clipped by its scroll container, so the point' : '';
   const err = new Error(
-    `click point (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)}) of ${target} is covered by ${by}${within}${recentred}. `
+    `click point (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)}) of ${target}${clipped} is covered by ${by}${within}${recentred}. `
     + 'The mouse click was not sent: it would land on the covering element.'
   );
   err.clickCovered = {
@@ -15743,6 +15925,7 @@ function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
     byPosition: hit.byPosition || null,
     dialog: hit.dialog === true,
     recentred: hit.recentred === true,
+    clipped: hit.clipped === true,
   };
   throw err;
 }
@@ -16642,6 +16825,15 @@ function documentScrollByJs(dx, dy) {
   return `Element.prototype.scrollBy.call(${DOCUMENT_SCROLLER_JS}, { left: ${dx}, top: ${dy}, behavior: 'instant' })`;
 }
 
+// #560: `scroll <t> "to top"` passes the edge phrase as one argument. Split it, so every positional
+// reader (edge parse, --scroll-container, receipts, export) sees `to` and the edge separately.
+function splitScrollEdgeArgs(args = []) {
+  const list = Array.isArray(args) ? args.map(arg => String(arg)) : [];
+  const words = String(list[0] || '').trim().split(/\s+/);
+  if (words.length < 2 || words[0].toLowerCase() !== 'to') return list;
+  return [...words, ...list.slice(1)];
+}
+
 function parseScrollEdge(direction, amount) {
   const first = String(direction || '').trim().toLowerCase();
   if (first !== 'to') return null;
@@ -16684,7 +16876,7 @@ function scrollActionTarget(args = [], extra = {}) {
     input: extra.input ?? [direction, amount].filter(Boolean).join(' '),
     resolvedBy: extra.resolvedBy ?? 'scroll',
     label: extra.label ?? (edge ? `to ${edge}` : (direction || 'scroll')),
-    commandArgs: extra.commandArgs ?? [direction, amount],
+    commandArgs: extra.commandArgs ?? (Array.isArray(args) ? args.filter(arg => arg != null && arg !== '') : []),
   };
   if (extra.targetId) target.targetId = extra.targetId;
   if (edge) target.expectedOutcome = DOCUMENT_SCROLL_EDGE_OUTCOME;
@@ -21878,7 +22070,10 @@ async function recordStr(cdp, sid, args, refs) {
       }
       else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
-      else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], opts.actionArgs.slice(2));
+      else if (opts.action === 'scroll') {
+        const scrollArgs = splitScrollEdgeArgs(opts.actionArgs);
+        actionText = await scrollStr(cdp, sid, scrollArgs[0], scrollArgs[1], scrollArgs.slice(2));
+      }
       else if (opts.action === 'nav' || opts.action === 'navigate') actionText = await navStr(cdp, sid, opts.actionArgs[0]);
       else throw new Error(`record --action does not support: ${opts.action}`);
       events.push({ kind: 'action', summary: actionText.split('\n')[0], ts: Date.now() });
@@ -25071,14 +25266,81 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile), background: Boolean(opts.background), headless: Boolean(opts.headless) };
 }
 
+function spawnOutputChunk(chunk) {
+  return Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+}
+
+function utf8SequenceLength(buf, index) {
+  const lead = buf[index];
+  let len = 0;
+  if (lead < 0x80) len = 1;
+  else if ((lead & 0xe0) === 0xc0 && lead >= 0xc2) len = 2;
+  else if ((lead & 0xf0) === 0xe0) len = 3;
+  else if ((lead & 0xf8) === 0xf0 && lead <= 0xf4) len = 4;
+  if (!len || index + len > buf.length) return 0;
+  for (let j = 1; j < len; j++) {
+    if ((buf[index + j] & 0xc0) !== 0x80) return 0;
+  }
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(index, index + len));
+    return [...text].length === 1 ? len : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// A tail window may start on a continuation byte. Skip that split code point, then keep every
+// well-formed sequence. Illegal bytes are dropped and never become U+FFFD. `omitted` is true only
+// when an illegal byte was dropped, not when the window merely started mid-character.
+function decodeSpawnBytes(buf) {
+  let start = 0;
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start += 1;
+  const body = buf.subarray(start);
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(body), omitted: false };
+  } catch {
+    let text = '';
+    let omitted = false;
+    for (let i = 0; i < body.length;) {
+      const len = utf8SequenceLength(body, i);
+      if (!len) {
+        omitted = true;
+        i += 1;
+        continue;
+      }
+      text += new TextDecoder('utf-8', { fatal: true }).decode(body.subarray(i, i + len));
+      i += len;
+    }
+    return { text, omitted };
+  }
+}
+
 function captureSpawnOutput(child, maxBytes = 4096) {
-  const output = { stdout: '', stderr: '' };
+  const output = { stdout: '', stderr: '', stdoutOmitted: false, stderrOmitted: false };
   for (const key of ['stdout', 'stderr']) {
     const stream = child?.[key];
     if (!stream?.on) continue;
-    try { stream.setEncoding?.('utf8'); } catch {}
+    const chunks = [];
+    let size = 0;
     stream.on('data', chunk => {
-      output[key] = (output[key] + String(chunk)).slice(-maxBytes);
+      const buf = spawnOutputChunk(chunk);
+      chunks.push(buf);
+      size += buf.length;
+      while (size > maxBytes && chunks.length) {
+        const extra = size - maxBytes;
+        if (chunks[0].length <= extra) {
+          size -= chunks[0].length;
+          chunks.shift();
+        } else {
+          chunks[0] = chunks[0].subarray(extra);
+          size = maxBytes;
+          break;
+        }
+      }
+      const joined = Buffer.concat(chunks, size);
+      const decoded = decodeSpawnBytes(joined);
+      output[key] = decoded.text;
+      output[`${key}Omitted`] = decoded.omitted;
     });
   }
   return output;
@@ -25094,6 +25356,115 @@ function spawnOutputHandoffText(output, readiness) {
   return [output?.stdout, output?.stderr, readiness?.stdout, readiness?.stderr]
     .filter(Boolean)
     .join('\n');
+}
+
+function devToolsActivePortPath(profileDir) {
+  return pathApiForRoot(profileDir).resolve(String(profileDir), 'DevToolsActivePort');
+}
+
+function portFromDevToolsActivePortText(text) {
+  const line = String(text || '').split(/\r?\n/, 1)[0].trim();
+  return /^\d+$/.test(line) ? line : null;
+}
+
+function otherRememberedPorts(record, profileDir, requestedPort) {
+  const want = cdpProfileKey(profileDir);
+  const requested = String(requestedPort);
+  const ports = [];
+  const add = (port, dir) => {
+    if (!dir || cdpProfileKey(dir) !== want) return;
+    const value = port == null || port === '' ? '' : String(port);
+    if (!/^\d+$/.test(value) || value === requested || ports.includes(value)) return;
+    ports.push(value);
+  };
+  add(record?.port, record?.profileDir);
+  for (const item of record?.history || []) add(item.port, item.profileDir);
+  return ports;
+}
+
+async function liveOtherProfilePort(plan, {
+  fetcher,
+  remembered,
+  fs,
+  inspectOccupantProfileDir,
+  connectWebSocket,
+  readProcessArgv = null,
+} = {}) {
+  const candidates = otherRememberedPorts(remembered, plan.profileDir, plan.port);
+  try {
+    const read = fs?.readFileSync;
+    const text = typeof read === 'function' ? read(devToolsActivePortPath(plan.profileDir), 'utf8') : '';
+    const filePort = portFromDevToolsActivePortText(text);
+    if (filePort && filePort !== String(plan.port) && !candidates.includes(filePort)) candidates.push(filePort);
+  } catch {}
+  for (const port of candidates) {
+    let answered = false;
+    try {
+      const res = await fetcher(`http://${plan.host}:${port}/json/version`, { signal: AbortSignal.timeout(500) });
+      answered = Boolean(res?.ok);
+    } catch {
+      answered = false;
+    }
+    if (!answered) continue;
+    // Identify the occupant from the live process only. The remembered record is what is being
+    // checked, so it is not evidence of who holds the port now.
+    let occupant = null;
+    try {
+      if (typeof inspectOccupantProfileDir === 'function') {
+        occupant = await inspectOccupantProfileDir({ host: plan.host, port, remembered });
+      } else if (process.env.NODE_ENV !== 'test' || typeof connectWebSocket === 'function') {
+        occupant = await inspectCdpOccupantProfileDirViaCdp({ host: plan.host, port, connectWebSocket });
+      }
+    } catch {
+      occupant = null;
+    }
+    // Chrome hides its argv from CDP without --enable-automation; the OS command line names the profile.
+    if (!occupant && typeof readProcessArgv === 'function') {
+      try {
+        occupant = profileDirFromCommandLine(await readProcessArgv({ host: plan.host, port }));
+      } catch {
+        occupant = null;
+      }
+    }
+    // Refuse only an occupant identified as this profile. An unidentified one (a stale port now held
+    // by another CDP server) launches; a real duplicate is still caught by the exit-0 hand-off.
+    if (!occupant || cdpProfileKey(occupant) !== cdpProfileKey(plan.profileDir)) continue;
+    return port;
+  }
+  return null;
+}
+
+function profileInUseSpawnError(plan, { livePort = null } = {}) {
+  const message = livePort
+    ? `spawn-debug-browser: profile ${plan.profileDir} is already open on port ${livePort}. Pass --profile-dir <other> for a second browser.`
+    : `spawn-debug-browser: profile ${plan.profileDir} was absorbed by an existing browser session. Pass --profile-dir <other> for a second browser.`;
+  const err = new Error(message);
+  err.code = 'cdp_profile_in_use';
+  err.host = plan.host;
+  err.port = plan.port;
+  err.profileDir = plan.profileDir;
+  if (livePort) err.livePort = String(livePort);
+  err.cdpRecovery = livePort
+    ? {
+      kind: 'profile-in-use',
+      strategy: 'use-live-port',
+      run: `CDP_PORT=${livePort} cdp list`,
+      ask: 'Pass --profile-dir <other> for a second browser.',
+      reason: `Profile ${plan.profileDir} is already open on port ${livePort}.`,
+    }
+    : {
+      kind: 'profile-in-use',
+      strategy: 'use-other-profile',
+      run: `cdp spawn-debug-browser ${plan.browser} --port ${plan.port} --profile-dir <other>`,
+      reason: 'The browser exited 0 and handed the launch to an existing session. A second browser needs a different profile directory.',
+    };
+  return err;
+}
+
+function readinessIsProfileHandoff(output, readiness) {
+  if (!readiness?.exited || (readiness.exitCode !== 0 && readiness.exitCode !== '0')) return false;
+  if (output?.stdoutOmitted) return true;
+  return isExistingBrowserSessionHandoff(spawnOutputHandoffText(output, readiness));
 }
 
 function isDefaultBrowserProfileDir(plan, extras = {}) {
@@ -25261,7 +25632,7 @@ async function probeTcpPort({ host = DEFAULT_CDP_HOST, port, timeoutMs = 500, co
 
 async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const platform = deps.platform || process.platform;
-  const fs = deps.fs || { existsSync, mkdirSync, readdirSync };
+  const fs = deps.fs || { existsSync, mkdirSync, readdirSync, readFileSync };
   const launcher = deps.spawn || spawn;
   const probePort = deps.probeTcpPort || probeTcpPort;
   const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
@@ -25338,6 +25709,21 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       await quitter(plan, { platform, fs });
     }
   }
+  if (!opts.dailyProfile) {
+    const remembered = typeof deps.readLastCdpEndpoint === 'function'
+      ? deps.readLastCdpEndpoint()
+      : (process.env.NODE_ENV === 'test' ? null : readLastCdpEndpoint());
+    const livePort = await liveOtherProfilePort(plan, {
+      fetcher,
+      remembered,
+      fs,
+      inspectOccupantProfileDir: deps.inspectOccupantProfileDir,
+      connectWebSocket: deps.connectWebSocket,
+      readProcessArgv: deps.readBrowserProcessArgv
+        || (process.env.NODE_ENV === 'test' ? null : readBrowserProcessArgv),
+    });
+    if (livePort) throw profileInUseSpawnError(plan, { livePort });
+  }
   let child = null;
   let output = null;
   let readiness = null;
@@ -25363,6 +25749,9 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
         continue;
       }
       throw new Error(formatDailyDefaultProfileCdpFailure(plan, handoffText));
+    }
+    if (!opts.dailyProfile && readinessIsProfileHandoff(output, readiness)) {
+      throw profileInUseSpawnError(plan);
     }
     break;
   }
@@ -26767,6 +27156,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     scroll: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      fopts.args = splitScrollEdgeArgs(fopts.args);
       const value = await actionFeedback(
         'scroll',
         () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1], fopts.args.slice(2)),
@@ -27475,7 +27865,8 @@ async function discoverLivePagesForTargetResolution({
       ...(connect ? { connect } : {}),
       ...(request ? { request } : {}),
     });
-    if (pages) return pages;
+    // A daemon started before #546 can still return one id twice from list_raw.
+    if (pages) return distinctTargets(pages);
   }
   const openCdp = connectCdp || (async (wsUrl) => {
     const cdp = new CDP();
@@ -31257,23 +31648,17 @@ async function main(options = {}) {
     console.error(formatCliError(unknownAliasError(targetPrefix), { cmd, format: cliErrorFormat }));
     return finish(1);
   }
-  const livePages = await livePagesForTargetCommand(targetAlias);
   // #538: the previous page list remembers the URL and title last seen for a prefix that may be gone.
   const lastSeenPages = readCachedPages();
-  writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 });
-  const requestedTargetId = targetAlias?.targetId || targetPrefix;
-  const preliminaryMatches = livePages.filter(page => String(page.targetId || '').toUpperCase().startsWith(String(requestedTargetId).toUpperCase()));
-  const preliminaryTargetId = preliminaryMatches.length === 1 ? preliminaryMatches[0].targetId : null;
-  const daemonBinding = preliminaryTargetId ? await readDaemonBinding(preliminaryTargetId) : null;
+  let livePages;
   let targetResolution;
   try {
-    targetResolution = resolveLiveTargetBinding({
-      requested: targetPrefix,
-      livePages,
-      daemonBinding,
-      alias: targetAlias,
+    ({ livePages, targetResolution } = await resolvePageCommandTarget({
+      targetPrefix,
+      targetAlias,
       lastSeenPages,
-    });
+      onPages: livePages => writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 }),
+    }));
   } catch (error) {
     if (error?.code !== 'target_successor') throw error;
     // The recovery reruns this command, with its arguments, on the successor page.
@@ -31630,7 +32015,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
-  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, splitScrollEdgeArgs, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, webVitalsModel, clearObservationBuffers,
   selectConsoleEntries, locateObservedEntries,
@@ -31644,12 +32029,12 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   enableDaemonDomains,
   getOrStartTabDaemon,
   suggestCommands, unknownCommandMessage, editDistance, commandUsageTemplate,
-  resolveLiveTargetBinding, completeTargetResolution, attachTargetResolutionDiagnostics,
+  resolveLiveTargetBinding, resolvePageCommandTarget, completeTargetResolution, attachTargetResolutionDiagnostics,
   buildExactTargetSupervisorCandidates,
   cdpRuntimeIdentity,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr, pressUsageError,
-  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
+  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, assertClickPointNotCovered, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, perceiveStoreDiffSource, frameViewportOffset,
