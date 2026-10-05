@@ -11986,6 +11986,7 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
     // livePagesForTargetCommand.
     expect(targetCmd).toMatch(/await resolvePageCommandTarget\(\{\s*targetPrefix,\s*targetAlias,/);
     expect(targetCmd).not.toMatch(/function livePagesForTargetCommand/);
+    expect(targetCmd).not.toMatch(/\bdiscover\s*:/);
     expect(src).toMatch(/async function resolvePageCommandTarget\(\{[\s\S]{0,200}discover = livePagesForTargetCommand,/);
     expect(targetCmd).not.toMatch(/targetAlias\?\.port[\s\S]{0,200}cachedPages/);
   });

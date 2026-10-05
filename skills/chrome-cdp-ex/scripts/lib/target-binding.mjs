@@ -3,9 +3,9 @@ import { redactUrl } from './redaction.mjs';
 const TARGET_RESOLUTION_SCHEMA = 'chrome-cdp-ex.target-resolution.v1';
 
 // One entry per target id: a page list that names the same id twice still names one tab (#546).
-function distinctTargets(pages) {
+export function distinctTargets(pages) {
   const seen = new Set();
-  return pages.filter(page => {
+  return (pages || []).filter(page => {
     const id = String(page?.targetId || '').toUpperCase();
     if (seen.has(id)) return false;
     seen.add(id);
@@ -43,12 +43,12 @@ function uniqueLivePrefix(targetId, livePages) {
 // almost certainly the same tab. Name it; never re-bind to it.
 function findSuccessorPage(requested, lastSeenPages, livePages) {
   const upper = String(requested || '').toUpperCase();
-  const seen = (lastSeenPages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper));
+  const seen = distinctTargets((lastSeenPages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper)));
   // A blank or New Tab page looks like every other one, so it never names a successor.
   if (seen.length !== 1 || !seen[0].url || /^(?:about:blank(?:#.*)?|chrome:\/\/new-?tab(?:-page)?\/?)$/i.test(seen[0].url)) return null;
   const { url, title = '' } = seen[0];
   // Only reached when no live page matches the prefix, so every candidate is another page.
-  const candidates = (livePages || []).filter(page => page?.url === url && (page?.title || '') === title);
+  const candidates = distinctTargets((livePages || []).filter(page => page?.url === url && (page?.title || '') === title));
   return candidates.length === 1 ? candidates[0] : null;
 }
 

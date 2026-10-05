@@ -28,9 +28,31 @@ function resolveWith(snapshots) {
 describe('#546 a prefix that is ambiguous for a moment after reload', () => {
   it('T1 resolves when the live list names the same target id twice', async () => {
     const { promise, calls } = resolveWith([[page(TAB), page(TAB)]]);
-    const { targetResolution } = await promise;
+    const { targetResolution, livePages } = await promise;
     expect(targetResolution.resolvedTargetId).toBe(TAB);
+    // Later steps (the runtime supervisor's exact-target locator) see one entry, not two.
+    expect(livePages).toEqual([page(TAB)]);
     expect(calls).toHaveLength(1);
+  });
+
+  it('T1 getPages lists a target id once when Target.getTargets names it twice', async () => {
+    const info = { targetId: TAB, type: 'page', url: PAGE_URL, title: 't' };
+    const cdp = { send: async () => ({ targetInfos: [info, { ...info }] }) };
+    await expect(T.getPages(cdp)).resolves.toEqual([info]);
+  });
+
+  it('keeps naming the #538 successor when the last-seen or live list repeats an id', () => {
+    const OLD = '1667E1A41DF4F9ED4DEBC30A498CCB8F';
+    const error = (() => {
+      try {
+        T.resolveLiveTargetBinding({ requested: '1667E1A4', livePages: [page(TAB), page(TAB)], lastSeenPages: [page(OLD), page(OLD)] });
+      } catch (e) {
+        return e;
+      }
+      return null;
+    })();
+    expect(error?.code).toBe('target_successor');
+    expect(error.successorTargetId).toBe(TAB);
   });
 
   it('T2 resolves when the second match is gone on the next discovery', async () => {

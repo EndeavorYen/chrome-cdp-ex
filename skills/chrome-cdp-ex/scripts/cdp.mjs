@@ -156,6 +156,7 @@ import {
 import {
   attachTargetResolutionDiagnostics,
   completeTargetResolution,
+  distinctTargets,
   resolveLiveTargetBinding,
 } from './lib/target-binding.mjs';
 import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
@@ -3063,7 +3064,7 @@ async function resolvePageCommandTarget({
 } = {}) {
   const requestedTargetId = String(targetAlias?.targetId || targetPrefix).toUpperCase();
   for (let attempt = 1; ; attempt++) {
-    const livePages = await discover(targetAlias);
+    const livePages = distinctTargets(await discover(targetAlias));
     onPages(livePages);
     const preliminaryIds = new Set(livePages
       .map(page => String(page.targetId || ''))
@@ -4493,11 +4494,12 @@ function cdpDomains(cdp) {
 async function getPages(cdp) {
   const { targetInfos } = await cdpDomains(cdp).Target.getTargets();
   // Keep regular page targets, including about:blank so agents always have a
-  // usable handle. Skip chrome://, edge://, and devtools:// internal pages.
-  return targetInfos.filter(t => t.type === 'page'
+  // usable handle. Skip chrome://, edge://, and devtools:// internal pages. One entry per
+  // target id: a list that names one tab twice is still one tab (#546).
+  return distinctTargets(targetInfos.filter(t => t.type === 'page'
     && !t.url.startsWith('chrome://')
     && !t.url.startsWith('edge://')
-    && !t.url.startsWith('devtools://'));
+    && !t.url.startsWith('devtools://')));
 }
 
 function formatPageList(pages, browserInfo = null, opts = {}) {
