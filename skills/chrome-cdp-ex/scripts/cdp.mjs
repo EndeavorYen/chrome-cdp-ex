@@ -3990,10 +3990,14 @@ async function discoverWsUrl({
 
   // Chrome 136+ often does not write DevToolsActivePort. Probe the same HTTP
   // path as CDP_PORT=9224, including the 404 → /devtools/browser fallback.
-  try {
-    return await httpProbe(DEFAULT_CDP_PROBE_PORT);
-  } catch (error) {
-    probed[DEFAULT_CDP_PROBE_PORT] = error?.probeCause || error?.message || 'unreachable';
+  // Skip a port the file already missed: a 404 response is success for this
+  // probe, and that would hide a live remembered endpoint (#558).
+  if (!Object.hasOwn(probed, String(DEFAULT_CDP_PROBE_PORT))) {
+    try {
+      return await httpProbe(DEFAULT_CDP_PROBE_PORT);
+    } catch (error) {
+      probed[DEFAULT_CDP_PROBE_PORT] = error?.probeCause || error?.message || 'unreachable';
+    }
   }
 
   // Last, the endpoint this tool last reached (#425): a live browser there is attach success.
