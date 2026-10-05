@@ -41,6 +41,20 @@ describe('#546 a prefix that is ambiguous for a moment after reload', () => {
     await expect(T.getPages(cdp)).resolves.toEqual([info]);
   });
 
+  it('T1 a daemon list_raw that names one id twice is listed once', async () => {
+    const pages = await T.discoverLivePagesForTargetResolution({
+      env: { CDP_PORT: '9333' },
+      listSockets: () => [{ socketPath: 'old-daemon.sock' }],
+      connect: async () => ({ destroy() {} }),
+      request: async (_conn, req) => (req.cmd === 'meta'
+        ? { ok: true, result: JSON.stringify({ cdpEndpoint: '127.0.0.1:9333' }) }
+        : { ok: true, result: JSON.stringify([page(TAB), page(TAB)]) }),
+      // Never fall through to a real browser.
+      resolveWsUrl: async () => { throw new Error('unexpected live discovery'); },
+    });
+    expect(pages).toEqual([page(TAB)]);
+  });
+
   it('keeps naming the #538 successor when the last-seen or live list repeats an id', () => {
     const OLD = '1667E1A41DF4F9ED4DEBC30A498CCB8F';
     const error = (() => {

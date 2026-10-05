@@ -4495,7 +4495,8 @@ async function getPages(cdp) {
   const { targetInfos } = await cdpDomains(cdp).Target.getTargets();
   // Keep regular page targets, including about:blank so agents always have a
   // usable handle. Skip chrome://, edge://, and devtools:// internal pages. One entry per
-  // target id: a list that names one tab twice is still one tab (#546).
+  // target id: a list that names one tab twice is still one tab (#546). The first copy is kept;
+  // which copy is fresher right after a reload is not known.
   return distinctTargets(targetInfos.filter(t => t.type === 'page'
     && !t.url.startsWith('chrome://')
     && !t.url.startsWith('edge://')
@@ -27674,7 +27675,8 @@ async function discoverLivePagesForTargetResolution({
       ...(connect ? { connect } : {}),
       ...(request ? { request } : {}),
     });
-    if (pages) return pages;
+    // A daemon started before #546 can still return one id twice from list_raw.
+    if (pages) return distinctTargets(pages);
   }
   const openCdp = connectCdp || (async (wsUrl) => {
     const cdp = new CDP();
