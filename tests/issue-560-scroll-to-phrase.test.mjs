@@ -26,6 +26,15 @@ describe('#560 scroll "to top" as one argument', () => {
     expect(T.scrollFeedbackPolicy(args[0], args[1])).toBe('report-only');
   });
 
+  it('T4 a recorded container scroll keeps its --scroll-container for export', () => {
+    const args = T.splitScrollEdgeArgs(['to bottom', '--scroll-container', '.feed']);
+    expect(T.scrollActionTarget(args).commandArgs).toEqual(['to', 'bottom', '--scroll-container', '.feed']);
+    expect(T.scrollActionTarget(['down', '300']).commandArgs).toEqual(['down', '300']);
+    expect(T.scrollActionTarget(['down']).commandArgs).toEqual(['down']);
+    const step = T.playwrightStepFromCommand({ action: 'scroll', command: ['scroll', ...args], replayable: true });
+    expect(step.lines.join('\n')).toContain('.feed');
+  });
+
   it('T4 the Playwright export of a recorded one-argument phrase scrolls to the edge', () => {
     expect(T.playwrightStepFromCommand({
       action: 'scroll',

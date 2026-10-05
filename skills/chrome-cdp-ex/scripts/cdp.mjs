@@ -16747,7 +16747,7 @@ function scrollActionTarget(args = [], extra = {}) {
     input: extra.input ?? [direction, amount].filter(Boolean).join(' '),
     resolvedBy: extra.resolvedBy ?? 'scroll',
     label: extra.label ?? (edge ? `to ${edge}` : (direction || 'scroll')),
-    commandArgs: extra.commandArgs ?? [direction, amount],
+    commandArgs: extra.commandArgs ?? (Array.isArray(args) ? args.filter(arg => arg != null && arg !== '') : []),
   };
   if (extra.targetId) target.targetId = extra.targetId;
   if (edge) target.expectedOutcome = DOCUMENT_SCROLL_EDGE_OUTCOME;
