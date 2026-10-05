@@ -25187,7 +25187,9 @@ async function liveOtherProfilePort(plan, {
     } catch {
       occupant = null;
     }
-    if (occupant && cdpProfileKey(occupant) !== cdpProfileKey(plan.profileDir)) continue;
+    // Refuse only an occupant identified as this profile. An unidentified one (a stale port now held
+    // by another CDP server) launches; a real duplicate is still caught by the exit-0 hand-off.
+    if (!occupant || cdpProfileKey(occupant) !== cdpProfileKey(plan.profileDir)) continue;
     return port;
   }
   return null;

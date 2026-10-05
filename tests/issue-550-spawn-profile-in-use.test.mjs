@@ -91,6 +91,7 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
       fs: fsFor({ portText: '9333\n/devtools/browser\n' }),
       readLastCdpEndpoint: () => null,
       fetcher: answering('9333'),
+      inspectOccupantProfileDir: async () => PROFILE,
     });
     expect(launched).toEqual([]);
     expect(text).toContain('Next: CDP_PORT=9333 cdp list (Kind: profile-in-use)');
@@ -111,6 +112,17 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
       readLastCdpEndpoint: () => ({ port: '9333', profileDir: PROFILE, history: [] }),
       fetcher: answering('9333'),
       inspectOccupantProfileDir: async () => '/other/profile',
+    });
+    expect(caught).toBeNull();
+    expect(launched).toEqual(['spawn']);
+  });
+
+  it('T8 still launches when the answering occupant cannot be identified', async () => {
+    const { launched, caught } = await spawnChrome({}, {
+      fs: fsFor({ portText: '9333\n/devtools/browser\n' }),
+      readLastCdpEndpoint: () => null,
+      fetcher: answering('9333'),
+      inspectOccupantProfileDir: async () => null,
     });
     expect(caught).toBeNull();
     expect(launched).toEqual(['spawn']);
