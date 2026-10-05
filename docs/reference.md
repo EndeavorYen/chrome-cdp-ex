@@ -93,7 +93,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |
 | `closetab` | `closetab <target>` | `mutation / mutation` |
-| `netlog` | `netlog <target> [--id N [--out file [--overwrite]]] [--type xhr,fetch] [--url text] [--status 4xx\|5xx\|failed] [--clear] [--unsafe-full] [--format json]` | `conditional-mutation / conditional` |
+| `netlog` | `netlog <target> [--id N [--body] [--out file [--overwrite]]] [--type xhr,fetch] [--url text] [--status 4xx\|5xx\|failed] [--clear] [--unsafe-full] [--format json]` | `conditional-mutation / conditional` |
 | `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
 | `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
 | `record` | `record <target> [ms]` | `conditional-mutation / conditional` |

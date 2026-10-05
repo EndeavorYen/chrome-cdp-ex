@@ -9,6 +9,7 @@ import {
 } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { commandResult } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
 import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs';
+import { MCP_RUN_COMMAND_ALLOWLIST } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -345,7 +346,10 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       sendMessage: message => sent.push(message),
     });
 
-    for (const [index, fixture] of contract.mcp.mappingCases.entries()) {
+    const mappingCases = contract.mcp.mappingCases.filter(fixture => (
+      fixture.tool !== 'run_command' || MCP_RUN_COMMAND_ALLOWLIST.includes(fixture.args?.command)
+    ));
+    for (const [index, fixture] of mappingCases.entries()) {
       await handle({
         jsonrpc: '2.0',
         id: index + 1,
@@ -361,7 +365,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         },
       });
     }
-    expect(executeCli).toHaveBeenCalledTimes(contract.mcp.mappingCases.length);
+    expect(executeCli).toHaveBeenCalledTimes(mappingCases.length);
   });
 
   it('rejects all frozen invalid mappings before direct runtime execution', async () => {
@@ -380,7 +384,11 @@ describe('Phase 5 current MCP process boundary characterization', () => {
           ? { uri: fixture.uri }
           : { name: fixture.tool, arguments: fixture.args },
       });
-      expect(sent.at(-1).error).toMatchObject({ code: -32000, message: fixture.error });
+      const spelling = fixture.args?.command;
+      const message = fixture.tool === 'run_command' && spelling && !MCP_RUN_COMMAND_ALLOWLIST.includes(spelling)
+        ? `run_command command not allowlisted: ${spelling}`
+        : fixture.error;
+      expect(sent.at(-1).error).toMatchObject({ code: -32000, message });
     }
     expect(executeCli).not.toHaveBeenCalled();
   });
@@ -668,7 +676,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       },
       {
         key: 'visual-check', cmd: 'visual-check', canonical: 'responsive-audit', args: ['--format', 'json'],
-        mcpDenied: 'run_command visual-check requires confirm: true',
+        mcpDenied: 'run_command command not allowlisted: visual-check',
       },
     ];
 
@@ -830,14 +838,21 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         } }),
         sendMessage: message => sent.push(message),
       });
+      const runSpelling = entry.tool === 'run_command'
+        ? entry.toolArgs?.command
+        : (entry.tool ? null : entry.cmd);
+      const offAllowlist = Boolean(runSpelling) && !MCP_RUN_COMMAND_ALLOWLIST.includes(runSpelling);
+      const mcpDenied = offAllowlist
+        ? `run_command command not allowlisted: ${runSpelling}`
+        : (entry.mcpDenied || null);
       await handle({
         jsonrpc: '2.0', id: index + 1, method: 'tools/call',
-        params: entry.mcpDenied
+        params: mcpDenied
           ? { name: 'run_command', arguments: { command: entry.cmd, args: ['fixture', ...entry.args] } }
           : { name: entry.tool, arguments: entry.toolArgs },
       });
-      if (entry.mcpDenied) {
-        expect(sent[0].error).toMatchObject({ code: -32000, message: entry.mcpDenied });
+      if (mcpDenied) {
+        expect(sent[0].error).toMatchObject({ code: -32000, message: mcpDenied });
       } else {
         // Versioned JSON output (an object with a `schema`) is also returned as structuredContent (#465).
         const output = outputs.get(key);
@@ -861,7 +876,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         ? { ok: true, resultPreview: '' }
         : { ok: false, error: failures.get(key) });
 
-      if (!entry.mcpDenied) {
+      if (!mcpDenied) {
         const failedSent = [];
         const failedHandle = createMcpRequestHandler({
           runtimeClient: createRuntimeClient({

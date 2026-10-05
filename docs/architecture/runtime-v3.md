@@ -26,10 +26,11 @@ a time behind the existing CLI and MCP surfaces.
 
 1. Node.js 22+, ESM, zero runtime dependencies, and current package entry points
    remain intact unless a separately reviewed versioned migration changes them.
-2. Metadata for all 81 canonical commands, aliases, output formats, public JSON
-   schemas, CLI/MCP compatibility, and representative browser-independent CLI
-   exit and error behavior remain frozen by versioned fixtures. Phase 3 adds
-   replay coverage for browser-dependent behavior before runtime extraction.
+2. The live public contract is `SURVIVOR_COMMANDS`: help synopses, aliases,
+   output formats, and representative browser-independent CLI exit and error behavior. Historical
+   fixtures under `docs/contracts/` keep the older full catalog. A command that
+   is not on that card may change without a new whole-catalog fixture. Phase 3
+   adds replay coverage for browser-dependent behavior before runtime extraction.
 3. The existing per-tab resident runtime stays in place while a browser-level
    supervisor is introduced around it.
 4. Public resources are serializable and stable enough to log; private CDP
@@ -58,8 +59,8 @@ CLI adapter                 MCP adapter
 ```
 
 Adapters parse and render. They do not own target-command behavior. The
-dependency-free command surface is the single immutable owner of all 81 command
-policy, alias, help, domain, and MCP records. Runtime `COMMANDS`, target routing,
+dependency-free command surface records the full command catalog. The live
+public gate is the survivor card, not every command in that catalog. Runtime `COMMANDS`, target routing,
 application specs, generated help/index regions, and MCP definitions derive
 from that validated owner. All 68 target commands execute through one branded,
 catalog-derived application dispatcher. The other 13 commands are intentional

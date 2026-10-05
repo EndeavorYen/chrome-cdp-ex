@@ -341,6 +341,7 @@ export function parseNetlogArgs(args = []) {
   const opts = {
     clear: false,
     unsafeFull: false,
+    includeBody: false,
     format: 'text',
     id: null,
     out: null,
@@ -352,6 +353,7 @@ export function parseNetlogArgs(args = []) {
   for (let i = 0; i < args.length; i++) {
     const arg = String(args[i]);
     if (arg === '--clear') opts.clear = true;
+    else if (arg === '--body') opts.includeBody = true;
     else if (arg === '--unsafe-full') opts.unsafeFull = true;
     else if (arg === '--format') {
       const value = requireValue(args, ++i, '--format');
@@ -373,11 +375,12 @@ export function parseNetlogArgs(args = []) {
         if (!STATUS_FILTER_RE.test(lower)) throw new Error(`netlog: --status ${status} must be 4xx, 5xx, failed, pending or an HTTP code`);
         if (!opts.status.includes(lower)) opts.status.push(lower);
       }
-    } else throw new Error(`netlog: unknown argument ${arg}. Use --id N, --type, --url, --status, --format json, --out FILE, --overwrite, --clear or --unsafe-full.`);
+    } else throw new Error(`netlog: unknown argument ${arg}. Use --id N, --body, --type, --url, --status, --format json, --out FILE, --overwrite, --clear or --unsafe-full.`);
   }
   const listFilters = opts.types.length || opts.url != null || opts.status.length;
-  if (opts.clear && (opts.id != null || listFilters || opts.out)) throw new Error('netlog: --clear cannot be combined with --id, --out or filters');
+  if (opts.clear && (opts.id != null || listFilters || opts.out || opts.includeBody)) throw new Error('netlog: --clear cannot be combined with --id, --out, --body or filters');
   if (opts.id != null && listFilters) throw new Error('netlog: --id cannot be combined with --type, --url or --status');
+  if (opts.includeBody && opts.id == null) throw new Error('netlog: --body requires --id N');
   if (opts.out && opts.id == null) throw new Error('netlog: --out requires --id N (it saves one response body)');
   if (opts.overwrite && !opts.out) throw new Error('netlog: --overwrite only applies to --out FILE');
   return opts;
@@ -682,14 +685,15 @@ function durationMs(detail) {
   return null;
 }
 
-export function buildNetlogRequestModel(detail, { body = null, unsafeFull = false, targetId = '', savedTo = null } = {}) {
+export function buildNetlogRequestModel(detail, { body = null, unsafeFull = false, targetId = '', savedTo = null, includeBody = false } = {}) {
   const target = targetId || '<target>';
   const shownUrl = value => (unsafeFull ? String(value || '') : redactUrl(value || ''));
   const hasResponse = detail.status != null || detail.responseHeaders != null;
   const nextSteps = [];
-  if (body?.available && body.truncated && !savedTo) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --out <file>`);
+  if (includeBody && body?.available && body.truncated && !savedTo) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --out <file>`);
   nextSteps.push(`cdp netlog ${target}`);
-  if (!unsafeFull) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --unsafe-full  # raw headers, URL and body`);
+  if (!includeBody) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --body  # include the redacted body`);
+  else if (!unsafeFull) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --unsafe-full  # raw headers, URL and body`);
   return {
     schema: NETLOG_REQUEST_SCHEMA,
     targetId: targetId || null,
@@ -731,12 +735,17 @@ export function buildNetlogRequestModel(detail, { body = null, unsafeFull = fals
       ...(detail.timing || {}),
     },
     redirects: detail.redirects.map(hop => ({ status: hop.status, url: shownUrl(hop.url) })),
-    body: body ? {
+    body: includeBody && body ? {
       ...body,
       savedTo: savedTo?.path ?? null,
       savedBytes: savedTo?.bytes ?? null,
       savedRedacted: savedTo ? savedTo.redacted === true : null,
-    } : null,
+    } : {
+      omitted: true,
+      savedTo: savedTo?.path ?? null,
+      savedBytes: savedTo?.bytes ?? null,
+      savedRedacted: savedTo ? savedTo.redacted === true : null,
+    },
     nextSteps,
   };
 }
@@ -760,7 +769,10 @@ function formatTimingLine(timing) {
 
 export function formatNetlogRequestText(model) {
   const { request, response, error, timing, body } = model;
-  const lines = [`Request #${model.id}${model.redacted ? '' : ' [unsafe-full: headers, URL and body not redacted]'}`];
+  const unsafeBanner = body?.omitted
+    ? ' [unsafe-full: headers and URL not redacted]'
+    : ' [unsafe-full: headers, URL and body not redacted]';
+  const lines = [`Request #${model.id}${model.redacted ? '' : unsafeBanner}`];
   lines.push(`  ${request.method} ${request.url}${request.urlTruncated ? ' …(URL truncated)' : ''}`);
   if (response?.status != null) {
     lines.push(`  Status: ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
@@ -783,7 +795,10 @@ export function formatNetlogRequestText(model) {
   for (const hop of model.redirects) lines.push(`  Redirected: ${hop.status ?? '?'} from ${hop.url}`);
   lines.push(...formatHeaderBlock('Request headers', request.headers, { count: request.headerCount, truncated: request.headersTruncated }));
   if (response) lines.push(...formatHeaderBlock('Response headers', response.headers, { count: response.headerCount, truncated: response.headersTruncated }));
-  if (body) {
+  if (body?.omitted) {
+    lines.push('Body: omitted (pass --body to include the redacted body)');
+    if (body.savedTo) lines.push(`Saved body: ${body.savedTo} (${body.savedBytes} bytes${body.savedRedacted ? ', secrets redacted' : ''})`);
+  } else if (body) {
     if (!body.available) {
       lines.push(`Body: not available (${body.error})`);
     } else if (body.kind === 'binary') {

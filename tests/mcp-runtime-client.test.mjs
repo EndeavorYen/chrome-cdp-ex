@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
+import { MCP_RUN_COMMAND_ALLOWLIST } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -99,7 +100,10 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     }));
     const state = handlerWith(executeCli);
 
-    for (const [index, fixture] of contract.mcp.mappingCases.entries()) {
+    const mappingCases = contract.mcp.mappingCases.filter(fixture => (
+      fixture.tool !== 'run_command' || MCP_RUN_COMMAND_ALLOWLIST.includes(fixture.args?.command)
+    ));
+    for (const [index, fixture] of mappingCases.entries()) {
       await state.handle({
         jsonrpc: '2.0',
         id: index + 1,
@@ -116,7 +120,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
         },
       });
     }
-    expect(executeCli).toHaveBeenCalledTimes(contract.mcp.mappingCases.length);
+    expect(executeCli).toHaveBeenCalledTimes(mappingCases.length);
   });
 
   it('rejects every frozen invalid mapping before RuntimeClient execution', async () => {
@@ -131,15 +135,17 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
           ? { uri: fixture.uri }
           : { name: fixture.tool, arguments: fixture.args },
       });
-      expect(state.sent.at(-1).error).toEqual({ code: -32000, message: fixture.error });
+      const spelling = fixture.args?.command;
+      const message = fixture.tool === 'run_command' && spelling && !MCP_RUN_COMMAND_ALLOWLIST.includes(spelling)
+        ? `run_command command not allowlisted: ${spelling}`
+        : fixture.error;
+      expect(state.sent.at(-1).error).toEqual({ code: -32000, message });
     }
     expect(executeCli).not.toHaveBeenCalled();
   });
 
   it.each([
-    'back', 'clickxy', 'dismiss-modal', 'forward', 'jsclick', 'nav',
-    'navigate', 'reload', 'type', 'verify-click', 'mock', 'clock', 'throttle',
-    'emulate', 'resize',
+    'dismiss-modal', 'nav', 'navigate',
   ])(
     'rejects run_command %s without confirmation before RuntimeClient execution',
     async command => {
@@ -155,7 +161,25 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     },
   );
 
-  it('rejects table collection without confirmation before RuntimeClient execution', async () => {
+  it.each([
+    'back', 'clickxy', 'forward', 'jsclick', 'reload', 'type', 'verify-click',
+    'mock', 'clock', 'throttle', 'emulate', 'resize', 'table',
+  ])(
+    'rejects run_command %s because it is off the survivor allowlist',
+    async command => {
+      const executeCli = vi.fn();
+      const state = handlerWith(executeCli);
+      await state.handle({
+        jsonrpc: '2.0', id: 48, method: 'tools/call',
+        params: { name: 'run_command', arguments: { command, args: ['fixture'], confirm: true } },
+      });
+      expect(state.sent[0].error).toMatchObject({ code: -32000 });
+      expect(state.sent[0].error.message).toMatch(/not allowlisted/);
+      expect(executeCli).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects table collection before RuntimeClient execution', async () => {
     const executeCli = vi.fn();
     const state = handlerWith(executeCli);
     await state.handle({
@@ -169,7 +193,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
       },
     });
     expect(state.sent[0].error).toMatchObject({ code: -32000 });
-    expect(state.sent[0].error.message).toMatch(/confirm: true/i);
+    expect(state.sent[0].error.message).toMatch(/not allowlisted/);
     expect(executeCli).not.toHaveBeenCalled();
   });
 

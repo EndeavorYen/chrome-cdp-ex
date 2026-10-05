@@ -236,7 +236,7 @@ describe('#487 fixed-output snapshots', () => {
       effects: { domDiff: diff, console: [], network: [], navigation: null },
     }), emptyDelta);
     expect(T.formatActionResultOutput(result, { dispatchText }))
-      .toBe('Clicked <BUTTON> "Smooth target" (@1). Outcome: changed. Next: cdp perceive 48515122 --since-action');
+      .toBe('Clicked <BUTTON> "Smooth target" (@1). Next: cdp perceive 48515122 --since-action');
   });
 
   it('bounds the diff-only -i text and marks the cut with a fixed note', () => {

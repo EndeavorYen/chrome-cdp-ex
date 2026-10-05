@@ -25,7 +25,7 @@ import {
   buildMcpToolCommand,
   listMcpResources,
 } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
-import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
+import { COMMAND_SURFACE, SURVIVOR_COMMANDS } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 
 const DEFAULT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const FIXTURE_NAME = 'public-contracts.v1.json';
@@ -292,7 +292,9 @@ const MCP_INVALID_INPUTS = Object.freeze([
 function mcpProjection(commands) {
   const toolNames = new Set(MCP_TOOL_DEFINITIONS.map(tool => tool.name));
   const commandSpellings = new Set(commands.flatMap(command => [command.name, ...command.aliases]));
-  const mappingCases = MCP_MAPPING_INPUTS.map(entry => {
+  const mappingCases = MCP_MAPPING_INPUTS.flatMap(entry => {
+    // A run_command mapping has to succeed. Spellings off the survivor allowlist cannot.
+    if (entry.tool === 'run_command' && !MCP_RUN_COMMAND_ALLOWLIST.includes(entry.args?.command)) return [];
     const command = buildMcpToolCommand(entry.tool, entry.args);
     if (!commandSpellings.has(command[0])) {
       throw new Error(`MCP mapping ${entry.id} produced unknown CLI command: ${command[0]}`);
@@ -303,7 +305,7 @@ function mcpProjection(commands) {
         throw new Error(`MCP mapping ${entry.id} omits required confirmation`);
       }
     }
-    return { ...entry, command };
+    return [{ ...entry, command }];
   });
   const covered = new Set(mappingCases.map(entry => entry.tool));
   const missing = [...toolNames].filter(name => !covered.has(name));
@@ -484,6 +486,116 @@ function checkPackageInventory(rootDir, version, tarball = null) {
   return path;
 }
 
+const SURVIVOR_NAME_SET = new Set(SURVIVOR_COMMANDS);
+
+function survivorToolNameSet() {
+  const names = new Set(['run_command']);
+  for (const command of COMMAND_SURFACE.commands) {
+    if (SURVIVOR_NAME_SET.has(command.name) && command.mcp.toolName) names.add(command.mcp.toolName);
+  }
+  return names;
+}
+
+function isSurvivorAllowlistSpelling(spelling) {
+  if (spelling === 'help') return true;
+  const command = COMMAND_SURFACE.resolve(spelling);
+  return Boolean(command && SURVIVOR_NAME_SET.has(command.name));
+}
+
+function synopsisMap(value) {
+  if (value && value.commands && !Array.isArray(value.commands)) return value.commands;
+  return value || {};
+}
+
+function normalizeRunCommandDescription(tool) {
+  const command = tool?.inputSchema?.properties?.command;
+  if (tool?.name !== 'run_command' || !command || typeof command.description !== 'string') return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...tool.inputSchema.properties,
+        command: { ...command, description: 'Allowlisted CLI command name.' },
+      },
+    },
+  };
+}
+
+// #554: historical fixtures keep the full catalog. The live gate compares survivors.
+export function alignContractToSurvivors(contract) {
+  const toolNames = survivorToolNameSet();
+  const servedAllowlist = new Set(MCP_RUN_COMMAND_ALLOWLIST);
+  const mcp = contract?.mcp || {};
+  const commands = (contract?.commands || []).filter(command => SURVIVOR_NAME_SET.has(command.name));
+  const tools = (mcp.tools || [])
+    .filter(tool => toolNames.has(tool.name))
+    .map(normalizeRunCommandDescription);
+  const allow = list => (list || []).filter(spelling => isSurvivorAllowlistSpelling(spelling));
+  const mappingCases = (mcp.mappingCases || []).filter(entry => {
+    if (entry.tool !== 'run_command') return toolNames.has(entry.tool);
+    return servedAllowlist.has(entry.args?.command);
+  });
+  const invalidCases = (mcp.invalidCases || []).filter(entry => {
+    if (entry.kind === 'resource') return true;
+    if (entry.tool && entry.tool !== 'run_command') return toolNames.has(entry.tool);
+    const spelling = entry.args?.command;
+    if (!spelling) return true;
+    return servedAllowlist.has(spelling) || spelling === 'rm';
+  });
+  const cliCases = (contract?.cliCases || []).map(entry => (
+    entry?.id === 'help' || entry?.id === 'no-args-help'
+      ? { ...entry, stdout: '<survivor-synopsis-file>' }
+      : entry
+  ));
+  return {
+    ...contract,
+    commands,
+    cliCases,
+    mcp: {
+      ...mcp,
+      tools,
+      runCommandAllowlist: allow(mcp.runCommandAllowlist),
+      runCommandMutating: allow(mcp.runCommandMutating),
+      mappingCases,
+      invalidCases,
+    },
+  };
+}
+
+export function liveSurvivorSynopses(surface = COMMAND_SURFACE) {
+  const commands = {};
+  for (const name of SURVIVOR_COMMANDS) {
+    const command = surface.resolve(name);
+    if (!command?.help) throw new Error(`COMMAND_SURFACE.resolve cannot see help for ${name}`);
+    commands[name] = { synopsis: command.help.synopsis, summary: command.help.summary };
+  }
+  return { schema: 'chrome-cdp-ex.survivor-synopsis.v1', commands };
+}
+
+export function survivorSynopsisDifferences(expected, actual) {
+  const left = synopsisMap(expected);
+  const right = synopsisMap(actual);
+  const differences = [];
+  for (const name of SURVIVOR_COMMANDS) {
+    if (!left[name]) {
+      differences.push(`${name}: missing expected synopsis`);
+      continue;
+    }
+    if (!right[name]) {
+      differences.push(`${name}: missing live synopsis`);
+      continue;
+    }
+    if (left[name].synopsis !== right[name].synopsis) {
+      differences.push(`${name}.synopsis: expected ${JSON.stringify(left[name].synopsis)}, received ${JSON.stringify(right[name].synopsis)}`);
+    }
+    if (left[name].summary !== right[name].summary) {
+      differences.push(`${name}.summary: expected ${JSON.stringify(left[name].summary)}, received ${JSON.stringify(right[name].summary)}`);
+    }
+  }
+  return differences;
+}
+
 export async function runContractCheck({ rootDir = DEFAULT_ROOT, version, write = false, tarball = null }) {
   const actual = await buildPublicContract({ rootDir });
   if (version !== actual.productVersion) {
@@ -503,9 +615,20 @@ export async function runContractCheck({ rootDir = DEFAULT_ROOT, version, write 
   } catch (error) {
     throw new Error(`Unable to read public contract fixture ${path}: ${error.message}`);
   }
-  const differences = diffContracts(expected, actual);
+  const differences = diffContracts(alignContractToSurvivors(expected), alignContractToSurvivors(actual));
   if (differences.length) {
     throw new Error(`Public contract drift detected:\n${differences.map(line => `- ${line}`).join('\n')}`);
+  }
+  const synopsisPath = join(dirname(path), 'survivor-synopsis.v1.json');
+  let synopsisFixture;
+  try {
+    synopsisFixture = readJson(synopsisPath);
+  } catch (error) {
+    throw new Error(`Unable to read survivor synopsis fixture ${synopsisPath}: ${error.message}`);
+  }
+  const synopsisDifferences = survivorSynopsisDifferences(synopsisFixture, liveSurvivorSynopses());
+  if (synopsisDifferences.length) {
+    throw new Error(`Survivor synopsis drift detected:\n${synopsisDifferences.map(line => `- ${line}`).join('\n')}`);
   }
   checkPackageInventory(rootDir, version, tarball);
   return { mode: 'check', path };
