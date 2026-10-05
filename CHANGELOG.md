@@ -13,6 +13,12 @@
   * Decisions on each command (fold, re-card, deprecate, MCP scope) move to
     [#544](https://github.com/EndeavorYen/chrome-cdp-ex/issues/544).
 
+* Dual-window usage report ([#544](https://github.com/EndeavorYen/chrome-cdp-ex/issues/544)).
+  * `npm run usage:report` compares trailing `7d` and `30d` counts (`--windows 7d,30d`). A command with
+    zero use in both windows is listed, and the report prints one hint line. It does not assign a fate,
+    fold names, change the survivor card, or remove a command.
+  * `--since YYYY-MM-DD` still prints the single-window report.
+
 * In background mode, a capture of a hidden tab (a background tab, or any tab of a minimized window) no
   longer gives up after one frameless attempt. It retries once with focus emulation on for that capture
   (`Emulation.setFocusEmulationEnabled`), then switches it off again. Focus emulation makes the document
