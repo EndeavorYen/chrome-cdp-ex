@@ -8626,6 +8626,8 @@ function actionObservationPerceiveOpts(targetId, extra = {}) {
   return {
     ...extra,
     cards: false,
+    // An action settle must not renumber the refs from the agent's last perceive (#548).
+    preserveRefs: true,
     targetPrefix: extra.targetPrefix || targetPrefixForDisplay(targetId),
   };
 }
@@ -13761,11 +13763,26 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   const currTreeStart = currHeaderEnd >= 0 ? currHeaderEnd + 1 : 5;
   const prevTree = prev.slice(prevTreeStart).map(stripPerceiveIdentityChrome);
   const currTree = curr.slice(currTreeStart).map(stripPerceiveIdentityChrome);
-  // Line-level diff with StaticText noise filtering.
-  const prevSet = new Set(prevTree);
-  const currSet = new Set(currTree);
-  const removed = prevTree.filter(l => !currSet.has(l));
-  const added = currTree.filter(l => !prevSet.has(l));
+  // Line-level diff with StaticText noise filtering. A ref number is not page identity: an action
+  // settle keeps numbers (#548) and a later perceive renumbers, so lines compare without `@N`.
+  // Reported lines keep their refs.
+  const refFreeKey = line => line.replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
+  // Count each key, so one of two identical lines going away is still reported.
+  const unmatched = (lines, other) => {
+    const left = new Map();
+    for (const line of other) left.set(refFreeKey(line), (left.get(refFreeKey(line)) || 0) + 1);
+    return lines.filter(line => {
+      const key = refFreeKey(line);
+      const count = left.get(key) || 0;
+      if (count > 0) {
+        left.set(key, count - 1);
+        return false;
+      }
+      return true;
+    });
+  };
+  const removed = unmatched(prevTree, currTree);
+  const added = unmatched(currTree, prevTree);
   const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
   const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
   const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
@@ -13983,8 +14000,11 @@ function formatRefRect(rect) {
 
 // Pure tree-building logic extracted from perceiveStr for testability.
 // Takes raw AX nodes + page metadata, returns enriched tree lines and ref node IDs.
+// Highest numeric ref a ref map has handed out; it survives refMap.clear() (#548).
+const REF_HIGH_WATER = Symbol('refHighWater');
+
 function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
-  const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null } = opts;
+  const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null, preserveRefs = false } = opts;
   // opts.adaptive + opts.consoleErrors are used by the --last auto / --adaptive budget path
   // opts.cursorInteractive is accepted so -C ranking shares this path with last/adaptive.
 
@@ -14015,9 +14035,23 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const rowCellIdx = new Map();
   const dataRowIdx = new Map();
 
-  // Clear and rebuild ref map
-  refMap.clear();
+  // Clear and rebuild ref map. An action settle (preserveRefs) keeps the number each node already
+  // has, so a ref the agent read still names the same element; a new node gets a number above every
+  // number handed out before, never a freed one (#548).
+  const preservedRefByNode = new Map();
   let refCounter = 0;
+  if (preserveRefs) {
+    refCounter = refMap[REF_HIGH_WATER] || 0;
+    for (const [ref, backendNodeId] of refMap) {
+      if (!Number.isInteger(ref)) continue;
+      // A node listed twice keeps each of its numbers, lowest first.
+      if (!preservedRefByNode.has(backendNodeId)) preservedRefByNode.set(backendNodeId, []);
+      preservedRefByNode.get(backendNodeId).push(ref);
+      if (ref > refCounter) refCounter = ref;
+    }
+    for (const refs of preservedRefByNode.values()) refs.sort((a, b) => a - b);
+  }
+  refMap.clear();
   const refNodeIds = [];
   const pendingContentRefs = [];
   const pendingRestRefs = [];
@@ -14059,10 +14093,12 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
   function assignInteractiveRef(node) {
     if (!node.backendDOMNodeId) return null;
-    refCounter++;
-    refMap.set(refCounter, node.backendDOMNodeId);
-    refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
-    return refCounter;
+    let ref = (preservedRefByNode.get(node.backendDOMNodeId) || []).find(kept => !refMap.has(kept));
+    if (ref == null) ref = ++refCounter;
+    refMap.set(ref, node.backendDOMNodeId);
+    refMap[REF_HIGH_WATER] = Math.max(refMap[REF_HIGH_WATER] || 0, ref);
+    refNodeIds.push({ ref, backendDOMNodeId: node.backendDOMNodeId });
+    return ref;
   }
 
   function childRegion(ctx, counts) {
@@ -14741,6 +14777,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     last,
     adaptive,
     cursorInteractive,
+    preserveRefs: opts.preserveRefs === true,
     consoleErrors: errors + exceptions,
     targetPrefix: opts.targetPrefix || '<target>',
   });
