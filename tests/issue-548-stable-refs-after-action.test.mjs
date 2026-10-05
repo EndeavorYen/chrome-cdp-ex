@@ -65,6 +65,13 @@ describe('#548 an action settle does not renumber the refs the agent holds', () 
     expect(withNew).not.toContain('Login');
   });
 
+  it('perceive --diff still reports one of two identical lines going away', () => {
+    const header = ['Page: list — http://127.0.0.1:8799/', 'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none', 'Interactive: 2', 'Console: clean', ''];
+    const two = [...header, '[WebArea] list', '  [button] Delete  @1', '  [button] Delete  @2'].join('\n');
+    const one = [...header, '[WebArea] list', '  [button] Delete  @1'].join('\n');
+    expect(T.formatPerceiveDiffOutput(two, one)).toContain('[button] Delete');
+  });
+
   it('T3 action settle and hover recapture perceive with preserveRefs', () => {
     expect(T.actionObservationPerceiveOpts('48515122').preserveRefs).toBe(true);
     expect(T.actionObservationPerceiveOpts('48515122', { frameRef: '@f1' }).preserveRefs).toBe(true);

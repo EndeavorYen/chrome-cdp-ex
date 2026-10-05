@@ -13767,10 +13767,22 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   // settle keeps numbers (#548) and a later perceive renumbers, so lines compare without `@N`.
   // Reported lines keep their refs.
   const refFreeKey = line => line.replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
-  const prevSet = new Set(prevTree.map(refFreeKey));
-  const currSet = new Set(currTree.map(refFreeKey));
-  const removed = prevTree.filter(l => !currSet.has(refFreeKey(l)));
-  const added = currTree.filter(l => !prevSet.has(refFreeKey(l)));
+  // Count each key, so one of two identical lines going away is still reported.
+  const unmatched = (lines, other) => {
+    const left = new Map();
+    for (const line of other) left.set(refFreeKey(line), (left.get(refFreeKey(line)) || 0) + 1);
+    return lines.filter(line => {
+      const key = refFreeKey(line);
+      const count = left.get(key) || 0;
+      if (count > 0) {
+        left.set(key, count - 1);
+        return false;
+      }
+      return true;
+    });
+  };
+  const removed = unmatched(prevTree, currTree);
+  const added = unmatched(currTree, prevTree);
   const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
   const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
   const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
