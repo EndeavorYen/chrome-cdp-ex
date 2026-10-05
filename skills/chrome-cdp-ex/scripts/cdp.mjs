@@ -25007,6 +25007,51 @@ function spawnOutputChunk(chunk) {
   return Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
 }
 
+function utf8SequenceLength(buf, index) {
+  const lead = buf[index];
+  let len = 0;
+  if (lead < 0x80) len = 1;
+  else if ((lead & 0xe0) === 0xc0 && lead >= 0xc2) len = 2;
+  else if ((lead & 0xf0) === 0xe0) len = 3;
+  else if ((lead & 0xf8) === 0xf0 && lead <= 0xf4) len = 4;
+  if (!len || index + len > buf.length) return 0;
+  for (let j = 1; j < len; j++) {
+    if ((buf[index + j] & 0xc0) !== 0x80) return 0;
+  }
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(index, index + len));
+    return [...text].length === 1 ? len : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// A tail window may start on a continuation byte. Skip that split code point, then keep every
+// well-formed sequence. Illegal bytes are dropped and never become U+FFFD. `omitted` is true only
+// when an illegal byte was dropped, not when the window merely started mid-character.
+function decodeSpawnBytes(buf) {
+  let start = 0;
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start += 1;
+  const body = buf.subarray(start);
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(body), omitted: false };
+  } catch {
+    let text = '';
+    let omitted = false;
+    for (let i = 0; i < body.length;) {
+      const len = utf8SequenceLength(body, i);
+      if (!len) {
+        omitted = true;
+        i += 1;
+        continue;
+      }
+      text += new TextDecoder('utf-8', { fatal: true }).decode(body.subarray(i, i + len));
+      i += len;
+    }
+    return { text, omitted };
+  }
+}
+
 function captureSpawnOutput(child, maxBytes = 4096) {
   const output = { stdout: '', stderr: '', stdoutOmitted: false, stderrOmitted: false };
   for (const key of ['stdout', 'stderr']) {
@@ -25030,13 +25075,9 @@ function captureSpawnOutput(child, maxBytes = 4096) {
         }
       }
       const joined = Buffer.concat(chunks, size);
-      try {
-        output[key] = new TextDecoder('utf-8', { fatal: true }).decode(joined);
-        output[`${key}Omitted`] = false;
-      } catch {
-        output[key] = '';
-        output[`${key}Omitted`] = true;
-      }
+      const decoded = decodeSpawnBytes(joined);
+      output[key] = decoded.text;
+      output[`${key}Omitted`] = decoded.omitted;
     });
   }
   return output;

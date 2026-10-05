@@ -151,9 +151,25 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
     });
     expect(text).not.toContain(mojibake.toString('latin1'));
     expect(text).not.toContain('\uFFFD');
-    expect(text).not.toMatch(/^stdout:/m);
     expect(text).toContain('Kind: profile-in-use');
     expect(text).not.toContain('--headless --no-sandbox');
+  });
+
+  it('keeps a UTF-8 tail that starts mid-character as an ordinary early exit', async () => {
+    const chunk = Buffer.concat([Buffer.from([0x80]), Buffer.from('renderer exited cleanly')]);
+    const { text } = await spawnChrome({}, {
+      spawn: () => childWithStdout(chunk),
+      waitForSpawnedCdp: async ({ output }) => ({
+        ok: false,
+        exited: true,
+        exitCode: 0,
+        stdout: output?.stdout || '',
+        stderr: output?.stderr || '',
+      }),
+    });
+    expect(text).toContain('renderer exited cleanly');
+    expect(text).toContain('exited early');
+    expect(text).not.toContain('Kind: profile-in-use');
   });
 
   it('T7 keeps exited-early for a non-zero exit that is not a hand-off', async () => {
