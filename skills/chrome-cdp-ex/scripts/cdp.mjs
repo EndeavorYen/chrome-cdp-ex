@@ -14990,6 +14990,35 @@ function elementScreenshotClip(rect, scroll = {}, pad = 8) {
   };
 }
 
+// Click's nameOf rule: collapse whitespace, then keep 80 characters. No ellipsis (#547).
+function elshotReceiptLabel(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim().substring(0, 80);
+}
+
+function formatElshotReceipt(desc, { w, h, clip = null, fallback = false, path }) {
+  const fb = fallback ? ' (fallback)' : '';
+  const clipText = clip
+    ? ` (clip: ${Math.round(clip.width)}×${Math.round(clip.height)} with padding)`
+    : '';
+  return `Element screenshot of ${desc} — ${Math.round(w)}×${Math.round(h)} CSS px${clipText}${fb} -> ${path}`;
+}
+
+// resolveRef's text is already cut at 80 before whitespace collapse. Read the full
+// aria-label, title, or textContent here so elshot cuts after collapse (#547).
+async function elshotRefLabel(cdp, sid, refMap, ref, refState) {
+  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const read = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId,
+    functionDeclaration: `function() {
+      /* elshot-label */
+      return (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80);
+    }`,
+    returnByValue: true,
+  }, sid, REF_RESOLVE_TIMEOUT);
+  if (read.exceptionDetails) throw new Error(runtimeExceptionMessage(read.exceptionDetails));
+  return String(read.result?.value ?? '');
+}
+
 // elshot <sel|@ref> [file] [--format text] (#526): the first positional is the selector, the
 // second the output file. Any other flag or a third positional is an error, never a file name.
 function parseElshotArgs(args = []) {
@@ -15026,6 +15055,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
+    const label = await elshotRefLabel(cdp, sid, refMap, selector, refState);
     await sleep(100);
     const scroll = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ x: window.scrollX, y: window.scrollY })'));
     const clip = elementScreenshotClip(r, scroll);
@@ -15033,8 +15063,12 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
     const prefix = (targetId || 'unknown').slice(0, 8);
     const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
     writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
-    const fb = fallback ? ' (fallback)' : '';
-    return `${out}\nElement screenshot of <${r.tag}> "${r.text}" (${selector}) — ${Math.round(r.w)}×${Math.round(r.h)} CSS px${fb}`;
+    return formatElshotReceipt(`<${r.tag}> "${elshotReceiptLabel(label)}" (${selector})`, {
+      w: r.w,
+      h: r.h,
+      fallback,
+      path: out,
+    });
   }
   // Scroll element into view and get its bounding rect
   const expr = `
@@ -15048,7 +15082,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
         x: rect.x, y: rect.y, w: rect.width, h: rect.height,
         scrollX: window.scrollX, scrollY: window.scrollY,
         tag: el.tagName, id: el.id,
-        text: el.textContent.trim().substring(0, 60)
+        text: (el.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80)
       };
     })()
   `;
@@ -15069,9 +15103,8 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
   const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-${selSafe}.png`);
   writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
 
-  const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${r.text}"`;
-  const fb = fallback ? ' (fallback)' : '';
-  return `${out}\nElement screenshot of ${desc} — ${Math.round(r.w)}×${Math.round(r.h)} CSS px (clip: ${Math.round(clip.width)}×${Math.round(clip.height)} with padding)${fb}`;
+  const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${elshotReceiptLabel(r.text)}"`;
+  return formatElshotReceipt(desc, { w: r.w, h: r.h, clip, fallback, path: out });
 }
 
 // Attach a no-op rejection handler now and return the same promise for a later await.

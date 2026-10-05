@@ -214,6 +214,17 @@ describe('#465 screenshot tools return an image content block', () => {
     }
   }));
 
+  it('T3: attaches an elshot PNG named at the end of the one-line receipt', withRuntimeDir(async runtimeDir => {
+    const path = join(runtimeDir, 'elshot-ABCDEF12-ref3.png');
+    writeFileSync(path, TINY_PNG);
+    const line = `Element screenshot of <FORM>#composer "a b" — 10×20 CSS px (clip: 26×36 with padding) -> ${path}`;
+    const reply = await harness(async () => ({ code: 0, stdout: line, stderr: '' }), { runtimeDir })
+      .call('run_command', { command: 'elshot', args: ['ABCDEF12', '#composer'], confirm: true });
+    expect(reply.result.content[1]).toEqual({
+      type: 'image', data: TINY_PNG.toString('base64'), mimeType: 'image/png',
+    });
+  }));
+
   it('attaches images for allowlisted screenshot spellings and refuses fullshot', withRuntimeDir(async runtimeDir => {
     const path = join(runtimeDir, 'elshot-ABCDEF12-ref3.png');
     writeFileSync(path, TINY_PNG);
