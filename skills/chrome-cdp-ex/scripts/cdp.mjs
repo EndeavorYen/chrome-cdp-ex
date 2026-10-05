@@ -12071,27 +12071,46 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     const styleOf = node => { try { return getComputedStyle(node); } catch { return null; } };
     const escapeMode = position => (position === 'fixed' || position === 'absolute' ? position : 'flow');
     const clippingAncestors = [];
+    // body's overflow reaches the viewport only while html's is visible on both axes.
+    const htmlStyle = docElement ? styleOf(docElement) : null;
+    const bodyPropagates = !htmlStyle
+      || (String(htmlStyle.overflowX || 'visible') === 'visible' && String(htmlStyle.overflowY || 'visible') === 'visible');
+    // transform, filter and contain make an element the containing block of fixed/absolute children.
+    const containsOutOfFlow = style => Boolean(style) && (
+      (style.transform && style.transform !== 'none')
+      || (style.filter && style.filter !== 'none')
+      || /paint|layout|strict|content/.test(String(style.contain || '')));
     let mode = escapeMode(String(styleOf(this)?.position || 'static'));
-    for (let node = this.parentNode, guard = 0; node && mode !== 'fixed' && guard < 4096; guard++) {
+    // Slotted content is clipped by the shadow tree it is rendered in: follow assignedSlot first.
+    const nextUp = node => node.assignedSlot || node.parentNode;
+    for (let node = nextUp(this), guard = 0; node && mode !== 'fixed' && guard < 4096; guard++) {
       if (node.nodeType === 11 && node.host) { node = node.host; continue; }
       if (node.nodeType !== 1) break;
       const style = styleOf(node);
       const position = String(style?.position || 'static');
-      const containingBlock = mode === 'flow' || position !== 'static';
-      if (containingBlock && node !== docElement && node !== docBody && style) {
+      const containingBlock = mode === 'flow' || position !== 'static' || containsOutOfFlow(style);
+      const display = String(style?.display || '');
+      const propagates = node === docElement || (node === docBody && bodyPropagates);
+      // overflow does not apply to display:contents or inline boxes.
+      if (containingBlock && !propagates && style && display !== 'contents' && display !== 'inline') {
         const clipX = String(style.overflowX || 'visible') !== 'visible';
         const clipY = String(style.overflowY || 'visible') !== 'visible';
         if (clipX || clipY) clippingAncestors.push({ node, clipX, clipY });
       }
-      if (containingBlock) mode = escapeMode(position);
-      node = node.parentNode;
+      if (containingBlock) mode = containsOutOfFlow(style) && position === 'static' ? 'flow' : escapeMode(position);
+      node = nextUp(node);
     }
+    // Overflow clips at the padding box, inside borders and scrollbars.
     const clipBox = () => {
       const box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
       for (const { node, clipX, clipY } of clippingAncestors) {
         const r = node.getBoundingClientRect();
-        if (clipX) { box.left = Math.max(box.left, r.x); box.right = Math.min(box.right, r.x + r.width); }
-        if (clipY) { box.top = Math.max(box.top, r.y); box.bottom = Math.min(box.bottom, r.y + r.height); }
+        const left = r.x + (Number(node.clientLeft) || 0);
+        const top = r.y + (Number(node.clientTop) || 0);
+        const width = Number(node.clientWidth) > 0 ? Number(node.clientWidth) : r.width;
+        const height = Number(node.clientHeight) > 0 ? Number(node.clientHeight) : r.height;
+        if (clipX) { box.left = Math.max(box.left, left); box.right = Math.min(box.right, left + width); }
+        if (clipY) { box.top = Math.max(box.top, top); box.bottom = Math.min(box.bottom, top + height); }
       }
       return box;
     };

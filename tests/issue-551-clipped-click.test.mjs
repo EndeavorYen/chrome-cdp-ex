@@ -118,9 +118,9 @@ describe('#551 a click target clipped by a scrollable ancestor', () => {
 describe('#551 does not call a target clipped when it is not', () => {
   it('ignores html/body overflow, which propagates to the viewport', async () => {
     const dom = fakeDom();
-    // html, body { height: 100%; overflow-x: hidden } scrolled down: body's rect is one viewport tall
-    // and sits above the target.
-    const html = dom.el('html', { overflow: 'hidden', overflowY: 'auto', rect: { x: 0, y: -1200, width: 780, height: 900 } });
+    // body { height: 100%; overflow-x: hidden } with html visible: body's overflow goes to the
+    // viewport, and scrolled down its rect is one viewport tall and sits above the target.
+    const html = dom.el('html', { rect: { x: 0, y: -1200, width: 780, height: 900 } });
     const body = dom.el('body', { parent: html, overflow: 'hidden', overflowY: 'auto', rect: { x: 0, y: -1200, width: 780, height: 900 } });
     const button = dom.el('button', { text: 'Save', parent: body, rect: { x: 100, y: 400, width: 80, height: 30 } });
     dom.doc.documentElement = html;
