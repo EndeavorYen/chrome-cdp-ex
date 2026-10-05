@@ -13722,11 +13722,14 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   const currTreeStart = currHeaderEnd >= 0 ? currHeaderEnd + 1 : 5;
   const prevTree = prev.slice(prevTreeStart).map(stripPerceiveIdentityChrome);
   const currTree = curr.slice(currTreeStart).map(stripPerceiveIdentityChrome);
-  // Line-level diff with StaticText noise filtering.
-  const prevSet = new Set(prevTree);
-  const currSet = new Set(currTree);
-  const removed = prevTree.filter(l => !currSet.has(l));
-  const added = currTree.filter(l => !prevSet.has(l));
+  // Line-level diff with StaticText noise filtering. A ref number is not page identity: an action
+  // settle keeps numbers (#548) and a later perceive renumbers, so lines compare without `@N`.
+  // Reported lines keep their refs.
+  const refFreeKey = line => line.replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
+  const prevSet = new Set(prevTree.map(refFreeKey));
+  const currSet = new Set(currTree.map(refFreeKey));
+  const removed = prevTree.filter(l => !currSet.has(refFreeKey(l)));
+  const added = currTree.filter(l => !prevSet.has(refFreeKey(l)));
   const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
   const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
   const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
@@ -13985,10 +13988,15 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const preservedRefByNode = new Map();
   let refCounter = 0;
   if (preserveRefs) {
+    refCounter = refMap[REF_HIGH_WATER] || 0;
     for (const [ref, backendNodeId] of refMap) {
-      if (Number.isInteger(ref)) preservedRefByNode.set(backendNodeId, ref);
+      if (!Number.isInteger(ref)) continue;
+      // A node listed twice keeps each of its numbers, lowest first.
+      if (!preservedRefByNode.has(backendNodeId)) preservedRefByNode.set(backendNodeId, []);
+      preservedRefByNode.get(backendNodeId).push(ref);
+      if (ref > refCounter) refCounter = ref;
     }
-    refCounter = Math.max(refMap[REF_HIGH_WATER] || 0, ...preservedRefByNode.values(), 0);
+    for (const refs of preservedRefByNode.values()) refs.sort((a, b) => a - b);
   }
   refMap.clear();
   const refNodeIds = [];
@@ -14032,8 +14040,8 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
   function assignInteractiveRef(node) {
     if (!node.backendDOMNodeId) return null;
-    let ref = preservedRefByNode.get(node.backendDOMNodeId);
-    if (ref == null || refMap.has(ref)) ref = ++refCounter;
+    let ref = (preservedRefByNode.get(node.backendDOMNodeId) || []).find(kept => !refMap.has(kept));
+    if (ref == null) ref = ++refCounter;
     refMap.set(ref, node.backendDOMNodeId);
     refMap[REF_HIGH_WATER] = Math.max(refMap[REF_HIGH_WATER] || 0, ref);
     refNodeIds.push({ ref, backendDOMNodeId: node.backendDOMNodeId });
