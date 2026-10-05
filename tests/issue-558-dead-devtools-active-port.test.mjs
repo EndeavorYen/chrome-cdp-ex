@@ -85,6 +85,34 @@ describe('#558 dead DevToolsActivePort falls through to the remembered port', ()
     await expect(T.getWsUrl(opts)).rejects.not.toThrow(/no DevToolsActivePort/i);
   });
 
+  it('a 9224 file port that returns HTTP 404 and refuses its socket does not replace the remembered port', async () => {
+    const remembered = [];
+    const fetched = [];
+    const url = await T.getWsUrl({
+      env: { CDP_PORT_FILE: portFile('9224') },
+      fetcher: async (target) => {
+        fetched.push(String(target));
+        const port = String(target).match(/:(\d+)\//)?.[1];
+        if (port === '9222') throw new Error('connect ECONNREFUSED 127.0.0.1:9222');
+        if (port === '9224') return { ok: false, status: 404, json: async () => ({}) };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ Browser: 'Chrome/154.0.0.0', webSocketDebuggerUrl: LIVE_WS }),
+        };
+      },
+      lastEndpoint: { host: '127.0.0.1', port: LIVE_PORT, profileDir: 'C:/profiles/live' },
+      rememberEndpoint: (record) => remembered.push(record),
+      connectWebSocket: async () => {
+        throw new Error('WebSocket refused');
+      },
+    });
+
+    expect(url).toBe(LIVE_WS);
+    expect(remembered.map(record => String(record.port))).not.toContain('9224');
+    expect(fetched.filter(target => target.includes(':9224/'))).toHaveLength(1);
+  });
+
   it('a file port whose HTTP 404 still opens its websocket stays that endpoint', async () => {
     const file = portFile(DEAD_PORT);
     const fetched = [];
