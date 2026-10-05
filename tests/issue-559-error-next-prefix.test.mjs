@@ -39,4 +39,11 @@ describe('#559 action failure Next uses the 8-character target prefix', () => {
     expect(classifyActionFailure(err, { action: 'scroll', target: { targetId: 'C3573E' } }).nextCommand).toBe('cdp perceive C3573E -C -d 8');
     expect(classifyActionFailure(err, { action: 'scroll', target: {} }).nextCommand).toBe('cdp perceive <target> -C -d 8');
   });
+
+  it('a long alias stays whole in every printed command', async () => {
+    const { actionTargetCommandPrefix } = await import('../skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs');
+    expect(actionTargetCommandPrefix({ targetId: '@checkout-app' })).toBe('@checkout-app');
+    expect(actionTargetCommandPrefix({ targetId: FULL_ID })).toBe('C3573E00');
+    expect(actionTargetCommandPrefix({})).toBe('<target>');
+  });
 });

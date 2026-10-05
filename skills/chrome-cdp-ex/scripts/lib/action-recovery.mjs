@@ -14,11 +14,12 @@ export function actionFailureTargetId(target = {}) {
   return target?.targetId || target?.id || target?.target || '<target>';
 }
 
-// #559: printed recovery commands name a tab the way `list` does: a full hex target id becomes
-// its 8-character prefix. Aliases, short prefixes and the placeholder pass through.
+// #559: printed recovery commands name a tab the way `list` does: a target id becomes its
+// 8-character prefix. Aliases (@name), short prefixes and the placeholder pass through.
 export function actionFailureCommandTarget(target = {}) {
   const id = String(actionFailureTargetId(target) || '');
-  return /^[0-9A-F]{9,}$/i.test(id) ? id.slice(0, 8) : id;
+  if (id.startsWith('@') || id === '<target>') return id;
+  return id.slice(0, 8);
 }
 
 export function actionFailureInput(target = {}) {
@@ -29,10 +30,9 @@ export function actionTargetCommandId(target = {}) {
   return actionFailureTargetId(target);
 }
 
+// One rule for every printed command (#559): a full hex id becomes its prefix, an alias stays whole.
 export function actionTargetCommandPrefix(target = {}) {
-  const id = String(actionTargetCommandId(target) || '');
-  if (!id || id === '<target>') return '<target>';
-  return id.slice(0, 8);
+  return actionFailureCommandTarget(target) || '<target>';
 }
 
 export function isPdfViewerActionTarget(target = {}) {
