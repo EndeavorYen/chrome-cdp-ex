@@ -12,7 +12,7 @@ function fakeDom({ innerWidth = 780, innerHeight = 900 } = {}) {
     getRootNode() { return doc; }
   }
   const doc = { nodeType: 9, hitAt: () => null, elementFromPoint(x, y) { return this.hitAt(x, y); } };
-  function el(tag, { id = '', className = '', text = '', parent = null, rect = null, overflow = 'visible' } = {}) {
+  function el(tag, { id = '', className = '', text = '', parent = null, rect = null, overflow = 'visible', overflowY = null, position = 'static' } = {}) {
     const node = Object.create(Node.prototype);
     Object.assign(node, {
       nodeType: 1,
@@ -23,6 +23,8 @@ function fakeDom({ innerWidth = 780, innerHeight = 900 } = {}) {
       _parent: parent,
       _rect: rect || { x: 0, y: 0, width: 0, height: 0 },
       _overflow: overflow,
+      _overflowY: overflowY || overflow,
+      _position: position,
       scrolls: 0,
       getAttribute: () => null,
       getBoundingClientRect() { return { ...this._rect }; },
@@ -37,7 +39,7 @@ function fakeDom({ innerWidth = 780, innerHeight = 900 } = {}) {
     document: doc,
     location: { href: 'file:///dialog.html' },
     Node,
-    getComputedStyle: node => ({ position: 'static', overflowX: node._overflow, overflowY: node._overflow }),
+    getComputedStyle: node => ({ position: node._position || 'static', overflowX: node._overflow, overflowY: node._overflowY }),
     Promise, Date, setTimeout, Math, Object, Reflect, String, Number, Array,
   };
   return { doc, el, context };
@@ -52,7 +54,8 @@ async function settledRect(context, node) {
 // inside the 900px viewport but below the grid's visible bottom (300).
 function dialogLayout({ overflow = 'auto' } = {}) {
   const dom = fakeDom();
-  const body = dom.el('body', { rect: { x: 0, y: 0, width: 780, height: 900 } });
+  const html = dom.el('html', { rect: { x: 0, y: 0, width: 780, height: 900 } });
+  const body = dom.el('body', { parent: html, rect: { x: 0, y: 0, width: 780, height: 900 } });
   const dialog = dom.el('dialog', { id: 'pose-dlg', parent: body, rect: { x: 40, y: 60, width: 700, height: 800 } });
   const grid = dom.el('div', { className: 'pose-grid', parent: dialog, overflow, rect: { x: 60, y: 100, width: 660, height: 200 } });
   const button = dom.el('button', { text: '刪除', parent: grid, rect: { x: 80, y: 798, width: 60, height: 30 } });
@@ -108,6 +111,53 @@ describe('#551 a click target clipped by a scrollable ancestor', () => {
     page.doc.hitAt = () => page.grid;
     const value = await settledRect(page.context, page.button);
     expect(page.button.scrolls).toBe(0);
+    expect(value.hit).toEqual({ covered: false });
+  });
+});
+
+describe('#551 does not call a target clipped when it is not', () => {
+  it('ignores html/body overflow, which propagates to the viewport', async () => {
+    const dom = fakeDom();
+    // html, body { height: 100%; overflow-x: hidden } scrolled down: body's rect is one viewport tall
+    // and sits above the target.
+    const html = dom.el('html', { overflow: 'hidden', overflowY: 'auto', rect: { x: 0, y: -1200, width: 780, height: 900 } });
+    const body = dom.el('body', { parent: html, overflow: 'hidden', overflowY: 'auto', rect: { x: 0, y: -1200, width: 780, height: 900 } });
+    const button = dom.el('button', { text: 'Save', parent: body, rect: { x: 100, y: 400, width: 80, height: 30 } });
+    dom.doc.documentElement = html;
+    dom.doc.body = body;
+    dom.doc.hitAt = () => button;
+    const value = await settledRect(dom.context, button);
+    expect(button.scrolls).toBe(0);
+    expect(value.hit).toEqual({ covered: false });
+  });
+
+  it('a fixed target escapes an overflow:hidden ancestor', async () => {
+    const dom = fakeDom();
+    const shell = dom.el('div', { className: 'app-shell', overflow: 'hidden', rect: { x: 0, y: 0, width: 400, height: 300 } });
+    const fab = dom.el('button', { text: 'New', parent: shell, position: 'fixed', rect: { x: 700, y: 800, width: 50, height: 50 } });
+    dom.doc.hitAt = () => fab;
+    const value = await settledRect(dom.context, fab);
+    expect(fab.scrolls).toBe(0);
+    expect(value.hit).toEqual({ covered: false });
+  });
+
+  it('an absolute target escapes a non-positioned overflow ancestor', async () => {
+    const dom = fakeDom();
+    const card = dom.el('div', { className: 'card', overflow: 'hidden', rect: { x: 0, y: 0, width: 200, height: 100 } });
+    const menu = dom.el('button', { text: 'Item', parent: card, position: 'absolute', rect: { x: 10, y: 150, width: 80, height: 30 } });
+    dom.doc.hitAt = () => menu;
+    const value = await settledRect(dom.context, menu);
+    expect(menu.scrolls).toBe(0);
+    expect(value.hit).toEqual({ covered: false });
+  });
+
+  it('a target larger than its clipping parent passes when its click point is inside', async () => {
+    const dom = fakeDom();
+    const wrap = dom.el('div', { overflow: 'hidden', rect: { x: 100, y: 100, width: 200, height: 40 } });
+    const link = dom.el('span', { text: 'A very long label', parent: wrap, rect: { x: 100, y: 100, width: 260, height: 40 } });
+    dom.doc.hitAt = () => link;
+    const value = await settledRect(dom.context, link);
+    expect(link.scrolls).toBe(0);
     expect(value.hit).toEqual({ covered: false });
   });
 });

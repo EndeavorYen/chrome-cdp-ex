@@ -12061,16 +12061,29 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       const rect = this.getBoundingClientRect();
       return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
     };
-    // #551: visible means inside the viewport and inside every ancestor that clips its overflow.
+    // #551: an ancestor that clips its overflow can hide the click point of a target that is inside
+    // the viewport. Walk the containing-block chain: a fixed element escapes every ancestor, and an
+    // absolute one escapes ancestors that are not positioned. html and body propagate their overflow
+    // to the viewport, so they never clip here. Transforms and contain are not modelled (fail open).
+    const ownerDoc = this.ownerDocument;
+    const docElement = ownerDoc ? ownerDoc.documentElement : null;
+    const docBody = ownerDoc ? ownerDoc.body : null;
+    const styleOf = node => { try { return getComputedStyle(node); } catch { return null; } };
+    const escapeMode = position => (position === 'fixed' || position === 'absolute' ? position : 'flow');
     const clippingAncestors = [];
-    for (let node = this.parentNode, guard = 0; node && guard < 4096; guard++) {
+    let mode = escapeMode(String(styleOf(this)?.position || 'static'));
+    for (let node = this.parentNode, guard = 0; node && mode !== 'fixed' && guard < 4096; guard++) {
       if (node.nodeType === 11 && node.host) { node = node.host; continue; }
       if (node.nodeType !== 1) break;
-      let style = null;
-      try { style = getComputedStyle(node); } catch {}
-      const clipX = Boolean(style) && String(style.overflowX || 'visible') !== 'visible';
-      const clipY = Boolean(style) && String(style.overflowY || 'visible') !== 'visible';
-      if (clipX || clipY) clippingAncestors.push({ node, clipX, clipY });
+      const style = styleOf(node);
+      const position = String(style?.position || 'static');
+      const containingBlock = mode === 'flow' || position !== 'static';
+      if (containingBlock && node !== docElement && node !== docBody && style) {
+        const clipX = String(style.overflowX || 'visible') !== 'visible';
+        const clipY = String(style.overflowY || 'visible') !== 'visible';
+        if (clipX || clipY) clippingAncestors.push({ node, clipX, clipY });
+      }
+      if (containingBlock) mode = escapeMode(position);
       node = node.parentNode;
     }
     const clipBox = () => {
@@ -12082,9 +12095,15 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       }
       return box;
     };
+    // Visible: the whole rect is in the viewport (as before), and the click point is inside every
+    // clipping ancestor. A target larger than its clipping parent passes when its centre shows.
     const insideClip = rect => {
+      if (!(rect.x >= 0 && rect.y >= 0 && rect.x + rect.w <= window.innerWidth && rect.y + rect.h <= window.innerHeight)) return false;
+      if (!clippingAncestors.length) return true;
       const box = clipBox();
-      return rect.x >= box.left && rect.y >= box.top && rect.x + rect.w <= box.right && rect.y + rect.h <= box.bottom;
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      return cx >= box.left && cy >= box.top && cx < box.right && cy < box.bottom;
     };
     const initial = readRect();
     const fullyVisible = insideClip(initial);
