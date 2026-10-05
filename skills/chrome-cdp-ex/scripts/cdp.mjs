@@ -11967,7 +11967,7 @@ function linkFrameNamePageExpression(el) {
 // pointer-events:none layers. Open shadow roots are walked to the deepest element; a closed one
 // stops at its host, which then counts as an ancestor of the target.
 function clickPointHitFunctionSource() {
-  return `function clickPointHit(target, rect) {
+  return `function clickPointHit(target, rect, clip = null) {
     if (!target || target.nodeType !== 1) return null;
     const doc = target.ownerDocument;
     if (!doc || typeof doc.elementFromPoint !== 'function') return null;
@@ -11982,6 +11982,9 @@ function clickPointHitFunctionSource() {
       top = inner;
     }
     if (!top) return null;
+    // #551: a point outside the target's clip-visible rect (a scroll container cuts it off) does not
+    // reach the target, even when an ancestor such as the container's <dialog> is what is there.
+    const clipped = Boolean(clip) && (x < clip.left || y < clip.top || x >= clip.right || y >= clip.bottom);
     const composedParent = node => {
       const parent = node.parentNode;
       return parent && parent.nodeType === 11 && parent.host ? parent.host : parent;
@@ -11994,9 +11997,11 @@ function clickPointHitFunctionSource() {
     };
     // The target, something inside it, or an ancestor (the target itself is not hit-testable,
     // e.g. pointer-events:none) receives the same event a user's click there would send.
-    if (composedContains(target, top) || composedContains(top, target)) return { covered: false };
+    // The target or something inside it is at the point: the browser itself says the click reaches it.
+    if (composedContains(target, top)) return { covered: false };
+    if (!clipped && composedContains(top, target)) return { covered: false };
     const label = typeof top.closest === 'function' ? top.closest('label') : null;
-    if (label && label.control === target) return { covered: false };
+    if (!clipped && label && label.control === target) return { covered: false };
     const positionOf = node => {
       try { return getComputedStyle(node).position || ''; } catch { return ''; }
     };
@@ -12028,7 +12033,9 @@ function clickPointHitFunctionSource() {
       byPosition: positionOf(top),
       within: layer && layer.node !== top ? describe(layer.node, false) : null,
       withinPosition: layer ? layer.position : null,
-      dialog,
+      // A clipped target's own container (an ancestor at the point) is not a dialog to dismiss.
+      dialog: clipped && composedContains(top, target) ? false : dialog,
+      ...(clipped ? { clipped: true } : {}),
     };
   }`;
 }
@@ -12058,9 +12065,71 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       const rect = this.getBoundingClientRect();
       return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
     };
+    // #551: an ancestor that clips its overflow can hide the click point of a target that is inside
+    // the viewport. Walk the containing-block chain: a fixed element escapes every ancestor, and an
+    // absolute one escapes ancestors that are not positioned. html and body propagate their overflow
+    // to the viewport, so they never clip here.
+    const ownerDoc = this.ownerDocument;
+    const docElement = ownerDoc ? ownerDoc.documentElement : null;
+    const docBody = ownerDoc ? ownerDoc.body : null;
+    const styleOf = node => { try { return getComputedStyle(node); } catch { return null; } };
+    const escapeMode = position => (position === 'fixed' || position === 'absolute' ? position : 'flow');
+    const clippingAncestors = [];
+    // body's overflow reaches the viewport only while html's is visible on both axes.
+    const htmlStyle = docElement ? styleOf(docElement) : null;
+    const bodyPropagates = !htmlStyle
+      || (String(htmlStyle.overflowX || 'visible') === 'visible' && String(htmlStyle.overflowY || 'visible') === 'visible');
+    // transform, filter and contain make an element the containing block of fixed/absolute children.
+    const containsOutOfFlow = style => Boolean(style) && (
+      (style.transform && style.transform !== 'none')
+      || (style.filter && style.filter !== 'none')
+      || /paint|layout|strict|content/.test(String(style.contain || '')));
+    let mode = escapeMode(String(styleOf(this)?.position || 'static'));
+    // Slotted content is clipped by the shadow tree it is rendered in: follow assignedSlot first.
+    const nextUp = node => node.assignedSlot || node.parentNode;
+    for (let node = nextUp(this), guard = 0; node && mode !== 'fixed' && guard < 4096; guard++) {
+      if (node.nodeType === 11 && node.host) { node = node.host; continue; }
+      if (node.nodeType !== 1) break;
+      const style = styleOf(node);
+      const position = String(style?.position || 'static');
+      const containingBlock = mode === 'flow' || position !== 'static' || containsOutOfFlow(style);
+      const display = String(style?.display || '');
+      const propagates = node === docElement || (node === docBody && bodyPropagates);
+      // overflow does not apply to display:contents or inline boxes.
+      if (containingBlock && !propagates && style && display !== 'contents' && display !== 'inline') {
+        const clipX = String(style.overflowX || 'visible') !== 'visible';
+        const clipY = String(style.overflowY || 'visible') !== 'visible';
+        if (clipX || clipY) clippingAncestors.push({ node, clipX, clipY });
+      }
+      if (containingBlock) mode = containsOutOfFlow(style) && position === 'static' ? 'flow' : escapeMode(position);
+      node = nextUp(node);
+    }
+    // Overflow clips at the padding box, inside borders and scrollbars.
+    const clipBox = () => {
+      const box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+      for (const { node, clipX, clipY } of clippingAncestors) {
+        const r = node.getBoundingClientRect();
+        const left = r.x + (Number(node.clientLeft) || 0);
+        const top = r.y + (Number(node.clientTop) || 0);
+        const width = Number(node.clientWidth) > 0 ? Number(node.clientWidth) : r.width;
+        const height = Number(node.clientHeight) > 0 ? Number(node.clientHeight) : r.height;
+        if (clipX) { box.left = Math.max(box.left, left); box.right = Math.min(box.right, left + width); }
+        if (clipY) { box.top = Math.max(box.top, top); box.bottom = Math.min(box.bottom, top + height); }
+      }
+      return box;
+    };
+    // Visible: the whole rect is in the viewport (as before), and the click point is inside every
+    // clipping ancestor. A target larger than its clipping parent passes when its centre shows.
+    const insideClip = rect => {
+      if (!(rect.x >= 0 && rect.y >= 0 && rect.x + rect.w <= window.innerWidth && rect.y + rect.h <= window.innerHeight)) return false;
+      if (!clippingAncestors.length) return true;
+      const box = clipBox();
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      return cx >= box.left && cy >= box.top && cx < box.right && cy < box.bottom;
+    };
     const initial = readRect();
-    const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
-      initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
+    const fullyVisible = insideClip(initial);
     if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     // One budget for every settle pass (including the hit-test re-centre), kept below the
     // caller's REF_RESOLVE_TIMEOUT so the CDP call returns instead of timing out (#464).
@@ -12085,8 +12154,7 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
           Math.abs(current.w - previous.w),
           Math.abs(current.h - previous.h),
         );
-        const currentVisible = current.x >= 0 && current.y >= 0 &&
-          current.x + current.w <= window.innerWidth && current.y + current.h <= window.innerHeight;
+        const currentVisible = insideClip(current);
         previous = current;
         stableSamples = movement < 0.5 ? stableSamples + 1 : 0;
         if (currentVisible && stableSamples >= 2) break;
@@ -12097,11 +12165,11 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     let previous = await settle(maxSamples);${hitTest ? `
     ${clickPointHitFunctionSource()}
     ${actionabilityFunctionSource()}
-    let hit = clickPointHit(this, previous);
+    let hit = clickPointHit(this, previous, clipBox());
     if (hit && hit.covered && fullyVisible) {
       this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       previous = await settle(60);
-      hit = clickPointHit(this, previous);
+      hit = clickPointHit(this, previous, clipBox());
       if (hit && hit.covered) hit.recentred = true;
     }` : ''}
     return {
@@ -15802,8 +15870,10 @@ function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
     : String(hit.by || '<unknown>');
   const within = hit.within ? ` (inside position:${hit.withinPosition} ${hit.within})` : '';
   const recentred = hit.recentred ? ' even after scrolling it to the viewport centre' : '';
+  // #551: the target's scroll container cuts it off at the click point.
+  const clipped = hit.clipped ? ' is clipped by its scroll container, so the point' : '';
   const err = new Error(
-    `click point (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)}) of ${target} is covered by ${by}${within}${recentred}. `
+    `click point (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)}) of ${target}${clipped} is covered by ${by}${within}${recentred}. `
     + 'The mouse click was not sent: it would land on the covering element.'
   );
   err.clickCovered = {
@@ -15813,6 +15883,7 @@ function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
     byPosition: hit.byPosition || null,
     dialog: hit.dialog === true,
     recentred: hit.recentred === true,
+    clipped: hit.clipped === true,
   };
   throw err;
 }
@@ -31898,7 +31969,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cdpRuntimeIdentity,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr, pressUsageError,
-  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
+  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, assertClickPointNotCovered, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, perceiveStoreDiffSource, frameViewportOffset,
