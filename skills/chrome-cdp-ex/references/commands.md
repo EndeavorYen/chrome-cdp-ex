@@ -1215,6 +1215,7 @@ must re-perceive (or pivot to a stable selector) and pick the next handle.
 The error you'll see is classified by cause:
 
 - `No refs have been assigned in this daemon yet.` — daemon-start; just run `perceive`.
+- `Refs from the previous daemon were cleared because this tab's daemon restarted.` — this process replaced one that already had refs. Run `perceive` again. `cdp-<target>.log` keeps the previous session: the next `session-start` is appended, and an exit that was logged is a `session-end` line with `reason` `exception`, `idle-timeout`, or `signal`.
 - `Refs were cleared because the page navigated/reloaded after the last perceive (e.g. Vite HMR or in-app routing). Run "perceive" to refresh refs, or use a stable CSS selector for long loops.` — top-level navigation invalidation.
 - `Refs were invalidated by DOM changes after the last perceive. Run "perceive" again, or use a stable CSS selector in batch/loops.` — backend node could not be re-resolved (large rewrite).
 
