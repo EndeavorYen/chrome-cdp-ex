@@ -25158,6 +25158,7 @@ async function liveOtherProfilePort(plan, {
   fs,
   inspectOccupantProfileDir,
   connectWebSocket,
+  readProcessArgv = null,
 } = {}) {
   const candidates = otherRememberedPorts(remembered, plan.profileDir, plan.port);
   try {
@@ -25186,6 +25187,14 @@ async function liveOtherProfilePort(plan, {
       });
     } catch {
       occupant = null;
+    }
+    // Chrome hides its argv from CDP without --enable-automation; the OS command line names the profile.
+    if (!occupant && typeof readProcessArgv === 'function') {
+      try {
+        occupant = profileDirFromCommandLine(await readProcessArgv({ host: plan.host, port }));
+      } catch {
+        occupant = null;
+      }
     }
     // Refuse only an occupant identified as this profile. An unidentified one (a stale port now held
     // by another CDP server) launches; a real duplicate is still caught by the exit-0 hand-off.
@@ -25480,6 +25489,8 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       fs,
       inspectOccupantProfileDir: deps.inspectOccupantProfileDir,
       connectWebSocket: deps.connectWebSocket,
+      readProcessArgv: deps.readBrowserProcessArgv
+        || (process.env.NODE_ENV === 'test' ? null : readBrowserProcessArgv),
     });
     if (livePort) throw profileInUseSpawnError(plan, { livePort });
   }

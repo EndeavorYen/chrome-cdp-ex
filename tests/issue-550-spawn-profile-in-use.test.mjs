@@ -91,7 +91,8 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
       fs: fsFor({ portText: '9333\n/devtools/browser\n' }),
       readLastCdpEndpoint: () => null,
       fetcher: answering('9333'),
-      inspectOccupantProfileDir: async () => PROFILE,
+      // Chrome hides its argv from CDP without --enable-automation; the OS command line names the profile.
+      readBrowserProcessArgv: () => [EXE, '--remote-debugging-port=9333', `--user-data-dir=${PROFILE}`],
     });
     expect(launched).toEqual([]);
     expect(text).toContain('Next: CDP_PORT=9333 cdp list (Kind: profile-in-use)');
@@ -122,7 +123,7 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
       fs: fsFor({ portText: '9333\n/devtools/browser\n' }),
       readLastCdpEndpoint: () => null,
       fetcher: answering('9333'),
-      inspectOccupantProfileDir: async () => null,
+      readBrowserProcessArgv: () => ['/opt/SomeApp/someapp', '--remote-debugging-port=9333'],
     });
     expect(caught).toBeNull();
     expect(launched).toEqual(['spawn']);
