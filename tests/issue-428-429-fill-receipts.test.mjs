@@ -170,7 +170,7 @@ describe('#428 fill reports the real before/after value', () => {
 
     const bare = new Error('fill: @2 did not accept "abc"; live value is still empty');
     const fallback = T.classifyActionFailure(bare, { action: 'fill', target: { targetId: TARGET_ID, input: '@2' } });
-    expect(fallback.nextCommand).toBe(`cdp perceive ${TARGET_ID} -C -d 8`);
+    expect(fallback.nextCommand).toBe(`cdp perceive ${TARGET_ID.slice(0, 8)} -C -d 8`);
     expect(fallback.nextCommand).not.toContain('querySelector');
   });
 

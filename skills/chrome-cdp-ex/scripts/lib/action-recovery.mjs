@@ -14,6 +14,13 @@ export function actionFailureTargetId(target = {}) {
   return target?.targetId || target?.id || target?.target || '<target>';
 }
 
+// #559: printed recovery commands name a tab the way `list` does: a full hex target id becomes
+// its 8-character prefix. Aliases, short prefixes and the placeholder pass through.
+export function actionFailureCommandTarget(target = {}) {
+  const id = String(actionFailureTargetId(target) || '');
+  return /^[0-9A-F]{9,}$/i.test(id) ? id.slice(0, 8) : id;
+}
+
 export function actionFailureInput(target = {}) {
   return target?.input || target?.label || target?.selector || '';
 }
@@ -410,7 +417,7 @@ export function classifyActionFailure(err, context = {}) {
 function classifyActionFailureKind(err, { action = 'action', target = {} } = {}) {
   const originalMessage = actionFailureMessage(err);
   const lower = originalMessage.toLowerCase();
-  const targetId = actionFailureTargetId(target);
+  const targetId = actionFailureCommandTarget(target);
   const input = actionFailureInput(target);
   const frameRef = String(input).match(/^(@f\d+):\d+$/)?.[1] || null;
   const perceiveCommand = frameRef
