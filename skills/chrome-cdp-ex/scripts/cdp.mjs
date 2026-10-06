@@ -1255,6 +1255,7 @@ function createDaemonShutdown({
   statSocket = statSync,
   removeRecord = () => {},
   isWindows = IS_WINDOWS,
+  beforeExit = () => {},
 }) {
   if (!(requestConnections instanceof Set)) throw new Error('daemon request connection registry must be a Set');
   if (typeof getServer !== 'function') throw new Error('daemon server accessor must be a function');
@@ -1262,9 +1263,19 @@ function createDaemonShutdown({
   if (typeof cleanupSession !== 'function') throw new Error('daemon session cleanup must be a function');
   if (typeof exitProcess !== 'function') throw new Error('daemon process exit must be a function');
   let alive = true;
-  return (exitCode = 0) => {
+  return (exitCode = 0, meta = {}) => {
     if (!alive) return;
     alive = false;
+    const info = meta && typeof meta === 'object' ? meta : {};
+    try {
+      beforeExit({
+        exitCode: Number.isInteger(exitCode) ? exitCode : 0,
+        reason: info.reason || 'exit',
+        ...(info.signal ? { signal: info.signal } : {}),
+        ...(info.exceptionKind ? { exceptionKind: info.exceptionKind } : {}),
+        ...(info.message ? { message: info.message } : {}),
+      });
+    } catch {}
     const reason = new Error('daemon shutting down');
     for (const connection of [...requestConnections]) {
       try { connection.abortAll(reason, { retire: true }); } catch {}
@@ -1579,8 +1590,9 @@ function daemonRecordPath(targetId, runtimeDir = RUNTIME_DIR) {
 }
 
 // A tab daemon that dies on an uncaught error leaves one bounded record behind, so the
-// client's "Connection closed before response" can say why (#464). The session log is
-// rewritten by the next daemon, so it cannot carry this.
+// client's "Connection closed before response" can say why (#464). The session log keeps a
+// session-end line for that exit too; the next daemon appends session-start instead of
+// truncating the file (#549).
 const DAEMON_CRASH_SCHEMA = 'chrome-cdp-ex.daemon-crash.v1';
 
 function daemonCrashReportPath(targetId, runtimeDir = RUNTIME_DIR) {
@@ -1614,9 +1626,10 @@ function readDaemonCrashReport(targetId, { sinceMs = 0, runtimeDir = RUNTIME_DIR
   }
 }
 
-function installDaemonCrashRecorder(targetId, { processRef = process, record = recordDaemonCrash } = {}) {
+function installDaemonCrashRecorder(targetId, { processRef = process, record = recordDaemonCrash, onCrash = () => {} } = {}) {
   const fail = kind => error => {
     record(targetId, kind, error);
+    try { onCrash(kind, error); } catch {}
     try { processRef.stderr.write(`Daemon ${kind}: ${error?.stack || error}\n`); } catch {}
     processRef.exit(1);
   };
@@ -10517,25 +10530,64 @@ function appendSessionEnvironmentLog(session, event, { ts = Date.now() } = {}) {
   return entry;
 }
 
-function initializeSessionLog(session, { ts = session.createdAt || Date.now(), writer = writeFileSync } = {}) {
+function initializeSessionLog(session, {
+  ts = session.createdAt || Date.now(),
+  writer = appendFileSync,
+  rename = renameSync,
+  size = path => statSync(path).size,
+  rotateBytes = SESSION_LOG_ROTATE_BYTES,
+} = {}) {
   if (!session.logPath) return null;
-  const payload = {
-    schema: 'chrome-cdp-ex.session-event.v1',
+  let existing = 0;
+  try { existing = size(session.logPath); } catch { existing = 0; }
+  // A new process for a tab that already has a log is a restart: its ref map is empty
+  // because the previous daemon exited, not because this tab was never perceived (#549).
+  if (existing > 0 && session.refs?.invalidationReason === 'daemon-start') {
+    session.refs.invalidationReason = 'daemon-restart';
+  }
+  session.logBytes = existing;
+  return appendSessionEventLog(session, {
     kind: 'session-start',
     ts,
-    targetId: session.targetId,
-    sessionId: session.sessionId,
+    restarted: existing > 0,
+  }, { writer, rename, size, rotateBytes });
+}
+
+function appendSessionExitLog(session, {
+  reason,
+  signal = null,
+  exceptionKind = null,
+  message = null,
+  exitCode = 0,
+  ts = Date.now(),
+} = {}) {
+  const event = { kind: 'session-end', ts, reason, exitCode };
+  if (signal) event.signal = signal;
+  if (exceptionKind) event.exceptionKind = exceptionKind;
+  if (message) event.message = redactSensitiveString(String(message).slice(0, 300));
+  return appendSessionEventLog(session, event);
+}
+
+// Exit lines belong to the daemon that owns the tab log. A loser that exits because another
+// daemon already serves the socket must not append session-end into that log (#549).
+function createDaemonExitLog(session) {
+  let owned = false;
+  return {
+    markOwned() { owned = true; },
+    onCrash(kind, error) {
+      if (!owned) return null;
+      return appendSessionExitLog(session, {
+        reason: 'exception',
+        exceptionKind: kind,
+        message: error?.message || String(error || 'unknown error'),
+        exitCode: 1,
+      });
+    },
+    beforeExit(info) {
+      if (!owned) return null;
+      return appendSessionExitLog(session, info);
+    },
   };
-  try {
-    const line = `${JSON.stringify(payload)}\n`;
-    writer(session.logPath, line, { mode: 0o600 });
-    session.logBytes = Buffer.byteLength(line);
-    return payload;
-  } catch (e) {
-    if (!session.logErrors) session.logErrors = [];
-    session.logErrors.push({ ts: Date.now(), message: e.message });
-    return null;
-  }
 }
 
 function nextSessionActionSequence(session) {
@@ -11856,6 +11908,9 @@ function formatUnknownRefError(ref, state = {}) {
   }
   if (reason === 'dom-mutation') {
     return `Unknown ref: ${ref}. Refs were invalidated by DOM changes after the last perceive. Run "perceive" again, or use a stable CSS selector in batch/loops.`;
+  }
+  if (reason === 'daemon-restart') {
+    return `Unknown ref: ${ref}. Refs from the previous daemon were cleared because this tab's daemon restarted. Run "perceive" to refresh refs, or use a CSS selector.`;
   }
   if (reason === 'daemon-start' || (!state.generation)) {
     return `Unknown ref: ${ref}. No refs have been assigned in this daemon yet. Run "perceive" first, or use a CSS selector.`;
@@ -26348,7 +26403,10 @@ async function revealHiddenTab(cdp, sid, targetId, {
 }
 
 async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
-  installDaemonCrashRecorder(targetId);
+  const exitLog = { current: null };
+  installDaemonCrashRecorder(targetId, {
+    onCrash: (kind, error) => exitLog.current?.onCrash(kind, error),
+  });
   resetScreenshotTier();
   const sp = sockPath(targetId);
   const daemonMetadata = {
@@ -26383,6 +26441,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   const session = createSessionState({ targetId, sessionId });
+  exitLog.current = createDaemonExitLog(session);
   // Whether the last `_activate` left the tab hidden (#488).
   const revealState = { activationIneffective: false };
   const tableArtifactStore = createTableArtifactStore({
@@ -26484,22 +26543,23 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     getServer: () => server,
     cleanupSession: () => tableArtifactStore.cleanupSession(),
     closeCdp: () => cdp.close(),
+    beforeExit: info => exitLog.current.beforeExit(info),
   });
   const shutdown = endpointLifecycle.shutdown;
 
   // Exit if target goes away or Chrome disconnects
   cdp.onEvent('Target.targetDestroyed', (params) => {
-    if (params.targetId === targetId) shutdown();
+    if (params.targetId === targetId) shutdown(0, { reason: 'target-destroyed' });
   });
   cdp.onEvent('Target.detachedFromTarget', (params) => {
-    if (params.sessionId === sessionId) shutdown();
+    if (params.sessionId === sessionId) shutdown(0, { reason: 'target-detached' });
   });
-  cdp.onClose(() => shutdown());
-  process.on('SIGTERM', () => shutdown());
-  process.on('SIGINT', () => shutdown());
+  cdp.onClose(() => shutdown(0, { reason: 'browser-disconnect' }));
+  process.on('SIGTERM', () => shutdown(0, { reason: 'signal', signal: 'SIGTERM' }));
+  process.on('SIGINT', () => shutdown(0, { reason: 'signal', signal: 'SIGINT' }));
 
   // Idle timer
-  const idleTimer = createDaemonIdleTimer({ timeoutMs: IDLE_TIMEOUT, onIdle: () => shutdown() });
+  const idleTimer = createDaemonIdleTimer({ timeoutMs: IDLE_TIMEOUT, onIdle: () => shutdown(0, { reason: 'idle-timeout' }) });
   // Other tabs' old runtime artifacts (#462), pruned after the first answered request.
   const runtimePrune = createRuntimePruneScheduler({ run: () => pruneDaemonRuntimeArtifacts(session, targetId) });
   function resetIdle() {
@@ -27557,6 +27617,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     // Only the daemon that owns the endpoint starts the tab's session log (the loser would truncate it).
     onServing: () => {
       initializeSessionLog(session);
+      exitLog.current.markOwned();
       runtimePrune.arm();
     },
   });
@@ -27613,6 +27674,7 @@ function createDaemonEndpointLifecycle({
   pid = process.pid,
   watch = watchDaemonSocket,
   log = message => process.stderr.write(message),
+  beforeExit = () => {},
 }) {
   let identity = null;
   const shutdown = createDaemonShutdown({
@@ -27626,6 +27688,7 @@ function createDaemonEndpointLifecycle({
     statSocket: stat,
     removeRecord: () => removeOwnDaemonRecord(targetId, { pid, runtimeDir }),
     isWindows: platform === 'win32',
+    beforeExit,
   });
   async function serve({ listen, record, onServing = () => {} }) {
     let claim;
@@ -27651,7 +27714,7 @@ function createDaemonEndpointLifecycle({
       stat,
       onLost: () => {
         log(`Daemon: ${socketPath} no longer belongs to this daemon; exiting\n`);
-        shutdown(0);
+        shutdown(0, { reason: 'socket-lost' });
       },
     });
     return true;
@@ -32037,7 +32100,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
   appendSessionEnvironmentLog, buildRecordEnvironmentModel,
-  initializeSessionLog, parseReportArgs, buildSessionReportModel, formatSessionReport, sessionScreenshotDir, sessionDownloadDir,
+  initializeSessionLog, appendSessionExitLog, createDaemonExitLog, parseReportArgs, buildSessionReportModel, formatSessionReport, sessionScreenshotDir, sessionDownloadDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
