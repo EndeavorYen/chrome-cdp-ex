@@ -4592,7 +4592,7 @@ describe('issues #227-#231 open contracts', () => {
       },
       onActionResult: (result) => { captured = result; },
       format: { format: 'text', qa: true },
-    })).rejects.toThrow(/Kind: no-navigation\nNext: cdp jsclick 1D366978FULL a/);
+    })).rejects.toThrow(/Kind: no-navigation\nNext: cdp jsclick 1D366978 a/);
 
     expect(captured.dispatch.ok).toBe(false);
     const qa = T.formatActionResultOutput(captured, { qa: true });
