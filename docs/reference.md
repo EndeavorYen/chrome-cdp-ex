@@ -364,6 +364,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> off --format json
 
 Mutating commands such as `click`, `verify-click`, `qa` with `--click`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, `restore`, and `dismiss-modal` return action evidence.
 
+`viewport` / `resize` compares the size read back from the page with the request. A match is `outcome.status: changed`, `outcome.evidence: viewport`, and `verdict.status: continue` (`canContinue: true`), including when the accessibility tree did not change. The text receipt prints the one-line `Viewport:` result and includes an AX diff only when that tree changed. A mismatch keeps a non-success `verdict.status: investigate` whose reason names the requested size and the size read back. It does not add `fresh-perception-needed`. Other commands are unchanged: an unexpected AX no-change is still `verdict: investigate` with that blocking signal.
+
 Action evidence answers three questions:
 
 | Question | Signal |
