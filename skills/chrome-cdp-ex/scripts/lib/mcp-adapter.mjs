@@ -296,6 +296,7 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'perceive': {
       const command = ['perceive', requireString(args, 'target')];
+      if (args.followUrl === true) command.push('--follow-url');
       if (args.depth != null) command.push('-d', String(args.depth));
       if (args.cursorInteractive) command.push('-C');
       if (args.selector) command.push('--selector', String(args.selector));
@@ -309,6 +310,7 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'controls': {
       const command = ['controls', requireString(args, 'target')];
+      if (args.followUrl === true) command.push('--follow-url');
       if (args.selector) command.push('--selector', String(args.selector));
       if (args.filter) command.push('--filter', String(args.filter));
       if (args.limit != null) command.push('--limit', String(args.limit));
@@ -317,6 +319,7 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'overlay': {
       const command = ['overlay', requireString(args, 'target')];
+      if (args.followUrl === true) command.push('--follow-url');
       if (args.selector) command.push(String(args.selector));
       return optionalFormatJson(command);
     }
@@ -420,6 +423,7 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'wait-for': {
       const command = ['waitfor', requireString(args, 'target')];
+      if (args.followUrl === true) command.push('--follow-url');
       if (args.anyOf) {
         command.push('--any-of', String(args.anyOf));
         if (args.scope) command.push('--scope', String(args.scope));
@@ -442,6 +446,7 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'cascade': {
       const command = ['cascade', requireString(args, 'target'), requireString(args, 'selector')];
+      if (args.followUrl === true) command.push('--follow-url');
       if (args.property) command.push(String(args.property));
       return optionalFormatJson(command);
     }

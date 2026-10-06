@@ -40,19 +40,20 @@ function uniqueLivePrefix(targetId, livePages) {
 // #538: Chrome can hand a tab a new target id without the tab closing (a renderer swap, a
 // cross-process navigation). When the vanished prefix had exactly one entry in the page list last
 // written to pages.json, and exactly one live page has that entry's URL and title, that page is
-// almost certainly the same tab. Name it; never re-bind to it.
+// almost certainly the same tab. Name it. #540 re-binds to it only when followUrl is set.
 function findSuccessorPage(requested, lastSeenPages, livePages) {
   const upper = String(requested || '').toUpperCase();
   const seen = distinctTargets((lastSeenPages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper)));
   // A blank or New Tab page looks like every other one, so it never names a successor.
   if (seen.length !== 1 || !seen[0].url || /^(?:about:blank(?:#.*)?|chrome:\/\/new-?tab(?:-page)?\/?)$/i.test(seen[0].url)) return null;
-  const { url, title = '' } = seen[0];
+  const previous = seen[0];
+  const { url, title = '' } = previous;
   // Only reached when no live page matches the prefix, so every candidate is another page.
   const candidates = distinctTargets((livePages || []).filter(page => page?.url === url && (page?.title || '') === title));
-  return candidates.length === 1 ? candidates[0] : null;
+  return candidates.length === 1 ? { page: candidates[0], previous } : null;
 }
 
-export function resolveLiveTargetBinding({ requested, livePages = [], daemonBinding = null, alias = null, lastSeenPages = [] } = {}) {
+export function resolveLiveTargetBinding({ requested, livePages = [], daemonBinding = null, alias = null, lastSeenPages = [], followUrl = false } = {}) {
   const rawRequested = String(requested || '').trim();
   const requestedTarget = alias?.targetId || rawRequested;
   if (!requestedTarget) throw new Error('Target binding requires a requested target id or prefix.');
@@ -65,10 +66,28 @@ export function resolveLiveTargetBinding({ requested, livePages = [], daemonBind
     }
     const successor = findSuccessorPage(rawRequested, lastSeenPages, livePages);
     if (successor) {
-      const successorPrefix = uniqueLivePrefix(successor.targetId, livePages);
-      const error = new Error(`No live target matching prefix "${rawRequested}". Target ${rawRequested} is gone; the same page (same URL and title) is now ${successorPrefix}: ${redactUrl(successor.url)}`);
+      const successorPrefix = uniqueLivePrefix(successor.page.targetId, livePages);
+      // #540: opt-in re-bind. Aliases never reach this branch. The caller allows it for read commands only.
+      if (followUrl) {
+        return {
+          schema: TARGET_RESOLUTION_SCHEMA,
+          requestedTargetPrefix: rawRequested,
+          requestedTargetId: successor.previous.targetId,
+          boundTargetId: daemonBinding?.boundTargetId || daemonBinding?.targetId || null,
+          resolvedTargetId: successor.page.targetId,
+          resolvedUrl: successor.page.url || '',
+          resolvedTitle: successor.page.title || '',
+          resolutionSource: 'follow-url',
+          status: 'followed-url',
+          rebindRequired: false,
+          rebound: true,
+          followedUrl: true,
+          successorPrefix,
+        };
+      }
+      const error = new Error(`No live target matching prefix "${rawRequested}". Target ${rawRequested} is gone; the same page (same URL and title) is now ${successorPrefix}: ${redactUrl(successor.page.url)}`);
       error.code = 'target_successor';
-      error.successorTargetId = successor.targetId;
+      error.successorTargetId = successor.page.targetId;
       error.successorPrefix = successorPrefix;
       throw error;
     }
@@ -101,13 +120,17 @@ export function resolveLiveTargetBinding({ requested, livePages = [], daemonBind
 }
 
 export function completeTargetResolution(binding = {}, { boundTargetId = null, rebound = false } = {}) {
-  return {
+  const followed = binding.followedUrl === true || binding.status === 'followed-url';
+  const next = {
     ...binding,
     boundTargetId: boundTargetId || binding.resolvedTargetId || null,
-    status: rebound ? 'rebound' : binding.boundTargetId ? 'reused' : 'started',
+    status: followed ? 'followed-url' : rebound ? 'rebound' : binding.boundTargetId ? 'reused' : 'started',
     rebindRequired: false,
-    rebound,
+    rebound: followed ? true : rebound,
   };
+  if (followed) next.followedUrl = true;
+  else delete next.followedUrl;
+  return next;
 }
 
 export function attachTargetResolutionDiagnostics(result, diagnostic) {
@@ -120,7 +143,9 @@ export function attachTargetResolutionDiagnostics(result, diagnostic) {
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
   const stableTargetId = diagnostic.resolvedTargetId || null;
-  const canCollapseStableTarget = parsed.mode === 'compact'
+  const followed = diagnostic.followedUrl === true || diagnostic.status === 'followed-url';
+  const canCollapseStableTarget = !followed
+    && parsed.mode === 'compact'
     && stableTargetId
     && diagnostic.requestedTargetId === stableTargetId
     && diagnostic.boundTargetId === stableTargetId
@@ -138,6 +163,10 @@ export function attachTargetResolutionDiagnostics(result, diagnostic) {
     resolutionSource: diagnostic.resolutionSource || null,
     status: diagnostic.status || null,
     rebound: diagnostic.rebound === true,
+    ...(followed ? {
+      followedUrl: true,
+      successorPrefix: diagnostic.successorPrefix || null,
+    } : {}),
   };
   const output = { ...parsed, targetResolution };
   if (typeof result !== 'string') return output;
