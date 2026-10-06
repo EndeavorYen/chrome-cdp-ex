@@ -143,17 +143,24 @@ export async function probeDaemonEndpoint(endpoint, {
   }
 }
 
+// dev+ino (+ change time) of one stat result. `dev` and `ino` stay in whatever type `stat`
+// returned: a bigint identity (fs.statSync with `{ bigint: true }`) is not the same value as
+// the number form, so both sides of a comparison must use one type (#549).
+function socketIdentityFromStats(stats) {
+  if (stats == null || stats.dev === undefined || stats.ino === undefined) return null;
+  const identity = { dev: stats.dev, ino: stats.ino };
+  const ctime = stats.ctimeNs ?? stats.ctimeMs;
+  if (ctime !== undefined) identity.ctime = ctime;
+  return identity;
+}
+
 // dev+ino (+ change time) of the socket file now at `endpoint`. A daemon records it once
 // bound, so it can later tell its own socket from one a newer daemon bound at the same path
 // (#458). ext4 hands a just-freed inode number straight back to the next bind, so dev+ino
 // alone cannot tell a stale file from its replacement; the nanosecond ctime can.
 export function daemonSocketIdentity(endpoint, { stat = statSync } = {}) {
   try {
-    const stats = stat(endpoint, { bigint: true });
-    const identity = { dev: stats.dev, ino: stats.ino };
-    const ctime = stats.ctimeNs ?? stats.ctimeMs;
-    if (ctime !== undefined) identity.ctime = ctime;
-    return identity;
+    return socketIdentityFromStats(stat(endpoint, { bigint: true }));
   } catch {
     return null;
   }
@@ -228,9 +235,12 @@ export function watchDaemonSocket(endpoint, {
   };
   timer = setTimer(() => {
     if (timer === null) return;
-    let current;
+    let current = null;
     try {
-      current = stat(endpoint);
+      // The recorded identity is bigint. A number-typed stat of the same file is not equal
+      // (`1n !== 1`), and treating that as "lost" exits a healthy daemon about one interval
+      // after it starts (#549).
+      current = socketIdentityFromStats(stat(endpoint, { bigint: true }));
     } catch (error) {
       if (error?.code !== 'ENOENT') return;
       current = null;
