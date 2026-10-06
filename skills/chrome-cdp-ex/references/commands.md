@@ -741,6 +741,8 @@ cdp drag <target> @12 640,300 --steps 20                         # drop at a vie
 
 The daemon answers JavaScript dialogs (alert, confirm, prompt, beforeunload) in the background so they don't block automation. The default is to **accept**: `confirm()` gets OK, `prompt()` gets its default text, and a `beforeunload` "Leave site?" prompt during `nav`, `reload`, or a navigating click is accepted, which discards that page's unsaved changes. Use `dialog` to check history or switch to dismiss.
 
+`dialog accept` / `dialog dismiss`, `throttle`, and `mock add` / `mock clear` are written to `cdp-<targetId>.env.json` in the runtime dir (mode 0600) when the command succeeds. The next daemon for that tab, including after an idle exit, a crash, or `kill -9`, applies that dialog mode before it answers a dialog, then applies the throttle profile and mock rules. Hit counts and the netlog buffer are not kept. The first command result after such a restart (not `meta`, `list_raw`, or `_activate`) begins with a line such as `daemon restarted: dialog=dismiss, throttle=offline, 2 mocks restored, netlog buffer was reset`. Text output includes that line; `--format json` prints it first and leaves the JSON body unchanged. The next command does not repeat it. If throttle or mocks cannot be applied, the line says `throttle was reset` or `2 mocks were reset` and those controls stay off, while a saved dismiss mode stays dismiss. A file that cannot be parsed selects dismiss rather than auto-accept. `closetab` removes the file. Once more than 64 of these files exist, only a file that matches the defaults (dialog accept, throttle off, no mocks) may be removed. A dismiss mode, a throttle profile, mock rules, or a file that cannot be parsed is kept until `closetab`, so a saved dismiss is not dropped to make room. If the file cannot be written, the command fails instead of reporting the setting as saved. A tab that never saved one keeps auto-accept, throttle off, and mocks off, and its first daemon prints no restart line. `download` and MCP JSON or screenshot results skip that one restart line when they read the body underneath it.
+
 ```bash
 scripts/cdp.mjs dialog <target>              # show recent dialog history
 scripts/cdp.mjs dialog <target> accept       # set auto-accept mode (default)
@@ -937,7 +939,7 @@ scripts/cdp.mjs mock <target>               # show active rules and recent hits
 scripts/cdp.mjs mock <target> clear         # disable all mocks
 ```
 
-`mock` uses CDP Fetch interception inside the live tab. Use it to reproduce API failure, empty-state, or alternate-response UI without editing backend code. Active rules and hit counts appear in `report <target>`. Clear mocks before handing the session back.
+`mock` uses CDP Fetch interception inside the live tab. Use it to reproduce API failure, empty-state, or alternate-response UI without editing backend code. Active rules and hit counts appear in `report <target>`. Rules are saved with the tab's dialog mode and throttle and applied again after a daemon restart; hit counts start over. See Dialog handling. Clear mocks before handing the session back.
 
 ### Clock control
 
@@ -960,7 +962,7 @@ scripts/cdp.mjs throttle <target>               # show the current profile
 scripts/cdp.mjs throttle <target> off           # reset network conditions
 ```
 
-`throttle` changes the live tab's CDP network conditions and records the profile in `report <target>`. Reset to `off` after a focused experiment so later steps do not inherit a slow or offline session.
+`throttle` changes the live tab's CDP network conditions and records the profile in `report <target>`. The profile is saved with the tab's dialog mode and mocks and applied again after a daemon restart. See Dialog handling. Reset to `off` after a focused experiment so later steps do not inherit a slow or offline session.
 
 ### Cursor-interactive elements (`perceive -C`)
 
