@@ -271,7 +271,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs target --title "Agent Decision Lab"
 node skills/chrome-cdp-ex/scripts/cdp.mjs open http://127.0.0.1:8788 --reuse-url
 ```
 
-`list` ranks non-blank pages first and marks the recommended target. Ambiguous `target` matches return candidate URLs/titles plus exact follow-up commands. Target commands resolve ordinary prefixes from live discovery before daemon/cache state, validate the daemon-bound target id, and attempt one bounded rebind on a target mismatch. Structured target-command output includes `targetResolution` with requested, bound, and resolved ids.
+`list` ranks non-blank pages first and marks the recommended target. Ambiguous `target` matches return candidate URLs/titles plus exact follow-up commands. Target commands resolve ordinary prefixes from live discovery before daemon/cache state, validate the daemon-bound target id, and attempt one bounded rebind on a target mismatch. Structured target-command output includes `targetResolution` with requested, bound, and resolved ids. `--follow-url` re-binds a vanished prefix only for a target-taking read command when exactly one live page has the last-seen URL and title (not a blank or New Tab page). The JSON receipt then uses `targetResolution.status` `followed-url`. `list` takes no target. `click`, `nav`, `eval`, `shot`, and every other non-read command do not re-bind.
 
 ## Semantic Verification And QA
 
