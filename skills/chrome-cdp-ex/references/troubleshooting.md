@@ -180,6 +180,8 @@ Next: cdp nav B7BB111A http://127.0.0.1:7860/ (Kind: target-resolution)
 
 Scripts that run for a long time should not keep a fixed prefix. Resolve the target by URL each time with `cdp target --url <url>`, or check `cdp list` when a prefix stops working.
 
+`--follow-url` on a target-taking read command (`perceive`, `html`, `status`, and the other catalog commands whose kind is `read` and that take a target) re-binds to that one page instead of failing. The receipt says so: JSON `targetResolution.status` is `followed-url`, and every format prints `Re-bound target <old> to <new> (same URL and title).` on stderr. The same URL and title must match exactly one live page. A blank or New Tab page does not count. That command then writes the live page list, so the next call should use the new prefix from the receipt. `list` is a read command and takes no target, so it does not accept the flag. A mutating or page-changing command (`click`, `nav`, `eval`, `shot`, and any command whose kind is not `read`) does not re-bind: `--follow-url` is an error and the command does not run. Saved aliases do not follow a new target id. There is no environment variable for this.
+
 ## Focused search poisons perceive
 
 If a search/typeahead is focused, `perceive` may dump suggestions instead of the article. Blur first (`press Escape`) or `perceive -s main`. Use `--keep-typeahead` only when inspecting the dropdown.
