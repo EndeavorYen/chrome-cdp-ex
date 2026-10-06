@@ -69,7 +69,9 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
       { urlPattern: '**/api/a*', method: 'POST', status: 503, body: 'nope', contentType: 'text/plain; charset=utf-8' },
       { urlPattern: '**/api/b*', method: null, status: 201, body: 'ok', contentType: 'application/json' },
     ]);
-    expect(statSync(T.tabEnvPath(first.targetId, dir)).mode & 0o077).toBe(0);
+    if (process.platform !== 'win32') {
+      expect(statSync(T.tabEnvPath(first.targetId, dir)).mode & 0o777).toBe(0o600);
+    }
 
     const next = sessionAt(dir);
     const nextRef = { value: true };
