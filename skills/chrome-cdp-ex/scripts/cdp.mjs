@@ -38,6 +38,7 @@ import {
 import { createDaemonReadHandlers } from './lib/daemon-read-handlers.mjs';
 import { captureStackFrames, createSourceMapResolver, formatGeneratedFrame } from './lib/source-maps.mjs';
 import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
+import { DAEMON_RESTART_NOTICE_PREFIX } from './lib/daemon-restart-notice.mjs';
 import { isTableCollectArgs, parseTableArgs, parseTableContinuationToken } from './lib/table-contract.mjs';
 import { createTableArtifactStore } from './lib/table-artifacts.mjs';
 import {
@@ -1784,6 +1785,353 @@ function daemonBackgroundMode(targetId, { env = process.env, runtimeDir = RUNTIM
   return explicitBackgroundChoice(env)
     ?? readTabMode(targetId, { runtimeDir, ...(reader ? { reader } : {}) })
     ?? true;
+}
+
+// Dialog mode, throttle, and mock rules (#575). They used to live only in the daemon process, so a
+// crash, idle exit, or kill -9 brought the next daemon back to auto-accept. The file is written when
+// the setting changes, not at exit, because kill -9 never runs the exit hook. The netlog ring buffer
+// is observation and is not stored; the next daemon names that loss on its first receipt.
+const TAB_ENV_SCHEMA = 'chrome-cdp-ex.tab-env.v1';
+const TAB_ENV_SUFFIX = '.env.json';
+// Only files that match the defaults (accept, throttle off, no mocks) are removed past this.
+// A dismiss record must not be deleted to make room: the next daemon would auto-accept (#575).
+const TAB_ENV_RECORDS_MAX = 64;
+const TAB_ENV_THROTTLE_PROFILES = new Set(['offline', 'slow-3g', 'fast-3g', 'lte', 'custom']);
+const RESTART_NOTICE_PROBE_COMMANDS = new Set(['meta', 'list_raw', '_activate']);
+
+function tabEnvPath(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}${TAB_ENV_SUFFIX}`);
+}
+
+function persistedThrottle(throttle) {
+  if (!throttle || throttle.profile === 'off') return null;
+  const profile = String(throttle.profile || '');
+  if (!TAB_ENV_THROTTLE_PROFILES.has(profile)) return null;
+  return {
+    profile,
+    offline: throttle.offline === true,
+    latencyMs: Number(throttle.latencyMs) || 0,
+    downloadKbps: throttle.downloadKbps == null ? null : Number(throttle.downloadKbps),
+    uploadKbps: throttle.uploadKbps == null ? null : Number(throttle.uploadKbps),
+  };
+}
+
+function persistedMocks(mocks) {
+  if (!Array.isArray(mocks)) return [];
+  return mocks.map(rule => ({
+    id: typeof rule?.id === 'string' && rule.id ? rule.id : `mock-${Date.now().toString(36)}`,
+    urlPattern: String(rule?.urlPattern || ''),
+    method: rule?.method ? String(rule.method).toUpperCase() : null,
+    status: Number(rule?.status),
+    body: String(rule?.body ?? ''),
+    contentType: String(rule?.contentType || 'text/plain; charset=utf-8'),
+  }));
+}
+
+function finiteNonNegative(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function parsePersistedThrottle(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const profile = String(value.profile || '');
+  if (!TAB_ENV_THROTTLE_PROFILES.has(profile)) return undefined;
+  const downloadKbps = value.downloadKbps == null ? null : Number(value.downloadKbps);
+  const uploadKbps = value.uploadKbps == null ? null : Number(value.uploadKbps);
+  const latencyMs = Number(value.latencyMs);
+  if (!finiteNonNegative(latencyMs)) return undefined;
+  if (downloadKbps != null && !finiteNonNegative(downloadKbps)) return undefined;
+  if (uploadKbps != null && !finiteNonNegative(uploadKbps)) return undefined;
+  if (profile === 'custom' && (downloadKbps == null || uploadKbps == null)) return undefined;
+  return {
+    profile,
+    offline: value.offline === true,
+    latencyMs,
+    downloadKbps,
+    uploadKbps,
+  };
+}
+
+function parsePersistedMocks(value) {
+  if (!Array.isArray(value)) return null;
+  const mocks = [];
+  for (const rule of value) {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null;
+    const urlPattern = rule.urlPattern;
+    const status = Number(rule.status);
+    if (typeof urlPattern !== 'string' || !urlPattern) return null;
+    if (!Number.isInteger(status) || status < 100 || status > 599) return null;
+    if (rule.body != null && typeof rule.body !== 'string') return null;
+    if (rule.contentType != null && typeof rule.contentType !== 'string') return null;
+    if (rule.method != null && typeof rule.method !== 'string') return null;
+    mocks.push({
+      id: typeof rule.id === 'string' && rule.id ? rule.id : `mock-${Date.now().toString(36)}`,
+      urlPattern,
+      method: rule.method ? String(rule.method).toUpperCase() : null,
+      status,
+      body: String(rule.body ?? ''),
+      contentType: String(rule.contentType || 'text/plain; charset=utf-8'),
+    });
+  }
+  return mocks;
+}
+
+function parseTabEnvironment(text, targetId) {
+  let record;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    return { status: 'unreadable' };
+  }
+  if (!record || record.schema !== TAB_ENV_SCHEMA || record.targetId !== String(targetId)) {
+    return { status: 'unreadable' };
+  }
+  if (record.dialog !== 'accept' && record.dialog !== 'dismiss') return { status: 'unreadable' };
+  const throttle = parsePersistedThrottle(record.throttle);
+  if (throttle === undefined) return { status: 'unreadable' };
+  const mocks = parsePersistedMocks(record.mocks);
+  if (!mocks) return { status: 'unreadable' };
+  return { status: 'ok', dialog: record.dialog, throttle, mocks };
+}
+
+function readTabEnvironment(targetId, { runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+  let text;
+  try {
+    text = reader(tabEnvPath(targetId, runtimeDir), 'utf8');
+  } catch (error) {
+    return error?.code === 'ENOENT' ? { status: 'absent' } : { status: 'unreadable' };
+  }
+  return parseTabEnvironment(text, targetId);
+}
+
+function listTabEnvironmentRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, reader = readFileSync } = {}) {
+  try {
+    return readdir(runtimeDir)
+      .filter(name => name.startsWith('cdp-') && name.endsWith(TAB_ENV_SUFFIX))
+      .map(name => {
+        const path = resolve(runtimeDir, name);
+        let text;
+        try {
+          text = reader(path, 'utf8');
+        } catch {
+          return null;
+        }
+        let record;
+        try {
+          record = JSON.parse(text);
+        } catch {
+          // Unreadable files force dismiss on the next daemon. Deleting one would make that
+          // tab auto-accept, so they stay until closetab.
+          return { path, setAt: '', prunable: false };
+        }
+        if (!record || record.schema !== TAB_ENV_SCHEMA) return { path, setAt: '', prunable: false };
+        const parsed = parseTabEnvironment(text, record.targetId);
+        // A readable accept record with throttle off and no mocks matches a missing file.
+        // Anything else, including dismiss, is kept: dropping it would come back as auto-accept.
+        const prunable = parsed.status === 'ok'
+          && parsed.dialog === 'accept'
+          && !parsed.throttle
+          && parsed.mocks.length === 0;
+        return { path, setAt: String(record.setAt || ''), prunable };
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function writeTabEnvironment(targetId, state, {
+  runtimeDir = RUNTIME_DIR,
+  writer = writeFileSync,
+  rename = renameSync,
+  remover = unlinkSync,
+  now = Date.now,
+} = {}) {
+  const path = tabEnvPath(targetId, runtimeDir);
+  const tmp = `${path}.${process.pid}.tmp`;
+  const record = {
+    schema: TAB_ENV_SCHEMA,
+    targetId: String(targetId),
+    dialog: state?.dialog === 'dismiss' ? 'dismiss' : 'accept',
+    throttle: persistedThrottle(state?.throttle),
+    mocks: persistedMocks(state?.mocks),
+    setAt: new Date(now()).toISOString(),
+  };
+  try {
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    writer(tmp, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    rename(tmp, path);
+  } catch {
+    try { remover(tmp); } catch {}
+    return false;
+  }
+  const records = listTabEnvironmentRecords({ runtimeDir, reader: readFileSync });
+  if (records.length > TAB_ENV_RECORDS_MAX) {
+    const extra = records.length - TAB_ENV_RECORDS_MAX;
+    const victims = records
+      .filter(record => record.prunable && record.path !== path)
+      .sort((a, b) => a.setAt.localeCompare(b.setAt))
+      .slice(0, extra);
+    for (const old of victims) {
+      try { remover(old.path); } catch {}
+    }
+  }
+  return true;
+}
+
+function removeTabEnvironment(targetId, { runtimeDir = RUNTIME_DIR, remover = unlinkSync } = {}) {
+  try { remover(tabEnvPath(targetId, runtimeDir)); } catch {}
+}
+
+function rememberTabEnvironment(session) {
+  if (!session?.targetId || !session.runtimeDir) return false;
+  const saved = writeTabEnvironment(session.targetId, {
+    dialog: session.dialogMode === 'dismiss' ? 'dismiss' : 'accept',
+    throttle: session.networkThrottle,
+    mocks: session.networkMocks,
+  }, { runtimeDir: session.runtimeDir });
+  if (!saved) {
+    throw new Error('Could not save dialog, throttle, and mock settings for this tab. They are active in this daemon only; a restarted daemon will not keep them.');
+  }
+  return true;
+}
+
+// Absent means the caller never chose a mode, so auto-accept stays. Anything we cannot read fails
+// closed: a saved dismiss must not come back as auto-accept (#575).
+function savedDialogAccepts(record) {
+  if (!record || record.status === 'absent') return true;
+  if (record.status !== 'ok') return false;
+  return record.dialog !== 'dismiss';
+}
+
+function environmentRestoreOutcome(saved) {
+  if (!saved || saved.status === 'absent') {
+    return {
+      unreadable: false,
+      dialog: 'accept',
+      throttleProfile: 'off',
+      throttleReset: false,
+      mockCount: 0,
+      mocksReset: false,
+    };
+  }
+  if (saved.status !== 'ok') {
+    return {
+      unreadable: true,
+      dialog: 'dismiss',
+      throttleProfile: 'off',
+      throttleReset: true,
+      mockCount: 0,
+      mocksReset: true,
+    };
+  }
+  return {
+    unreadable: false,
+    dialog: saved.dialog === 'dismiss' ? 'dismiss' : 'accept',
+    throttleProfile: saved.throttle?.profile || 'off',
+    throttleReset: false,
+    mockCount: Array.isArray(saved.mocks) ? saved.mocks.length : 0,
+    mocksReset: false,
+  };
+}
+
+function formatDaemonRestartNotice(outcome = {}) {
+  const dialogPart = outcome.unreadable
+    ? 'dialog=dismiss (saved record unreadable)'
+    : `dialog=${outcome.dialog === 'dismiss' ? 'dismiss' : 'accept'}`;
+  const throttlePart = outcome.throttleReset
+    ? 'throttle was reset'
+    : `throttle=${outcome.throttleProfile || 'off'}`;
+  let mockPart;
+  if (outcome.unreadable) {
+    mockPart = 'mocks were reset';
+  } else {
+    const count = Number(outcome.mockCount) || 0;
+    const noun = count === 1 ? 'mock' : 'mocks';
+    const verb = outcome.mocksReset ? (count === 1 ? 'was reset' : 'were reset') : 'restored';
+    mockPart = `${count} ${noun} ${verb}`;
+  }
+  return `${DAEMON_RESTART_NOTICE_PREFIX} ${dialogPart}, ${throttlePart}, ${mockPart}, netlog buffer was reset`;
+}
+
+function armDaemonRestartNotice(session, outcome, { restarted = false } = {}) {
+  if (!session) return null;
+  if (!restarted) {
+    session.restartNotice = null;
+    return null;
+  }
+  session.restartNotice = formatDaemonRestartNotice(outcome);
+  return session.restartNotice;
+}
+
+function resultLooksLikeJson(result) {
+  const trimmed = String(result ?? '').trim();
+  return trimmed.startsWith('{') || trimmed.startsWith('[');
+}
+
+function applyDaemonRestartNotice(session, cmd, response) {
+  if (!response || typeof response !== 'object') return response;
+  const notice = session?.restartNotice;
+  if (!notice) return response;
+  if (RESTART_NOTICE_PROBE_COMMANDS.has(cmd)) return response;
+  session.restartNotice = null;
+  const next = { ...response, restartNotice: notice };
+  if (typeof next.result === 'string' && !resultLooksLikeJson(next.result)) {
+    next.result = next.result ? `${notice}\n${next.result}` : notice;
+  } else if ((next.result == null || next.result === '') && typeof next.error === 'string' && !resultLooksLikeJson(next.error)) {
+    next.error = `${notice}\n${next.error}`;
+  }
+  return next;
+}
+
+async function applySavedNetworkControls(cdp, sid, session, saved) {
+  const outcome = environmentRestoreOutcome(saved);
+  if (!saved || saved.status !== 'ok') return outcome;
+  if (saved.throttle) {
+    try {
+      const profile = { ...saved.throttle };
+      await cdpDomains(cdp).Network.enable({}, sid);
+      await cdpDomains(cdp).Network.emulateNetworkConditions(throttleCdpParams(profile), sid);
+      session.networkThrottle = {
+        ...profile,
+        cdpParams: throttleCdpParams(profile),
+        appliedAt: Date.now(),
+      };
+      outcome.throttleProfile = profile.profile;
+    } catch {
+      session.networkThrottle = null;
+      outcome.throttleReset = true;
+      outcome.throttleProfile = 'off';
+    }
+  }
+  if (saved.mocks?.length) {
+    session.networkMocks = saved.mocks.map(rule => ({ ...rule }));
+    session.networkMockHits = [];
+    try {
+      await applyNetworkMocks(cdp, sid, session);
+    } catch {
+      session.networkMocks = [];
+      session.networkMockHits = [];
+      try { await cdpDomains(cdp).Fetch.disable({}, sid); } catch {}
+      outcome.mocksReset = true;
+    }
+  }
+  return outcome;
+}
+
+// Sets the dialog ref before its first await so a caller can register Page.javascriptDialogOpening
+// while throttle and mocks are still being applied.
+async function applySavedTabEnvironment(cdp, sid, session, dialogAutoAcceptRef, {
+  runtimeDir = session?.runtimeDir || RUNTIME_DIR,
+  reader,
+} = {}) {
+  const saved = readTabEnvironment(session.targetId, { runtimeDir, ...(reader ? { reader } : {}) });
+  const accept = savedDialogAccepts(saved);
+  if (dialogAutoAcceptRef) dialogAutoAcceptRef.value = accept;
+  if (session) session.dialogMode = accept ? 'accept' : 'dismiss';
+  return applySavedNetworkControls(cdp, sid, session, saved);
 }
 
 function emptyAliasStore() {
@@ -10434,7 +10782,7 @@ async function runDaemonRequestScope({ cmd, secrets = null, execution = null, se
     execution || null,
     () => daemonSecretStorage.run({ secrets, session }, run),
   );
-  return scrubDaemonResponse(session, response, cmd);
+  return applyDaemonRestartNotice(session, cmd, scrubDaemonResponse(session, response, cmd));
 }
 
 // The daemon's fill capability. `fill(selector, text, opts)` is fillStr bound to the tab.
@@ -11803,6 +12151,8 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     secretValues: new Map(),
     networkMocks: [],
     networkMockHits: [],
+    dialogMode: 'accept',
+    restartNotice: null,
     clock: null,
     environmentLog: [],
     actionSeq: 0,
@@ -19883,6 +20233,15 @@ function dialogStr(dialogBuf, dialogAutoAcceptRef, flag) {
   return lines.join('\n');
 }
 
+function setDialogMode(dialogBuf, dialogAutoAcceptRef, session, flag) {
+  const text = dialogStr(dialogBuf, dialogAutoAcceptRef, flag);
+  if (flag === 'accept' || flag === 'dismiss') {
+    if (session) session.dialogMode = flag;
+    rememberTabEnvironment(session);
+  }
+  return text;
+}
+
 function javascriptDialogHandleParams(params = {}, accept) {
   return {
     accept: Boolean(accept),
@@ -20218,11 +20577,13 @@ async function mockStr(cdp, sid, session, args = []) {
     session.networkMocks.push(parsed.rule);
     await applyNetworkMocks(cdp, sid, session);
     appendSessionEnvironmentLog(session, { kind: 'mock', ts: Date.now(), action: 'add', rule: parsed.rule });
+    rememberTabEnvironment(session);
   } else if (parsed.mode === 'clear') {
     session.networkMocks = [];
     session.networkMockHits = [];
     await applyNetworkMocks(cdp, sid, session);
     appendSessionEnvironmentLog(session, { kind: 'mock', ts: Date.now(), action: 'clear' });
+    rememberTabEnvironment(session);
   }
   const model = buildMockModel(session, parsed);
   return parsed.format === 'json' ? formatJson(model) : formatMockText(model);
@@ -20531,6 +20892,7 @@ async function throttleStr(cdp, sid, session, args = []) {
       appliedAt: Date.now(),
     };
     appendSessionEnvironmentLog(session, { kind: 'throttle', ts: session.networkThrottle.appliedAt, action: 'apply', throttle: session.networkThrottle });
+    rememberTabEnvironment(session);
   }
   const model = throttleModel(session, parsed);
   return parsed.format === 'json' ? formatJson(model) : formatThrottleText(model);
@@ -22656,8 +23018,10 @@ async function closetabStr(cdp, targetId, { force = false, runtimeDir = RUNTIME_
     }
   }
   await cdpDomains(cdp).Target.closeTarget( { targetId });
-  // The tab is gone: its background-mode record (#441) has nothing left to apply to.
+  // The tab is gone: its background-mode record (#441) and saved dialog/throttle/mocks (#575)
+  // have nothing left to apply to.
   removeTabMode(targetId, { runtimeDir });
+  removeTabEnvironment(targetId, { runtimeDir });
   return `Closed tab: ${targetId.slice(0, 8)}`;
 }
 
@@ -26467,6 +26831,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   const session = createSessionState({ targetId, sessionId });
+  session.runtimeDir = RUNTIME_DIR;
   exitLog.current = createDaemonExitLog(session);
   // Whether the last `_activate` left the tab hidden (#488).
   const revealState = { activationIneffective: false };
@@ -26550,7 +26915,14 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   session.buffers.dialog = dialogBuf;
   // Auto-ACCEPT by default (confirm → OK, beforeunload → leave) so a dialog cannot lock the
   // page; `dialog <target> dismiss` flips it. Action receipts report each answer (#460).
-  const dialogAutoAcceptRef = { value: true };
+  // The saved mode is applied here, before any request, and before throttle/mocks are replayed.
+  // Network replay waits until this process owns the socket so a loser does not emulate over the
+  // daemon that won it (#575).
+  const savedEnvironment = readTabEnvironment(targetId);
+  const dialogAutoAcceptRef = { value: savedDialogAccepts(savedEnvironment) };
+  session.dialogMode = dialogAutoAcceptRef.value ? 'accept' : 'dismiss';
+  session.environmentRestore = environmentRestoreOutcome(savedEnvironment);
+  let environmentReady = Promise.resolve();
   const jsDialogs = createJavaScriptDialogSession();
   cdp.onEvent('Page.javascriptDialogOpening', (params, msg) => {
     jsDialogs.track(handleOpeningJavaScriptDialog(cdp, sessionId, params, msg, {
@@ -27036,7 +27408,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       { kind: 'action-receipt' },
     ),
     dialog: async args => commandResult(
-      dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]),
+      setDialogMode(dialogBuf, dialogAutoAcceptRef, session, args[0]),
       null,
     ),
     'dismiss-modal': async args => {
@@ -27524,6 +27896,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   async function handleCommand({ cmd, args, policy, secrets = null }, execution = undefined, { outermost = false, guarded = false } = {}) {
+  await environmentReady;
   if (daemonCommandResetsIdle(cmd)) resetIdle();
   if (daemonRequestStorage.getStore() === undefined) {
     const policyState = createRequestPolicyState(policy);
@@ -27642,9 +28015,25 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     record: { pid: daemonMetadata.pid, startedAt: daemonMetadata.startedAt },
     // Only the daemon that owns the endpoint starts the tab's session log (the loser would truncate it).
     onServing: () => {
-      initializeSessionLog(session);
-      exitLog.current.markOwned();
       runtimePrune.arm();
+      const started = initializeSessionLog(session);
+      const restarted = started?.restarted === true;
+      environmentReady = (async () => {
+        try {
+          session.environmentRestore = await applySavedNetworkControls(cdp, sessionId, session, savedEnvironment);
+        } catch {
+          // Dialog mode was already taken from the file. Leave throttle and mocks off and say so.
+          session.environmentRestore = {
+            ...environmentRestoreOutcome(savedEnvironment),
+            throttleReset: savedEnvironment?.status === 'ok' ? Boolean(savedEnvironment.throttle) : true,
+            mocksReset: savedEnvironment?.status === 'ok' ? Boolean(savedEnvironment.mocks?.length) : true,
+          };
+          session.networkThrottle = null;
+          session.networkMocks = [];
+        }
+        armDaemonRestartNotice(session, session.environmentRestore, { restarted });
+      })();
+      exitLog.current.markOwned();
     },
   });
   if (!serving) return;
@@ -31159,6 +31548,13 @@ function emitTargetCommandResponse(response, {
         ? boundedTableObservationEmissionJson(output)
         : boundedTableObservationEmissionText(output);
     }
+    const notice = typeof response?.restartNotice === 'string' ? response.restartNotice : '';
+    if (notice) {
+      console.log(notice);
+      if (output === notice) return;
+      const prefix = `${notice}\n`;
+      if (typeof output === 'string' && output.startsWith(prefix)) output = output.slice(prefix.length);
+    }
     // #466: present only when CDP_CONTENT_BOUNDARIES=1 asked the daemon for it.
     console.log(isContentBoundary(response?.contentBoundary)
       ? wrapContentBoundary(output, response.contentBoundary, { format })
@@ -31171,8 +31567,13 @@ function emitTargetCommandResponse(response, {
     return;
   }
   if (response?.ok === false) {
+    const notice = typeof response?.restartNotice === 'string' ? response.restartNotice : '';
+    if (notice) console.log(notice);
+    let error = response.error;
+    const prefix = notice ? `${notice}\n` : '';
+    if (prefix && typeof error === 'string' && error.startsWith(prefix)) error = error.slice(prefix.length);
     // The arguments let a recovery rerun the same command (#488 hidden-tab).
-    console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format, args }));
+    console.error(formatDaemonCommandError(error, { cmd, targetPrefix, format, args }));
     process.exitCode = 1;
   }
 }
@@ -32195,6 +32596,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   foregroundActivationRequest, revealHiddenTab, REVEAL_POLL_TIMEOUT_MS, setBackgroundCaptureGuard, hiddenTabCaptureError,
   isHiddenTabCaptureError, HIDDEN_TAB_CAPTURE_TIMEOUT_MS, BATCH_BLOCKED, REPEAT_BLOCKED, REPLAY_BLOCKED,
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
+  tabEnvPath, readTabEnvironment, writeTabEnvironment, removeTabEnvironment, rememberTabEnvironment,
+  setDialogMode, applySavedTabEnvironment, formatDaemonRestartNotice, armDaemonRestartNotice, applyDaemonRestartNotice,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   recordCommandUsage, USAGE_LOG_MAX_BYTES, getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, readCdpUserAgent, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,

@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
+import { withoutDaemonRestartNotice } from './lib/daemon-restart-notice.mjs';
 import { downloadViaPage, formatDownloadReceipt, parseDownloadArgs } from './lib/page-download.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -21,7 +22,7 @@ export function createEvaluate(target, { run = execFileAsync, cdpPath = CDP_PATH
     });
     let reply;
     try {
-      reply = JSON.parse(stdout);
+      reply = JSON.parse(withoutDaemonRestartNotice(stdout));
     } catch {
       throw new Error(`download: unexpected evalraw output: ${String(stdout).slice(0, 120)}`);
     }

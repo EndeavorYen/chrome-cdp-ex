@@ -18,6 +18,7 @@ import {
   readSessionPolicy,
   urlFlagValue,
 } from './session-policy.mjs';
+import { withoutDaemonRestartNotice } from './daemon-restart-notice.mjs';
 
 export {
   MCP_RESOURCE_TEMPLATES,
@@ -604,7 +605,7 @@ function readCappedRegularFile(path, maxBytes, notBeforeMs) {
 // `shot` prints the PNG path as the whole first line. `elshot` prints one line and puts the
 // path after the last ` -> ` (#547). A label that itself contains ` -> ` still leaves the path last.
 function screenshotPathFromStdout(stdout) {
-  const line = String(stdout ?? '').split(/\r?\n/, 1)[0].trim();
+  const line = withoutDaemonRestartNotice(stdout).split(/\r?\n/, 1)[0].trim();
   const marker = ' -> ';
   if (line.startsWith('Element screenshot of ')) {
     const at = line.lastIndexOf(marker);
@@ -654,7 +655,7 @@ export function mcpImageContent(command, result, {
 
 // A command's versioned JSON output (an object with a string `schema`) becomes structuredContent.
 function structuredOutput(stdout) {
-  const text = stdout.trim();
+  const text = withoutDaemonRestartNotice(stdout).trim();
   if (!text.startsWith('{')) return null;
   try {
     const value = JSON.parse(text);
