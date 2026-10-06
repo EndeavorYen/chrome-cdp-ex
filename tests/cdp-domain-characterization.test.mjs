@@ -430,8 +430,9 @@ describe('Phase 6 direct CDP characterization', () => {
     // #536 added emulateStr → Emulation.setFocusEmulationEnabled (on, off).
     // #535 added captureHiddenTabFrame → focus emulation on, a retried capture, and focus emulation off.
     // #547 added elshotRefLabel → Runtime.callFunctionOn, a read-only label read for the elshot receipt.
-    expect(inventory).toHaveLength(172);
-    expect(digest).toBe('sha256:d6c98b545c9c5cc1d73d80eae3e5e1ebd6c421a7f5c02626595f310f3dc41c27');
+    // #575 added applySavedNetworkControls → Network.enable, Network.emulateNetworkConditions, Fetch.disable.
+    expect(inventory).toHaveLength(175);
+    expect(digest).toBe('sha256:98c7b60bc7ea2ee2829b47e5653f78c0ad0e4b0db41b2bdbb6f81f2bc5ababf6');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
