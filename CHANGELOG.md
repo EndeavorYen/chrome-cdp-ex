@@ -8,10 +8,17 @@
   * `CDP_USAGE_LOG=1` appends `{ts, command, via: cli|mcp}` to `<runtime dir>/usage.jsonl`. The record holds
     the canonical command name only, never its arguments. The file rotates above 1 MiB and stays on the machine.
   * `npm run usage:report` prints per-command counts from that file and from local Claude Code and Codex
-    transcripts. Sessions in this repository are counted separately as `dev`. The report lists unused commands
-    and prints no transcript text.
+    transcripts. Sessions in this repository are counted separately as `dev`. `--since` lists unused commands
+    for that one cutoff and prints no transcript text. With no flags, the report compares `7d` and `30d`
+    (see the entry below).
   * Decisions on each command (fold, re-card, deprecate, MCP scope) move to
     [#544](https://github.com/EndeavorYen/chrome-cdp-ex/issues/544).
+
+* Dual-window usage report ([#544](https://github.com/EndeavorYen/chrome-cdp-ex/issues/544)).
+  * `npm run usage:report` compares trailing `7d` and `30d` counts (`--windows 7d,30d`). A command with
+    zero use in both windows is listed, and the report prints one hint line. It does not assign a fate,
+    fold names, change the survivor card, or remove a command.
+  * `--since YYYY-MM-DD` still prints the single-window report.
 
 * In background mode, a capture of a hidden tab (a background tab, or any tab of a minimized window) no
   longer gives up after one frameless attempt. It retries once with focus emulation on for that capture
