@@ -6590,11 +6590,11 @@ async function summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
   const expr = `
     (function() {
       const counts = {};
+      const renderedInteractive = ${renderedInteractiveSource()};
       const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex]');
       let visibleControls = 0;
       for (const el of interactive) {
-        const style = window.getComputedStyle(el);
-        if (el.hidden || el.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') continue;
+        if (el.getAttribute('aria-hidden') === 'true' || !renderedInteractive(el)) continue;
         visibleControls += 1;
         const tag = el.tagName.toLowerCase();
         const type = tag === 'input' ? 'input[' + (el.type || 'text') + ']' : tag;
@@ -14563,9 +14563,25 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
 // Browser-side script for perceiveStr — extracted for readability and testability.
 // Collects page metadata, layout map, style hints, and cursor-interactive elements.
+// #561: the Interactive census counts a control only when it is rendered (it has a client rect, so no
+// display:none ancestor, closed <dialog>, hidden attribute or type=hidden) and visible. A native input
+// hidden behind a styled <label> (input{display:none}) is therefore not counted, as in the AX tree.
+function renderedInteractiveSource() {
+  return `function renderedInteractive(el) {
+    if (!el || typeof el.getClientRects !== 'function' || el.getClientRects().length === 0) return false;
+    // checkVisibility also catches a content-visibility:hidden ancestor (a closed <details>), which
+    // keeps its rects.
+    if (typeof el.checkVisibility === 'function') return el.checkVisibility({ visibilityProperty: true });
+    let visibility = 'visible';
+    try { visibility = String(getComputedStyle(el).visibility || 'visible'); } catch {}
+    return visibility !== 'hidden' && visibility !== 'collapse';
+  }`;
+}
+
 function perceivePageScript(cursorInteractive) {
   return `(function() {
 ${visibleControlsCollectorSource()}
+      const renderedInteractive = ${renderedInteractiveSource()};
       const pickPrimaryScrollMetrics = ${pickPrimaryScrollMetrics.toString()};
       const vw = window.innerWidth, vh = window.innerHeight;
       const scrollingEl = document.scrollingElement || document.documentElement;
@@ -14607,6 +14623,7 @@ ${visibleControlsCollectorSource()}
       // Interactive element counts
       const counts = {};
       for (const el of document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex]')) {
+        if (!renderedInteractive(el)) continue;
         const tag = el.tagName.toLowerCase();
         const type = tag === 'input' ? 'input[' + (el.type || 'text') + ']' : tag;
         counts[type] = (counts[type] || 0) + 1;
@@ -32044,7 +32061,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, axNodeTokenState, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, pickPrimaryScrollMetrics, omitTypeaheadListboxNodes, TYPEAHEAD_OMITTED_NOTICE,
-  buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, renderedInteractiveSource, perceiveStr,
   perceiveTextboxValueFromOutput,
   filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   buildCardsModel, formatCardsJson, formatCardsText,
