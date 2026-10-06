@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// #532: count how agents use the cdp.mjs command catalog, from local sources only:
+// #532: count how agents use the cdp.mjs command catalog, from local sources only.
+// #544: with no --since, the CLI compares two trailing windows (default 7d and 30d) and prints one hint line. It does not assign a fate or delete a command.
 //   1. the opt-in CDP_USAGE_LOG counter (<runtime dir>/usage.jsonl, plus usage.jsonl.1),
 //   2. Claude Code transcripts (~/.claude/projects/**/*.jsonl): Bash tool inputs and MCP tool calls,
 //   3. Codex sessions (~/.codex/sessions/**/*.jsonl): shell / exec tool inputs and MCP tool calls.
@@ -9,8 +10,14 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
+import { COMMAND_SURFACE, SURVIVOR_COMMANDS } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import { resolveRuntimeDir } from '../skills/chrome-cdp-ex/scripts/lib/runtime-dir.mjs';
+
+const ON_CARD = new Set(SURVIVOR_COMMANDS);
+const DAY_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_USAGE_WINDOWS = Object.freeze(['7d', '30d']);
+// One line. Principles are recorded here; this report does not assign a fate or delete a command.
+export const USAGE_COMPARISON_HINT = 'Hint: zero use in both windows may deprecate; duplicate spellings become aliases once a fold list exists; core card commands stay on the card. This report does not remove commands.';
 
 export const SOURCES = Object.freeze(['counter', 'claude', 'codex', 'dev']);
 
@@ -214,10 +221,13 @@ export function parseUsageReportArgs(argv = []) {
   const opts = {
     format: 'text',
     since: null,
+    windowSpecs: null,
     claudeDir: join(homedir(), '.claude', 'projects'),
     codexDir: join(homedir(), '.codex', 'sessions'),
     usageFile: join(resolveRuntimeDir(), 'usage.jsonl'),
   };
+  let sawSince = false;
+  let sawWindows = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -230,41 +240,150 @@ export function parseUsageReportArgs(argv = []) {
       const at = Date.parse(value());
       if (!Number.isFinite(at)) throw new Error('usage-report: --since needs a date (YYYY-MM-DD)');
       opts.since = at;
+      sawSince = true;
+    } else if (arg === '--windows') {
+      opts.windowSpecs = parseWindowSpecs(value());
+      sawWindows = true;
     } else if (arg === '--claude-dir') opts.claudeDir = resolve(value());
     else if (arg === '--codex-dir') opts.codexDir = resolve(value());
     else if (arg === '--usage-file') opts.usageFile = resolve(value());
     else throw new Error(`usage-report: unknown argument ${arg}`);
   }
   if (!['text', 'json'].includes(opts.format)) throw new Error('usage-report: --format must be text or json');
+  if (sawSince && sawWindows) throw new Error('usage-report: --since and --windows cannot be combined');
+  if (sawSince) opts.windowSpecs = null;
+  else if (!sawWindows) opts.windowSpecs = [...DEFAULT_USAGE_WINDOWS];
   return opts;
+}
+
+async function forEachUsageLine(opts, onLine) {
+  const files = { counter: 0, claude: 0, codex: 0 };
+  for (const path of [opts.usageFile, `${opts.usageFile}.1`]) {
+    if (!path || !existsSync(path) || !statSync(path).isFile()) continue;
+    files.counter += 1;
+    await eachLine(path, line => onLine('counter', line, null));
+  }
+  for (const path of jsonlFiles(opts.claudeDir)) {
+    files.claude += 1;
+    await eachLine(path, line => onLine('claude', line, null));
+  }
+  for (const path of jsonlFiles(opts.codexDir)) {
+    files.codex += 1;
+    const state = {};
+    await eachLine(path, line => onLine('codex', line, state));
+  }
+  return files;
 }
 
 export async function buildUsageReport(opts) {
   const report = emptyUsageReport();
-  for (const path of [opts.usageFile, `${opts.usageFile}.1`]) {
-    if (!path || !existsSync(path) || !statSync(path).isFile()) continue;
-    report.files.counter += 1;
-    await eachLine(path, line => addUsage(report, 'counter', usageFromCounterLine(line, opts)));
-  }
   const seenClaude = new Set();
-  for (const path of jsonlFiles(opts.claudeDir)) {
-    report.files.claude += 1;
-    await eachLine(path, line => addUsage(report, 'claude', usageFromClaudeLine(line, opts), seenClaude));
-  }
   const seenCodex = new Set();
-  for (const path of jsonlFiles(opts.codexDir)) {
-    report.files.codex += 1;
-    const state = {};
-    await eachLine(path, line => addUsage(report, 'codex', usageFromCodexLine(line, state, opts), seenCodex));
-  }
+  report.files = await forEachUsageLine(opts, (source, line, state) => {
+    if (source === 'counter') addUsage(report, 'counter', usageFromCounterLine(line, opts));
+    else if (source === 'claude') addUsage(report, 'claude', usageFromClaudeLine(line, opts), seenClaude);
+    else addUsage(report, 'codex', usageFromCodexLine(line, state, opts), seenCodex);
+  });
   return usageReportModel(report);
+}
+
+export function parseWindowSpecs(text) {
+  const specs = String(text ?? '').split(',').map(part => part.trim()).filter(Boolean);
+  if (specs.length !== 2) throw new Error('usage-report: --windows needs two durations, for example 7d,30d');
+  for (const spec of specs) {
+    if (!/^([1-9]\d*)d$/.test(spec)) throw new Error(`usage-report: window ${spec} must look like 7d`);
+  }
+  if (specs[0] === specs[1]) throw new Error('usage-report: --windows needs two different durations');
+  return specs;
+}
+
+export function windowBounds(specs, now) {
+  return parseWindowSpecs(specs.join(',')).map(id => {
+    const days = Number(id.slice(0, -1));
+    return { id, days, since: now - days * DAY_MS };
+  });
+}
+
+function windowSlice(row) {
+  return {
+    counter: row.counter,
+    claude: row.claude,
+    codex: row.codex,
+    dev: row.dev,
+    mcp: row.mcp,
+    total: row.total,
+  };
+}
+
+export function comparisonFromReports(windows, models, files) {
+  const longId = windows[1].id;
+  const shortId = windows[0].id;
+  const commands = models[0].commands.map(row => ({
+    command: row.command,
+    onCard: ON_CARD.has(row.command),
+    windows: {},
+  }));
+  const index = new Map(commands.map(row => [row.command, row]));
+  windows.forEach((window, i) => {
+    for (const row of models[i].commands) index.get(row.command).windows[window.id] = windowSlice(row);
+  });
+  commands.sort((a, b) => b.windows[longId].total - a.windows[longId].total
+    || b.windows[shortId].total - a.windows[shortId].total
+    || b.windows[longId].dev - a.windows[longId].dev
+    || a.command.localeCompare(b.command));
+  const zeroInBoth = commands
+    .filter(row => windows.every(window => row.windows[window.id].total === 0 && row.windows[window.id].dev === 0))
+    .map(row => row.command);
+  return {
+    schema: 'chrome-cdp-ex.usage-report.v2',
+    files,
+    windows,
+    commands,
+    zeroInBoth,
+    hint: USAGE_COMPARISON_HINT,
+  };
+}
+
+export async function buildUsageComparison(opts) {
+  const specs = opts.windowSpecs ?? DEFAULT_USAGE_WINDOWS;
+  const now = opts.now ?? Date.now();
+  const windows = windowBounds(specs, now);
+  const reports = windows.map(() => emptyUsageReport());
+  const seen = windows.map(() => ({ claude: new Set(), codex: new Set() }));
+  const files = await forEachUsageLine(opts, (source, line, state) => {
+    windows.forEach((window, index) => {
+      const bounds = { since: window.since };
+      if (source === 'counter') addUsage(reports[index], 'counter', usageFromCounterLine(line, bounds));
+      else if (source === 'claude') addUsage(reports[index], 'claude', usageFromClaudeLine(line, bounds), seen[index].claude);
+      else addUsage(reports[index], 'codex', usageFromCodexLine(line, state, bounds), seen[index].codex);
+    });
+  });
+  return comparisonFromReports(windows, reports.map(usageReportModel), files);
+}
+
+export function formatUsageComparison(model) {
+  const [left, right] = model.windows;
+  const lines = [
+    `Usage report: ${left.id} vs ${right.id} — ${model.files.counter} counter file(s), ${model.files.claude} Claude transcript(s), ${model.files.codex} Codex session(s)`,
+    `command               ${`${left.id}-total`.padStart(8)}  ${`${right.id}-total`.padStart(9)}  ${`${left.id}-dev`.padStart(6)}  ${`${right.id}-dev`.padStart(7)}  card`,
+  ];
+  for (const row of model.commands) {
+    const a = row.windows[left.id];
+    const b = row.windows[right.id];
+    if (a.total === 0 && a.dev === 0 && b.total === 0 && b.dev === 0) continue;
+    lines.push(`${row.command.padEnd(20)}  ${String(a.total).padStart(8)}  ${String(b.total).padStart(9)}  ${String(a.dev).padStart(6)}  ${String(b.dev).padStart(7)}  ${row.onCard ? 'yes' : 'no'}`);
+  }
+  lines.push(`Zero in both windows (${model.zeroInBoth.length}): ${model.zeroInBoth.join(', ') || '(none)'}`);
+  lines.push(model.hint || USAGE_COMPARISON_HINT);
+  return lines.join('\n');
 }
 
 async function runCli() {
   try {
     const opts = parseUsageReportArgs(process.argv.slice(2));
-    const model = await buildUsageReport(opts);
-    console.log(opts.format === 'json' ? JSON.stringify(model, null, 2) : formatUsageReport(model));
+    const model = opts.since != null ? await buildUsageReport(opts) : await buildUsageComparison(opts);
+    const text = opts.since != null ? formatUsageReport(model) : formatUsageComparison(model);
+    console.log(opts.format === 'json' ? JSON.stringify(model, null, 2) : text);
   } catch (error) {
     console.error(`Error: ${error.message}`);
     process.exitCode = 1;
