@@ -2505,6 +2505,10 @@
               "minimum": 1,
               "type": "integer"
             },
+            "followUrl": {
+              "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
+              "type": "boolean"
+            },
             "last": {
               "description": "Explicit text-row budget; overrides adaptive mode.",
               "maximum": 500,
@@ -3150,6 +3154,10 @@
               "description": "Pipe-delimited alternatives, e.g. win|lose|escape.",
               "type": "string"
             },
+            "followUrl": {
+              "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
+              "type": "boolean"
+            },
             "scope": {
               "description": "Optional CSS scope selector.",
               "type": "string"
@@ -3198,6 +3206,10 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "followUrl": {
+              "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
+              "type": "boolean"
+            },
             "property": {
               "description": "CSS property to trace. Defaults to color when omitted by CLI behavior; prefer an explicit property.",
               "type": "string"

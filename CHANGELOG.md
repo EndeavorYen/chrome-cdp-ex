@@ -4,6 +4,8 @@
 
 ### Features
 
+* `--follow-url` re-binds a vanished target prefix on a target-taking read command when exactly one live page has the same URL and title. The receipt sets `targetResolution.status` to `followed-url`. Mutating and page-changing commands do not re-bind. There is no environment variable, and saved aliases do not follow ([#540](https://github.com/EndeavorYen/chrome-cdp-ex/issues/540)).
+
 * Opt-in usage measurement ([#532](https://github.com/EndeavorYen/chrome-cdp-ex/issues/532)).
   * `CDP_USAGE_LOG=1` appends `{ts, command, via: cli|mcp}` to `<runtime dir>/usage.jsonl`. The record holds
     the canonical command name only, never its arguments. The file rotates above 1 MiB and stays on the machine.

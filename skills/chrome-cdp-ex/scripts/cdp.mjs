@@ -295,6 +295,7 @@ const LAST_CDP_ENDPOINT_FILE = 'cdp-last-endpoint.json';
 const LAST_CDP_ENDPOINT_SCHEMA = 'chrome-cdp-ex.cdp-last-endpoint.v1';
 const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
+const FOLLOW_URL_FLAG = '--follow-url';
 const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_CDP_PROBE_PORT = '9224';
 const DEFAULT_DEBUG_PORT = 9222;
@@ -3065,12 +3066,38 @@ function selectLivePagesForAliasResolution({
   return discoveredPages;
 }
 
+// #540: --follow-url re-binds a vanished prefix only for a catalog read command that takes a target.
+function commandAcceptsFollowUrl(cmd) {
+  const command = COMMAND_SURFACE.resolve(cmd);
+  return Boolean(command && command.kind === 'read' && command.needsTarget === true);
+}
+
+function takeFollowUrlFlag(cmd, args = []) {
+  const rest = [];
+  let followUrl = false;
+  for (const arg of args) {
+    if (arg === FOLLOW_URL_FLAG) followUrl = true;
+    else rest.push(arg);
+  }
+  if (!followUrl) return { followUrl: false, args: rest };
+  if (!commandAcceptsFollowUrl(cmd)) {
+    const command = COMMAND_SURFACE.resolve(cmd);
+    const name = command?.name || cmd;
+    const kind = command?.kind || 'unknown';
+    const error = new Error(`${name}: --follow-url re-binds only a read command (kind "read" with a target). ${name} is ${kind}.`);
+    error.code = 'follow_url_not_read';
+    throw error;
+  }
+  return { followUrl: true, args: rest };
+}
+
 // #546: a page list taken right after location.reload() can hold two matches for one tab for a
 // moment. Discover again (up to 3 more times, 250 ms apart) before an ambiguous prefix fails.
 async function resolvePageCommandTarget({
   targetPrefix,
   targetAlias = null,
   lastSeenPages = [],
+  followUrl = false,
   discover = livePagesForTargetCommand,
   readBinding = readDaemonBinding,
   onPages = () => {},
@@ -3094,6 +3121,7 @@ async function resolvePageCommandTarget({
         daemonBinding,
         alias: targetAlias,
         lastSeenPages,
+        followUrl,
       });
       return { livePages, targetResolution };
     } catch (error) {
@@ -31041,6 +31069,11 @@ function emitTargetCommandResponse(response, {
   console = globalThis.console,
   process = globalThis.process,
 } = {}) {
+  if (targetResolution?.status === 'followed-url' || targetResolution?.followedUrl === true) {
+    const from = targetResolution.requestedTargetPrefix || targetPrefix || '';
+    const to = targetResolution.successorPrefix || String(targetResolution.resolvedTargetId || '').slice(0, 8);
+    console.error(`Re-bound target ${from} to ${to} (same URL and title).`);
+  }
   const hasResult = response?.result !== undefined
     && response?.result !== null
     && response.result !== '';
@@ -31611,6 +31644,16 @@ async function main(options = {}) {
     targetCommandArgs.splice(allowStaleDaemonFlagIndex, 1);
   }
 
+  let followUrl = false;
+  try {
+    const taken = takeFollowUrlFlag(cmd, targetCommandArgs);
+    followUrl = taken.followUrl;
+    targetCommandArgs.splice(0, targetCommandArgs.length, ...taken.args);
+  } catch (error) {
+    console.error(formatCliError(error, { cmd, format: detectCliErrorFormat(targetCommandArgs) }));
+    return finish(1);
+  }
+
   let { targetPrefix, cmdArgs } = parseTargetAndCommandArgs(cmd, targetCommandArgs);
   let cliErrorFormat = targetCommandCliErrorFormat(targetPrefix, cmdArgs, targetCommandArgs);
   if (
@@ -31674,6 +31717,7 @@ async function main(options = {}) {
       targetPrefix,
       targetAlias,
       lastSeenPages,
+      followUrl,
       onPages: livePages => writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 }),
     }));
   } catch (error) {
@@ -32047,6 +32091,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   getOrStartTabDaemon,
   suggestCommands, unknownCommandMessage, editDistance, commandUsageTemplate,
   resolveLiveTargetBinding, resolvePageCommandTarget, completeTargetResolution, attachTargetResolutionDiagnostics,
+  commandAcceptsFollowUrl, takeFollowUrlFlag, FOLLOW_URL_FLAG,
   buildExactTargetSupervisorCandidates,
   cdpRuntimeIdentity,
   // 3y-mud feedback additions
