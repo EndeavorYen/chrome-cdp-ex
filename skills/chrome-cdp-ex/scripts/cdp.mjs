@@ -10,7 +10,7 @@
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, readlinkSync, realpathSync, renameSync, statSync, promises as fsPromises } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { homedir, hostname as osHostname, tmpdir } from 'os';
-import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
+import { basename, dirname, isAbsolute, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { format as formatValue } from 'util';
@@ -5936,6 +5936,8 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
       };
     }
   }
+  // Fail before capture: a missing directory is a caller-path mistake, not a browser failure (#577).
+  if (filePath) assertScreenshotOutputDirectory(filePath, 'shot');
   const dpr = await getDpr(cdp, sid);
   const captureHooks = { skipSanityRetry: opts.skipSanityRetry, tierState: opts.tierState };
   if (Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0) captureHooks.timeoutMs = opts.timeoutMs;
@@ -5943,7 +5945,7 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   const { data } = capture;
   opts.onCapture?.(capture);
   const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
-  writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
+  writeScreenshotFile(out, data, 'shot');
 
   // Default output: saved path FIRST so scripts grabbing `head -1` get a clean
   // path. Verbose adds full coordinate-mapping tutorial. Quiet hides hints.
@@ -15706,8 +15708,341 @@ function absolutizeElshotFileArg(args = [], cwd = process.cwd()) {
   return next;
 }
 
+// A user path is opened in the tab daemon, whose cwd is whoever started it (#577).
+// Leave an absolute path untouched, including its spelling, so a second pass is a no-op.
+function resolveCallerFile(filePath, cwd) {
+  const text = String(filePath);
+  if (!text || isAbsolute(text)) return text;
+  return resolve(cwd, text);
+}
+
+function sameArgList(left, right) {
+  return Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function canonicalCallerCommand(cmd) {
+  return COMMAND_SURFACE.resolve(String(cmd || ''))?.name || String(cmd || '');
+}
+
+function assertScreenshotOutputDirectory(filePath, command) {
+  const dir = dirname(String(filePath));
+  let info;
+  try {
+    info = statSync(dir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`${command}: output directory does not exist: ${dir}`);
+    throw error;
+  }
+  if (!info.isDirectory()) throw new Error(`${command}: output path is not a directory: ${dir}`);
+}
+
+function writeScreenshotFile(filePath, base64, command) {
+  assertScreenshotOutputDirectory(filePath, command);
+  try {
+    writeFileSync(filePath, Buffer.from(base64, 'base64'), { mode: 0o600 });
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`${command}: output directory does not exist: ${dirname(filePath)}`);
+    if (error?.code === 'ENOTDIR') throw new Error(`${command}: output path is not a directory: ${dirname(filePath)}`);
+    throw error;
+  }
+}
+
+function absolutizeShotArgs(args = [], cwd = process.cwd()) {
+  if (!Array.isArray(args) || args.length === 0) return args;
+  if (args[0] === '--annotate' || args[0] === '-a') return args;
+  let fileIndex = -1;
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token == null) continue;
+    if (token === '--quiet' || token === '-q' || token === '--verbose' || token === '-v') continue;
+    if (typeof token === 'string' && !token.startsWith('--')) fileIndex = i;
+  }
+  if (fileIndex < 0) return args;
+  const resolved = resolveCallerFile(args[fileIndex], cwd);
+  if (resolved === args[fileIndex]) return args;
+  const next = args.slice();
+  next[fileIndex] = resolved;
+  return next;
+}
+
+function absolutizeFullshotArgs(args = [], cwd = process.cwd()) {
+  if (!Array.isArray(args) || args.length === 0) return args;
+  const token = args[0];
+  if (typeof token !== 'string' || !token || token.startsWith('--')) return args;
+  const resolved = resolveCallerFile(token, cwd);
+  if (resolved === token) return args;
+  const next = args.slice();
+  next[0] = resolved;
+  return next;
+}
+
+function uploadPathIndexes(args = []) {
+  const indexes = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === '--format' || token === '--max-diff-lines') {
+      i += 1;
+      continue;
+    }
+    if (
+      token === '--compact' || token === '--full' || token === '--unsafe-full'
+      || token === '--qa' || token === '--summary'
+      || (typeof token === 'string' && token.startsWith('--max-diff-lines='))
+    ) continue;
+    indexes.push(i);
+  }
+  return indexes;
+}
+
+function absolutizeUploadArgs(args = [], cwd = process.cwd()) {
+  const pathIndex = uploadPathIndexes(args)[1];
+  if (pathIndex == null) return args;
+  const raw = args[pathIndex];
+  if (typeof raw !== 'string' || !raw) return args;
+  const resolved = raw.split(',').map(part => {
+    const trimmed = part.trim();
+    if (!trimmed) return part;
+    const next = resolveCallerFile(trimmed, cwd);
+    return next === trimmed ? part : next;
+  }).join(',');
+  if (resolved === raw) return args;
+  const next = args.slice();
+  next[pathIndex] = resolved;
+  return next;
+}
+
+// replay/restore read the artifact inside the daemon. --json is a payload, not a path.
+function absolutizeArtifactFileArgs(args = [], cwd = process.cwd()) {
+  if (!Array.isArray(args)) return args;
+  const next = args.slice();
+  let changed = false;
+  let sawFile = false;
+  let sawJson = false;
+  const positional = [];
+  for (let i = 0; i < next.length; i++) {
+    const token = next[i];
+    if (token === '--format') {
+      i += 1;
+      continue;
+    }
+    if (token === '--continue' || token === '-c') continue;
+    if (token === '--json') {
+      sawJson = true;
+      break;
+    }
+    if (token === '--file' || token === '-f') {
+      sawFile = true;
+      const value = next[i + 1];
+      if (typeof value === 'string' && value && !value.startsWith('--')) {
+        const resolved = resolveCallerFile(value, cwd);
+        if (resolved !== value) {
+          next[i + 1] = resolved;
+          changed = true;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    positional.push(i);
+  }
+  if (!sawJson && !sawFile && positional.length) {
+    const index = positional[0];
+    const raw = next[index];
+    if (typeof raw === 'string' && raw && !raw.startsWith('{') && !raw.startsWith('[')) {
+      const resolved = resolveCallerFile(raw, cwd);
+      if (resolved !== raw) {
+        next[index] = resolved;
+        changed = true;
+      }
+    }
+  }
+  return changed ? next : args;
+}
+
+function absolutizeResponsiveAuditArgs(args = [], cwd = process.cwd()) {
+  if (!Array.isArray(args)) return args;
+  const next = args.slice();
+  let changed = false;
+  for (let i = 0; i < next.length - 1; i++) {
+    if (next[i] !== '--out-dir' && next[i] !== '--output-dir') continue;
+    const value = next[i + 1];
+    if (typeof value !== 'string' || !value || value.startsWith('--')) continue;
+    const resolved = resolveCallerFile(value, cwd);
+    if (resolved !== value) {
+      next[i + 1] = resolved;
+      changed = true;
+    }
+    i += 1;
+  }
+  return changed ? next : args;
+}
+
+function callerPayloadIndexes(args, extraSkip) {
+  const indexes = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === '--format') {
+      i += 1;
+      continue;
+    }
+    if (extraSkip.has(token)) continue;
+    indexes.push(i);
+  }
+  return indexes;
+}
+
+function replaceCallerPayload(args, indexes, value) {
+  const drop = new Set(indexes.slice(1));
+  const first = indexes[0];
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if (drop.has(i)) continue;
+    out.push(i === first ? value : args[i]);
+  }
+  return out;
+}
+
+function rewriteFlowInput(input, cwd, depth) {
+  const steps = String(input).split(';');
+  let changed = false;
+  const next = steps.map(step => {
+    const trimmed = step.trim();
+    if (!trimmed) return step;
+    const parts = trimmed.split(/\s+/);
+    const head = parts[0];
+    if (head === 'wait' || head === 'assert') return step;
+    let rewritten;
+    try {
+      rewritten = rewriteCallerCommandArgs(head, parts.slice(1), cwd, depth + 1);
+    } catch {
+      return step;
+    }
+    if (sameArgList(rewritten, parts.slice(1))) return step;
+    changed = true;
+    const prefix = step.match(/^\s*/)?.[0] || '';
+    return `${prefix}${[head, ...rewritten].join(' ')}`.trimEnd();
+  });
+  return changed ? next.join(';') : input;
+}
+
+function rewriteBatchInput(input, cwd, depth) {
+  const text = String(input);
+  const trimmed = text.trim();
+  if (trimmed.startsWith('[')) {
+    let commands;
+    try { commands = JSON.parse(trimmed); } catch { return input; }
+    if (!Array.isArray(commands)) return input;
+    let changed = false;
+    const next = commands.map(command => {
+      if (!command || typeof command !== 'object' || Array.isArray(command)) return command;
+      const args = Array.isArray(command.args) ? command.args.map(String) : [];
+      let rewritten = args;
+      try { rewritten = rewriteCallerCommandArgs(command.cmd, args, cwd, depth + 1); } catch { rewritten = args; }
+      if (sameArgList(rewritten, args)) return command;
+      changed = true;
+      return { ...command, args: rewritten };
+    });
+    return changed ? JSON.stringify(next) : input;
+  }
+  const segments = text.split('|');
+  let changed = false;
+  const next = segments.map(segment => {
+    const trimmedSegment = segment.trim();
+    if (!trimmedSegment) return segment;
+    const parts = trimmedSegment.split(/\s+/);
+    let rewritten;
+    try {
+      rewritten = rewriteCallerCommandArgs(parts[0], parts.slice(1), cwd, depth + 1);
+    } catch {
+      return segment;
+    }
+    if (sameArgList(rewritten, parts.slice(1))) return segment;
+    changed = true;
+    return [parts[0], ...rewritten].join(' ');
+  });
+  return changed ? next.join('|') : input;
+}
+
+function absolutizeFlowArgs(args, cwd, depth) {
+  if (!Array.isArray(args)) return args;
+  const indexes = callerPayloadIndexes(args, new Set());
+  if (!indexes.length) return args;
+  const input = indexes.map(index => args[index]).join(' ');
+  const rewritten = rewriteFlowInput(input, cwd, depth);
+  if (rewritten === input) return args;
+  return replaceCallerPayload(args, indexes, rewritten);
+}
+
+function absolutizeBatchArgs(args, cwd, depth) {
+  if (!Array.isArray(args)) return args;
+  const indexes = callerPayloadIndexes(args, new Set(['--parallel', '--plain', '--compact']));
+  if (!indexes.length) return args;
+  const input = indexes.map(index => args[index]).join(' ');
+  const rewritten = rewriteBatchInput(input, cwd, depth);
+  if (rewritten === input) return args;
+  return replaceCallerPayload(args, indexes, rewritten);
+}
+
+function absolutizeRepeatArgs(args, cwd, depth) {
+  if (!Array.isArray(args)) return args;
+  const untilFlags = new Set(['--until-selector', '--until-selector-missing', '--until-text']);
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === '--continue' || token === '-c') continue;
+    if (untilFlags.has(token)) {
+      i += 1;
+      continue;
+    }
+    positional.push(i);
+  }
+  if (positional.length < 3) return args;
+  const argIndexes = positional.slice(2);
+  const inner = argIndexes.map(index => args[index]);
+  const rewritten = rewriteCallerCommandArgs(args[positional[1]], inner, cwd, depth + 1);
+  if (sameArgList(rewritten, inner)) return args;
+  if (rewritten.length === inner.length) {
+    const next = args.slice();
+    argIndexes.forEach((index, offset) => { next[index] = rewritten[offset]; });
+    return next;
+  }
+  for (let i = 1; i < argIndexes.length; i++) {
+    if (argIndexes[i] !== argIndexes[i - 1] + 1) return args;
+  }
+  const start = argIndexes[0];
+  const end = argIndexes[argIndexes.length - 1];
+  return [...args.slice(0, start), ...rewritten, ...args.slice(end + 1)];
+}
+
+// Top-level commands and the same paths nested in flow, batch, and repeat (#577).
+function rewriteCallerCommandArgs(cmd, args, cwd, depth) {
+  if (depth > 8 || !Array.isArray(args)) return args;
+  switch (canonicalCallerCommand(cmd)) {
+    case 'shot': return absolutizeShotArgs(args, cwd);
+    case 'fullshot': return absolutizeFullshotArgs(args, cwd);
+    case 'elshot': return absolutizeElshotFileArg(args, cwd);
+    case 'upload': return absolutizeUploadArgs(args, cwd);
+    case 'replay':
+    case 'restore': return absolutizeArtifactFileArgs(args, cwd);
+    case 'responsive-audit': return absolutizeResponsiveAuditArgs(args, cwd);
+    case 'netlog': return absolutizeNetlogOutArg(args, cwd);
+    case 'click': return absolutizeExpectDownloadOut(args, cwd);
+    case 'flow': return absolutizeFlowArgs(args, cwd, depth);
+    case 'batch': return absolutizeBatchArgs(args, cwd, depth);
+    case 'repeat': return absolutizeRepeatArgs(args, cwd, depth);
+    default: return args;
+  }
+}
+
+function absolutizeCallerFileArgs(cmd, args = [], cwd = process.cwd()) {
+  return rewriteCallerCommandArgs(cmd, args, cwd, 0);
+}
+
 async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePath = null) {
   if (!selector) throw new Error('CSS selector or @ref required');
+  if (filePath) assertScreenshotOutputDirectory(filePath, 'elshot');
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
     const label = await elshotRefLabel(cdp, sid, refMap, selector, refState);
@@ -15717,7 +16052,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png', clip });
     const prefix = (targetId || 'unknown').slice(0, 8);
     const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
-    writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
+    writeScreenshotFile(out, data, 'elshot');
     return formatElshotReceipt(`<${r.tag}> "${elshotReceiptLabel(label)}" (${selector})`, {
       w: r.w,
       h: r.h,
@@ -15756,7 +16091,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePat
   const prefix = (targetId || 'unknown').slice(0, 8);
   const selSafe = selector.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 30);
   const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-${selSafe}.png`);
-  writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
+  writeScreenshotFile(out, data, 'elshot');
 
   const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${elshotReceiptLabel(r.text)}"`;
   return formatElshotReceipt(desc, { w: r.w, h: r.h, clip, fallback, path: out });
@@ -19083,6 +19418,7 @@ async function selectStr(cdp, sid, selector, value, opts = {}) {
 }
 
 async function fullshotStr(cdp, sid, filePath, targetId) {
+  if (filePath) assertScreenshotOutputDirectory(filePath, 'fullshot');
   const targetPrefix = targetPrefixForDisplay(targetId);
   await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
   const dpr = await getDpr(cdp, sid);
@@ -19127,7 +19463,7 @@ async function fullshotStr(cdp, sid, filePath, targetId) {
   }
 
   const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
-  writeFileSync(out, Buffer.from(capture.data, 'base64'), { mode: 0o600 });
+  writeScreenshotFile(out, capture.data, 'fullshot');
 
   const diagnostics = formatScreenshotCaptureDiagnostics(capture);
   const fb = diagnostics ? ` ${diagnostics}` : '';
@@ -30683,6 +31019,18 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         : '--out needs an absolute path in an existing directory that is not a symlink and does not exist yet (or pass --overwrite).',
     };
   }
+  // #577: a screenshot path whose parent is missing used to surface as raw ENOENT / Kind: unknown.
+  if (lower.includes('output directory does not exist') || lower.includes('output path is not a directory')) {
+    const missing = lower.includes('output directory does not exist');
+    return {
+      kind: 'usage',
+      strategy: 'create-output-directory',
+      run: cmd ? `cdp help ${commandCatalogName(cmd)}` : 'cdp help shot',
+      reason: missing
+        ? 'The output directory does not exist. Create it, then rerun. A relative path is resolved from the directory where you ran the command.'
+        : 'That output path is not a directory. Choose a file inside a directory. A relative path is resolved from the directory where you ran the command.',
+    };
+  }
   if (
     lower.includes('unknown option')
     || lower.includes('unknown argument')
@@ -32334,6 +32682,13 @@ async function main(options = {}) {
     }
   }
 
+  // The daemon keeps the cwd of whichever CLI started it. Send caller paths absolute (#577).
+  try {
+    cmdArgs = absolutizeCallerFileArgs(cmd, cmdArgs);
+  } catch (error) {
+    exitCliError(error.message, { cmd, targetPrefix, format: cliErrorFormat });
+  }
+
   if (cmd === 'nav' || cmd === 'navigate') {
     const checkArgs = argsWithoutFormat(cmdArgs);
     if (!checkArgs[0]) exitCliError('URL required', { cmd, targetPrefix, format: cliErrorFormat });
@@ -32590,7 +32945,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
   parseFormControlStateSnapshot, snapshotFormControlState,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr, buildTableCollectorBootstrapExpression,
-  parseShotArgs, shotStr, elshotStr, parseElshotArgs, absolutizeElshotFileArg, RUNTIME_DIR, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
+  parseShotArgs, shotStr, elshotStr, parseElshotArgs, absolutizeElshotFileArg, absolutizeCallerFileArgs, RUNTIME_DIR, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
   isBackgroundMode, explicitBackgroundChoice, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
   foregroundActivationRequest, revealHiddenTab, REVEAL_POLL_TIMEOUT_MS, setBackgroundCaptureGuard, hiddenTabCaptureError,
