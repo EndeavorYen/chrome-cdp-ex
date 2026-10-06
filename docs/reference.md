@@ -507,7 +507,7 @@ Configuration:
 | `CDP_PORT_FILE` | Override the `DevToolsActivePort` file path. |
 | `CDP_BACKGROUND` | Background mode is on by default: no command focuses a tab or raises the window. `0` (also `false`, `no`, `off`) turns it off. |
 | `CDP_FOREGROUND` | `1` turns background mode off, like `CDP_BACKGROUND=0`. |
-| `CDP_USAGE_LOG` | `1` appends `{ts, command, via}` (command name only, no arguments) to `<runtime dir>/usage.jsonl`, rotated above 1 MiB, local only. `npm run usage:report` reads it with local Claude Code and Codex transcripts. Off by default. |
+| `CDP_USAGE_LOG` | `1` appends `{ts, command, via}` (command name only, no arguments) to `<runtime dir>/usage.jsonl`, rotated above 1 MiB, local only. `npm run usage:report` reads it with local Claude Code and Codex transcripts and, by default, compares trailing `7d` and `30d` windows. `--since YYYY-MM-DD` keeps a single window. Off by default. |
 | `CDP_CONTENT_BOUNDARIES` | `1` wraps page output (`perceive`, `text`, `console`, `table`, `netlog`, `back`/`forward`, `nav`/`open --perceive`) in nonce-marked `PAGE CONTENT (untrusted)` blocks. Off by default. |
 | `CDP_ALLOWED_ORIGINS` | Comma-separated origins (`https://*.example.com` for subdomains). `nav`/`open`/`spawn-debug-browser --url` elsewhere fail with `Kind: policy`, commands do not run while the tab is elsewhere, and a command that navigates elsewhere fails after the fact. Unset by default. |
 | `CDP_DENY_ACTIONS` | Comma-separated command names that exit 1 with `Kind: policy`, with the commands that do the same job (`eval` also denies `eval64`/`call`/`inject --js`; any list denies `evalraw`), also as `batch`/`flow`/`repeat`/`replay`/`record --action` steps and MCP tool calls. Unset by default. |
