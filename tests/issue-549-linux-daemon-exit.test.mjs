@@ -61,7 +61,9 @@ describe('#549 socket watch keeps the owning daemon', () => {
     expect(onLost).not.toHaveBeenCalled();
   });
 
-  it('a real bound socket is still this daemon after one watch tick, and a replacement is not', async () => {
+  // win32 daemons bind \\.\pipe\ names and claim with identity null, so this
+  // watch never runs there. listen() on a filesystem .sock path is EACCES.
+  it.skipIf(process.platform === 'win32')('a real bound socket is still this daemon after one watch tick, and a replacement is not', async () => {
     const dir = runtimeDir();
     const endpoint = join(dir, 'cdp-T549.sock');
     const server = net.createServer();
