@@ -17248,7 +17248,16 @@ async function pressStr(cdp, sid, keyName, opts = {}) {
     nativeVirtualKeyCode: mapped.keyCode,
     modifiers,
   };
-  await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'keyDown' }, sid);
+  const keyDown = { ...base, type: 'keyDown' };
+  // Enter is not a one-character key, so the char branch below does not run.
+  // Chrome emits keypress and implicit form submission only when keyDown
+  // carries text "\r". A separate char event still submits after keydown
+  // preventDefault, and sending both clicks the default button twice.
+  if (isEnterKeyName(keyName)) {
+    keyDown.text = '\r';
+    keyDown.unmodifiedText = '\r';
+  }
+  await cdpDomains(cdp).Input.dispatchKeyEvent(keyDown, sid);
   // For printable single characters, send a `char` event so the page receives input
   // (mirrors what real keyboards do for letter / digit / punctuation keys).
   if (mapped.key.length === 1 && mapped.code !== 'Space' && mapped.key !== ' ') {
