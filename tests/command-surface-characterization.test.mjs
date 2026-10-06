@@ -136,7 +136,7 @@ describe('Phase 6 command-surface characterization', () => {
     }
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:5f3f71b39581f492d0f353bcbb235d5931b71617aba0b15d672663d558f4eb4c');
+      .toBe('sha256:ce342c1006beebae61b6ce3c5d9928da9817611a3460ad0d314b96f84c348636');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))

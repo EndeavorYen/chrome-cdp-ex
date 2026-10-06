@@ -441,6 +441,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
       required: ['target'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
+        followUrl: booleanSchema('Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.'),
         depth: { type: 'integer', minimum: 1, maximum: 20, description: 'Tree depth limit.' },
         cursorInteractive: booleanSchema('Include visible clickable controls and @c refs.'),
         selector: stringSchema('Optional CSS selector scope.'),
@@ -462,6 +463,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
       required: ['target'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
+        followUrl: booleanSchema('Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.'),
         selector: stringSchema('Optional CSS selector scope.'),
         filter: stringSchema('Optional visible text/name filter.'),
         limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum controls to return.' },
@@ -478,6 +480,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
       required: ['target'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
+        followUrl: booleanSchema('Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.'),
         selector: stringSchema('Optional CSS selector, @ref, or @c ref to test for coverage.'),
       },
       additionalProperties: false,
@@ -686,6 +689,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
       required: ['target'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
+        followUrl: booleanSchema('Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.'),
         text: stringSchema('Wait until this text appears.'),
         anyOf: stringSchema('Pipe-delimited alternatives, e.g. win|lose|escape.'),
         selectorStable: stringSchema('CSS selector that must remain stable.'),
@@ -704,6 +708,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
       required: ['target', 'selector'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
+        followUrl: booleanSchema('Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.'),
         selector: stringSchema('CSS selector, @ref, or @c ref.'),
         property: stringSchema('CSS property to trace. Defaults to color when omitted by CLI behavior; prefer an explicit property.'),
       },
@@ -1037,7 +1042,7 @@ function surfaceDigest(value) {
 }
 
 export const COMMAND_SURFACE_IDENTITY = 'cbb3d71222df277950afe93110283d054b2e2b3f99ef4e7050f00f0f87a4a64a';
-export const MCP_SURFACE_IDENTITY = '3a906cccd2ff90e8eafa943f98a691692b73fa514a517b4785a35c73369a3d97';
+export const MCP_SURFACE_IDENTITY = 'a29cd2a3b9ca95675685ae8029b93482781946d93c1d1d9d15fd7cc7d7fd10f5';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }
