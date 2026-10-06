@@ -80,7 +80,7 @@ Other requirements:
 
 - Node.js 22+ (uses built-in WebSocket).
 - If your browser's `DevToolsActivePort` is in a non-standard location, set `CDP_PORT_FILE` to its full path.
-- `CDP_USAGE_LOG=1` (opt-in, off by default) appends `{ts, command, via}` to `<runtime dir>/usage.jsonl` for every CLI or MCP run (#532). Only the canonical command name is written, never its arguments, URLs or selectors. The file rotates to `usage.jsonl.1` above 1 MiB and never leaves the machine. In a checkout, `npm run usage:report` counts per-command use from it and from local Claude Code and Codex transcripts (`--format json`, `--since YYYY-MM-DD`).
+- `CDP_USAGE_LOG=1` (opt-in, off by default) appends `{ts, command, via}` to `<runtime dir>/usage.jsonl` for every CLI or MCP run (#532). Only the canonical command name is written, never its arguments, URLs or selectors. The file rotates to `usage.jsonl.1` above 1 MiB and never leaves the machine. In a checkout, `npm run usage:report` counts per-command use from it and from local Claude Code and Codex transcripts. With no flags it compares trailing `7d` and `30d` windows and prints one hint line; it does not remove commands (`--windows 7d,30d`, `--format json`). `--since YYYY-MM-DD` keeps the single-window report (#544).
 
 > **macOS / Edge note:** the previous skill text said never to suggest `--remote-debugging-port`. That advice was too absolute — when Edge is fresh-installed and `edge://inspect` has never been touched, the only realistic non-invasive option is the `spawn-debug-browser` helper above. It is safe because it uses a disposable profile.
 
