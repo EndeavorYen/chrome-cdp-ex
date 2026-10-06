@@ -816,8 +816,9 @@ export function formatNetlogRequestText(model) {
 
 // `--out` (#467): create the file with mode 0600 and never follow a symlink.
 // An existing path is refused unless `overwrite`; then it is truncated in place
-// and set to 0600. The path must be absolute: inside batch/flow the command
-// runs in the daemon, whose working directory is not the caller's.
+// and set to 0600. The path must be absolute: the daemon's working directory is
+// not the caller's. The CLI resolves a relative path first, including inside
+// batch, flow, and repeat (#577).
 export function writeNetlogBodyFile(path, data, { overwrite = false, requestId = '' } = {}) {
   const label = `netlog: --out ${path} for request #${requestId}`;
   if (!isAbsolute(String(path))) {
