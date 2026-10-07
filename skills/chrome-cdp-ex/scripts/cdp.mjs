@@ -8884,7 +8884,7 @@ function formatFailedDispatchText(result = {}) {
     message: result.dispatch?.error || failure.originalMessage || '',
     reason: failure.reason || diagnosis.reason || result.outcome?.reason || '',
     kind: failure.kind || diagnosis.kind || 'unknown',
-    detailLines: [formatFillValueLine(failure)],
+    detailLines: [formatFillValueLine(failure), ...(Array.isArray(failure.detailLines) ? failure.detailLines : [])],
     nextCommand: defaultMutatingNextCommand(result),
   });
 }
@@ -10128,6 +10128,73 @@ async function pageContainsText(cdp, sid, text) {
   }
 }
 
+const REACTIVE_CLICK_TAGS = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY', 'OPTION', 'LABEL']);
+const REACTIVE_CLICK_ROLES = new Set([
+  'button', 'link', 'checkbox', 'radio', 'switch', 'tab',
+  'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
+  'combobox', 'slider', 'spinbutton', 'textbox', 'searchbox',
+]);
+const CLICKED_CONTROL_TAG_RE = /^(?:Clicked|JS-clicked|Pointer-clicked)\s+<([A-Za-z0-9]+)>/;
+
+function clickControlShouldReact(result, dispatchText) {
+  const action = String(result?.action || '').toLowerCase();
+  if (action !== 'click' && action !== 'jsclick') return false;
+  const trust = result?.target?.clickTrust;
+  const role = String(trust?.role || '').toLowerCase();
+  if (REACTIVE_CLICK_ROLES.has(role)) return true;
+  const tag = String(trust?.tag || '').toUpperCase()
+    || String(dispatchText || '').match(CLICKED_CONTROL_TAG_RE)?.[1]?.toUpperCase()
+    || '';
+  return REACTIVE_CLICK_TAGS.has(tag);
+}
+
+function clickNoChangeError(dispatchText) {
+  const line = String(dispatchText || '').replace(/\s+/g, ' ').trim();
+  const err = new Error(`click: the control did not react (Outcome: no-change).${line ? ` ${line}` : ''}`);
+  err.clickNoChange = { dispatchText: line };
+  return err;
+}
+
+// #552: a mouse or JS click that reached a control and settled as no-change is a
+// failed action. Expected no-change (clipboard, PDF viewer, and the other
+// existing cases) stays a success. Exit code stays 1; this is not a per-Kind map.
+function applyReactiveClickNoChangeFailure(result, dispatchText) {
+  if (!result || result.dispatch?.ok === false) return null;
+  if (result.outcome?.status !== 'no-change') return null;
+  if (!clickControlShouldReact(result, dispatchText)) return null;
+  const target = result.target && typeof result.target === 'object' ? result.target : {};
+  if (isExpectedNoChange(
+    { ...target, dispatchText: target.dispatchText || dispatchText },
+    [dispatchText, result.effects?.domDiff].filter(Boolean).join('\n'),
+    result.action,
+  )) return null;
+  const err = clickNoChangeError(dispatchText);
+  const failure = classifyActionFailure(err, { action: result.action, target });
+  result.dispatch = {
+    ...(result.dispatch || {}),
+    ok: false,
+    error: failure.originalMessage,
+  };
+  result.settle = { ...(result.settle || {}), ok: false };
+  result.effects = result.effects || {};
+  result.effects.failure = failure;
+  applyActionReceipt(applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result)))));
+  return err;
+}
+
+async function finishObservedAction(result, { output, dispatchText, enrichActionResult, onActionResult }) {
+  await finalizeActionResult(result, { enrichActionResult, onActionResult: null });
+  const refused = applyReactiveClickNoChangeFailure(result, dispatchText);
+  if (onActionResult) onActionResult(result);
+  if (refused) {
+    if (output.format === 'json') return formatActionResultOutput(result, { ...output, dispatchText });
+    const wrapped = new Error(formatActionFailure(refused, { action: result.action, target: result.target }));
+    wrapped.clickNoChange = true;
+    throw wrapped;
+  }
+  return formatActionResultOutput(result, { ...output, dispatchText });
+}
+
 async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = GENERIC_SINCE_ACTION_HINT, enrichActionResult = null, onActionResult = null, format = 'text' }) {
   const output = normalizeActionOutputOptions(format);
   const startedAt = Date.now();
@@ -10166,9 +10233,11 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff: null, console: [], network: [], navigation: null, ...openedTabEffect },
       nextHint: feedbackPolicy === 'report-only' ? nextHint : null,
     });
-    await finalizeActionResult(result, { enrichActionResult, onActionResult });
-    if (feedbackPolicy === 'none') return dispatchText;
-    return formatActionResultOutput(result, { ...output, dispatchText });
+    if (feedbackPolicy === 'none') {
+      await finalizeActionResult(result, { enrichActionResult, onActionResult });
+      return dispatchText;
+    }
+    return finishObservedAction(result, { output, dispatchText, enrichActionResult, onActionResult });
   }
   try {
     const domDiff = await observe();
@@ -10180,9 +10249,9 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff, console: [], network: [], navigation: null, ...openedTabEffect },
       nextHint,
     });
-    await finalizeActionResult(result, { enrichActionResult, onActionResult });
-    return formatActionResultOutput(result, { ...output, dispatchText });
+    return await finishObservedAction(result, { output, dispatchText, enrichActionResult, onActionResult });
   } catch (e) {
+    if (e?.clickNoChange) throw e;
     const observationError = isTimeoutError(e) ? null : compactObservationError(e);
     const result = createActionResult({
       action,
@@ -12774,7 +12843,8 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       linkTarget: ${linkTargetPageExpression('this')},
       frameName: ${linkFrameNamePageExpression('this')},
       pageHref: location.href,
-      text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),${hitTest ? `
+      text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
+      role: (typeof this.getAttribute === 'function' ? this.getAttribute('role') : '') || '',${hitTest ? `
       hit,
       disabled: actionDisabledReason(this),` : ''}
     };
@@ -16226,7 +16296,11 @@ async function dispatchClickMouseEvent(cdp, sid, params) {
 }
 
 function clickEventProbeInstallOnViewSource() {
-  return `function installOnView(view, scope) {
+  // `target` is the intended element. The same set the pre-dispatch hit test
+  // accepts (#436/#551) counts as reached: the target, a descendant, an
+  // ancestor, or a <label> whose control is the target. A page-level probe
+  // passes target null and only records that some event arrived.
+  return `function installOnView(view, target, scope) {
     const key = ${JSON.stringify(CLICK_EVENT_PROBE_KEY)};
     const types = ['pointerdown', 'mousedown', 'mouseup', 'pointerup', 'click'];
     if (!view || typeof view.addEventListener !== 'function') {
@@ -16239,14 +16313,65 @@ function clickEventProbeInstallOnViewSource() {
       }
     }
     const seen = [];
-    const handler = function(event) { seen.push(event.type); };
+    const reached = [];
+    const state = { landedOn: '' };
+    const verifiesTarget = Boolean(target && target.nodeType === 1);
+    const composedParent = node => {
+      if (!node) return null;
+      const parent = node.parentNode;
+      return parent && parent.nodeType === 11 && parent.host ? parent.host : parent;
+    };
+    const composedContains = (outer, inner) => {
+      for (let node = inner, guard = 0; node && guard < 4096; node = composedParent(node), guard++) {
+        if (node === outer) return true;
+      }
+      return false;
+    };
+    const describe = node => {
+      if (!node || node.nodeType !== 1) return '';
+      const tag = String(node.tagName || 'node').toUpperCase();
+      const id = node.id ? '#' + node.id : '';
+      return '<' + tag + id + '>';
+    };
+    const accepted = hit => {
+      if (!verifiesTarget || !hit || hit.nodeType !== 1) return false;
+      if (composedContains(target, hit) || composedContains(hit, target)) return true;
+      const label = typeof hit.closest === 'function' ? hit.closest('label') : null;
+      return Boolean(label && (label.control === target || composedContains(label, target)));
+    };
+    const handler = function(event) {
+      seen.push(event.type);
+      if (!verifiesTarget) return;
+      const raw = event && event.target;
+      const hit = raw && raw.nodeType === 1 ? raw : (raw && raw.parentElement) || null;
+      if (accepted(hit)) {
+        reached.push(event.type);
+        return;
+      }
+      if (!state.landedOn) state.landedOn = describe(hit);
+    };
     for (const type of types) view.addEventListener(type, handler, true);
-    view[key] = { types: types, handler: handler, seen: seen };
+    view[key] = {
+      types: types,
+      handler: handler,
+      seen: seen,
+      reached: reached,
+      state: state,
+      verifiesTarget: verifiesTarget,
+    };
     let top = false;
     let href = '';
     try { top = view.top === view; } catch (err) { top = false; }
     try { href = String(view.location.href || ''); } catch (err) { href = ''; }
-    return { cdpClickProbe: true, ok: true, installed: true, scope: scope || 'target-document', top: top, href: href };
+    return {
+      cdpClickProbe: true,
+      ok: true,
+      installed: true,
+      scope: scope || 'target-document',
+      top: top,
+      href: href,
+      verifiesTarget: verifiesTarget,
+    };
   }`;
 }
 
@@ -16261,8 +16386,18 @@ function clickEventProbeReadOnViewSource() {
       for (const type of types) view.removeEventListener(type, probe.handler, true);
     }
     const seen = Array.isArray(probe.seen) ? probe.seen.slice() : [];
+    const reached = Array.isArray(probe.reached) ? probe.reached.slice() : [];
+    const landedOn = probe.state && typeof probe.state.landedOn === 'string' ? probe.state.landedOn : '';
+    const verifiesTarget = probe.verifiesTarget === true;
     try { delete view[key]; } catch (err) { view[key] = undefined; }
-    return { cdpClickProbe: true, ok: true, seen: seen };
+    return {
+      cdpClickProbe: true,
+      ok: true,
+      seen: seen,
+      reached: reached,
+      landedOn: landedOn,
+      verifiesTarget: verifiesTarget,
+    };
   }`;
 }
 
@@ -16270,7 +16405,8 @@ function clickEventProbeInstallOnNodeDeclaration() {
   return `function() {
     ${clickEventProbeInstallOnViewSource()}
     const view = this && this.ownerDocument && this.ownerDocument.defaultView;
-    return installOnView(view, 'target-document');
+    const target = this && this.nodeType === 1 ? this : null;
+    return installOnView(view, target, 'target-document');
   }`;
 }
 
@@ -16282,9 +16418,17 @@ function clickEventProbeReadOnNodeDeclaration() {
   }`;
 }
 
-function clickEventProbeInstallAtPointScript(x, y) {
+function clickEventProbeInstallAtPointScript(x, y, selector = '') {
   return `(function() {
     ${clickEventProbeInstallOnViewSource()}
+    const bindSelector = ${JSON.stringify(String(selector || ''))};
+    if (bindSelector && !/^@(?:c\\d+|(?:f\\d+:)?\\d+)$/.test(bindSelector)) {
+      let target = null;
+      try { target = document.querySelector(bindSelector); } catch (err) { target = null; }
+      if (!target) return { cdpClickProbe: true, ok: false, missingTarget: true, installed: false };
+      const boundView = (target.ownerDocument && target.ownerDocument.defaultView) || window;
+      return installOnView(boundView, target, 'target-document');
+    }
     const px0 = ${JSON.stringify(Number(x))};
     const py0 = ${JSON.stringify(Number(y))};
     let doc = document;
@@ -16314,7 +16458,7 @@ function clickEventProbeInstallAtPointScript(x, y) {
     }
     if (opaqueFrame) return { cdpClickProbe: true, ok: true, installed: true, opaqueFrame: true, scope: 'opaque-frame' };
     const scope = (view && view !== window) ? 'target-document' : 'top';
-    return installOnView(view || window, scope);
+    return installOnView(view || window, null, scope);
   })()`;
 }
 
@@ -16390,6 +16534,29 @@ async function probePageVisibility(cdp, sid) {
   }
 }
 
+function clickProbeBindSelector(selector) {
+  const text = String(selector || '').trim();
+  if (!text || isRef(text) || isCursorRef(text)) return '';
+  return text;
+}
+
+function clickMisdirectedError(x, y, selector = '', { sent = true, landedOn = '' } = {}) {
+  const target = selector ? ` for ${selector}` : '';
+  const where = landedOn ? ` It landed on ${landedOn}.` : '';
+  const sentText = sent ? 'The mouse click was misdirected.' : 'The mouse click was not sent.';
+  const err = new Error(
+    `click: the mouse click at (${x}, ${y})${target} did not reach the intended element.${where} ${sentText}`
+  );
+  err.clickMisdirected = {
+    x,
+    y,
+    selector: String(selector || ''),
+    landedOn: String(landedOn || ''),
+    sent: sent !== false,
+  };
+  return err;
+}
+
 function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown') {
   const target = selector ? ` for ${selector}` : '';
   const hidden = visibility === 'hidden'
@@ -16402,7 +16569,22 @@ function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown') {
   return err;
 }
 
-async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0 } = {}) {
+function clickProbeInstallModel(parsed, { objectId = null, x = 0, y = 0, scope = 'top' } = {}) {
+  return {
+    installed: Boolean(parsed?.ok && parsed?.installed),
+    verifiesTarget: parsed?.verifiesTarget === true,
+    missingTarget: parsed?.missingTarget === true,
+    scope: parsed?.scope || scope,
+    opaqueFrame: parsed?.opaqueFrame === true,
+    top: parsed?.top === true,
+    href: typeof parsed?.href === 'string' ? parsed.href : '',
+    objectId,
+    x,
+    y,
+  };
+}
+
+async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0, selector = '' } = {}) {
   try {
     if (objectId) {
       const res = await cdpDomains(cdp).Runtime.callFunctionOn({
@@ -16410,33 +16592,15 @@ async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0 
         functionDeclaration: clickEventProbeInstallOnNodeDeclaration(),
         returnByValue: true,
       }, sid);
-      if (res.exceptionDetails) return { installed: false };
-      const parsed = parseClickEventProbeOutput(res.result?.value);
-      return {
-        installed: Boolean(parsed?.ok && parsed?.installed),
-        scope: parsed?.scope || 'target-document',
-        opaqueFrame: parsed?.opaqueFrame === true,
-        top: parsed?.top === true,
-        href: typeof parsed?.href === 'string' ? parsed.href : '',
-        objectId,
-        x,
-        y,
-      };
+      if (res.exceptionDetails) return { installed: false, verifiesTarget: false, missingTarget: false };
+      return clickProbeInstallModel(parseClickEventProbeOutput(res.result?.value), {
+        objectId, x, y, scope: 'target-document',
+      });
     }
-    const raw = await evalStr(cdp, sid, clickEventProbeInstallAtPointScript(x, y));
-    const parsed = parseClickEventProbeOutput(raw);
-    return {
-      installed: Boolean(parsed?.ok && parsed?.installed),
-      scope: parsed?.scope || 'top',
-      opaqueFrame: parsed?.opaqueFrame === true,
-      top: parsed?.top === true,
-      href: typeof parsed?.href === 'string' ? parsed.href : '',
-      objectId: null,
-      x,
-      y,
-    };
+    const raw = await evalStr(cdp, sid, clickEventProbeInstallAtPointScript(x, y, selector));
+    return clickProbeInstallModel(parseClickEventProbeOutput(raw), { objectId: null, x, y, scope: 'top' });
   } catch {
-    return { installed: false, scope: 'top', opaqueFrame: false, objectId, x, y };
+    return { installed: false, verifiesTarget: false, missingTarget: false, scope: 'top', opaqueFrame: false, objectId, x, y };
   }
 }
 
@@ -16467,9 +16631,11 @@ async function readClickEventProbe(cdp, sid, probe = {}) {
 // before injecting. Serializing on that ack with a 250ms swallow left
 // press/release uninjected (dispatch.ok, zero page events). Overlap the
 // CDP commands, wait long enough for the ~5s stall, then fail closed unless a
-// capture-phase probe on the target document saw mouse/click events. A missing
-// probe is fail-closed for top-level clicks; framed targets must probe the
-// iframe document instead of treating a top-level empty `seen` as proof.
+// capture-phase probe on the target document saw mouse/click events. When the
+// probe is bound to the intended element, those events must land on that
+// element (or the #436/#551 hit set). A missing probe is fail-closed for
+// top-level clicks; framed targets must probe the iframe document instead of
+// treating a top-level empty `seen` as proof.
 async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     throw new Error(`Click point is not a finite viewport coordinate (x=${x}, y=${y}); the target's box could not be measured. Re-run perceive and retry, or use a CSS selector.`);
@@ -16478,7 +16644,11 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     objectId: probeTarget.objectId || null,
     x,
     y,
+    selector: clickProbeBindSelector(probeTarget.selector),
   });
+  if (probe.missingTarget) {
+    throw clickMisdirectedError(x, y, probeTarget.selector, { sent: false });
+  }
   const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
   const navigation = watchMainFrameNavigation(cdp, sid);
   try {
@@ -16498,6 +16668,17 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     }
     if (probe.scope === 'top' && framed) return;
     const readout = await readClickEventProbe(cdp, sid, probe);
+    if (probe.verifiesTarget) {
+      if (readout?.ok && clickProbeSawPageEvent(readout.reached)) return;
+      if (!readout?.ok && await clickProbeWipedByNavigation(cdp, sid, probe, navigation.seen)) return;
+      if (readout?.ok && clickProbeSawPageEvent(readout.seen)) {
+        throw clickMisdirectedError(x, y, probeTarget.selector, {
+          sent: true,
+          landedOn: readout.landedOn || '',
+        });
+      }
+      throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
+    }
     if (readout?.ok && clickProbeSawPageEvent(readout.seen)) return;
     if (!readout?.ok && await clickProbeWipedByNavigation(cdp, sid, probe, navigation.seen)) return;
     throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
@@ -16901,6 +17082,7 @@ function namedInViewportClickExpression(name) {
       linkTarget,
       frameName,
       pageHref,
+      role: (typeof el.getAttribute === 'function' ? el.getAttribute('role') : '') || '',
       x: rect.x,
       y: rect.y,
       w: rect.width,
@@ -16912,7 +17094,15 @@ function namedInViewportClickExpression(name) {
   })()`;
 }
 
-async function namedInViewportJsClickStr(cdp, sid, input) {
+function rememberClickTrust(holder, { tag = '', role = '' } = {}) {
+  if (!holder || typeof holder !== 'object') return;
+  const nextTag = String(tag || '').toUpperCase();
+  const nextRole = String(role || '').toLowerCase();
+  if (nextTag) holder.tag = nextTag;
+  if (nextRole && nextRole !== 'null') holder.role = nextRole;
+}
+
+async function namedInViewportJsClickStr(cdp, sid, input, clickTrust = null) {
   const name = namedClickQueryName(input);
   if (!name) {
     throw new Error(`${String(input).trim()} has no visible text to match. Pass the button or link text, e.g. click <target> "text=Save", or an @ref from perceive.`);
@@ -16925,6 +17115,7 @@ async function namedInViewportJsClickStr(cdp, sid, input) {
   const result = await evalStr(cdp, sid, namedInViewportClickExpression(name));
   const parsed = JSON.parse(result);
   if (!parsed.ok) throw new Error(namedClickMissMessage(input, parsed.error));
+  rememberClickTrust(clickTrust, { tag: parsed.tag, role: parsed.role });
   const newTabWatch = clickFollowsHref(parsed) && linkOpensNewBrowsingContext(parsed)
     ? clickNewTabWatchFromTargets(sid, await pagesBefore)
     : null;
@@ -16951,7 +17142,7 @@ async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
     if (pointer) {
       throw new Error('click --pointer needs a CSS selector or @ref, not an accessible name. Run `perceive` to get an @ref.');
     }
-    return namedInViewportJsClickStr(cdp, sid, selector);
+    return namedInViewportJsClickStr(cdp, sid, selector, options.clickTrust);
   }
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
@@ -16963,13 +17154,22 @@ async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
         this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         if (typeof this.click === 'function') this.click();
         else this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        return { tag: this.tagName, text: (this.textContent || '').trim().substring(0, 80) };
+        return {
+          tag: this.tagName,
+          text: (this.textContent || '').trim().substring(0, 80),
+          role: (typeof this.getAttribute === 'function' ? this.getAttribute('role') : '') || '',
+        };
       }`,
       awaitPromise: pointer,
       returnByValue: true,
     }, sid);
-    if (pointer) return formatPointerClickReceipt(res.result.value || {}, selector);
+    if (pointer) {
+      const value = res.result.value || {};
+      rememberClickTrust(options.clickTrust, value);
+      return formatPointerClickReceipt(value, selector);
+    }
     const r = res.result.value || {};
+    rememberClickTrust(options.clickTrust, r);
     return `JS-clicked <${r.tag || '?'}> "${r.text || ''}"${isRef(selector) ? ` (${selector})` : ''}`;
   } catch (e) {
     if (isTimeoutError(e, ['Runtime.callFunctionOn'])) {
@@ -17058,6 +17258,7 @@ function pointerClickFunctionDeclaration(settleMs = POINTER_CLICK_SETTLE_MS, sel
       ok: true,
       tag: el.tagName,
       text: label,
+      role: (typeof el.getAttribute === 'function' ? el.getAttribute('role') : '') || '',
       ariaExpanded: trigger.getAttribute('aria-expanded'),
       dataState: trigger.getAttribute('data-state'),
     };
@@ -17066,8 +17267,8 @@ function pointerClickFunctionDeclaration(settleMs = POINTER_CLICK_SETTLE_MS, sel
 
 // `click --pointer` shares jsClickStr's single Runtime.callFunctionOn call site (the direct-CDP inventory is frozen),
 // so this is only a named entry point for tests and the handler.
-function pointerClickStr(cdp, sid, selector, refMap, refState) {
-  return jsClickStr(cdp, sid, selector, refMap, refState, { pointer: true });
+function pointerClickStr(cdp, sid, selector, refMap, refState, clickTrust = null) {
+  return jsClickStr(cdp, sid, selector, refMap, refState, { pointer: true, clickTrust });
 }
 
 // #468: bounded actionability wait for click, fill and select on a CSS selector. It runs inside the
@@ -17264,7 +17465,7 @@ async function waitForActionableSelector(cdp, sid, selector, { waitMs = ACTIONAB
 // without waiting.
 async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
-  if (isNamedClickQuery(selector)) return jsClickStr(cdp, sid, selector, refMap, refState);
+  if (isNamedClickQuery(selector)) return jsClickStr(cdp, sid, selector, refMap, refState, { clickTrust: opts.clickTrust });
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);
     await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2, { selector, x: r.x + r.w / 2, y: r.y + r.h / 2 });
@@ -17274,6 +17475,7 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true });
     if (r.disabled) throw actionDisabledError('click', { tag: r.tag, text: r.text, reason: r.disabled }, selector);
+    rememberClickTrust(opts.clickTrust, r);
     assertClickPointNotCovered(r.hit, { x: r.x + r.w / 2, y: r.y + r.h / 2, tag: r.tag, text: r.text, ref: selector });
     let objectId = null;
     try {
@@ -17313,6 +17515,7 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
         y: rect.y + rect.h / 2,
         tag: rect.tag,
         text: rect.text,
+        role: rect.role || '',
         href: rect.href || (el.tagName === 'A' ? (el.href || null) : null),
         linkTarget: rect.linkTarget,
         frameName: rect.frameName,
@@ -17326,6 +17529,7 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   const r = JSON.parse(result);
   if (!r.ok && r.disabled) throw actionDisabledError('click', { ...r.disabled, waited: r.waited, waitedMs: r.waitedMs }, selector);
   if (!r.ok) throw new Error(cssClickMissMessage(selector, actionabilityMissMessage(r.error, r)));
+  rememberClickTrust(opts.clickTrust, r);
   assertClickPointNotCovered(r.hit, { x: r.x, y: r.y, tag: r.tag, text: r.text });
   const newTabWatch = await prepareClickFollowedHref(cdp, sid, r);
   await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
@@ -27956,10 +28160,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     jsclick: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const selector = fopts.args[0];
+      const clickTrust = {};
+      const target = namedClickActionTarget(selector);
+      target.clickTrust = clickTrust;
       const value = await actionFeedback(
         'jsclick',
-        () => jsClickStr(cdp, sessionId, selector, refMap, refState),
-        namedClickActionTarget(selector),
+        () => jsClickStr(cdp, sessionId, selector, refMap, refState, { clickTrust }),
+        target,
         jsclickFeedbackPolicy(selector),
         null,
         fopts,
@@ -28256,8 +28463,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     click: applicationPreflight.handlerBuilders.click({
       actionFeedback,
       click: (selector, opts) => clickStr(cdp, sessionId, selector, refMap, refState, opts),
-      jsClick: selector => jsClickStr(cdp, sessionId, selector, refMap, refState),
-      pointerClick: selector => pointerClickStr(cdp, sessionId, selector, refMap, refState),
+      jsClick: (selector, clickTrust) => jsClickStr(cdp, sessionId, selector, refMap, refState, { clickTrust }),
+      pointerClick: (selector, clickTrust) => pointerClickStr(cdp, sessionId, selector, refMap, refState, clickTrust),
       expectDownload: (options, run, effects) => captureClickDownload({
         browser: clickDownloadBrowser(cdp, sessionId, targetId),
         dir: options.dir || sessionDownloadDir(targetId),
@@ -29939,10 +30146,13 @@ ACTION FEEDBACK
   settle and return compact action evidence plus a perceive diff.
   Named click / jsclick (a control name, not @ref or CSS)
   is report-only: skinny URL receipt, no AX dump. Unique off-screen
-  names scrollIntoView first. Mouse click @ref still
+  names scrollIntoView first.   Mouse click @ref still
   fail-closes with no-input-events. Mouse click @ref / CSS hit-tests the
   click point first: when another element is on top it fails with
-  Kind: covered, names that element, and sends nothing. click, fill and select
+  Kind: covered, names that element, and sends nothing. After the click is
+  sent, the intended element must receive it (Kind: misdirected when it lands
+  elsewhere). A click or jsclick on a control that should react exits 1 with
+  Kind: click-no-change when nothing visible changes. click, fill and select
   on a CSS selector wait up to 2s (--wait-ms N; 0 = no wait) for the element to be
   attached, visible and enabled; a disabled target (or @ref) fails with
   Kind: disabled and sends nothing. scroll to top/to bottom is also
@@ -30420,9 +30630,13 @@ function createClickCommandHandler({ actionFeedback, click, jsClick, pointerClic
     const target = namedClickActionTarget(selector, {
       commandArgs: parsed.download ? [...baseArgs, '--expect-download'] : baseArgs,
     });
+    // Shared with the dispatch: actionFeedback shallow-copies the target, so
+    // mutations of this object survive onto the receipt.
+    const clickTrust = {};
+    target.clickTrust = clickTrust;
     const clickOnce = parsed.pointer
-      ? () => pointerClick(selector)
-      : () => (useJs ? jsClick(selector) : click(selector, { waitMs: parsed.waitMs }));
+      ? () => pointerClick(selector, clickTrust)
+      : () => (useJs ? jsClick(selector, clickTrust) : click(selector, { waitMs: parsed.waitMs, clickTrust }));
     let dispatch = clickOnce;
     if (parsed.download) {
       if (typeof expectDownload !== 'function') throw new Error('click: --expect-download is not available on this path');
@@ -33014,6 +33228,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonCrashReportPath, recordDaemonCrash, readDaemonCrashReport, installDaemonCrashRecorder, REF_SETTLE_BUDGET_MS, REF_RESOLVE_TIMEOUT,
   dragStr, dispatchDrag, parseDragArgs, formatDragEventCounts, dragEventProbeInstallScript, dragEventProbeReadScript,
   parseClickEventProbeOutput, clickProbeSawPageEvent,
+  clickEventProbeInstallOnNodeDeclaration, clickEventProbeReadOnNodeDeclaration,
+  clickEventProbeInstallAtPointScript, clickEventProbeReadAtPointScript,
   isNamedClickQuery, namedClickQueryName, textSelectorName, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
   namedClickActionTarget, namedInViewportClickExpression, NAMED_IN_VIEWPORT_CLICK_OUTCOME,
   isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,

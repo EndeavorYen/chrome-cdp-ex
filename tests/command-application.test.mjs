@@ -736,6 +736,7 @@ describe('Phase 4 click compatibility slice', () => {
         resolvedBy: 'selector-or-ref',
         label: selector,
         commandArgs: javascriptFallback ? ['--js', selector] : [selector],
+        clickTrust: {},
       });
       expect(policy).toBe('settle-diff');
       expect(observe).toBe(null);

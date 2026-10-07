@@ -100,6 +100,14 @@ cdp eval <target> "JSON.stringify(window.__job)"
 
 Bringing the window forward (or `CDP_BACKGROUND=0` for a background tab) lets painting resume.
 
+## Click fails with `Kind: misdirected`
+
+The mouse click's point passed the pre-dispatch hit test, but the event did not reach the intended element (or that element was gone before dispatch). `dispatched: true` means the input was sent and landed elsewhere; the `Error:` line names that element when the page reported it. `dispatched: false` means nothing was sent. Inspect with `cdp perceive <target> --since-action` before retrying. `cdp click <target> <sel> --js` runs the handler without hit-testing when that handler still needs to run. Do not treat the click as proof the control ran.
+
+## Click fails with `Kind: click-no-change`
+
+`click` or `jsclick` reached a control that should react (a button, link, input, or the other controls listed under `click` in `commands.md`) and the page showed no change. The receipt includes `Outcome: no-change` and exits 1. A clipboard or PDF-viewer click that is expected to leave the tree unchanged still exits 0. A checkbox or select that toggles, a download, a navigation, or a new tab still exits 0. Inspect with `cdp perceive <target> --since-action` before retrying.
+
 ## Click fails with `Kind: covered`
 
 The mouse `click` hit-tests the target's centre first. `covered` means another element is on top there, so a real
