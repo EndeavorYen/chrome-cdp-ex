@@ -7,10 +7,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-gray" alt="MIT License"></a>
 </p>
 <p>
-  <a href="experiment/codex-killer-path-demo.mp4"><img src="experiment/codex-killer-path-demo-poster.png" alt="Codex uses chrome-cdp-ex to perceive, act, and read a short receipt on a live tab" width="720"></a>
+  <a href="experiment/attach-beam-hero.mp4"><img src="experiment/attach-beam-hero-poster.png" alt="Attach to the Chrome tab you already have open — cookies stay, not a fresh Playwright, zero runtime npm deps" width="720"></a>
 </p>
 <p>
-  <strong><a href="experiment/codex-killer-path-demo.mp4">Watch the 60-second Codex demo.</a></strong>
+  <strong><a href="experiment/attach-beam-hero.mp4">Watch the 15-second Attach Beam hero.</a></strong>
+  · <a href="experiment/codex-killer-path-demo.mp4">60s Codex path demo</a>
 </p>
 </div>
 

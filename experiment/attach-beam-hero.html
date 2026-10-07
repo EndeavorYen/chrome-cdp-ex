@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920, initial-scale=1">
+<title>chrome-cdp-ex · Attach Beam</title>
+<style>
+:root {
+  --bg: #050908;
+  --panel: #0d1412;
+  --line: #24342e;
+  --ink: #f4f1e8;
+  --muted: #aab5af;
+  --cyan: #56e0dd;
+  --lime: #a8f05c;
+  --amber: #ffc85a;
+  --danger: #ff6b6b;
+  --warm: #2a1f14;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 1920px; height: 1080px; overflow: hidden;
+  background: var(--bg); color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; opacity: .18; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 80px 80px;
+}
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(86,224,221,.07), transparent 70%);
+}
+#stage { position: relative; width: 1920px; height: 1080px; z-index: 1; }
+
+/* ---- shared ---- */
+.brand-bar {
+  position: absolute; top: 42px; left: 64px; right: 64px;
+  display: flex; justify-content: space-between; align-items: center;
+  font: 700 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--cyan);
+  opacity: 0; transition: none;
+}
+.brand-bar .clock { color: var(--muted); letter-spacing: .08em; font-weight: 600; }
+
+.layer { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
+
+/* ---- Hook ---- */
+#hook { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+#hook .eyebrow {
+  font: 700 16px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .2em; text-transform: uppercase; color: var(--amber);
+  margin-bottom: 28px; opacity: 0;
+}
+#hook h1 {
+  font-size: 92px; line-height: .95; letter-spacing: -.05em; font-weight: 720;
+  text-align: center; max-width: 1400px; opacity: 0;
+}
+#hook h1 .accent { color: var(--lime); }
+#hook .tabs {
+  display: flex; gap: 48px; margin-top: 72px; opacity: 0;
+}
+.tab-sil {
+  width: 380px; height: 64px; border-radius: 14px 14px 0 0;
+  border: 1px solid var(--line); background: rgba(13,20,18,.7);
+  display: flex; align-items: center; gap: 14px; padding: 0 22px;
+  position: relative; overflow: hidden;
+}
+.tab-sil .dot { width: 10px; height: 10px; border-radius: 50%; background: #3a4a44; }
+.tab-sil .bar { height: 10px; border-radius: 5px; background: #2a3832; flex: 1; }
+.tab-sil.left .dot { background: #555; }
+.tab-sil.right {
+  border-color: rgba(86,224,221,.45);
+  box-shadow: 0 0 40px rgba(86,224,221,.12);
+}
+.tab-sil.right .dot { background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
+.tab-sil.right .bar { background: linear-gradient(90deg, rgba(86,224,221,.35), rgba(168,240,92,.25)); }
+
+/* ---- Contrast / split ---- */
+#contrast { }
+.split {
+  position: absolute; top: 120px; left: 64px; right: 64px; bottom: 80px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 28px;
+}
+.pane {
+  border-radius: 22px; border: 1px solid var(--line);
+  background: linear-gradient(160deg, rgba(18,27,24,.96), rgba(8,13,12,.98));
+  overflow: hidden; display: flex; flex-direction: column;
+  box-shadow: 0 28px 80px rgba(0,0,0,.35);
+  transform: translateY(24px); opacity: 0;
+}
+.pane.left { filter: grayscale(.55) brightness(.85); }
+.pane.right {
+  border-color: rgba(255,200,90,.35);
+  box-shadow: 0 28px 80px rgba(0,0,0,.35), 0 0 60px rgba(255,200,90,.08);
+}
+.pane-chrome {
+  height: 52px; display: flex; align-items: center; gap: 8px; padding: 0 18px;
+  border-bottom: 1px solid var(--line); background: rgba(0,0,0,.35);
+}
+.pane-chrome .traffic { display: flex; gap: 7px; }
+.pane-chrome .traffic i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+.pane-chrome .traffic i:nth-child(1) { background: #ff5f57; }
+.pane-chrome .traffic i:nth-child(2) { background: #febc2e; }
+.pane-chrome .traffic i:nth-child(3) { background: #28c840; }
+.pane-chrome .url {
+  flex: 1; margin-left: 12px; height: 28px; border-radius: 8px;
+  background: rgba(255,255,255,.04); border: 1px solid var(--line);
+  font: 500 13px/28px ui-monospace, Menlo, monospace; color: var(--muted);
+  padding: 0 12px; white-space: nowrap; overflow: hidden;
+}
+.pane-label {
+  position: absolute; top: 18px; right: 18px;
+  font: 700 12px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .14em; text-transform: uppercase;
+  padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--muted); background: rgba(5,9,8,.7);
+}
+.pane.right .pane-label {
+  color: var(--amber); border-color: rgba(255,200,90,.5);
+  box-shadow: 0 0 20px rgba(255,200,90,.15);
+}
+.pane-body { flex: 1; position: relative; padding: 36px 32px; }
+.pane.left .pane-body {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: #6a7670;
+}
+.empty-face {
+  width: 120px; height: 120px; border-radius: 24px; border: 2px dashed #3a4a44;
+  display: grid; place-items: center; margin-bottom: 28px; opacity: .7;
+}
+.empty-face svg { width: 56px; height: 56px; stroke: #5a6a64; fill: none; stroke-width: 1.5; }
+.pane.left h3 { font-size: 28px; color: #8a9690; font-weight: 650; margin-bottom: 10px; }
+.pane.left p { font-size: 16px; color: #5a6a64; text-align: center; max-width: 340px; line-height: 1.45; }
+.cookie-x {
+  margin-top: 28px; display: flex; gap: 10px; align-items: center;
+  font: 650 14px/1 ui-monospace, Menlo, monospace; color: var(--danger); opacity: .85;
+}
+.cookie-x::before {
+  content: "✕"; width: 22px; height: 22px; border-radius: 50%;
+  border: 1.5px solid var(--danger); display: grid; place-items: center; font-size: 12px;
+}
+
+.live-ui { display: grid; gap: 18px; }
+.live-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 16px; border-bottom: 1px solid rgba(255,200,90,.2);
+}
+.live-header .logo {
+  font: 700 20px/1 Inter, sans-serif; color: var(--ink);
+}
+.live-header .logo span { color: var(--amber); }
+.avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--amber), #ff8a4a);
+  box-shadow: 0 0 20px rgba(255,200,90,.35);
+  display: grid; place-items: center;
+  font: 700 13px/1 Inter, sans-serif; color: #1a1008;
+}
+.live-card {
+  background: rgba(255,255,255,.03); border: 1px solid rgba(255,200,90,.18);
+  border-radius: 14px; padding: 20px 22px;
+}
+.live-card .row { display: flex; justify-content: space-between; margin-bottom: 12px; }
+.live-card .row:last-child { margin-bottom: 0; }
+.live-card .k { color: var(--muted); font-size: 14px; }
+.live-card .v { color: var(--ink); font: 650 15px/1 ui-monospace, Menlo, monospace; }
+.live-card .v.ok { color: var(--lime); }
+.cookie-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-top: 8px; padding: 10px 14px; border-radius: 999px;
+  border: 1px solid rgba(168,240,92,.5); color: var(--lime);
+  font: 700 13px/1 ui-monospace, Menlo, monospace;
+  background: rgba(168,240,92,.08);
+  box-shadow: 0 0 24px rgba(168,240,92,.12);
+}
+.cookie-badge::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--lime); box-shadow: 0 0 12px var(--lime);
+}
+.pane-title-row {
+  position: relative;
+}
+.pane-tag {
+  font: 700 13px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .12em; text-transform: uppercase;
+  margin-bottom: 20px;
+}
+.pane.left .pane-tag { color: #7a8a84; }
+.pane.right .pane-tag { color: var(--amber); }
+
+/* ---- CLI + Beam ---- */
+#attach { }
+.cli-panel {
+  position: absolute; left: 64px; bottom: 64px; width: 720px;
+  background: #020403; border: 1px solid #2a4038; border-radius: 16px;
+  padding: 22px 26px; font: 500 18px/1.55 ui-monospace, Menlo, monospace;
+  color: #c9d6cf; box-shadow: 0 22px 70px rgba(0,0,0,.4);
+  opacity: 0; transform: translateY(30px);
+  z-index: 5;
+}
+.cli-panel .prompt { color: var(--lime); }
+.cli-panel .cmd { color: var(--ink); }
+.cli-panel .dim { color: #788780; }
+.cli-panel .cursor-blink {
+  display: inline-block; width: 10px; height: 18px; background: var(--cyan);
+  margin-left: 2px; vertical-align: text-bottom; animation: blink 0.7s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+#beam-canvas {
+  position: absolute; inset: 0; z-index: 4; pointer-events: none;
+}
+
+.right-focus {
+  position: absolute; top: 120px; right: 64px; width: calc(50% - 78px); bottom: 80px;
+  border-radius: 22px; border: 1px solid rgba(86,224,221,.5);
+  background: linear-gradient(160deg, rgba(18,27,24,.96), rgba(8,13,12,.98));
+  overflow: hidden; box-shadow: 0 0 80px rgba(86,224,221,.2), 0 28px 80px rgba(0,0,0,.4);
+  opacity: 0; transform: scale(.96);
+  z-index: 3;
+}
+.attach-glow {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(circle at 30% 50%, rgba(86,224,221,.15), transparent 55%);
+  opacity: 0;
+}
+
+/* ---- Act ---- */
+#act { }
+.act-browser {
+  position: absolute; top: 110px; left: 280px; right: 280px; bottom: 160px;
+  border-radius: 22px; border: 1px solid rgba(86,224,221,.4);
+  background: linear-gradient(160deg, rgba(18,27,24,.98), rgba(8,13,12,.99));
+  overflow: hidden; box-shadow: 0 0 60px rgba(86,224,221,.15), 0 30px 90px rgba(0,0,0,.45);
+  opacity: 0; transform: scale(.97);
+}
+.act-chrome {
+  height: 48px; display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  border-bottom: 1px solid var(--line); background: rgba(0,0,0,.4);
+}
+.act-chrome .url {
+  flex: 1; margin-left: 10px; height: 26px; border-radius: 7px;
+  background: rgba(255,255,255,.04); border: 1px solid var(--line);
+  font: 500 13px/26px ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 12px;
+}
+.act-body { padding: 40px 48px; position: relative; }
+.act-body h3 { font-size: 26px; margin-bottom: 28px; letter-spacing: -.02em; }
+.form-row { margin-bottom: 22px; }
+.form-row label {
+  display: block; font: 650 13px/1 ui-monospace, Menlo, monospace;
+  color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 10px;
+}
+.form-field {
+  position: relative; height: 52px; border-radius: 12px;
+  border: 1.5px solid var(--line); background: rgba(0,0,0,.3);
+  display: flex; align-items: center; padding: 0 16px;
+  font: 500 18px/1 ui-monospace, Menlo, monospace; color: var(--ink);
+  transition: border-color .15s, box-shadow .15s, transform .08s;
+}
+.form-field.highlighted {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgba(86,224,221,.25), 0 0 40px rgba(86,224,221,.2);
+}
+.form-field.shake {
+  animation: shake .35s ease-in-out;
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+.ref-tag {
+  position: absolute; top: -12px; right: 12px;
+  font: 700 12px/1 ui-monospace, Menlo, monospace;
+  padding: 5px 10px; border-radius: 6px;
+  background: var(--cyan); color: #041210;
+  opacity: 0; transform: translateY(4px);
+  box-shadow: 0 0 20px rgba(86,224,221,.4);
+}
+.ref-tag.show { opacity: 1; transform: translateY(0); }
+.btn-primary {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-top: 8px; height: 48px; padding: 0 28px; border-radius: 12px;
+  background: var(--lime); color: #07100b; font: 700 16px/1 Inter, sans-serif;
+  border: none; position: relative;
+  box-shadow: 0 0 30px rgba(168,240,92,.25);
+  transition: box-shadow .15s, transform .08s;
+}
+.btn-primary.highlighted {
+  box-shadow: 0 0 0 3px rgba(168,240,92,.35), 0 0 50px rgba(168,240,92,.4);
+}
+.btn-primary .ref-tag { background: var(--lime); }
+.click-ring {
+  position: absolute; width: 28px; height: 28px; border-radius: 50%;
+  border: 2px solid var(--cyan); pointer-events: none;
+  opacity: 0; transform: scale(.4);
+}
+.act-cli {
+  position: absolute; left: 64px; bottom: 48px; right: 64px;
+  background: #020403; border: 1px solid #2a4038; border-radius: 14px;
+  padding: 16px 24px; font: 500 16px/1.5 ui-monospace, Menlo, monospace;
+  color: #c9d6cf; opacity: 0; z-index: 5;
+}
+.act-cli .ok { color: var(--lime); }
+.act-cli .key { color: var(--cyan); }
+
+/* ---- Receipt ---- */
+#receipt { display: flex; align-items: center; justify-content: center; }
+.receipt-card {
+  width: 1100px; border-radius: 20px; border: 1px solid rgba(168,240,92,.4);
+  background: linear-gradient(135deg, rgba(18,27,24,.98), rgba(8,13,12,.99));
+  padding: 40px 48px; box-shadow: 0 0 80px rgba(168,240,92,.15), 0 40px 100px rgba(0,0,0,.5);
+  opacity: 0; transform: translateY(40px) scale(.94);
+}
+.receipt-card .eyebrow {
+  font: 700 14px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--lime); margin-bottom: 18px;
+}
+.receipt-line {
+  font: 600 28px/1.35 ui-monospace, Menlo, monospace;
+  color: var(--ink); word-break: break-all;
+}
+.receipt-line .ok { color: var(--lime); }
+.receipt-line .ref { color: var(--cyan); }
+.receipt-line .dim { color: var(--muted); }
+.receipt-meta {
+  display: flex; gap: 28px; margin-top: 28px; padding-top: 22px;
+  border-top: 1px solid var(--line);
+  font: 500 15px/1 ui-monospace, Menlo, monospace; color: var(--muted);
+}
+.receipt-meta strong { color: var(--ink); }
+
+/* ---- Badges ---- */
+#badges { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+#badges .finale-title {
+  font-size: 56px; letter-spacing: -.04em; font-weight: 720; text-align: center;
+  margin-bottom: 48px; opacity: 0; transform: translateY(16px);
+}
+#badges .finale-title .accent { color: var(--cyan); }
+.badge-row {
+  display: flex; gap: 22px; opacity: 0; transform: translateY(20px);
+}
+.fin-badge {
+  display: flex; align-items: center; gap: 12px;
+  padding: 18px 26px; border-radius: 999px;
+  border: 1.5px solid rgba(168,240,92,.55);
+  background: rgba(168,240,92,.07);
+  font: 700 18px/1 ui-monospace, Menlo, monospace; color: var(--lime);
+  box-shadow: 0 0 40px rgba(168,240,92,.1);
+}
+.fin-badge::before {
+  content: ""; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--lime); box-shadow: 0 0 14px var(--lime); flex-shrink: 0;
+}
+.fin-badge:nth-child(2) {
+  border-color: rgba(86,224,221,.55); color: var(--cyan);
+  background: rgba(86,224,221,.07); box-shadow: 0 0 40px rgba(86,224,221,.1);
+}
+.fin-badge:nth-child(2)::before { background: var(--cyan); box-shadow: 0 0 14px var(--cyan); }
+.fin-badge:nth-child(3) {
+  border-color: rgba(255,200,90,.55); color: var(--amber);
+  background: rgba(255,200,90,.07); box-shadow: 0 0 40px rgba(255,200,90,.1);
+}
+.fin-badge:nth-child(3)::before { background: var(--amber); box-shadow: 0 0 14px var(--amber); }
+.repo-line {
+  margin-top: 56px; font: 650 20px/1 ui-monospace, Menlo, monospace;
+  color: var(--muted); letter-spacing: .02em; opacity: 0;
+}
+.repo-line strong { color: var(--ink); }
+.repo-line .name { color: var(--cyan); }
+
+/* vignette */
+.vignette {
+  position: absolute; inset: 0; pointer-events: none; z-index: 10;
+  background: radial-gradient(ellipse 85% 75% at 50% 50%, transparent 55%, rgba(0,0,0,.45) 100%);
+}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="brand-bar" id="brandBar">
+    <div>chrome-cdp-ex · Attach Beam</div>
+    <div class="clock" id="clock">00:00</div>
+  </div>
+
+  <!-- HOOK 0–6 -->
+  <div class="layer" id="hook">
+    <div class="eyebrow" id="hookEyebrow">Live browser session</div>
+    <h1 id="hookTitle">The tab you<br><span class="accent">already have.</span></h1>
+    <div class="tabs" id="hookTabs">
+      <div class="tab-sil left"><span class="dot"></span><span class="bar"></span></div>
+      <div class="tab-sil right"><span class="dot"></span><span class="bar"></span></div>
+    </div>
+  </div>
+
+  <!-- CONTRAST 6–18 -->
+  <div class="layer" id="contrast">
+    <div class="split">
+      <div class="pane left" id="paneLeft">
+        <div class="pane-chrome">
+          <div class="traffic"><i></i><i></i><i></i></div>
+          <div class="url">about:blank · New profile</div>
+        </div>
+        <div class="pane-body">
+          <div class="pane-tag">Playwright · fresh browser</div>
+          <div class="empty-face">
+            <svg viewBox="0 0 56 56"><rect x="8" y="14" width="40" height="28" rx="4"/><path d="M8 22h40"/><circle cx="16" cy="18" r="1.5" fill="#5a6a64" stroke="none"/><circle cx="22" cy="18" r="1.5" fill="#5a6a64" stroke="none"/></svg>
+          </div>
+          <h3>Empty session</h3>
+          <p>Cold start. No cookies. No login. Agent gets a blank slate.</p>
+          <div class="cookie-x">No cookies · New profile</div>
+        </div>
+      </div>
+      <div class="pane right" id="paneRight">
+        <div class="pane-chrome">
+          <div class="traffic"><i></i><i></i><i></i></div>
+          <div class="url">https://app.example/dashboard</div>
+        </div>
+        <div class="pane-body">
+          <div class="pane-tag">Your open tab</div>
+          <div class="live-ui">
+            <div class="live-header">
+              <div class="logo">Acme<span>·</span>Cloud</div>
+              <div class="avatar">SY</div>
+            </div>
+            <div class="live-card">
+              <div class="row"><span class="k">Signed in as</span><span class="v">you@company.com</span></div>
+              <div class="row"><span class="k">Session</span><span class="v ok">active · 2h 14m</span></div>
+              <div class="row"><span class="k">Workspace</span><span class="v">production</span></div>
+            </div>
+            <div class="cookie-badge">Cookies stay · session intact</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ATTACH 18–28 -->
+  <div class="layer" id="attach">
+    <canvas id="beam-canvas" width="1920" height="1080"></canvas>
+    <div class="right-focus" id="rightFocus">
+      <div class="attach-glow" id="attachGlow"></div>
+      <div class="pane-chrome">
+        <div class="traffic"><i></i><i></i><i></i></div>
+        <div class="url">https://app.example/dashboard · CDP attached</div>
+      </div>
+      <div class="pane-body" style="padding:36px 32px">
+        <div class="pane-tag" style="color:var(--cyan)">Attached · live session</div>
+        <div class="live-ui">
+          <div class="live-header">
+            <div class="logo">Acme<span style="color:var(--cyan)">·</span>Cloud</div>
+            <div class="avatar">SY</div>
+          </div>
+          <div class="live-card">
+            <div class="row"><span class="k">Signed in as</span><span class="v">you@company.com</span></div>
+            <div class="row"><span class="k">Session</span><span class="v ok">active · 2h 14m</span></div>
+            <div class="row"><span class="k">Workspace</span><span class="v">production</span></div>
+          </div>
+          <div class="cookie-badge">Cookies stay · session intact</div>
+        </div>
+      </div>
+    </div>
+    <div class="cli-panel" id="cliPanel">
+      <div><span class="prompt">$</span> <span class="cmd" id="cliText"></span><span class="cursor-blink" id="cliCursor"></span></div>
+      <div class="dim" id="cliOut" style="margin-top:10px;min-height:1.55em"></div>
+    </div>
+  </div>
+
+  <!-- ACT 28–40 -->
+  <div class="layer" id="act">
+    <div class="act-browser" id="actBrowser">
+      <div class="act-chrome">
+        <div class="traffic" style="display:flex;gap:7px"><i style="width:11px;height:11px;border-radius:50%;background:#ff5f57;display:block"></i><i style="width:11px;height:11px;border-radius:50%;background:#febc2e;display:block"></i><i style="width:11px;height:11px;border-radius:50%;background:#28c840;display:block"></i></div>
+        <div class="url">https://app.example/dashboard</div>
+      </div>
+      <div class="act-body">
+        <h3>Update workspace settings</h3>
+        <div class="form-row">
+          <label>Display name</label>
+          <div class="form-field" id="fieldName">
+            <span id="fieldValue">Acme Cloud</span>
+            <span class="ref-tag" id="refName">@e12</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>Notify channel</label>
+          <div class="form-field" id="fieldChan">
+            <span id="chanValue">#ops-alerts</span>
+            <span class="ref-tag" id="refChan">@e14</span>
+          </div>
+        </div>
+        <button class="btn-primary" id="btnSave" type="button">
+          Save changes
+          <span class="ref-tag" id="refBtn">@e18</span>
+        </button>
+        <div class="click-ring" id="clickRing"></div>
+      </div>
+    </div>
+    <div class="act-cli" id="actCli">
+      <span class="prompt" style="color:var(--lime)">$</span> <span id="actCliText"></span>
+    </div>
+  </div>
+
+  <!-- RECEIPT 40–46 -->
+  <div class="layer" id="receipt">
+    <div class="receipt-card" id="receiptCard">
+      <div class="eyebrow">Action receipt</div>
+      <div class="receipt-line" id="receiptLine">
+        <span class="ok">ok</span> <span class="dim">·</span> <span class="ref">@e12</span> <span class="dim">·</span>
+        <span>https://app.example/dashboard</span> <span class="dim">·</span>
+        <span class="dim">Next:</span> stop
+      </div>
+      <div class="receipt-meta">
+        <span>dispatch <strong>ok</strong></span>
+        <span>settlement <strong style="color:var(--lime)">settled</strong></span>
+        <span>outcome <strong style="color:var(--lime)">changed</strong></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- BADGES 46–50 -->
+  <div class="layer" id="badges">
+    <div class="finale-title" id="finaleTitle">Attach to the browser<br>you <span class="accent">already</span> use.</div>
+    <div class="badge-row" id="badgeRow">
+      <div class="fin-badge">Cookies stay</div>
+      <div class="fin-badge">Not a fresh Playwright</div>
+      <div class="fin-badge">Zero runtime npm deps</div>
+    </div>
+    <div class="repo-line" id="repoLine">
+      <strong>github.com/EndeavorYen/</strong><span class="name">chrome-cdp-ex</span>
+    </div>
+  </div>
+
+  <div class="vignette"></div>
+</div>
+
+<script>
+(function () {
+  const DURATION = 15;
+  const params = new URLSearchParams(location.search);
+  const fixedT = params.has('t') ? Number(params.get('t')) : null;
+  const sceneParam = params.get('scene');
+  // 1 Hook · 2 Contrast · 3 Attach · 4 Act · 5 Finale (receipt+badges)
+  const sceneStarts = { 1: 0, 2: 2, 3: 5, 4: 9, 5: 12, 6: 12 };
+  const play = params.get('play') !== '0' && fixedT === null && !sceneParam;
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+  const easeInOut = (t) => {
+    t = clamp(t, 0, 1);
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  };
+  const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+
+  const brandBar = $('brandBar');
+  const clock = $('clock');
+  const layers = {
+    hook: $('hook'),
+    contrast: $('contrast'),
+    attach: $('attach'),
+    act: $('act'),
+    receipt: $('receipt'),
+    badges: $('badges'),
+  };
+
+  const cliFull = './bin/chrome-cdp perceive 9F3A… -C -d 8';
+  const fillCmd = './bin/chrome-cdp fill 9F3A… @e12 "Acme Cloud Ops" --format json';
+  const clickCmd = './bin/chrome-cdp click 9F3A… @e18 --format json';
+
+  let typedLen = -1;
+  let lastShake = false;
+
+  function setOpacity(el, o) {
+    el.style.opacity = String(clamp(o, 0, 1));
+    el.style.pointerEvents = o > 0.05 ? 'auto' : 'none';
+  }
+
+  function drawBeam(t) {
+    const canvas = $('beam-canvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, 1920, 1080);
+    // Attach 5–9: beam mid-window
+    const p = easeInOut(seg(t, 5.8, 7.8));
+    if (p <= 0) return;
+    const x0 = 400, y0 = 920;
+    const x1 = 1280, y1 = 480;
+    const prog = p;
+    const cx = lerp(x0, x1, prog);
+    const cy = lerp(y0, y1, prog);
+
+    const grad = ctx.createLinearGradient(x0, y0, cx, cy);
+    grad.addColorStop(0, 'rgba(86,224,221,0)');
+    grad.addColorStop(0.4, 'rgba(86,224,221,0.35)');
+    grad.addColorStop(1, 'rgba(168,240,92,0.9)');
+
+    const mx = (x0 + x1) / 2 - 80;
+    const my = (y0 + y1) / 2 - 120;
+
+    ctx.shadowColor = '#56e0dd';
+    ctx.shadowBlur = 28;
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = grad;
+    ctx.setLineDash([2000 * prog, 2000]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.quadraticCurveTo(mx, my, x1, y1);
+    ctx.stroke();
+
+    ctx.shadowBlur = 12;
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.quadraticCurveTo(mx, my, x1, y1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (prog > 0.85) {
+      const burst = easeOut((prog - 0.85) / 0.15);
+      ctx.beginPath();
+      ctx.arc(x1, y1, 8 + burst * 40, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(86,224,221,${0.35 * (1 - burst)})`;
+      ctx.shadowBlur = 40;
+      ctx.shadowColor = '#56e0dd';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x1, y1, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#a8f05c';
+      ctx.fill();
+    }
+
+    for (let i = 0; i < 12; i++) {
+      const u = (prog * 0.9 - i * 0.04);
+      if (u < 0 || u > 1) continue;
+      const px = (1 - u) * (1 - u) * x0 + 2 * (1 - u) * u * mx + u * u * x1;
+      const py = (1 - u) * (1 - u) * y0 + 2 * (1 - u) * u * my + u * u * y1;
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(168,240,92,${0.8 * (1 - i / 12)})`;
+      ctx.shadowBlur = 8;
+      ctx.fill();
+    }
+  }
+
+  function render(t) {
+    t = ((t % DURATION) + DURATION) % DURATION;
+    clock.textContent = `00:${String(Math.floor(t)).padStart(2, '0')}`;
+    brandBar.style.opacity = t > 0.12 && t < 14.7
+      ? String(easeOut(seg(t, 0.12, 0.55)) * (1 - seg(t, 14.3, 15)))
+      : '0';
+
+    // ---- HOOK 0–2 ----
+    const hookVis = t < 2.6
+      ? easeOut(seg(t, 0.05, 0.4)) * (1 - easeInOut(seg(t, 1.7, 2.35)))
+      : 0;
+    setOpacity(layers.hook, hookVis);
+    $('hookEyebrow').style.opacity = easeOut(seg(t, 0.1, 0.45));
+    $('hookTitle').style.opacity = easeOut(seg(t, 0.2, 0.75));
+    $('hookTitle').style.transform = `translateY(${lerp(14, 0, easeOut(seg(t, 0.2, 0.75)))}px)`;
+    $('hookTabs').style.opacity = easeOut(seg(t, 0.7, 1.25));
+    $('hookTabs').style.transform = `translateY(${lerp(16, 0, easeOut(seg(t, 0.7, 1.25)))}px)`;
+
+    // ---- CONTRAST 2–5 (very tight) ----
+    const cVis = t >= 1.6 && t < 6.0
+      ? easeInOut(seg(t, 1.7, 2.35)) * (1 - easeInOut(seg(t, 4.7, 5.6)))
+      : 0;
+    setOpacity(layers.contrast, cVis);
+    const pl = $('paneLeft'), pr = $('paneRight');
+    const pe = easeOut(seg(t, 2.0, 2.7));
+    pl.style.opacity = pe;
+    pr.style.opacity = pe;
+    pl.style.transform = `translateY(${lerp(22, 0, pe)}px)`;
+    pr.style.transform = `translateY(${lerp(22, 0, easeOut(seg(t, 2.15, 2.85)))}px)`;
+    if (t >= 4.3) {
+      pl.style.opacity = String(pe * (1 - easeInOut(seg(t, 4.3, 5.1))));
+    }
+
+    // ---- ATTACH 5–9 ----
+    const aVis = t >= 4.6 && t < 9.6
+      ? easeInOut(seg(t, 4.7, 5.4)) * (1 - easeInOut(seg(t, 8.6, 9.4)))
+      : 0;
+    setOpacity(layers.attach, aVis);
+    const cliE = easeOut(seg(t, 5.0, 5.55));
+    $('cliPanel').style.opacity = cliE;
+    $('cliPanel').style.transform = `translateY(${lerp(24, 0, cliE)}px)`;
+
+    const typeProg = seg(t, 5.15, 6.7);
+    const len = Math.floor(typeProg * cliFull.length);
+    if (len !== typedLen) {
+      typedLen = len;
+      $('cliText').textContent = cliFull.slice(0, len);
+    }
+    $('cliCursor').style.opacity = typeProg < 1 ? '1' : (Math.floor(t * 2) % 2 ? '1' : '0');
+    if (typeProg >= 1) {
+      $('cliOut').innerHTML = '<span style="color:#a8f05c">✓</span> <span style="color:#56e0dd">perceive</span> · 14 refs · session intact';
+      $('cliOut').style.opacity = easeOut(seg(t, 6.7, 7.15));
+    } else {
+      $('cliOut').textContent = '';
+      $('cliOut').style.opacity = 0;
+    }
+
+    drawBeam(t);
+
+    const rf = easeOut(seg(t, 6.5, 7.5));
+    $('rightFocus').style.opacity = rf * (1 - easeInOut(seg(t, 8.6, 9.4)));
+    if (t >= 6.5) {
+      pr.style.opacity = String(Math.max(0, pe * (1 - easeInOut(seg(t, 6.5, 7.3)))));
+    }
+    $('rightFocus').style.transform = `scale(${lerp(0.96, 1, rf)})`;
+    $('attachGlow').style.opacity = easeOut(seg(t, 7.2, 7.9));
+
+    // ---- ACT 9–12 ----
+    const actVis = t >= 8.6 && t < 12.6
+      ? easeInOut(seg(t, 8.7, 9.4)) * (1 - easeInOut(seg(t, 11.6, 12.4)))
+      : 0;
+    setOpacity(layers.act, actVis);
+    const ab = easeOut(seg(t, 8.9, 9.55));
+    $('actBrowser').style.opacity = ab;
+    $('actBrowser').style.transform = `scale(${lerp(0.97, 1, ab)})`;
+    $('actCli').style.opacity = easeOut(seg(t, 9.15, 9.65));
+
+    const hl1 = t >= 9.4 && t < 10.8;
+    $('fieldName').classList.toggle('highlighted', hl1 || (t >= 10.5 && t < 11.2));
+    $('refName').classList.toggle('show', t >= 9.5 && t < 11.4);
+
+    const fillTarget = 'Acme Cloud Ops';
+    const fillP = seg(t, 9.7, 10.55);
+    if (fillP > 0 && fillP < 1) {
+      const fl = Math.floor(fillP * fillTarget.length);
+      $('fieldValue').textContent = fillTarget.slice(0, fl);
+      $('actCliText').textContent = fillCmd.slice(0, Math.floor(fillP * fillCmd.length));
+      if (!lastShake && fl > 0) {
+        $('fieldName').classList.add('shake');
+        lastShake = true;
+        setTimeout(() => $('fieldName').classList.remove('shake'), 280);
+      }
+    } else if (fillP >= 1) {
+      $('fieldValue').textContent = fillTarget;
+      lastShake = false;
+    } else if (t < 9.7) {
+      $('fieldValue').textContent = 'Acme Cloud';
+      lastShake = false;
+    }
+
+    const hlBtn = t >= 10.9 && t < 12.0;
+    $('btnSave').classList.toggle('highlighted', hlBtn);
+    $('refBtn').classList.toggle('show', t >= 11.0 && t < 12.1);
+    if (t >= 11.15 && t < 12.3) {
+      $('actCliText').innerHTML = clickCmd + ' <span class="ok">→ ok</span>';
+    } else if (fillP >= 1 && t < 11.15) {
+      $('actCliText').innerHTML = fillCmd + ' <span class="ok">→ changed</span>';
+    } else if (t < 9.7) {
+      $('actCliText').textContent = './bin/chrome-cdp perceive 9F3A…  ·  refs ready';
+    }
+
+    const ringP = seg(t, 11.2, 11.65);
+    const ring = $('clickRing');
+    if (ringP > 0 && ringP < 1) {
+      const btn = $('btnSave').getBoundingClientRect();
+      const stage = $('stage').getBoundingClientRect();
+      ring.style.left = (btn.left - stage.left + btn.width / 2 - 14) + 'px';
+      ring.style.top = (btn.top - stage.top + btn.height / 2 - 14) + 'px';
+      ring.style.opacity = String(1 - ringP);
+      ring.style.transform = `scale(${lerp(0.4, 2.2, easeOut(ringP))})`;
+    } else {
+      ring.style.opacity = '0';
+    }
+
+    // ---- FINALE 12–15: receipt flash then badges ----
+    // Receipt brief 12.0–13.2
+    const rVis = t >= 11.7 && t < 13.45
+      ? easeInOut(seg(t, 11.8, 12.35)) * (1 - easeInOut(seg(t, 12.95, 13.4)))
+      : 0;
+    setOpacity(layers.receipt, rVis);
+    const rc = easeOut(seg(t, 12.0, 12.55));
+    $('receiptCard').style.opacity = rc;
+    $('receiptCard').style.transform = `translateY(${lerp(28, 0, rc)}px) scale(${lerp(0.95, 1, rc)})`;
+
+    // Badges 13.0–15
+    const bVis = t >= 12.9
+      ? easeInOut(seg(t, 13.0, 13.55))
+      : 0;
+    setOpacity(layers.badges, bVis);
+    const ft = easeOut(seg(t, 13.1, 13.7));
+    $('finaleTitle').style.opacity = ft;
+    $('finaleTitle').style.transform = `translateY(${lerp(12, 0, ft)}px)`;
+    const br = easeOut(seg(t, 13.45, 14.05));
+    $('badgeRow').style.opacity = br;
+    $('badgeRow').style.transform = `translateY(${lerp(14, 0, br)}px)`;
+    $('repoLine').style.opacity = easeOut(seg(t, 13.85, 14.45));
+  }
+
+  window.__attachBeam = {
+    duration: DURATION,
+    render,
+    setTime(t) { render(t); },
+  };
+
+  let start = performance.now();
+  let initial = 0;
+  if (sceneParam && sceneStarts[sceneParam] != null) {
+    initial = sceneStarts[sceneParam];
+    render(initial);
+  } else if (fixedT !== null && !Number.isNaN(fixedT)) {
+    render(fixedT);
+  } else {
+    function loop(now) {
+      const t = initial + (now - start) / 1000;
+      render(t);
+      if (play) requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  }
+})();
+</script>
+</body>
+</html>
