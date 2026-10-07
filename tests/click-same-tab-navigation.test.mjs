@@ -150,7 +150,11 @@ describe('click on a same-tab link that navigates before the probe is read (#447
     const cdp = fakeCdp({ navigateOnRelease: false });
     await T.dispatchClick(cdp, 'sid', 66, 41, { selector: '#noop' });
     const nonInput = cdp.calls.filter(c => c.method !== 'Input.dispatchMouseEvent');
-    expect(nonInput).toHaveLength(2); // probe install + probe read only
+    // Probe install, the pre-dispatch scroll pin, and the probe read. A seen
+    // probe still does not add a location.href round trip (#447).
+    expect(nonInput).toHaveLength(3);
+    expect(nonInput.some(call => String(call.params.expression || call.params.functionDeclaration || '').includes('function pinClickPoint'))).toBe(true);
+    expect(nonInput.some(call => String(call.params.expression || '') === 'location.href')).toBe(false);
     expect(cdp.listenerCount('Page.frameNavigated')).toBe(0);
   });
 

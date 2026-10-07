@@ -182,6 +182,8 @@ function classifyFillValueFailure(err, { base, target, input, perceiveCommand })
 }
 
 const COVERED_CLICK_MESSAGE_RE = /^click point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by /;
+const MISDIRECTED_CLICK_MESSAGE_RE = /did not reach the intended element|mouse click was misdirected/i;
+const CLICK_NO_CHANGE_MESSAGE_RE = /did not react \(Outcome: no-change\)/;
 const COVERED_DRAG_MESSAGE_RE = /^drag (start|drop) point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by /;
 
 // #471: a covered drag start or drop point. There is no JS fallback for a drag, so the
@@ -218,6 +220,48 @@ function classifyCoveredDragFailure(err, { base, targetId, input, message }) {
       `See what covers the ${point} point with \`${overlay}\`.`,
       'Scroll or close the covering layer so both points are clear, or drop at x,y CSS pixels that are not covered.',
       'Do not retry the same drag: it would hit the covering element again.',
+    ],
+  };
+}
+
+// #552: the gesture was sent (or the target disappeared before it could be) and the
+// intended element did not receive it. Distinct from covered, which sends nothing.
+function classifyMisdirectedClickFailure(err, { base, targetId }) {
+  const raw = err?.clickMisdirected && typeof err.clickMisdirected === 'object' ? err.clickMisdirected : {};
+  const sent = raw.sent !== false;
+  const landedOn = raw.landedOn ? String(raw.landedOn) : '';
+  const sinceAction = `cdp perceive ${targetId} --since-action`;
+  const perceive = `cdp perceive ${targetId} -C -d 8`;
+  return {
+    ...base,
+    kind: 'misdirected',
+    dispatched: sent,
+    ...(landedOn ? { landedOn } : {}),
+    reason: sent
+      ? 'The mouse click was delivered, but the intended element did not receive it.'
+      : 'The intended element was gone before the mouse click was sent. Nothing was clicked.',
+    nextCommand: sent ? sinceAction : perceive,
+    hints: [
+      'Inspect the page before retrying the same click.',
+      ...(sent ? ['Use `cdp click <target> <sel> --js` when the intended handler still needs to run.'] : []),
+      'Do not treat this click as proof the control ran.',
+    ],
+  };
+}
+
+// #552: the click reached a control that should react, and settle observed no change.
+function classifyClickNoChangeFailure(err, { base, targetId }) {
+  const sinceAction = `cdp perceive ${targetId} --since-action`;
+  return {
+    ...base,
+    kind: 'click-no-change',
+    dispatched: true,
+    detailLines: ['Outcome: no-change'],
+    reason: 'The click reached a control that should react, but nothing visible changed.',
+    nextCommand: sinceAction,
+    hints: [
+      `See what the click changed with \`${sinceAction}\` before retrying.`,
+      'Do not treat the receipt as success: the control did not react.',
     ],
   };
 }
@@ -478,6 +522,14 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   // #436: checked before message matching because the message quotes page text.
   if ((err?.clickCovered && typeof err.clickCovered === 'object') || COVERED_CLICK_MESSAGE_RE.test(originalMessage)) {
     return classifyCoveredClickFailure(err, { base, targetId, input });
+  }
+
+  // #552: after covered, before the generic overlay/"hit test" matcher.
+  if ((err?.clickMisdirected && typeof err.clickMisdirected === 'object') || MISDIRECTED_CLICK_MESSAGE_RE.test(originalMessage)) {
+    return classifyMisdirectedClickFailure(err, { base, targetId });
+  }
+  if ((err?.clickNoChange && typeof err.clickNoChange === 'object') || CLICK_NO_CHANGE_MESSAGE_RE.test(originalMessage)) {
+    return classifyClickNoChangeFailure(err, { base, targetId });
   }
 
   // #472: click --expect-download; the message quotes the page's file name.
@@ -1356,6 +1408,26 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'since-action', reason: 'Confirm the target handler ran.' },
     ],
     avoid: ['retrying the same mouse click while another element covers the click point'],
+  },
+  misdirected: {
+    strategy: 'inspect-misdirected-click',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'since-action', reason: 'See where the click landed before retrying.' },
+      { key: 'next-or-perceive', reason: 'Refresh the page, or retry with jsclick when the intended handler still needs to run.' },
+    ],
+    avoid: ['treating a misdirected click as proof the control ran'],
+  },
+  'click-no-change': {
+    strategy: 'inspect-unchanged-control',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'since-action', reason: 'See whether the control reacted before retrying.' },
+      { key: 'perceive', reason: 'Refresh refs if the control is stale.' },
+    ],
+    avoid: ['treating Outcome: no-change on a control that should react as success'],
   },
   'navigation-cancelled': {
     strategy: 'accept-beforeunload-then-retry',
