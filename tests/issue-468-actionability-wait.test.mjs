@@ -473,7 +473,10 @@ describe('#468 --wait-ms flag and recovery policy', () => {
     });
     await handler({ args: ['#a', '--wait-ms', '750'] });
     await handler({ args: ['#a'] });
-    expect(seen).toEqual([['click', '#a', { waitMs: 750 }], ['click', '#a', { waitMs: null }]]);
+    expect(seen).toEqual([
+      ['click', '#a', { waitMs: 750, clickTrust: {} }],
+      ['click', '#a', { waitMs: null, clickTrust: {} }],
+    ]);
   });
 
   it('registers a disabled recovery policy', () => {
