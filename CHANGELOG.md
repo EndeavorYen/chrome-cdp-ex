@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [2.21.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.20.0...v2.21.0) (2026-10-07)
+
+v2.21.0 adds opt-in usage measurement with a trailing 7-day and 30-day report, re-binds a vanished
+target prefix with `--follow-url`, captures a hidden tab once with temporary focus emulation, refuses
+daily profiles when `CDP_ISOLATED_ONLY=1`, and lets `emulate --focus` make a background tab behave as
+focused. Clicks fail closed when they miss or a reactive control does not change, `press Enter` submits
+the form, and a restarted tab daemon restores dialog, throttle, and mock state.
+
 ### Features
 
 * `--follow-url` re-binds a vanished target prefix on a target-taking read command when exactly one live page has the same URL and title. The receipt sets `targetResolution.status` to `followed-url`. Mutating and page-changing commands do not re-bind. There is no environment variable, and saved aliases do not follow ([#540](https://github.com/EndeavorYen/chrome-cdp-ex/issues/540)).
@@ -48,6 +56,20 @@
 
 ### Bug Fixes
 
+* `perceive -C` uses the accessibility role, and the accessible name when the collector label is only the
+  role or tag, for a Visible controls row that matches exactly one accessibility node. A labeled
+  `<input type="number">` prints `input role=spinbutton "Qty"` on the same `@ref` as `[spinbutton] Qty`.
+  A label that is already real text is left alone. `controls` stays DOM-only
+  ([#579](https://github.com/EndeavorYen/chrome-cdp-ex/issues/579)).
+
+* A mouse click is not a success unless the intended element is the one under the point. The scroll offset
+  is frozen immediately before the mouse events, so a CSS `scroll-behavior: smooth` animation cannot move
+  the target during the probe. If that element, or the same accepted hit-test set, does not receive the
+  event, the command exits 1 with `Kind: misdirected`. A `click` or `jsclick` on a reactive control
+  (button, link, input, and the matching ARIA roles) whose outcome stays `no-change` exits 1 with
+  `Kind: click-no-change`. Expected no-change cases stay exit 0
+  ([#552](https://github.com/EndeavorYen/chrome-cdp-ex/issues/552)).
+
 * `viewport` / `resize` treats a read-back size that matches the request as success
   (`Verdict: continue`), including when the accessibility tree did not change. The text
   receipt keeps the one-line `Viewport:` result and attaches an AX diff only when that
@@ -57,14 +79,94 @@
 
 * `shot <target> shots/a.png` writes `./shots/a.png` from the directory where you ran the command, even when the tab daemon was started elsewhere. A missing parent directory is `Kind: usage` (`shot: output directory does not exist`), not raw `ENOENT` / `Kind: unknown`. The same caller-directory resolution covers `fullshot`, `upload`, `replay --file`, `restore --file`, `responsive-audit --out-dir`, and relative paths of those commands plus `elshot`, `netlog --out`, and `click --expect-download --out` inside `flow`, `batch`, and `repeat` ([#577](https://github.com/EndeavorYen/chrome-cdp-ex/issues/577)).
 
+* After a tab daemon exits and a new one starts, dialog mode, network throttle, and mock rules are read
+  back from `cdp-<targetId>.env.json` and applied again. The netlog buffer is not stored. The first
+  user-visible command names the restart and anything that was not restored, for example
+  `daemon restarted: dialog=dismiss, throttle=offline, 2 mocks restored, netlog buffer was reset`.
+  Dialog mode is applied before the dialog handler is registered, so a saved dismiss does not fall back
+  to auto-accept ([#575](https://github.com/EndeavorYen/chrome-cdp-ex/issues/575)).
+
+* `press Enter` on a focused text field now sends keyDown with a carriage return in `text`, so the page
+  receives keypress and the browser default action, including a click on the form default button and
+  submit. Space, Tab, and printable letters keep their previous event sequences. Search-listing Enter
+  still returns before any key event
+  ([#576](https://github.com/EndeavorYen/chrome-cdp-ex/issues/576)).
+
+* On Linux, a tab daemon no longer treats its own socket as replaced a few seconds after bind and exits.
+  An exit from the daemon that owns the tab log appends `session-end` with the reason (`exception`,
+  `idle-timeout`, `signal`, or another shutdown cause). The next daemon appends `session-start` and does
+  not truncate the earlier lines. An unknown `@ref` after that restart says the previous daemon's refs
+  were cleared because this tab's daemon restarted
+  ([#549](https://github.com/EndeavorYen/chrome-cdp-ex/issues/549)).
+
+* The `Interactive:` census in `perceive`, and the `summary` census, count only controls that are rendered
+  and visible. A control with no client rect, under a closed `<dialog>` or `<details>`, with `hidden`,
+  `type=hidden`, or `visibility: hidden` / `collapse`, is not counted
+  ([#561](https://github.com/EndeavorYen/chrome-cdp-ex/issues/561)).
+
+* Unprefixed `doctor` and `list` keep looking when `DevToolsActivePort` names a port that does not answer.
+  They probe `9224` and the last endpoint this skill reached before recommending `spawn-debug-browser`.
+  A file port that answers `/json/version`, or whose HTTP 404 still opens that file's browser websocket,
+  stays the endpoint. A port that does neither is not remembered. When nothing answers, the failure names
+  the dead port ([#558](https://github.com/EndeavorYen/chrome-cdp-ex/issues/558)).
+
+* `scroll <target> "to top"` and `scroll <target> "to bottom"` work when the edge phrase is one argument,
+  the same as the two-argument form ([#560](https://github.com/EndeavorYen/chrome-cdp-ex/issues/560)).
+
+* When an action fails, every printed recovery command names the tab by the 8-character prefix that
+  `list` prints. This covers `Next:`, hints, and the JSON `recovery.commands`. An `@alias`, a short
+  prefix, and the `<target>` placeholder pass through unchanged
+  ([#559](https://github.com/EndeavorYen/chrome-cdp-ex/issues/559)).
+
+* `click` on a CSS selector or `@ref` whose target is clipped by a scrollable ancestor scrolls that
+  ancestor before the hit test. If the click point is still cut off, the click fails closed with
+  `Kind: covered` and sends no mouse event
+  ([#551](https://github.com/EndeavorYen/chrome-cdp-ex/issues/551)).
+
+* After an action settles, the `@N` refs from the last `perceive` still name the same elements. A new
+  node gets a number above every number already handed out, so a freed number is not reused. An explicit
+  `perceive` still numbers refs `@1..@N` in document order. `perceive --diff` and `--since-action`
+  compare lines without the ref number
+  ([#548](https://github.com/EndeavorYen/chrome-cdp-ex/issues/548)).
+
+* Page lists hold one entry per target id. When two distinct ids still match a prefix,
+  `resolvePageCommandTarget` runs live discovery up to 3 more times, 250 ms apart, before failing. The
+  ambiguous error names each match as `<unique id prefix> <type> <redacted url>`
+  ([#546](https://github.com/EndeavorYen/chrome-cdp-ex/issues/546)).
+
+* PowerShell can start the launcher with `bin/chrome-cdp.cmd` (`node` on the sibling `chrome-cdp`). The
+  extensionless shebang file stays for Unix
+  ([#557](https://github.com/EndeavorYen/chrome-cdp-ex/issues/557)).
+
+* `spawn-debug-browser` does not launch when this profile is already answering CDP on another port. The
+  receipt is `Kind: profile-in-use`. When the port is known, `Next:` is `CDP_PORT=<port> cdp list`.
+  Exit 0 with `Opening in existing browser session.` uses that same kind
+  ([#550](https://github.com/EndeavorYen/chrome-cdp-ex/issues/550)).
+
+* `elshot` prints one line: a collapsed element label of at most 80 characters, the size, and the PNG
+  path after ` -> ` ([#547](https://github.com/EndeavorYen/chrome-cdp-ex/issues/547)).
+
+* Skinny action receipts for `click`, `jsclick`, `fill`, `press`, `select`, `scroll`, `nav`, and
+  `navigate` no longer print an `Outcome` line. Exit 0 means the CDP call finished and the observations
+  were printed. The full diagnostic text and action JSON still carry outcome
+  ([#553](https://github.com/EndeavorYen/chrome-cdp-ex/issues/553)).
+
+* `npm run check:contracts` gates the 20 survivor commands against this version's
+  `survivor-synopsis.v1.json`. The served MCP tool list is the survivor card. `run_command` keeps
+  spellings whose canonical command is a survivor, plus `help`. Calling an unadvertised mapped tool by
+  name, such as `table`, still works
+  ([#554](https://github.com/EndeavorYen/chrome-cdp-ex/issues/554)).
+
+* Default `netlog --id` omits the response body. `--body` includes the redacted body and requires
+  `--id`. `--unsafe-full` still means do not redact headers and URL. The raw body is `--body --unsafe-full`
+  ([#555](https://github.com/EndeavorYen/chrome-cdp-ex/issues/555)).
+
 * When a target prefix stops resolving but the tab is still open (Chrome gave it a new target id),
   the error names the replacement page. This happens only when exactly one live page has the URL and
   title last seen for that prefix. The recovery reruns the same command on the new prefix, for example
   `Next: cdp nav B7BB111A <url> (Kind: target-resolution)`. Troubleshooting now explains why a target id
-  can change and recommends `cdp target --url` for long scripts. Automatic re-binding is tracked in #540
+  can change and recommends `cdp target --url` for long scripts. `--follow-url` on a read command re-binds that successor (see #540)
   ([#538](https://github.com/EndeavorYen/chrome-cdp-ex/issues/538)).
-
-### Bug Fixes
 
 Fixes from a Windows background-mode field report
 ([#533](https://github.com/EndeavorYen/chrome-cdp-ex/issues/533)):
@@ -98,6 +200,7 @@ Fixes from a Windows background-mode field report
   times out in a background tab: paint-tied promises such as `HTMLImageElement.decode()` and
   `requestAnimationFrame` may never settle, and timers are throttled. It gives the
   `eval --fire-and-forget` and poll pattern.
+
 
 ## [2.20.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.19.1...v2.20.0) (2026-10-03)
 

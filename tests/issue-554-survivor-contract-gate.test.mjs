@@ -11,7 +11,7 @@ import {
 import { COMMAND_SURFACE, SURVIVOR_COMMANDS } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
-const synopsisPath = join(rootDir, 'docs/contracts/v2.20.0/survivor-synopsis.v1.json');
+const synopsisPath = join(rootDir, 'docs/contracts/v2.21.0/survivor-synopsis.v1.json');
 
 function liveSynopses() {
   const commands = {};

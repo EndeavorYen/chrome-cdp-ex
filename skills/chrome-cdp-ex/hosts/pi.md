@@ -5,7 +5,7 @@ This repository is packaged as a Pi skills package via `package.json` metadata.
 ```json
 {
   "name": "pi-chrome-cdp",
-  "version": "2.20.0",
+  "version": "2.21.0",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "skills", "chrome", "cdp", "browser", "devtools"],
   "pi": {
     "skills": ["./skills"]
