@@ -6,6 +6,7 @@
     "package/LICENSE",
     "package/README.md",
     "package/bin/chrome-cdp",
+    "package/bin/chrome-cdp.cmd",
     "package/docs/adr/0001-runtime-v3-contract-first-strangler.md",
     "package/docs/adr/0003-runtime-v3-application-dispatch.md",
     "package/docs/architecture/runtime-v3.md",
@@ -34,6 +35,10 @@
     "package/docs/contracts/v2.20.0/package-entries.v1.json",
     "package/docs/contracts/v2.20.0/public-contracts.v1.json",
     "package/docs/contracts/v2.20.0/runtime-dispatch.v1.json",
+    "package/docs/contracts/v2.21.0/package-entries.v1.json",
+    "package/docs/contracts/v2.21.0/public-contracts.v1.json",
+    "package/docs/contracts/v2.21.0/runtime-dispatch.v1.json",
+    "package/docs/contracts/v2.21.0/survivor-synopsis.v1.json",
     "package/docs/daily-browser-cdp.md",
     "package/docs/examples/codex-killer-path.md",
     "package/docs/examples/killer-path.md",
@@ -67,6 +72,7 @@
     "package/scripts/setup.mjs",
     "package/skills/chrome-cdp-ex/SKILL.md",
     "package/skills/chrome-cdp-ex/bin/chrome-cdp",
+    "package/skills/chrome-cdp-ex/bin/chrome-cdp.cmd",
     "package/skills/chrome-cdp-ex/hosts/claude.md",
     "package/skills/chrome-cdp-ex/hosts/codex.md",
     "package/skills/chrome-cdp-ex/hosts/cursor.md",
@@ -93,6 +99,7 @@
     "package/skills/chrome-cdp-ex/scripts/lib/command-surface.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/daemon-action-handlers.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs",
+    "package/skills/chrome-cdp-ex/scripts/lib/daemon-restart-notice.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/git-head.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs",
@@ -121,6 +128,6 @@
     "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs",
     "package/skills/chrome-cdp-ex/scripts/session.mjs"
   ],
-  "productVersion": "2.20.0",
+  "productVersion": "2.21.0",
   "schema": "chrome-cdp-ex.package-entries.v1"
 }
