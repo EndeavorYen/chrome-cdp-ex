@@ -13893,27 +13893,98 @@ function refAnnotationsFromTreeLines(treeLines = []) {
   return out;
 }
 
-function attachRefToVisibleControl(control, annotations = []) {
-  if (!control || !annotations.length) return control;
+function visibleControlLabelIsGeneric(control) {
+  const label = String(control?.label || '').trim().toLowerCase();
+  if (!label) return true;
+  const role = String(control?.role || '').trim().toLowerCase();
+  const tag = String(control?.tag || '').trim().toLowerCase();
+  return label === role || label === tag;
+}
+
+function axRefNumber(ref) {
+  const match = String(ref || '').match(/^@(?:f\d+:)?(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+// Ref number → { role, name } taken from the AX node, so a value/checked
+// suffix on the printed dump cannot become the accessible name (#579).
+function axIdentityByRefMap(axNodes, refMap) {
+  const byBackend = new Map();
+  for (const node of axNodes || []) {
+    const backendId = node?.backendDOMNodeId;
+    if (backendId == null || byBackend.has(backendId)) continue;
+    byBackend.set(backendId, {
+      role: axNodeRole(node),
+      name: String(axNodeAccessibleName(node) || '').trim(),
+    });
+  }
+  const byRef = new Map();
+  if (!refMap || typeof refMap.entries !== 'function') return byRef;
+  for (const [ref, backendId] of refMap.entries()) {
+    if (!Number.isInteger(ref)) continue;
+    const identity = byBackend.get(backendId);
+    if (identity) byRef.set(ref, identity);
+  }
+  return byRef;
+}
+
+function axIdentityForVisibleControl(annotation, identities) {
+  const parsedRole = String(annotation?.role || '').trim();
+  const parsedName = String(annotation?.name || '').trim();
+  const ref = axRefNumber(annotation?.ref);
+  const fromNode = ref != null && identities && typeof identities.get === 'function'
+    ? identities.get(ref)
+    : null;
+  if (!fromNode) return { role: parsedRole, name: parsedName };
+  return {
+    role: String(fromNode.role || '').trim() || parsedRole,
+    name: fromNode.name == null ? parsedName : String(fromNode.name).trim(),
+  };
+}
+
+function visibleControlAnnotationMatches(control, annotations) {
   const id = String(control.hints?.id || '').trim();
   const selector = String(control.selector || '').trim();
-  const byIdentity = annotations.find(item => {
+  const byIdentity = annotations.filter(item => {
     if (id && (item.id === id || item.selector === `#${id}` || String(item.name || '') === id)) return true;
     if (selector && item.selector && (item.selector === selector || selector.endsWith(item.selector))) return true;
     return false;
   });
-  if (byIdentity) return { ...control, ref: byIdentity.ref };
-  if (!control.rect) return control;
+  if (byIdentity.length) return byIdentity;
+  if (!control.rect) return [];
   const { x, y, w, h } = control.rect;
-  const hit = annotations.find(item => (
+  return annotations.filter(item => (
     item.x != null
     && Math.abs(item.x - x) <= 1
     && Math.abs(item.y - y) <= 1
     && Math.abs(item.w - w) <= 1
     && Math.abs(item.h - h) <= 1
   ));
-  if (hit) return { ...control, ref: hit.ref };
-  return control;
+}
+
+function withVisibleControlAxIdentity(control, annotation, identities) {
+  const { role, name } = axIdentityForVisibleControl(annotation, identities);
+  const next = { ...control, ref: annotation.ref };
+  const previousRole = String(control?.role || '').trim().toLowerCase();
+  const generic = visibleControlLabelIsGeneric(control);
+  if (role) next.role = role;
+  // Replace only the collector's role/tag fallback ("textbox"). A real label
+  // stays, so a rect that happens to hit another AX node cannot rewrite
+  // cap-swap sample names (#299). The fallback is what looks like a missing
+  // label (#579).
+  if (!generic) return next;
+  if (name) next.label = name.replace(/\s+/g, ' ').trim();
+  else if (role && role.toLowerCase() !== previousRole) next.label = '';
+  return next;
+}
+
+function attachRefToVisibleControl(control, annotations = [], identities = null) {
+  if (!control || !annotations.length) return control;
+  const matches = visibleControlAnnotationMatches(control, annotations);
+  if (!matches.length) return control;
+  const matched = matches[0];
+  if (matches.length !== 1) return { ...control, ref: matched.ref };
+  return withVisibleControlAxIdentity(control, matched, identities);
 }
 
 function axRoleForDomControl(control = {}) {
@@ -15620,10 +15691,11 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
   if (cursorInteractive && meta.visibleControls?.length > 0) {
     const refAnns = refAnnotationsFromTreeLines(treeLines);
+    const axIdentities = axIdentityByRefMap(axNodes, activeRefMap);
     const ranked = rankPerceiveCursorItems(
-      meta.visibleControls,
+      meta.visibleControls.map(control => attachRefToVisibleControl(control, refAnns, axIdentities)),
       item => item.label || item.ariaLabel || item.text || item.title,
-    ).map(control => attachRefToVisibleControl(control, refAnns));
+    );
     const capped = ranked.slice(0, cursorLimit);
     const truncated = ranked.length > capped.length || meta.visibleControlsTruncated;
     treeLines.push('');
