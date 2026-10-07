@@ -5,7 +5,7 @@
       "exitCode": 0,
       "id": "no-args-help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -14,7 +14,7 @@
       "exitCode": 0,
       "id": "help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS.\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -22,7 +22,7 @@
       ],
       "exitCode": 1,
       "id": "unknown-command-suggestion",
-      "stderr": "Error: Unknown command: perceev\nDid you mean: perceive?\nRecovery:\n  Kind: usage\n  Strategy: suggest-command\n  Run: cdp perceive\n  Reason: Did you mean: perceive? Run `cdp help perceive` for usage.\nNext: cdp perceive",
+      "stderr": "Error: Unknown command: perceev\nDid you mean: perceive?\nRecovery:\n  Kind: usage\n  Strategy: suggest-command\n  Run: cdp perceive\n  Reason: Did you mean: perceive? Run `cdp help perceive` for usage.\nNext: cdp perceive (Kind: usage)",
       "stdout": ""
     },
     {
@@ -32,7 +32,7 @@
       ],
       "exitCode": 1,
       "id": "invalid-list-argument",
-      "stderr": "Error: list: unknown argument --bogus\nRecovery:\n  Kind: usage\n  Strategy: show-help\n  Run: cdp help list\n  Reason: The command received an unknown flag or argument. Print usage instead of probing doctor/status.\nNext: cdp help list",
+      "stderr": "Error: list: unknown argument --bogus\nRecovery:\n  Kind: usage\n  Strategy: show-help\n  Run: cdp help list\n  Reason: The command received an unknown flag or argument. Print usage instead of probing doctor/status.\nNext: cdp help list (Kind: usage)",
       "stdout": ""
     },
     {
@@ -43,7 +43,7 @@
       ],
       "exitCode": 1,
       "id": "invalid-format",
-      "stderr": "Error: format must be text or json\nRecovery:\n  Kind: unknown\n  Strategy: run-doctor\n  Run: cdp doctor\n  Reason: The failure was not classified; check browser setup and available targets.\nNext: cdp doctor",
+      "stderr": "Error: format must be text or json\nRecovery:\n  Kind: unknown\n  Strategy: run-doctor\n  Run: cdp doctor\n  Reason: The failure was not classified; check browser setup and available targets.\nNext: cdp doctor (Kind: unknown)",
       "stdout": ""
     },
     {
@@ -52,7 +52,7 @@
       ],
       "exitCode": 1,
       "id": "missing-target",
-      "stderr": "Error: target ID required. Run \"cdp list\" first.\nRecovery:\n  Kind: target-resolution\n  Strategy: rediscover-target\n  Run: cdp list  # if empty: cdp open https://example.com\n  Then: cdp open https://example.com\n  Reason: The requested tab target could not be resolved from the current page list.\nNext: cdp list  # if empty: cdp open https://example.com",
+      "stderr": "Error: target ID required. Run \"cdp list\" first.\nRecovery:\n  Kind: target-resolution\n  Strategy: rediscover-target\n  Run: cdp list  # if empty: cdp open https://example.com\n  Then: cdp open https://example.com\n  Reason: The requested tab target could not be resolved from the current page list.\nNext: cdp list  # if empty: cdp open https://example.com (Kind: target-resolution)",
       "stdout": ""
     }
   ],
@@ -1301,7 +1301,7 @@
           ],
           "command": "use"
         },
-        "error": "run_command use requires confirm: true",
+        "error": "run_command command not allowlisted: use",
         "id": "run-command-use-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1313,7 +1313,7 @@
           ],
           "command": "forget"
         },
-        "error": "run_command forget requires confirm: true",
+        "error": "run_command command not allowlisted: forget",
         "id": "run-command-forget-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1326,7 +1326,7 @@
           ],
           "command": "tab-group"
         },
-        "error": "run_command tab-group requires confirm: true",
+        "error": "run_command command not allowlisted: tab-group",
         "id": "run-command-tab-group-mutation-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1339,7 +1339,7 @@
           ],
           "command": "loadall"
         },
-        "error": "run_command loadall requires confirm: true",
+        "error": "run_command command not allowlisted: loadall",
         "id": "run-command-loadall-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1354,7 +1354,7 @@
           ],
           "command": "record"
         },
-        "error": "run_command record requires confirm: true",
+        "error": "run_command command not allowlisted: record",
         "id": "run-command-record-action-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1367,7 +1367,7 @@
           ],
           "command": "keepalive"
         },
-        "error": "run_command keepalive requires confirm: true",
+        "error": "run_command command not allowlisted: keepalive",
         "id": "run-command-keepalive-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1380,7 +1380,7 @@
           ],
           "command": "console"
         },
-        "error": "run_command console requires confirm: true",
+        "error": "run_command command not allowlisted: console",
         "id": "run-command-console-clear-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1393,7 +1393,7 @@
           ],
           "command": "netlog"
         },
-        "error": "run_command netlog requires confirm: true",
+        "error": "run_command command not allowlisted: netlog",
         "id": "run-command-netlog-clear-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1406,7 +1406,7 @@
           ],
           "command": "diff-shot"
         },
-        "error": "run_command diff-shot requires confirm: true",
+        "error": "run_command command not allowlisted: diff-shot",
         "id": "run-command-diff-shot-reset-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1432,7 +1432,7 @@
           ],
           "command": "fullshot"
         },
-        "error": "run_command fullshot requires confirm: true",
+        "error": "run_command command not allowlisted: fullshot",
         "id": "run-command-fullshot-path-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1448,7 +1448,7 @@
           ],
           "command": "table"
         },
-        "error": "run_command table requires confirm: true",
+        "error": "run_command command not allowlisted: table",
         "id": "run-command-table-collect-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1463,7 +1463,7 @@
           "command": "table",
           "confirm": true
         },
-        "error": "table: at most one positional table selector is allowed",
+        "error": "run_command command not allowlisted: table",
         "id": "run-command-table-malformed",
         "kind": "tool",
         "tool": "run_command"
@@ -2115,67 +2115,6 @@
         ],
         "id": "run-command-mutation",
         "tool": "run_command"
-      },
-      {
-        "args": {
-          "args": [
-            "fixture",
-            "#grid"
-          ],
-          "command": "table"
-        },
-        "command": [
-          "table",
-          "fixture",
-          "#grid"
-        ],
-        "id": "run-command-table-observe",
-        "tool": "run_command"
-      },
-      {
-        "args": {
-          "args": [
-            "fixture",
-            "#grid",
-            "--collect",
-            "--scroll-container",
-            ".viewport"
-          ],
-          "command": "table",
-          "confirm": true
-        },
-        "command": [
-          "table",
-          "fixture",
-          "#grid",
-          "--collect",
-          "--scroll-container",
-          ".viewport"
-        ],
-        "id": "run-command-table-collect",
-        "tool": "run_command"
-      },
-      {
-        "args": {
-          "args": [
-            "fixture",
-            "--continue",
-            "ct1.0123456789abcdef0123456789abcdef.0",
-            "--format",
-            "json"
-          ],
-          "command": "table"
-        },
-        "command": [
-          "table",
-          "fixture",
-          "--continue",
-          "ct1.0123456789abcdef0123456789abcdef.0",
-          "--format",
-          "json"
-        ],
-        "id": "run-command-table-continue",
-        "tool": "run_command"
       }
     ],
     "protocolVersion": "2025-06-18",
@@ -2235,139 +2174,51 @@
       }
     ],
     "runCommandAllowlist": [
-      "attach",
-      "back",
-      "broadcast",
       "cascade",
-      "checkpoint",
       "click",
-      "clickxy",
-      "clock",
-      "closetab",
-      "components",
-      "console",
-      "controls",
-      "cookies",
-      "current",
-      "dialog",
-      "diff-shot",
-      "diffshot",
       "dismiss-modal",
       "doctor",
-      "drag",
       "elshot",
-      "emulate",
-      "export-playwright",
       "fill",
-      "forget",
-      "forward",
-      "frame",
-      "frames",
-      "fullshot",
       "help",
-      "hover",
-      "html",
       "inject",
-      "jsclick",
-      "keepalive",
       "key",
       "list",
-      "loadall",
       "ls",
-      "mock",
       "nav",
       "navigate",
-      "net",
-      "netlog",
       "open",
-      "overlay",
       "perceive",
       "press",
-      "qa",
       "ready",
-      "record",
-      "record-actions",
-      "reload",
-      "report",
-      "resize",
-      "responsive-audit",
-      "restore",
-      "scanshot",
       "screenshot",
       "scroll",
       "select",
       "shot",
-      "snap",
-      "snapshot",
       "spawn",
       "spawn-debug-browser",
-      "status",
       "stop",
-      "styles",
-      "summary",
-      "tab-group",
-      "table",
       "tabs",
-      "target",
       "text",
-      "throttle",
-      "type",
-      "upload",
-      "use",
-      "verify-click",
-      "viewport",
-      "visual-check",
-      "wait",
       "waitfor"
     ],
     "runCommandMutating": [
-      "attach",
-      "back",
-      "broadcast",
-      "checkpoint",
       "click",
-      "clickxy",
-      "clock",
-      "closetab",
-      "components",
-      "cookies",
-      "dialog",
       "dismiss-modal",
-      "drag",
-      "emulate",
       "fill",
-      "forget",
-      "forward",
-      "hover",
       "inject",
-      "jsclick",
-      "keepalive",
       "key",
-      "loadall",
-      "mock",
       "nav",
       "navigate",
       "open",
       "press",
-      "qa",
-      "reload",
-      "resize",
-      "responsive-audit",
-      "restore",
       "scroll",
       "select",
       "spawn",
       "spawn-debug-browser",
-      "stop",
-      "throttle",
-      "type",
-      "upload",
-      "use",
-      "verify-click",
-      "viewport",
-      "visual-check"
+      "stop"
     ],
-    "serverVersion": "2.20.0",
+    "serverVersion": "2.21.0",
     "supportedProtocolVersions": [
       "2025-06-18",
       "2024-11-05"
@@ -2452,35 +2303,6 @@
           "idempotentHint": true,
           "openWorldHint": true,
           "readOnlyHint": true,
-          "title": "Select target"
-        },
-        "description": "Select a debuggable page target by URL and/or title substring (or exact match).",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "exact": {
-              "description": "Require exact URL/title match.",
-              "type": "boolean"
-            },
-            "title": {
-              "description": "Page title or title substring to match.",
-              "type": "string"
-            },
-            "url": {
-              "description": "URL or URL substring to match.",
-              "type": "string"
-            }
-          },
-          "type": "object"
-        },
-        "name": "select_target"
-      },
-      {
-        "annotations": {
-          "destructiveHint": false,
-          "idempotentHint": true,
-          "openWorldHint": true,
-          "readOnlyHint": true,
           "title": "Perceive"
         },
         "description": "Capture structured page perception with refs, layout, and console health.",
@@ -2504,6 +2326,10 @@
               "maximum": 20,
               "minimum": 1,
               "type": "integer"
+            },
+            "followUrl": {
+              "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
+              "type": "boolean"
             },
             "last": {
               "description": "Explicit text-row budget; overrides adaptive mode.",
@@ -2540,76 +2366,6 @@
           "type": "object"
         },
         "name": "perceive"
-      },
-      {
-        "annotations": {
-          "destructiveHint": false,
-          "idempotentHint": true,
-          "openWorldHint": true,
-          "readOnlyHint": true,
-          "title": "Controls"
-        },
-        "description": "Return a compact list of visible controls for low-token target discovery.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "compact": {
-              "description": "Return the bounded role/label/selector/rect model. Defaults to true.",
-              "type": "boolean"
-            },
-            "filter": {
-              "description": "Optional visible text/name filter.",
-              "type": "string"
-            },
-            "limit": {
-              "description": "Maximum controls to return.",
-              "maximum": 100,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "selector": {
-              "description": "Optional CSS selector scope.",
-              "type": "string"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "controls"
-      },
-      {
-        "annotations": {
-          "destructiveHint": false,
-          "idempotentHint": true,
-          "openWorldHint": true,
-          "readOnlyHint": true,
-          "title": "Overlay"
-        },
-        "description": "Detect dialogs, overlays, and hit-test blockers for the page or a target point.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "selector": {
-              "description": "Optional CSS selector, @ref, or @c ref to test for coverage.",
-              "type": "string"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "overlay"
       },
       {
         "annotations": {
@@ -2696,67 +2452,6 @@
           "idempotentHint": false,
           "openWorldHint": true,
           "readOnlyHint": false,
-          "title": "Verify click"
-        },
-        "description": "Click once and assert expected text, network request/status, and console health. Requires confirm: true.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm": {
-              "const": true,
-              "description": "Must be true to acknowledge browser-state mutation.",
-              "type": "boolean"
-            },
-            "evidence": {
-              "description": "Text evidence detail level.",
-              "enum": [
-                "concise",
-                "full"
-              ],
-              "type": "string"
-            },
-            "expectRequest": {
-              "description": "Expected network request, e.g. POST /api/save.",
-              "type": "string"
-            },
-            "expectStatus": {
-              "description": "Expected HTTP status for the matched request.",
-              "maximum": 599,
-              "minimum": 100,
-              "type": "integer"
-            },
-            "expectText": {
-              "description": "Expected text after the click.",
-              "type": "string"
-            },
-            "noConsoleErrors": {
-              "description": "Fail if action console/exception errors appear.",
-              "type": "boolean"
-            },
-            "selector": {
-              "description": "CSS selector, @ref, or @c ref.",
-              "type": "string"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "confirm",
-            "selector",
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "verify_click"
-      },
-      {
-        "annotations": {
-          "destructiveHint": true,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false,
           "title": "Dismiss modal"
         },
         "description": "Close common dialogs/modals safely and return action evidence. Requires confirm: true.",
@@ -2827,242 +2522,6 @@
           "type": "object"
         },
         "name": "fill"
-      },
-      {
-        "annotations": {
-          "destructiveHint": true,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false,
-          "title": "Drag"
-        },
-        "description": "Drag from a source element to a destination element or x,y point with a real mouse, finishing HTML5 drag-and-drop when the source starts one, and return action evidence. Requires confirm: true.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm": {
-              "const": true,
-              "description": "Must be true to acknowledge browser-state mutation.",
-              "type": "boolean"
-            },
-            "from": {
-              "description": "Source CSS selector, @ref, or @c ref.",
-              "type": "string"
-            },
-            "mode": {
-              "description": "auto (default) intercepts an HTML5 drag if the page starts one; html5 requires it; pointer sends mouse events only.",
-              "enum": [
-                "auto",
-                "html5",
-                "pointer"
-              ],
-              "type": "string"
-            },
-            "steps": {
-              "description": "Intermediate mouseMoved steps. Defaults to 10.",
-              "maximum": 100,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            },
-            "to": {
-              "description": "Destination CSS selector, @ref, @c ref, or x,y CSS pixel point.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "confirm",
-            "from",
-            "target",
-            "to"
-          ],
-          "type": "object"
-        },
-        "name": "drag"
-      },
-      {
-        "annotations": {
-          "destructiveHint": true,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false,
-          "title": "Viewport"
-        },
-        "description": "Read or set viewport size. Setting size requires confirm: true.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm": {
-              "description": "Required when size is provided because this mutates viewport state.",
-              "type": "boolean"
-            },
-            "size": {
-              "description": "Optional viewport size, for example 1440x900.",
-              "type": "string"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "viewport"
-      },
-      {
-        "annotations": {
-          "destructiveHint": true,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false,
-          "title": "QA page"
-        },
-        "description": "Run page, console, screenshot, and optional semantic interaction QA.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "click": {
-              "description": "Optional selector/ref to click as part of QA. Requires confirm: true.",
-              "type": "string"
-            },
-            "confirm": {
-              "const": true,
-              "description": "Must be true because QA changes viewport state and captures artifacts.",
-              "type": "boolean"
-            },
-            "desktop": {
-              "description": "Desktop viewport size, for example 1440x900.",
-              "type": "string"
-            },
-            "expectRequest": {
-              "description": "Expected network request, e.g. POST /api/save.",
-              "type": "string"
-            },
-            "expectStatus": {
-              "description": "Expected HTTP status for the matched request.",
-              "maximum": 599,
-              "minimum": 100,
-              "type": "integer"
-            },
-            "expectText": {
-              "description": "Expected text after the optional action.",
-              "type": "string"
-            },
-            "mobile": {
-              "description": "Mobile viewport size, for example 390x844.",
-              "type": "string"
-            },
-            "noConsoleErrors": {
-              "description": "Fail the QA report if action console/exception errors appear.",
-              "type": "boolean"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "confirm",
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "qa_page"
-      },
-      {
-        "annotations": {
-          "destructiveHint": true,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false,
-          "title": "Responsive audit"
-        },
-        "description": "Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm": {
-              "const": true,
-              "description": "Must be true because the audit changes viewport state and captures artifacts.",
-              "type": "boolean"
-            },
-            "maxControls": {
-              "description": "Max visible controls sampled per viewport.",
-              "maximum": 100,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "outDir": {
-              "description": "Optional screenshot output directory outside the repo.",
-              "type": "string"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            },
-            "viewports": {
-              "description": "Optional list of WxH viewports. Defaults to desktop + mobile.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "confirm",
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "responsive_audit"
-      },
-      {
-        "annotations": {
-          "destructiveHint": false,
-          "idempotentHint": true,
-          "openWorldHint": false,
-          "readOnlyHint": true,
-          "title": "Report"
-        },
-        "description": "Return session action timeline, artifacts, and recovery next steps.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "all": {
-              "description": "Include the full action timeline. Can be expensive.",
-              "type": "boolean"
-            },
-            "compact": {
-              "description": "Return compact report JSON. Defaults to true unless all is requested.",
-              "type": "boolean"
-            },
-            "last": {
-              "description": "Latest action count to include.",
-              "maximum": 100,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "qa": {
-              "description": "Return a compact QA summary instead of the full report.",
-              "type": "boolean"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "report"
       },
       {
         "annotations": {
@@ -3150,6 +2609,10 @@
               "description": "Pipe-delimited alternatives, e.g. win|lose|escape.",
               "type": "string"
             },
+            "followUrl": {
+              "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
+              "type": "boolean"
+            },
             "scope": {
               "description": "Optional CSS scope selector.",
               "type": "string"
@@ -3198,6 +2661,10 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "followUrl": {
+              "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
+              "type": "boolean"
+            },
             "property": {
               "description": "CSS property to trace. Defaults to color when omitted by CLI behavior; prefer an explicit property.",
               "type": "string"
@@ -3218,40 +2685,6 @@
           "type": "object"
         },
         "name": "cascade"
-      },
-      {
-        "annotations": {
-          "destructiveHint": false,
-          "idempotentHint": true,
-          "openWorldHint": true,
-          "readOnlyHint": false,
-          "title": "Components"
-        },
-        "description": "Inspect React/Vue component tree hooks when available for a selector/@ref. Requires confirm: true because props/state can contain sensitive data.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm": {
-              "const": true,
-              "description": "Must be true to acknowledge sensitive props/state access.",
-              "type": "boolean"
-            },
-            "selector": {
-              "description": "Optional CSS selector, @ref, or component cursor.",
-              "type": "string"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "confirm",
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "components"
       },
       {
         "annotations": {
@@ -3306,125 +2739,6 @@
           "idempotentHint": false,
           "openWorldHint": true,
           "readOnlyHint": false,
-          "title": "Record snapshot"
-        },
-        "description": "Record a short temporal timeline of DOM/network/console activity.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "durationMs": {
-              "description": "Recording window in ms.",
-              "maximum": 120000,
-              "minimum": 100,
-              "type": "integer"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "record_snapshot"
-      },
-      {
-        "annotations": {
-          "destructiveHint": false,
-          "idempotentHint": true,
-          "openWorldHint": true,
-          "readOnlyHint": false,
-          "title": "Session checkpoint"
-        },
-        "description": "Capture a redacted session checkpoint for handoff/restore.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "confirm": {
-              "const": true,
-              "description": "Must be true because checkpoints read session storage and cookies.",
-              "type": "boolean"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            },
-            "unsafeFull": {
-              "description": "Include restorable secrets. Explicit opt-in only.",
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "confirm",
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "session_checkpoint"
-      },
-      {
-        "annotations": {
-          "destructiveHint": true,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false,
-          "title": "Table"
-        },
-        "description": "Observe a bounded table snapshot, collect a virtualized table after confirm: true, or continue a private artifact. Selector and continue are mutually exclusive; collect requires a scroll container.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "collect": {
-              "description": "Scroll or click to collect virtualized rows. Requires confirm: true and scrollContainer.",
-              "type": "boolean"
-            },
-            "confirm": {
-              "const": true,
-              "description": "Must be true for collect because collection scrolls or clicks.",
-              "type": "boolean"
-            },
-            "continue": {
-              "description": "Immutable continuation token. Mutually exclusive with selector and collect.",
-              "type": "string"
-            },
-            "loadMore": {
-              "description": "Optional load-more control selector. Collect-only.",
-              "type": "string"
-            },
-            "rowKeyColumn": {
-              "description": "Zero-based stable row-key column. Collect-only.",
-              "maximum": 255,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "scrollContainer": {
-              "description": "Virtualized scroll-container selector. Required when collect is true.",
-              "type": "string"
-            },
-            "selector": {
-              "description": "Optional table CSS selector. Mutually exclusive with continue.",
-              "type": "string"
-            },
-            "target": {
-              "description": "Target prefix or named alias.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "target"
-          ],
-          "type": "object"
-        },
-        "name": "table"
-      },
-      {
-        "annotations": {
-          "destructiveHint": true,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false,
           "title": "Run command"
         },
         "description": "Escape hatch: run an allowlisted chrome-cdp-ex CLI command. Mutating commands require confirm: true.",
@@ -3439,7 +2753,7 @@
               "type": "array"
             },
             "command": {
-              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, target, open, use, current, forget, perceive, controls, overlay, snap, snapshot, summary, status, console, shot, screenshot, elshot, fullshot, scanshot, diff-shot, diffshot, click, verify-click, jsclick, clickxy, type, press, key, scroll, hover, drag, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, forward, reload, viewport, resize, emulate, wait, waitfor, loadall, cascade, components, frame, frames, text, table, html, styles, net, netlog, cookies, qa, responsive-audit, visual-check, report, record, checkpoint, restore, record-actions, export-playwright, tab-group, broadcast, spawn-debug-browser, spawn, attach, stop, closetab, keepalive, mock, clock, throttle, inject",
+              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, open, perceive, shot, screenshot, elshot, click, press, key, scroll, fill, select, dismiss-modal, nav, navigate, waitfor, cascade, text, spawn-debug-browser, spawn, stop, inject",
               "type": "string"
             },
             "confirm": {
@@ -3528,6 +2842,10 @@
       "package/docs/contracts/v2.20.0/package-entries.v1.json",
       "package/docs/contracts/v2.20.0/public-contracts.v1.json",
       "package/docs/contracts/v2.20.0/runtime-dispatch.v1.json",
+      "package/docs/contracts/v2.21.0/package-entries.v1.json",
+      "package/docs/contracts/v2.21.0/public-contracts.v1.json",
+      "package/docs/contracts/v2.21.0/runtime-dispatch.v1.json",
+      "package/docs/contracts/v2.21.0/survivor-synopsis.v1.json",
       "package/docs/daily-browser-cdp.md",
       "package/docs/examples/codex-killer-path.md",
       "package/experiment/codex-killer-path-demo-poster.png",
@@ -3577,9 +2895,9 @@
       "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs",
       "package/skills/chrome-cdp-ex/scripts/session.mjs"
     ],
-    "version": "2.20.0"
+    "version": "2.21.0"
   },
-  "productVersion": "2.20.0",
+  "productVersion": "2.21.0",
   "schema": "chrome-cdp-ex.public-contracts.v1",
   "schemas": [
     {
