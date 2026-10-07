@@ -1174,14 +1174,20 @@ describe('Phase 4 daemon dispatch seam', () => {
       send: async (method, params, sessionId) => {
         calls.push({ method, params, sessionId });
         if (method === 'Runtime.evaluate') {
-          if (String(params.expression || '').includes('__chromeCdpExClickProbe')) {
+          const expression = String(params.expression || '');
+          if (expression.includes('__chromeCdpExClickProbe')) {
             return {
               result: {
-                value: String(params.expression).includes('installed: true')
+                value: expression.includes('installed: true')
                   ? { cdpClickProbe: true, ok: true, installed: true }
                   : { cdpClickProbe: true, ok: true, seen: ['click'] },
               },
             };
+          }
+          // The click pins the point with its own evaluate. That is not the
+          // load-more existence probe this mock is counting.
+          if (expression.includes('function pinClickPoint')) {
+            return { result: { value: '' } };
           }
           loadProbe += 1;
           return {
@@ -1201,6 +1207,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     expect(calls.filter(call => (
       call.method === 'Runtime.evaluate'
       && !String(call.params.expression || '').includes('__chromeCdpExClickProbe')
+      && !String(call.params.expression || '').includes('function pinClickPoint')
     ))).toHaveLength(3);
     expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(6);
     expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(call => call.params.type))

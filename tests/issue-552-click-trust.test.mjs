@@ -84,6 +84,9 @@ function probeCdp({ install, read }) {
         }
         return Promise.resolve({ result: { value: read } });
       }
+      if (src.includes('function pinClickPoint')) {
+        return Promise.resolve({ result: { value: install.pin || null } });
+      }
       if (method === 'Runtime.evaluate' && String(params.expression).includes('visibilityState')) {
         return Promise.resolve({ result: { type: 'string', value: 'visible' } });
       }
@@ -266,6 +269,102 @@ describe('click probe confirms the intended target received the event (#552)', (
       action: 'click',
       target: { targetId: TARGET_ID, input: '#save' },
     }).dispatched).toBe(false);
+  });
+
+  it('dispatches at the pinned centre, not the stale pre-probe point', async () => {
+    const cdp = probeCdp({
+      install: {
+        cdpClickProbe: true, ok: true, installed: true, verifiesTarget: true, scope: 'target-document',
+        pin: { cdpClickPoint: true, ok: true, x: 40, y: 50, hit: { covered: false } },
+      },
+      read: {
+        cdpClickProbe: true, ok: true, seen: ['click'], reached: ['click'], landedOn: '',
+      },
+    });
+    await T.dispatchClick(cdp, 'sid', 12, 24, { selector: '@18', objectId: 'obj-1' });
+    const pressed = mouseEvents(cdp).find(call => call.params.type === 'mousePressed');
+    expect(pressed.params).toMatchObject({ x: 40, y: 50 });
+  });
+
+  it('keeps the top-viewport point for a frame ref', async () => {
+    const cdp = probeCdp({
+      install: {
+        cdpClickProbe: true, ok: true, installed: true, verifiesTarget: true, scope: 'target-document',
+        pin: { cdpClickPoint: true, ok: true, x: 1, y: 2, hit: { covered: false } },
+      },
+      read: {
+        cdpClickProbe: true, ok: true, seen: ['click'], reached: ['click'], landedOn: '',
+      },
+    });
+    await T.dispatchClick(cdp, 'sid', 12, 24, { selector: '@f2:1', objectId: 'obj-1', framed: true });
+    const pressed = mouseEvents(cdp).find(call => call.params.type === 'mousePressed');
+    expect(pressed.params).toMatchObject({ x: 12, y: 24 });
+    expect(cdp.calls.some(call => String(call.params.functionDeclaration || call.params.expression || '').includes('function pinClickPoint'))).toBe(false);
+  });
+
+  it('does not send the click when the pinned point is covered', async () => {
+    const cdp = probeCdp({
+      install: {
+        cdpClickProbe: true, ok: true, installed: true, verifiesTarget: true,
+        pin: {
+          cdpClickPoint: true,
+          ok: false,
+          x: 40,
+          y: 50,
+          hit: { covered: true, by: '<DIV#mask> "overlay"', byPosition: 'fixed', dialog: false },
+        },
+      },
+      read: { cdpClickProbe: true, ok: false },
+    });
+    const err = await T.dispatchClick(cdp, 'sid', 12, 24, { selector: '@18', objectId: 'obj-1' }).catch(e => e);
+    expect(err.clickCovered).toMatchObject({ by: '<DIV#mask> "overlay"' });
+    expect(mouseEvents(cdp)).toEqual([]);
+    expect(classifyActionFailure(err, {
+      action: 'click',
+      target: { targetId: TARGET_ID, input: '@18' },
+    }).kind).toBe('covered');
+  });
+
+  it('pins a smooth scroll with Element.prototype.scrollTo before reading the centre', () => {
+    const scrolls = [];
+    const button = {
+      nodeType: 1,
+      tagName: 'BUTTON',
+      id: 'smooth-target',
+      parentNode: null,
+      getBoundingClientRect() {
+        return { x: 36, y: 300, width: 133, height: 37, top: 300, left: 36, bottom: 337, right: 169 };
+      },
+      closest() { return null; },
+    };
+    const scrolling = { scrollTop: 2161.7, scrollLeft: 0 };
+    const document = {
+      nodeType: 9,
+      scrollingElement: scrolling,
+      documentElement: scrolling,
+      body: null,
+      elementFromPoint() { return button; },
+    };
+    button.ownerDocument = document;
+    const sandbox = {
+      innerWidth: 1280,
+      innerHeight: 720,
+      document,
+      Element: {
+        prototype: {
+          scrollTo(options) { scrolls.push(options); },
+        },
+      },
+    };
+    sandbox.window = sandbox;
+    document.defaultView = sandbox;
+    const pin = runInContext(`(${T.pinClickPointOnNodeDeclaration()})`, createContext(sandbox));
+    const pinned = pin.call(button);
+    expect(scrolls).toEqual([{ left: 0, top: 2161.7, behavior: 'instant' }]);
+    expect(pinned.ok).toBe(true);
+    expect(pinned.x).toBeCloseTo(36 + 133 / 2);
+    expect(pinned.y).toBeCloseTo(300 + 37 / 2);
+    expect(pinned.hit).toMatchObject({ covered: false });
   });
 
   it('keeps a page-level probe (no bound target) on the existing seen-event contract', async () => {

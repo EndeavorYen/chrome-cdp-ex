@@ -474,56 +474,61 @@ if (!parsedFailedClickAction.nextHint?.includes('cdp perceive')) {
 if (parsedFailedClickAction.recommendation?.source !== 'action-diagnosis' || !parsedFailedClickAction.nextSteps?.some(step => step.includes('cdp perceive'))) {
   throw new Error(`failed click --format json should promote diagnosis recovery commands:\n${failedClickJsonOut}`);
 }
-const noChangeClickJsonOut = step('no-change action json recovery', () => run(['click', target, '#noop', '--format', 'json']));
+// #552: a button that stays Outcome: no-change is a failed action (exit 1, Kind
+// click-no-change). Scripts can branch on the status without reading prose.
+const noChangeClickJsonOut = step('no-change action json recovery', () => runFailureStdout(['click', target, '#noop', '--format', 'json']));
 const parsedNoChangeAction = JSON.parse(noChangeClickJsonOut);
 if (parsedNoChangeAction.schema !== 'chrome-cdp-ex.action.v1' || parsedNoChangeAction.action !== 'click') {
   throw new Error(`no-change click --format json should return action evidence JSON:\n${noChangeClickJsonOut}`);
 }
-if (parsedNoChangeAction.outcome?.status !== 'no-change' || parsedNoChangeAction.outcome?.needsAttention !== true) {
-  throw new Error(`no-change click should report an attention-worthy no-change outcome:\n${noChangeClickJsonOut}`);
+if (parsedNoChangeAction.dispatch?.ok !== false || parsedNoChangeAction.effects?.failure?.kind !== 'click-no-change') {
+  throw new Error(`no-change click should fail closed with Kind click-no-change:\n${noChangeClickJsonOut}`);
 }
-if (parsedNoChangeAction.verdict?.status !== 'investigate' || parsedNoChangeAction.verdict?.canContinue !== false || parsedNoChangeAction.verdict?.needsRecovery !== true) {
-  throw new Error(`no-change click should include an investigate verdict:\n${noChangeClickJsonOut}`);
+if (!parsedNoChangeAction.effects?.failure?.detailLines?.includes('Outcome: no-change')) {
+  throw new Error(`no-change click should keep Outcome: no-change on the failure:\n${noChangeClickJsonOut}`);
 }
-if (parsedNoChangeAction.recommendation?.strategy !== 'investigate-no-change') {
-  throw new Error(`no-change click should recommend investigation instead of normal continuation:\n${noChangeClickJsonOut}`);
+if (parsedNoChangeAction.outcome?.status !== 'failed' || parsedNoChangeAction.outcome?.needsAttention !== true) {
+  throw new Error(`no-change click should report a failed outcome:\n${noChangeClickJsonOut}`);
+}
+if (parsedNoChangeAction.verdict?.status !== 'blocked' || parsedNoChangeAction.verdict?.canContinue !== false || parsedNoChangeAction.verdict?.needsRecovery !== true) {
+  throw new Error(`no-change click should block continuation:\n${noChangeClickJsonOut}`);
+}
+if (parsedNoChangeAction.recommendation?.strategy !== 'inspect-unchanged-control') {
+  throw new Error(`no-change click should recommend inspecting the unchanged control:\n${noChangeClickJsonOut}`);
 }
 const noChangeNextSteps = parsedNoChangeAction.nextSteps || [];
-const expectedNoChangeSteps = [
-  `cdp overlay ${target} "#noop" --format json`,
+for (const expected of [
+  `cdp perceive ${target} --since-action`,
   `cdp perceive ${target} -C -d 8`,
-  `cdp report ${target} --format json`,
-];
-const noChangeBlockingSignals = parsedNoChangeAction.receipt?.blockingSignals || parsedNoChangeAction.recommendation?.blockingSignals || [];
-if (noChangeBlockingSignals.includes('frame-check-needed')) {
-  expectedNoChangeSteps.splice(1, 0, `cdp frame ${target} --format json`);
-}
-for (const expected of expectedNoChangeSteps) {
+]) {
   if (!noChangeNextSteps.includes(expected)) {
     throw new Error(`no-change click should include ${expected} in nextSteps:\n${noChangeClickJsonOut}`);
   }
 }
-const batchNoChangeJsonOut = step('batch json no-change verdict handoff', () => run(['batch', target, '--format', 'json', 'click #noop']));
+const batchNoChangeJsonOut = step('batch json no-change verdict handoff', () => runFailureStdout(['batch', target, '--format', 'json', 'click #noop']));
 const parsedBatchNoChange = JSON.parse(batchNoChangeJsonOut);
-if (parsedBatchNoChange.schema !== 'chrome-cdp-ex.batch.v1' || parsedBatchNoChange.counts?.attention !== 1) {
-  throw new Error(`batch --format json should surface no-change action verdicts as attention:\n${batchNoChangeJsonOut}`);
+if (parsedBatchNoChange.schema !== 'chrome-cdp-ex.batch.v1' || parsedBatchNoChange.counts?.failed !== 1 || parsedBatchNoChange.counts?.attention !== 0) {
+  throw new Error(`batch --format json should fail a no-change click instead of treating it as attention:\n${batchNoChangeJsonOut}`);
 }
-if (parsedBatchNoChange.steps?.[0]?.verdict?.status !== 'investigate') {
-  throw new Error(`batch --format json should preserve the investigate verdict:\n${batchNoChangeJsonOut}`);
+if (parsedBatchNoChange.steps?.[0]?.failureKind !== 'click-no-change' || parsedBatchNoChange.steps?.[0]?.verdict?.status !== 'blocked') {
+  throw new Error(`batch --format json should preserve Kind click-no-change:\n${batchNoChangeJsonOut}`);
 }
-if (!parsedBatchNoChange.nextSteps?.includes(`cdp overlay ${target} "#noop" --format json`)) {
-  throw new Error(`batch --format json should promote no-change verdict recovery commands:\n${batchNoChangeJsonOut}`);
+if (!parsedBatchNoChange.nextSteps?.includes(`cdp perceive ${target} --since-action`)) {
+  throw new Error(`batch --format json should promote the click-no-change recovery command:\n${batchNoChangeJsonOut}`);
 }
-const flowNoChangeJsonOut = step('flow json no-change verdict handoff', () => run(['flow', target, '--format', 'json', 'click #noop; summary']));
+const flowNoChangeJsonOut = step('flow json no-change verdict handoff', () => runFailure(['flow', target, '--format', 'json', 'click #noop; summary']));
 const parsedFlowNoChange = JSON.parse(flowNoChangeJsonOut);
-if (parsedFlowNoChange.schema !== 'chrome-cdp-ex.flow.v1' || parsedFlowNoChange.counts?.attention !== 1 || parsedFlowNoChange.counts?.failed !== 0) {
-  throw new Error(`flow --format json should surface no-change action verdicts as attention without halting:\n${flowNoChangeJsonOut}`);
+if (parsedFlowNoChange.schema !== 'chrome-cdp-ex.flow.v1' || parsedFlowNoChange.halted !== true || parsedFlowNoChange.counts?.failed !== 1 || parsedFlowNoChange.counts?.attention !== 0) {
+  throw new Error(`flow --format json should halt when a click does not change a control:\n${flowNoChangeJsonOut}`);
 }
-if (parsedFlowNoChange.steps?.[0]?.verdict?.status !== 'investigate') {
-  throw new Error(`flow --format json should preserve the investigate verdict:\n${flowNoChangeJsonOut}`);
+if (parsedFlowNoChange.steps?.[0]?.failureKind !== 'click-no-change' || parsedFlowNoChange.steps?.[0]?.verdict?.status !== 'blocked') {
+  throw new Error(`flow --format json should preserve Kind click-no-change:\n${flowNoChangeJsonOut}`);
 }
-if (!parsedFlowNoChange.nextSteps?.includes(`cdp overlay ${target} "#noop" --format json`)) {
-  throw new Error(`flow --format json should promote no-change verdict recovery commands:\n${flowNoChangeJsonOut}`);
+if (parsedFlowNoChange.steps?.[1]?.skipped !== true) {
+  throw new Error(`flow --format json should skip steps after a click-no-change failure:\n${flowNoChangeJsonOut}`);
+}
+if (!parsedFlowNoChange.nextSteps?.includes(`cdp perceive ${target} --since-action`)) {
+  throw new Error(`flow --format json should promote the click-no-change recovery command:\n${flowNoChangeJsonOut}`);
 }
 const diffShotOut = step('diff-shot fill diff', () => run(['diff-shot', target]));
 assertIncludes(diffShotOut, 'Diff-shot: changed', 'diff-shot diff');
@@ -750,14 +755,18 @@ if (!Array.isArray(playwrightExportModel.review)) {
 }
 const replayArtifactPath = resolve(profileDir, 'record-actions.json');
 writeFileSync(replayArtifactPath, recordActionsJson);
-const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 70000 }));
+// Recorded button clicks are not idempotent: a later replay of #loop-attack or
+// #smooth-target can land on Outcome: no-change. --continue keeps the rest of
+// the artifact running, and the click-no-change line is the failure signal.
+const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath, '--continue'], { timeout: 70000 }));
 assertIncludes(replayOut, 'Replay:', 'replay');
 assertIncludes(replayOut, 'Environment:', 'replay environment');
 assertIncludes(replayOut, 'mock add **/api/mock*', 'replay mock environment');
+assertIncludes(replayOut, 'Kind: click-no-change', 'replay click-no-change');
 assertIncludes(replayOut, 'fill #cmd "look trainer"', 'replay fill');
 assertIncludes(replayOut, 'click #combat', 'replay click');
 assertIncludes(replayOut, 'Done:', 'replay summary');
-const replayJsonOut = step('replay record-actions artifact json', () => run(['replay', target, '--file', replayArtifactPath, '--format', 'json'], { timeout: 70000 }));
+const replayJsonOut = step('replay record-actions artifact json', () => run(['replay', target, '--file', replayArtifactPath, '--format', 'json', '--continue'], { timeout: 70000 }));
 const parsedReplay = JSON.parse(replayJsonOut);
 if (parsedReplay.schema !== 'chrome-cdp-ex.replay.v1' || parsedReplay.counts?.actions < 1 || parsedReplay.counts?.environment < 1) {
   throw new Error(`replay --format json should return structured replay counts:\n${replayJsonOut}`);

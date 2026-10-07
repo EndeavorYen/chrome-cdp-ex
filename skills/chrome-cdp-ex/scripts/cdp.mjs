@@ -16622,6 +16622,120 @@ async function readClickEventProbe(cdp, sid, probe = {}) {
   }
 }
 
+// The pre-dispatch settle can return while CSS scroll-behavior:smooth is still
+// animating. The click probe then adds a round trip, and the measured point is
+// no longer on the target: elementFromPoint hits an ancestor, the click is
+// accepted, and the control's listener never runs (#552). Freeze the current
+// scroll offset through the native Element scroll method (instant, so the CSS
+// animation cannot resume) and hit-test the fresh centre immediately before
+// the mouse events.
+function pinClickPointSource() {
+  return `function pinClickPoint(el) {
+    ${clickPointHitFunctionSource()}
+    if (!el || el.nodeType !== 1) return { cdpClickPoint: true, ok: false };
+    const doc = el.ownerDocument || document;
+    const view = doc.defaultView || window;
+    const scrolling = doc.scrollingElement || doc.documentElement;
+    const pin = scroller => {
+      if (!scroller || typeof Element === 'undefined' || typeof Element.prototype.scrollTo !== 'function') return;
+      try {
+        Element.prototype.scrollTo.call(scroller, {
+          left: Number(scroller.scrollLeft) || 0,
+          top: Number(scroller.scrollTop) || 0,
+          behavior: 'instant',
+        });
+      } catch (err) {}
+    };
+    const fullyVisible = () => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0
+        && rect.top >= -0.5 && rect.left >= -0.5
+        && rect.bottom <= view.innerHeight + 0.5 && rect.right <= view.innerWidth + 0.5;
+    };
+    pin(scrolling);
+    if (doc.body && doc.body !== scrolling) pin(doc.body);
+    if (!fullyVisible()) {
+      if (typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      }
+      if (scrolling) {
+        const rect = el.getBoundingClientRect();
+        const top = rect.top + (Number(scrolling.scrollTop) || 0) - Math.max(0, (view.innerHeight - rect.height) / 2);
+        try {
+          Element.prototype.scrollTo.call(scrolling, {
+            left: Number(scrolling.scrollLeft) || 0,
+            top: Math.max(0, top),
+            behavior: 'instant',
+          });
+        } catch (err) {}
+      }
+      pin(scrolling);
+    }
+    const rect = el.getBoundingClientRect();
+    const box = { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    const hit = clickPointHit(el, box);
+    return {
+      cdpClickPoint: true,
+      ok: Boolean(hit && hit.covered !== true && box.w > 0 && box.h > 0),
+      x: box.x + box.w / 2,
+      y: box.y + box.h / 2,
+      hit: hit,
+    };
+  }`;
+}
+
+function pinClickPointOnNodeDeclaration() {
+  return `function() {
+    ${pinClickPointSource()}
+    return pinClickPoint(this);
+  }`;
+}
+
+function pinClickPointSelectorScript(selector) {
+  return `(function() {
+    ${pinClickPointSource()}
+    let el = null;
+    try { el = document.querySelector(${JSON.stringify(String(selector))}); } catch (err) { el = null; }
+    if (!el) return { cdpClickPoint: true, ok: false, missingTarget: true };
+    return pinClickPoint(el);
+  })()`;
+}
+
+function parsePinnedClickPoint(raw) {
+  if (raw && typeof raw === 'object' && raw.cdpClickPoint === true) return raw;
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && parsed.cdpClickPoint === true ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Best-effort: a mock that does not implement the pin returns null and the
+// caller keeps the point it already hit-tested. A real page returns the frozen
+// centre, or missingTarget when the CSS node disappeared.
+async function readPinnedClickPoint(cdp, sid, probeTarget = {}) {
+  try {
+    if (probeTarget.objectId) {
+      const res = await cdpDomains(cdp).Runtime.callFunctionOn({
+        objectId: probeTarget.objectId,
+        functionDeclaration: pinClickPointOnNodeDeclaration(),
+        returnByValue: true,
+      }, sid);
+      if (res?.exceptionDetails) return null;
+      return parsePinnedClickPoint(res?.result?.value);
+    }
+    const selector = clickProbeBindSelector(probeTarget.selector);
+    if (!selector) return null;
+    const raw = await evalStr(cdp, sid, pinClickPointSelectorScript(selector));
+    return parsePinnedClickPoint(raw);
+  } catch {
+    return null;
+  }
+}
+
 // Shared: dispatch a realistic mouse click at CSS pixel coordinates.
 // Chrome's default action for <a href> requires the buttons bitmask
 // (left=1 while pressed, 0 after release). Omitting it yields mousedown
@@ -16648,6 +16762,23 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
   });
   if (probe.missingTarget) {
     throw clickMisdirectedError(x, y, probeTarget.selector, { sent: false });
+  }
+  // Frame-ref coordinates are already translated into the top viewport. The pin
+  // reads the element's own document, so those x/y values must not replace them.
+  const pinned = probeTarget.framed ? null : await readPinnedClickPoint(cdp, sid, probeTarget);
+  if (pinned?.missingTarget) {
+    throw clickMisdirectedError(x, y, probeTarget.selector, { sent: false });
+  }
+  if (pinned?.hit?.covered === true) {
+    assertClickPointNotCovered(pinned.hit, {
+      x: pinned.x,
+      y: pinned.y,
+      ref: probeTarget.selector || '',
+    });
+  }
+  if (pinned?.ok === true && Number.isFinite(pinned.x) && Number.isFinite(pinned.y)) {
+    x = pinned.x;
+    y = pinned.y;
   }
   const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
   const navigation = watchMainFrameNavigation(cdp, sid);
@@ -33230,6 +33361,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseClickEventProbeOutput, clickProbeSawPageEvent,
   clickEventProbeInstallOnNodeDeclaration, clickEventProbeReadOnNodeDeclaration,
   clickEventProbeInstallAtPointScript, clickEventProbeReadAtPointScript,
+  pinClickPointOnNodeDeclaration,
   isNamedClickQuery, namedClickQueryName, textSelectorName, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
   namedClickActionTarget, namedInViewportClickExpression, NAMED_IN_VIEWPORT_CLICK_OUTCOME,
   isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
