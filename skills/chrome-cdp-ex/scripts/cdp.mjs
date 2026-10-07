@@ -7746,6 +7746,18 @@ function actionHasDomObservation(actionResult = {}) {
     && actionResult.effects.domDiff !== undefined;
 }
 
+function viewportApplicationOf(actionResult = {}) {
+  if (String(actionResult.action || '').toLowerCase() !== 'viewport') return null;
+  const app = actionResult.target?.viewportApplication;
+  if (!app || typeof app !== 'object' || !app.requested) return null;
+  return app;
+}
+
+function isViewportSizeMismatch(actionResult = {}) {
+  const app = viewportApplicationOf(actionResult);
+  return Boolean(app && app.applied === false);
+}
+
 function buildActionOutcome(actionResult = {}) {
   const effects = actionResult.effects || {};
   const diagnosis = effects.diagnosis || null;
@@ -7834,6 +7846,31 @@ function buildActionOutcome(actionResult = {}) {
       reason: navigation.hrefChanged && navigation.from && navigation.to
         ? `Page navigated from ${navigation.from} to ${navigation.to}.`
         : 'Observed a document navigation after the action.',
+    };
+  }
+
+  // #578: a viewport resize succeeds when the page reads back the requested
+  // size. An unchanged AX tree is not a failure, and a mismatch is not an
+  // AX no-change investigation.
+  const viewport = viewportApplicationOf(actionResult);
+  if (viewport) {
+    if (viewport.applied) {
+      return {
+        ...base,
+        status: 'changed',
+        changed: true,
+        needsAttention: false,
+        evidence: 'viewport',
+        reason: viewport.reason || `Viewport ${viewport.requested.width}x${viewport.requested.height} applied.`,
+      };
+    }
+    return {
+      ...base,
+      status: 'attention',
+      changed: false,
+      needsAttention: true,
+      evidence: 'viewport',
+      reason: viewport.reason || `Requested ${viewport.requested.width}x${viewport.requested.height}; read back did not match.`,
     };
   }
 
@@ -7989,6 +8026,22 @@ function actionDeltaDetails(actionResult = {}) {
       status: 'completed',
       summary: downloadOutcomeReason(effects.download),
     });
+  } else if (outcome.evidence === 'viewport') {
+    const viewport = viewportApplicationOf(actionResult);
+    details.push({
+      type: 'viewport',
+      status: viewport?.applied ? 'applied' : 'mismatch',
+      summary: outcome.reason || (viewport?.applied ? 'Viewport size applied.' : 'Viewport size did not match the request.'),
+    });
+    if (actionDomDiffShowsChange(effects.domDiff)) {
+      const sample = summarizeActionDomDiff(effects.domDiff).sample;
+      details.push({
+        type: 'dom',
+        status: 'changed',
+        summary: 'DOM changed after action',
+        ...(sample ? { sample } : {}),
+      });
+    }
   } else if (outcome.status === 'changed') {
     const sample = summarizeActionDomDiff(effects.domDiff).sample;
     details.push({
@@ -8112,6 +8165,9 @@ function actionRecoveryHint(actionResult = {}) {
   // Successful document-scroll-edge already prints scrollY / scrollMax /
   // at-bottom. "Capture a fresh observation…" restates Hint perceive (#345).
   if (isSuccessfulBoundedDocumentScrollEdge(actionResult)) return null;
+  // Verdict already names the requested and read-back sizes (#578).
+  // A harder diagnosis (exception, network, console) keeps its own hint.
+  if (actionResult.recommendation?.strategy === 'investigate-viewport-size') return null;
   if (typeof recommendation.recoveryHint === 'string' && recommendation.recoveryHint.trim()) return recommendation.recoveryHint;
   if (diagnosis?.reason && diagnosis.status !== 'ok') return diagnosis.reason;
   // Leftover golden-path AX scroll already prints Outcome:changed, the compact
@@ -8345,6 +8401,23 @@ function buildActionRecommendation(actionResult = {}) {
       commands,
     };
   }
+  if (isViewportSizeMismatch(actionResult)) {
+    const readCommand = `cdp viewport ${target}`;
+    return {
+      source: 'action-evidence',
+      action: actionResult.action || 'viewport',
+      targetPrefix: target,
+      outcomeStatus: 'attention',
+      strategy: 'investigate-viewport-size',
+      priority: 'medium',
+      reason: viewportApplicationOf(actionResult)?.reason
+        || 'The viewport read back did not match the requested size.',
+      blockingSignals: [],
+      recoveryHint: null,
+      verifyCommand: readCommand,
+      commands: uniqueNextStepCommands([readCommand]),
+    };
+  }
   const openedTab = actionResult.effects?.openedTab;
   if (openedTab?.targetPrefix) {
     // #437: the click's result is in the other tab; look there, not at this one.
@@ -8433,6 +8506,12 @@ function applyActionRecommendation(actionResult) {
   ) {
     actionResult.nextHint = null;
   }
+  // A matching or mismatched readback already decides the viewport receipt.
+  // The generic since-action hint would send the agent to investigate a size
+  // change that did not need a fresh AX tree (#578).
+  if (viewportApplicationOf(actionResult) && isGenericSinceActionHint(actionResult.nextHint)) {
+    actionResult.nextHint = null;
+  }
   return actionResult;
 }
 
@@ -8460,6 +8539,19 @@ function buildActionVerdict(actionResult = {}) {
       confidence: diagnosis.confidence || (blocked ? 'high' : 'medium'),
       canContinue: false,
       needsRecovery: true,
+    };
+  }
+
+  // Other attention outcomes stay `recover`. A viewport size miss is the
+  // investigate verdict the receipt already uses for "look at this result",
+  // and it names requested vs actual via outcome.reason (#578).
+  if (isViewportSizeMismatch(actionResult)) {
+    return {
+      ...base,
+      status: 'investigate',
+      confidence: 'high',
+      canContinue: false,
+      needsRecovery: false,
     };
   }
 
@@ -8887,8 +8979,13 @@ function formatActionText(result, { compact = false, full = false, dispatchText 
   if (diagnostics.exceptionSample) lines.push(`Exception sample: ${diagnostics.exceptionSample}`);
   if (diagnostics.networkSummary) lines.push(diagnostics.networkSummary);
   if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
-  if (result.effects?.domDiff) {
-    const diff = redactSensitiveString(result.effects.domDiff);
+  // #578: no AX change is not evidence for viewport. Attach the diff only
+  // when the tree actually changed.
+  const viewportDomDiff = viewportApplicationOf(result) && !actionDomDiffShowsChange(result.effects?.domDiff)
+    ? ''
+    : result.effects?.domDiff;
+  if (viewportDomDiff) {
+    const diff = redactSensitiveString(viewportDomDiff);
     let formatted = leftoverAxScroll ? stripLeftoverAxScrollCensusChrome(diff) : diff;
     if (
       leftoverAxScroll
@@ -8901,6 +8998,9 @@ function formatActionText(result, { compact = false, full = false, dispatchText 
     if (formatted.trim()) lines.push('---', formatted);
   }
   if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
+  if (result.recommendation?.strategy === 'investigate-viewport-size' && result.recommendation.commands?.[0]) {
+    lines.push(`Next: ${result.recommendation.commands[0]}`);
+  }
   if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
     lines.push(`Next: ${result.recommendation.commands[0]}`);
   } else if (leftoverAxScrollNext) {
@@ -21314,25 +21414,66 @@ async function applyViewportOverride(cdp, sid, size) {
   return { width, height };
 }
 
+// Applied when either the layout or the emulated screen matches: a desktop override (mobile:false)
+// keeps the real screen, and a mobile size without <meta viewport> keeps a 980px layout.
+// Only a mobile override emulates the screen, so only then does a screen match prove anything.
+function assessViewportReadback(width, height, readback = {}) {
+  const dpr = readback.dpr;
+  const mobile = width <= 768;
+  const layoutMatches = readback.width === width && readback.height === height;
+  const applied = layoutMatches || (mobile && readback.screenWidth === width && readback.screenHeight === height);
+  const mobileNote = mobile ? ' (mobile mode)' : '';
+  const layoutNote = layoutMatches ? '' : `; layout ${readback.width}x${readback.height}`;
+  const text = applied
+    ? `Viewport: ${width}x${height} (DPR ${dpr})${mobileNote}${layoutNote}`
+    : `Viewport: ${readback.width}x${readback.height} (DPR ${dpr})${mobileNote}; requested ${width}x${height}`;
+  const flags = [`DPR ${dpr}`];
+  if (mobile) flags.push('mobile mode');
+  if (applied && !layoutMatches) flags.push(`layout ${readback.width}x${readback.height}`);
+  const reason = applied
+    ? `Viewport ${width}x${height} applied (${flags.join(', ')}).`
+    : `Requested ${width}x${height}${mobile ? ' (mobile mode)' : ''}; read back ${readback.width}x${readback.height} (DPR ${dpr}).`;
+  return {
+    applied,
+    requested: { width, height },
+    actual: {
+      width: readback.width,
+      height: readback.height,
+      screenWidth: readback.screenWidth,
+      screenHeight: readback.screenHeight,
+      dpr,
+      mobile,
+      layoutMatches,
+    },
+    text,
+    reason,
+  };
+}
+
+// The daemon shallow-copies the action target before dispatch. viewportStr stores
+// the readback on the session; this copies it onto the clone the receipt uses.
+function rememberViewportReadback(actionTarget, session) {
+  const assessment = session?.viewportReadback;
+  if (!actionTarget || !assessment?.requested) return actionTarget;
+  actionTarget.viewportApplication = assessment;
+  return actionTarget;
+}
+
 // #533: the receipt states the size read back from the page, so an agent knows the override took
 // effect. `session`, when given, remembers the override so an audit can put it back afterwards.
-async function viewportStr(cdp, sid, size, { session = null } = {}) {
+// #578: the same readback is the action's success signal, independent of the AX diff.
+async function viewportStr(cdp, sid, size, { session = null, application = null } = {}) {
   if (!size) {
     const d = await readViewportDims(cdp, sid);
     return `Viewport: ${d.width}×${d.height} (DPR: ${d.dpr})`;
   }
   const { width, height } = await applyViewportOverride(cdp, sid, size);
   if (session) session.viewportOverride = { width, height };
-  const d = await readViewportDims(cdp, sid);
-  const mobile = width <= 768 ? ' (mobile mode)' : '';
-  // Applied when either the layout or the emulated screen matches: a desktop override (mobile:false)
-  // keeps the real screen, and a mobile size without <meta viewport> keeps a 980px layout.
-  // Only a mobile override emulates the screen, so only then does a screen match prove anything.
-  const layoutMatches = d.width === width && d.height === height;
-  const applied = layoutMatches || (width <= 768 && d.screenWidth === width && d.screenHeight === height);
-  if (!applied) return `Viewport: ${d.width}x${d.height} (DPR ${d.dpr})${mobile}; requested ${width}x${height}`;
-  const layout = layoutMatches ? '' : `; layout ${d.width}x${d.height}`;
-  return `Viewport: ${width}x${height} (DPR ${d.dpr})${mobile}${layout}`;
+  const readback = await readViewportDims(cdp, sid);
+  const assessment = assessViewportReadback(width, height, readback);
+  if (session) session.viewportReadback = assessment;
+  if (application && typeof application === 'object') Object.assign(application, assessment);
+  return assessment.text;
 }
 
 async function cookieSetStr(cdp, sid, cookieStr) {
@@ -27403,6 +27544,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           ? await snapshotFormControlState(cdp, sessionId, actionTarget.input, refMap, refState)
           : null;
         const text = await dispatch();
+        // actionFeedback shallow-copies the target before dispatch. The readback
+        // lives on the session until it is copied onto that clone (#578).
+        if (action === 'viewport') rememberViewportReadback(actionTarget, session);
         if ((action === 'click' || action === 'jsclick' || action === 'clickxy') && jsDialogs.hasPending()) {
           await jsDialogs.waitForPending(1500);
         }
@@ -32903,6 +33047,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText, summaryStr,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
+  assessViewportReadback, rememberViewportReadback,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
   navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, splitScrollEdgeArgs, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,

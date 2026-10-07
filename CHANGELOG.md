@@ -48,6 +48,13 @@
 
 ### Bug Fixes
 
+* `viewport` / `resize` treats a read-back size that matches the request as success
+  (`Verdict: continue`), including when the accessibility tree did not change. The text
+  receipt keeps the one-line `Viewport:` result and attaches an AX diff only when that
+  tree changed. A mismatch is `Verdict: investigate` and names the requested size and
+  the size read back
+  ([#578](https://github.com/EndeavorYen/chrome-cdp-ex/issues/578)).
+
 * `shot <target> shots/a.png` writes `./shots/a.png` from the directory where you ran the command, even when the tab daemon was started elsewhere. A missing parent directory is `Kind: usage` (`shot: output directory does not exist`), not raw `ENOENT` / `Kind: unknown`. The same caller-directory resolution covers `fullshot`, `upload`, `replay --file`, `restore --file`, `responsive-audit --out-dir`, and relative paths of those commands plus `elshot`, `netlog --out`, and `click --expect-download --out` inside `flow`, `batch`, and `repeat` ([#577](https://github.com/EndeavorYen/chrome-cdp-ex/issues/577)).
 
 * When a target prefix stops resolving but the tab is still open (Chrome gave it a new target id),

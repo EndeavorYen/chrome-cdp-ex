@@ -551,7 +551,7 @@ If dispatch fails, read the classified failure block instead of retrying blindly
 | `qa` with `--click` | semantic QA report + action evidence |
 | `back`, `forward` | action evidence + full perceive |
 | `reload` | action evidence + bounded lightweight page observation |
-| `viewport` (when resizing) | action evidence + perceive diff |
+| `viewport` (when resizing) | one-line size read back. Match is `Verdict: continue`; AX diff only when the tree changed |
 | `nav` | action evidence + **URL + title** (and readyState). `--compact` is one line. Pass `--perceive` only when a full AX dump is required |
 
 Example:
@@ -785,6 +785,8 @@ scripts/cdp.mjs viewport <target> 1280x720   # desktop viewport
 ```
 
 Widths ≤ 768px automatically enable mobile emulation mode.
+
+A resize reads the applied size back from the page (layout viewport, or the emulated screen for a mobile width). When that size matches the request, the receipt is success: `Outcome: changed` with evidence `viewport` and `Verdict: continue`, even if the accessibility tree did not change. There is no `fresh-perception-needed` signal. The text receipt prints the one-line `Viewport:` result (including DPR, and mobile mode when the width is ≤ 768) and attaches an AX diff only when the tree changed. When neither the layout nor, for a mobile width, the emulated screen matches, the receipt is `Verdict: investigate` and names the requested size and the size read back. Other commands still treat an unexpected AX no-change as `Verdict: investigate`.
 
 ### Cookie management
 
@@ -1175,8 +1177,8 @@ scripts/cdp.mjs text <target> "main"              # scope to main content area
 ### Responsive testing
 1. `responsive-audit <target> --format json` — one-shot desktop/mobile audit with overflow, blank, console, controls, screenshots
 2. Or manually: `perceive <target>` — baseline at current viewport
-3. `viewport <target> 375x812` — switch to mobile (auto-returns perceive diff!)
-4. `viewport <target> 1280x720` — switch back to desktop (auto-returns perceive diff!)
+3. `viewport <target> 375x812` — switch to mobile (success when the size reads back; AX diff only if the tree changed)
+4. `viewport <target> 1280x720` — switch back to desktop (same receipt rule)
 
 ### Visual bug investigation
 1. `perceive <target>` — structure + layout positions + style hints
