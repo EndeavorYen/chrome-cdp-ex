@@ -1672,7 +1672,7 @@ cdp perceive <t> -C
 cdp controls <t> -s "#composer" --filter send --compact --format json
 ```
 
-`perceive -C` adds a compact visible-controls section for dense composers and query bars, including standard buttons, textboxes, labels, rects, selectors, and non-ARIA clickables. Non-ARIA clickables still get `@c1`, `@c2`… handles. Use `controls` when selector repair needs a bounded JSON inventory scoped to a subtree; `--compact` preserves role, label, selector, state, and rectangle while removing duplicate text/title/hint fields.
+`perceive -C` adds a compact visible-controls section for dense composers and query bars, including standard buttons, textboxes, labels, rects, selectors, and non-ARIA clickables. Non-ARIA clickables still get `@c1`, `@c2`… handles. A row matched to exactly one AX node uses that node's role. When its label is only the collector role or tag (`textbox`, `input`), the quoted label becomes that node's accessible name, so a labeled `<input type="number">` prints `input role=spinbutton "Qty"` on the same `@ref` as `[spinbutton] Qty` instead of `role=textbox "textbox"`. Use `controls` when selector repair needs a bounded JSON inventory scoped to a subtree; `--compact` preserves role, label, selector, state, and rectangle while removing duplicate text/title/hint fields. The `controls` inventory is DOM-only and does not read the AX tree.
 
 ### Vite / HMR
 
