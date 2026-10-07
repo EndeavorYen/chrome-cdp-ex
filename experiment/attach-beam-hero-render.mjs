@@ -84,15 +84,15 @@ async function main() {
 
   const fileUrl = pathToFileURL(HTML).href + '?play=0&t=0';
   await page.goto(fileUrl, { waitUntil: 'networkidle' });
-  await page.waitForFunction(() => window.__attachBeam && typeof window.__attachBeam.render === 'function');
+  await page.waitForFunction(() => globalThis.__attachBeam && typeof globalThis.__attachBeam.render === 'function');
 
   console.log(`[attach-beam] capturing ${TOTAL} frames @ ${FPS}fps (${DURATION}s)…`);
   const t0 = Date.now();
   for (let i = 0; i < TOTAL; i++) {
     const t = i / FPS;
     await page.evaluate((time) => {
-      window.__attachBeam.setTime(time);
-      return new Promise((r) => requestAnimationFrame(r));
+      globalThis.__attachBeam.setTime(time);
+      return new Promise((r) => globalThis.requestAnimationFrame(r));
     }, t);
     const framePath = path.join(FRAMES_DIR, `frame-${String(i).padStart(5, '0')}.jpg`);
     await page.screenshot({ path: framePath, type: 'jpeg', quality: 90, clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT } });
@@ -105,8 +105,8 @@ async function main() {
 
   // poster at ~2.5s
   console.log(`[attach-beam] poster at t=${POSTER_T}s…`);
-  await page.evaluate((time) => window.__attachBeam.setTime(time), POSTER_T);
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await page.evaluate((time) => globalThis.__attachBeam.setTime(time), POSTER_T);
+  await page.evaluate(() => new Promise((r) => globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(r))));
   await page.screenshot({ path: OUT_POSTER, type: 'png', clip: { x: 0, y: 0, width: WIDTH, height: HEIGHT } });
 
   await browser.close();
