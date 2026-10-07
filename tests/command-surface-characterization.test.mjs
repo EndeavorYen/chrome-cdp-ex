@@ -118,7 +118,8 @@ describe('Phase 6 command-surface characterization', () => {
   it('freezes every MCP tool, resource, allowlist entry, valid mapping, and invalid boundary', () => {
     expect(createHash('sha256').update(JSON.stringify(MCP_SURFACE)).digest('hex'))
       .toBe(MCP_SURFACE_IDENTITY);
-    // #554: the served tools/list is the survivor card. The historical fixture keeps the full catalog.
+    // #554: the served tools/list is the survivor card. run_command mappings in the
+    // current fixture are the survivor allowlist; published fixtures stay historical.
     expect(MCP_TOOLS.map(({ annotations: _annotations, ...tool }) => tool)).toEqual(MCP_TOOL_DEFINITIONS);
     expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).toEqual([
       'doctor', 'list_tabs', 'open_or_attach', 'perceive', 'screenshot', 'click',
@@ -173,9 +174,6 @@ describe('Phase 6 command-surface characterization', () => {
       run_command: [
         'run-command-read',
         'run-command-mutation',
-        'run-command-table-observe',
-        'run-command-table-collect',
-        'run-command-table-continue',
       ],
       screenshot: ['screenshot'],
       spawn_debug_browser: ['spawn-debug-browser'],
