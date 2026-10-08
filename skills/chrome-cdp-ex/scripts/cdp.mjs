@@ -2418,6 +2418,66 @@ function shellQuoteCliArg(value) {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
+// #615: flow and batch split on whitespace, so a quoted phrase was stored with the
+// quote characters still in the value (`fill #note " "` became quote-space-quote).
+// A quote starts a word only at a word boundary. Quotes inside a CSS token stay.
+// An unmatched quote is kept as literal text through the next whitespace.
+function tokenizeCommandLine(input) {
+  const text = String(input ?? '');
+  const tokens = [];
+  let index = 0;
+  while (index < text.length) {
+    while (index < text.length && /\s/.test(text[index])) index += 1;
+    if (index >= text.length) break;
+    const quote = text[index];
+    if (quote === '"' || quote === "'") {
+      let cursor = index + 1;
+      let value = '';
+      let closed = false;
+      while (cursor < text.length) {
+        if (text[cursor] === quote) {
+          closed = true;
+          cursor += 1;
+          break;
+        }
+        value += text[cursor];
+        cursor += 1;
+      }
+      if (!closed) {
+        let raw = '';
+        let end = index;
+        while (end < text.length && !/\s/.test(text[end])) {
+          raw += text[end];
+          end += 1;
+        }
+        tokens.push({ value: raw, quoted: false });
+        index = end;
+        continue;
+      }
+      tokens.push({ value, quoted: true });
+      index = cursor;
+      continue;
+    }
+    let raw = '';
+    while (index < text.length && !/\s/.test(text[index])) {
+      raw += text[index];
+      index += 1;
+    }
+    tokens.push({ value: raw, quoted: false });
+  }
+  return tokens;
+}
+
+// A quoted word that looks like a flag is text. `--` ends flag parsing for fill.
+function commandArgsFromTokens(tokens = []) {
+  const args = [];
+  for (const token of tokens) {
+    if (token.quoted && String(token.value).startsWith('-')) args.push('--');
+    args.push(token.value);
+  }
+  return args;
+}
+
 function inferBrowserFromExe(exe) {
   const name = String(exe || '').toLowerCase();
   if (name.includes('msedge') || name.includes('edge')) return 'edge';
@@ -12904,6 +12964,79 @@ function clickPointHitFunctionSource() {
   }`;
 }
 
+// #614: a zero-size border box (a closed dialog) and a box whose centre is outside the
+// viewport are not clickable. A descendant client rect or an associated label can still
+// be. The returned x/y are the border-box origin so callers keep using x + w/2.
+function clickableBoxHelpersSource() {
+  return `function clickBoxUsable(rect) {
+    if (!rect) return null;
+    const w = Number(rect.w != null ? rect.w : rect.width);
+    const h = Number(rect.h != null ? rect.h : rect.height);
+    const x = Number(rect.x != null ? rect.x : rect.left);
+    const y = Number(rect.y != null ? rect.y : rect.top);
+    if (!(w > 0) || !(h > 0) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const view = typeof window !== 'undefined' ? window : {};
+    const vw = Number(view.innerWidth);
+    const vh = Number(view.innerHeight);
+    if (!(vw > 0) || !(vh > 0)) return null;
+    if (cx < 0 || cy < 0 || cx >= vw || cy >= vh) return null;
+    return { x: x, y: y, w: w, h: h };
+  }
+  function firstUsableClientBox(node) {
+    if (!node) return null;
+    if (typeof node.getClientRects === 'function') {
+      let rects = [];
+      try { rects = node.getClientRects() || []; } catch (err) { rects = []; }
+      const count = Number(rects.length) || 0;
+      for (let i = 0; i < count; i++) {
+        const box = clickBoxUsable(rects[i]);
+        if (box) return box;
+      }
+    }
+    if (typeof node.getBoundingClientRect === 'function') {
+      try { return clickBoxUsable(node.getBoundingClientRect()); } catch (err) { return null; }
+    }
+    return null;
+  }
+  function resolveClickableBox(el, own) {
+    const self = clickBoxUsable(own) || firstUsableClientBox(el);
+    if (self) return { x: self.x, y: self.y, w: self.w, h: self.h, source: 'self', noClickBox: false, inViewport: true };
+    const candidates = [];
+    try {
+      if (el && typeof el.querySelectorAll === 'function') {
+        const found = el.querySelectorAll('*');
+        const count = Number(found && found.length) || 0;
+        for (let i = 0; i < count; i++) candidates.push(found[i]);
+      }
+    } catch (err) {}
+    const labels = el && el.labels;
+    if (labels && typeof labels.length === 'number') {
+      for (let i = 0; i < labels.length; i++) candidates.push(labels[i]);
+    }
+    for (let i = 0; i < candidates.length; i++) {
+      const node = candidates[i];
+      if (!node || node === el) continue;
+      const box = firstUsableClientBox(node);
+      if (box) return { x: box.x, y: box.y, w: box.w, h: box.h, source: 'content', noClickBox: false, inViewport: true };
+    }
+    const w = Number(own && (own.w != null ? own.w : own.width));
+    const h = Number(own && (own.h != null ? own.h : own.height));
+    const x = Number(own && (own.x != null ? own.x : own.left));
+    const y = Number(own && (own.y != null ? own.y : own.top));
+    return {
+      x: Number.isFinite(x) ? x : 0,
+      y: Number.isFinite(y) ? y : 0,
+      w: Number.isFinite(w) ? w : 0,
+      h: Number.isFinite(h) ? h : 0,
+      source: 'none',
+      noClickBox: true,
+      inViewport: false,
+    };
+  }`;
+}
+
 // `hitTest` folds the #436 click-point hit test into the same evaluation (no extra round trip).
 // A fully visible target that is covered (sticky header, toast) is centred once and re-tested;
 // whatever still covers it after that is reported, never retried.
@@ -13026,19 +13159,27 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       return previous;
     };
     const maxSamples = fullyVisible ? 2 : 60;
-    let previous = await settle(maxSamples);${hitTest ? `
+    let previous = await settle(maxSamples);
+    ${clickableBoxHelpersSource()}
+    const resolvedClickBox = resolveClickableBox(this, previous);
+    const noClickBox = resolvedClickBox.noClickBox === true;
+    if (!noClickBox) previous = { x: resolvedClickBox.x, y: resolvedClickBox.y, w: resolvedClickBox.w, h: resolvedClickBox.h };${hitTest ? `
     ${clickPointHitFunctionSource()}
     ${actionabilityFunctionSource()}
     let hit = clickPointHit(this, previous, clipBox());
     if (hit && hit.covered && fullyVisible) {
       this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       previous = await settle(60);
+      const recentredBox = resolveClickableBox(this, previous);
+      if (!recentredBox.noClickBox) previous = { x: recentredBox.x, y: recentredBox.y, w: recentredBox.w, h: recentredBox.h };
       hit = clickPointHit(this, previous, clipBox());
       if (hit && hit.covered) hit.recentred = true;
     }` : ''}
     return {
       connected: connectedToOwningDocument(),
       ...previous,
+      noClickBox: noClickBox,
+      inViewport: !noClickBox,
       tag: this.tagName,
       href: this.tagName === 'A' ? (this.href || null) : null,
       linkTarget: ${linkTargetPageExpression('this')},
@@ -16165,6 +16306,17 @@ function sameArgList(left, right) {
     && left.every((value, index) => value === right[index]);
 }
 
+// Rejoin a rewritten flow or batch step. Quote only values the tokenizer would
+// split or drop. A selector such as #f stays bare so the step text is stable.
+function rejoinRewrittenCommand(head, args) {
+  const parts = [head, ...args.map(arg => {
+    const text = String(arg ?? '');
+    if (text === '' || /[\s"'\\;|]/.test(text)) return shellQuoteCliArg(text);
+    return text;
+  })];
+  return parts.join(' ');
+}
+
 function canonicalCallerCommand(cmd) {
   return COMMAND_SURFACE.resolve(String(cmd || ''))?.name || String(cmd || '');
 }
@@ -16353,19 +16505,21 @@ function rewriteFlowInput(input, cwd, depth) {
   const next = steps.map(step => {
     const trimmed = step.trim();
     if (!trimmed) return step;
-    const parts = trimmed.split(/\s+/);
-    const head = parts[0];
+    const tokens = tokenizeCommandLine(trimmed);
+    if (!tokens.length) return step;
+    const head = tokens[0].value;
     if (head === 'wait' || head === 'assert') return step;
+    const args = tokens.slice(1).map(token => token.value);
     let rewritten;
     try {
-      rewritten = rewriteCallerCommandArgs(head, parts.slice(1), cwd, depth + 1);
+      rewritten = rewriteCallerCommandArgs(head, args, cwd, depth + 1);
     } catch {
       return step;
     }
-    if (sameArgList(rewritten, parts.slice(1))) return step;
+    if (sameArgList(rewritten, args)) return step;
     changed = true;
     const prefix = step.match(/^\s*/)?.[0] || '';
-    return `${prefix}${[head, ...rewritten].join(' ')}`.trimEnd();
+    return `${prefix}${rejoinRewrittenCommand(head, rewritten)}`.trimEnd();
   });
   return changed ? next.join(';') : input;
 }
@@ -16394,16 +16548,19 @@ function rewriteBatchInput(input, cwd, depth) {
   const next = segments.map(segment => {
     const trimmedSegment = segment.trim();
     if (!trimmedSegment) return segment;
-    const parts = trimmedSegment.split(/\s+/);
+    const tokens = tokenizeCommandLine(trimmedSegment);
+    if (!tokens.length) return segment;
+    const head = tokens[0].value;
+    const args = tokens.slice(1).map(token => token.value);
     let rewritten;
     try {
-      rewritten = rewriteCallerCommandArgs(parts[0], parts.slice(1), cwd, depth + 1);
+      rewritten = rewriteCallerCommandArgs(head, args, cwd, depth + 1);
     } catch {
       return segment;
     }
-    if (sameArgList(rewritten, parts.slice(1))) return segment;
+    if (sameArgList(rewritten, args)) return segment;
     changed = true;
-    return [parts[0], ...rewritten].join(' ');
+    return rejoinRewrittenCommand(head, rewritten);
   });
   return changed ? next.join('|') : input;
 }
@@ -16813,6 +16970,39 @@ function clickProbeBindSelector(selector) {
   return text;
 }
 
+function clickMeasurementUnusable(measurement, point = null) {
+  if (!measurement || typeof measurement !== 'object') return false;
+  const w = measurement.w;
+  const h = measurement.h;
+  const hasSize = typeof w === 'number' && typeof h === 'number'
+    && Number.isFinite(w) && Number.isFinite(h);
+  const positive = hasSize && w > 0 && h > 0;
+  const atOrigin = !!point && point.x === 0 && point.y === 0;
+  // A positive box that is still off-viewport keeps its real centre. The pin
+  // scrolls that box into view. Refuse before dispatch when there is no box,
+  // or when the point we would send is the origin.
+  if (measurement.noClickBox === true || measurement.inViewport === false) {
+    return !positive || atOrigin;
+  }
+  return hasSize && !positive;
+}
+
+function noClickBoxError(selector, measurement = {}) {
+  const name = String(selector || 'the target');
+  const w = typeof measurement.w === 'number' ? measurement.w : Number.NaN;
+  const h = typeof measurement.h === 'number' ? measurement.h : Number.NaN;
+  const size = Number.isFinite(w) && Number.isFinite(h) ? ` (${Math.round(w)}×${Math.round(h)})` : '';
+  const off = measurement.inViewport === false && w > 0 && h > 0 ? ' It is outside the viewport.' : '';
+  const err = new Error(`click: ${name}${size} has no clickable box in the viewport.${off} Nothing was clicked.`);
+  err.noClickBox = {
+    selector: String(selector || ''),
+    w: Number.isFinite(w) ? w : null,
+    h: Number.isFinite(h) ? h : null,
+    inViewport: measurement.inViewport === true,
+  };
+  return err;
+}
+
 function clickMisdirectedError(x, y, selector = '', { sent = true, landedOn = '' } = {}) {
   const target = selector ? ` for ${selector}` : '';
   const where = landedOn ? ` It landed on ${landedOn}.` : '';
@@ -16905,6 +17095,7 @@ async function readClickEventProbe(cdp, sid, probe = {}) {
 function pinClickPointSource() {
   return `function pinClickPoint(el) {
     ${clickPointHitFunctionSource()}
+    ${clickableBoxHelpersSource()}
     if (!el || el.nodeType !== 1) return { cdpClickPoint: true, ok: false };
     const doc = el.ownerDocument || document;
     const view = doc.defaultView || window;
@@ -16945,13 +17136,19 @@ function pinClickPointSource() {
       pin(scrolling);
     }
     const rect = el.getBoundingClientRect();
-    const box = { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
-    const hit = clickPointHit(el, box);
+    const own = { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    const resolved = resolveClickableBox(el, own);
+    const box = { x: resolved.x, y: resolved.y, w: resolved.w, h: resolved.h };
+    const hit = resolved.noClickBox ? null : clickPointHit(el, box);
     return {
       cdpClickPoint: true,
-      ok: Boolean(hit && hit.covered !== true && box.w > 0 && box.h > 0),
+      ok: Boolean(!resolved.noClickBox && hit && hit.covered !== true && box.w > 0 && box.h > 0),
+      noClickBox: resolved.noClickBox === true,
+      inViewport: resolved.noClickBox !== true,
       x: box.x + box.w / 2,
       y: box.y + box.h / 2,
+      w: box.w,
+      h: box.h,
       hit: hit,
     };
   }`;
@@ -17041,6 +17238,11 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
   const pinned = probeTarget.framed ? null : await readPinnedClickPoint(cdp, sid, probeTarget);
   if (pinned?.missingTarget) {
     throw clickMisdirectedError(x, y, probeTarget.selector, { sent: false });
+  }
+  // #614: a pin that measured a zero-size or still off-viewport box must not fall
+  // through to the caller's point. That point is (0, 0) for a closed dialog.
+  if (pinned?.noClickBox === true || pinned?.inViewport === false) {
+    throw noClickBoxError(probeTarget.selector || '', pinned);
   }
   if (pinned?.hit?.covered === true) {
     assertClickPointNotCovered(pinned.hit, {
@@ -17872,6 +18074,8 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (isNamedClickQuery(selector)) return jsClickStr(cdp, sid, selector, refMap, refState, { clickTrust: opts.clickTrust });
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);
+    const cursorPoint = { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+    if (clickMeasurementUnusable(r, cursorPoint)) throw noClickBoxError(selector, r);
     await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2, { selector, x: r.x + r.w / 2, y: r.y + r.h / 2 });
     await confirmClickFollowedHref(cdp, sid, r);
     return `Clicked <${r.sel}> "${r.text}" (${selector})`;
@@ -17879,6 +18083,8 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true });
     if (r.disabled) throw actionDisabledError('click', { tag: r.tag, text: r.text, reason: r.disabled }, selector);
+    const refPoint = { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+    if (clickMeasurementUnusable(r, refPoint)) throw noClickBoxError(selector, r);
     rememberClickTrust(opts.clickTrust, r);
     assertClickPointNotCovered(r.hit, { x: r.x + r.w / 2, y: r.y + r.h / 2, tag: r.tag, text: r.text, ref: selector });
     let objectId = null;
@@ -17917,6 +18123,10 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
         ok: true,
         x: rect.x + rect.w / 2,
         y: rect.y + rect.h / 2,
+        w: rect.w,
+        h: rect.h,
+        noClickBox: rect.noClickBox === true,
+        inViewport: rect.noClickBox === true ? false : rect.inViewport !== false,
         tag: rect.tag,
         text: rect.text,
         role: rect.role || '',
@@ -17933,6 +18143,7 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   const r = JSON.parse(result);
   if (!r.ok && r.disabled) throw actionDisabledError('click', { ...r.disabled, waited: r.waited, waitedMs: r.waitedMs }, selector);
   if (!r.ok) throw new Error(cssClickMissMessage(selector, actionabilityMissMessage(r.error, r)));
+  if (clickMeasurementUnusable(r, { x: r.x, y: r.y })) throw noClickBoxError(selector, r);
   rememberClickTrust(opts.clickTrust, r);
   assertClickPointNotCovered(r.hit, { x: r.x, y: r.y, tag: r.tag, text: r.text });
   const newTabWatch = await prepareClickFollowedHref(cdp, sid, r);
@@ -18265,6 +18476,89 @@ async function submitSearchListing(cdp, sid, probe, refMap, refState) {
   );
 }
 
+const PRESS_PROBE_MARKER = 'chrome-cdp-ex.press-probe.v1';
+const PRESS_PROBE_KEY = '__chromeCdpExPressProbe';
+const PRESS_DELIVERY_WAIT_MS = 6500;
+const PRESS_DELIVERY_POLL_MS = 100;
+
+function pressNotDeliveredError(key, visibility = 'unknown') {
+  const hidden = visibility === 'hidden'
+    ? " The tab's document.visibilityState is hidden."
+    : '';
+  const err = new Error(`press: ${key} was not delivered. The page received no keydown.${hidden}`);
+  err.pressNotDelivered = { key: String(key || ''), visibility: visibility || 'unknown' };
+  return err;
+}
+
+function pressProbeExpression(mode, mapped) {
+  const marker = JSON.stringify(PRESS_PROBE_MARKER);
+  const key = JSON.stringify(mapped.key);
+  const code = JSON.stringify(mapped.code);
+  if (mode === 'install') {
+    return `(function() {
+      const marker = ${marker};
+      const expectKey = ${key};
+      const expectCode = ${code};
+      const previous = window.${PRESS_PROBE_KEY};
+      if (previous && previous.listener) window.removeEventListener('keydown', previous.listener, true);
+      const state = { marker: marker, count: 0, matched: false, installed: true, listener: null };
+      state.listener = function(event) {
+        state.count += 1;
+        if (event && (event.key === expectKey || event.code === expectCode)) state.matched = true;
+      };
+      window.addEventListener('keydown', state.listener, true);
+      window.${PRESS_PROBE_KEY} = state;
+      return { marker: marker, ok: true, installed: true, matched: false, count: 0 };
+    })()`;
+  }
+  if (mode === 'cleanup') {
+    return `(function() {
+      const marker = ${marker};
+      const state = window.${PRESS_PROBE_KEY};
+      if (state && state.listener) window.removeEventListener('keydown', state.listener, true);
+      if (!state || state.marker !== marker) return { marker: marker, ok: false, installed: false, matched: false, count: 0 };
+      return { marker: marker, ok: true, installed: state.installed === true, matched: state.matched === true, count: Number(state.count) || 0 };
+    })()`;
+  }
+  return `(function() {
+    const marker = ${marker};
+    const state = window.${PRESS_PROBE_KEY};
+    if (!state || state.marker !== marker) return { marker: marker, ok: false, installed: false, matched: false, count: 0 };
+    return { marker: marker, ok: true, installed: state.installed === true, matched: state.matched === true, count: Number(state.count) || 0 };
+  })()`;
+}
+
+function parsePressProbe(raw) {
+  let value = raw;
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    if (!text) return null;
+    try { value = JSON.parse(text); } catch { return null; }
+  }
+  if (!value || typeof value !== 'object' || value.marker !== PRESS_PROBE_MARKER) return null;
+  return value;
+}
+
+async function readPressProbe(cdp, sid, mapped) {
+  const raw = await evalStr(cdp, sid, pressProbeExpression('read', mapped), false, { raw: true, timeoutMs: 1500 });
+  return parsePressProbe(raw);
+}
+
+async function confirmPressDelivered(cdp, sid, mapped, { waitMs } = {}) {
+  const budget = Number.isFinite(Number(waitMs)) ? Number(waitMs) : PRESS_DELIVERY_WAIT_MS;
+  const started = Date.now();
+  for (;;) {
+    const parsed = await readPressProbe(cdp, sid, mapped);
+    if (parsed?.matched === true) return parsed;
+    if (!parsed) break;
+    const elapsed = Date.now() - started;
+    if (elapsed >= budget) break;
+    const pause = Math.min(PRESS_DELIVERY_POLL_MS, budget - elapsed);
+    if (pause > 0) await sleep(pause);
+  }
+  throw pressNotDeliveredError(mapped.key, await probePageVisibility(cdp, sid));
+}
+
 async function pressStr(cdp, sid, keyName, opts = {}) {
   const usage = pressUsageError(keyName);
   if (usage) throw usage;
@@ -18300,14 +18594,32 @@ async function pressStr(cdp, sid, keyName, opts = {}) {
     keyDown.text = '\r';
     keyDown.unmodifiedText = '\r';
   }
-  await cdpDomains(cdp).Input.dispatchKeyEvent(keyDown, sid);
-  // For printable single characters, send a `char` event so the page receives input
-  // (mirrors what real keyboards do for letter / digit / punctuation keys).
-  if (mapped.key.length === 1 && mapped.code !== 'Space' && mapped.key !== ' ') {
-    await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'char', text: mapped.key, unmodifiedText: mapped.key }, sid);
+  // #607: success is a capture-phase keydown on the page, not a resolved
+  // Input.dispatchKeyEvent. A hidden tab is named in the error; the caller
+  // does not activate the tab or raise the window.
+  const installed = parsePressProbe(await evalStr(
+    cdp, sid, pressProbeExpression('install', mapped), false, { raw: true, timeoutMs: 1500 },
+  ));
+  if (!installed?.installed) {
+    throw pressNotDeliveredError(mapped.key, await probePageVisibility(cdp, sid));
   }
-  await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'keyUp' }, sid);
-  return `Pressed ${mapped.key}`;
+  try {
+    await cdpDomains(cdp).Input.dispatchKeyEvent(keyDown, sid);
+    // For printable single characters, send a `char` event so the page receives input
+    // (mirrors what real keyboards do for letter / digit / punctuation keys).
+    if (mapped.key.length === 1 && mapped.code !== 'Space' && mapped.key !== ' ') {
+      await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'char', text: mapped.key, unmodifiedText: mapped.key }, sid);
+    }
+    await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'keyUp' }, sid);
+    await confirmPressDelivered(cdp, sid, mapped, { waitMs: opts.deliveryWaitMs });
+    return `Pressed ${mapped.key}`;
+  } finally {
+    try {
+      await evalStr(cdp, sid, pressProbeExpression('cleanup', mapped), false, { raw: true, timeoutMs: 1500 });
+    } catch {
+      // The delivery result is already decided.
+    }
+  }
 }
 
 const DOCUMENT_SCROLL_EDGE_TOLERANCE_PX = 2;
@@ -24408,8 +24720,9 @@ function parseBatchArgs(args = []) {
     if (!Array.isArray(commands)) throw new Error('batch argument must be a JSON array');
   } else {
     commands = input.split('|').map(segment => {
-      const parts = segment.trim().split(/\s+/);
-      return { cmd: parts[0], args: parts.slice(1) };
+      const tokens = tokenizeCommandLine(segment.trim());
+      if (!tokens.length) return { cmd: '', args: [] };
+      return { cmd: tokens[0].value, args: commandArgsFromTokens(tokens.slice(1)) };
     }).filter(c => c.cmd);
   }
   return {
@@ -24617,7 +24930,8 @@ async function repeatStr({ run, probeCondition }, args) {
 function parseFlowSteps(input) {
   if (typeof input !== 'string' || !input.trim()) return [];
   return input.split(';').map(s => s.trim()).filter(Boolean).map(line => {
-    const parts = line.split(/\s+/);
+    const tokens = tokenizeCommandLine(line);
+    const parts = tokens.map(token => token.value);
     const head = parts[0];
     if (head === 'wait') {
       const what = parts.slice(1).join(' ').toLowerCase();
@@ -24637,7 +24951,7 @@ function parseFlowSteps(input) {
       return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
     }
     if (head === FOREGROUND_ACTIVATE_COMMAND) throw new Error(`flow: "${head}" is internal and not allowed as a step`);
-    return { kind: 'command', cmd: head, args: parts.slice(1) };
+    return { kind: 'command', cmd: head, args: commandArgsFromTokens(tokens.slice(1)) };
   });
 }
 
@@ -30939,26 +31253,31 @@ function parseFillArgs(args = []) {
   const fopts = parseCompactFormatArgs(wait.args, ['text', 'json']);
   let react = false;
   let secretName = null;
+  let acceptFlags = true;
   const positional = [];
   for (let index = 0; index < fopts.args.length; index += 1) {
     const token = fopts.args[index];
-    if (token === '--react') {
+    if (acceptFlags && token === '--') {
+      acceptFlags = false;
+      continue;
+    }
+    if (acceptFlags && token === '--react') {
       react = true;
       continue;
     }
-    if (token === '--secret') {
+    if (acceptFlags && token === '--secret') {
       if (secretName != null) throw new Error('fill: --secret may be given only once');
       secretName = assertSecretName(fopts.args[index + 1]);
       index += 1;
       continue;
     }
-    if (token === '--help' || token === '-h') {
+    if (acceptFlags && (token === '--help' || token === '-h')) {
       const err = new Error('fill: help requested');
       err.code = 'help_requested';
       err.helpTopic = 'fill';
       throw err;
     }
-    if (String(token).startsWith('--')) {
+    if (acceptFlags && String(token).startsWith('--')) {
       throw new Error(`fill: unknown argument ${token}`);
     }
     positional.push(token);
@@ -31983,6 +32302,31 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         ? 'cdp help loadall'
         : (targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : 'cdp help loadall'),
       reason: 'No current element matched the selector. A missing load-more control is not a successful disappear.',
+    };
+  }
+  if (lower.includes('has no clickable box')) {
+    const selector = String(err?.noClickBox?.selector || args?.[0] || '').trim();
+    const arg = selector ? recoveryCommandArg(selector) : '';
+    return {
+      kind: 'no-click-box',
+      strategy: 'use-jsclick',
+      run: (targetPrefix && arg) ? `cdp jsclick ${target} ${arg}` : `cdp perceive ${target} -C -d 8`,
+      reason: 'The target has no positive-size box inside the viewport, so no mouse click was sent.',
+    };
+  }
+  if (cmd === 'press' && lower.includes('was not delivered') && lower.includes('no keydown')) {
+    const hidden = lower.includes('visibilitystate is hidden');
+    const key = String(err?.pressNotDelivered?.key || args?.[0] || '').trim();
+    const keyArg = key ? recoveryCommandArg(key) : '';
+    return {
+      kind: 'press-not-delivered',
+      strategy: 'confirm-key-delivery',
+      run: hidden
+        ? `CDP_BACKGROUND=0 cdp press ${target}${keyArg ? ` ${keyArg}` : ''}`
+        : `cdp perceive ${target} -C -d 8`,
+      reason: hidden
+        ? 'The tab is hidden, so the keydown was not delivered. CDP_BACKGROUND=0 activates the tab and does not raise a covered window.'
+        : 'The key was not delivered. The page received no keydown.',
     };
   }
   if (
@@ -33726,7 +34070,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cdpRuntimeIdentity,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr, pressUsageError,
-  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, assertClickPointNotCovered, formatRefRect, isPriorityPerceiveTextLine,
+  PRESS_PROBE_MARKER, PRESS_DELIVERY_WAIT_MS,
+  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, clickableBoxHelpersSource, assertClickPointNotCovered, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, perceiveStoreDiffSource, frameViewportOffset,

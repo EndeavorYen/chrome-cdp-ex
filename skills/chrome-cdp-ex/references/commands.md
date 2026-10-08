@@ -524,6 +524,7 @@ Runs the steps in order, halting on the first failure. A halted flow exits non-z
   - `wait dom stable` — wait for DOM mutations to quiet for 500ms (max ~10s); timeout fails the flow.
   - `wait network idle` — wait until pending XHR/Fetch/Document requests drain; timeout fails with the pending count.
 - Use `flow` for short pipelines that read top-to-bottom or need ordered failure handoff; use `batch` when you need parallelism or multiple independent command results.
+- A quoted word in a `flow` or `batch` step is one argument, and the quote characters are not part of the value. `fill #note " "` types one space; `fill #note "hello world"` types `hello world`. Quotes inside a token that is not itself quoted stay, so `click input[name="q"]` is still one selector. A quoted word that starts with `-` is text (`"--secret"`), while an unquoted `--secret NAME` stays the secret flag. A pipe or semicolon inside quotes is still a separator. A direct `fill` argument is not quote-stripped.
 
 ### Doctor / readiness check
 
@@ -629,7 +630,7 @@ scripts/cdp.mjs click   <target> "text=Save" [--format json]  # Playwright-style
 scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path; scrollIntoView if off-screen
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
-scripts/cdp.mjs press   <target> <key> [--format json] # press key (alias: key; Enter/Escape/Tab auto-return perceive diff; non-listing Enter keyDown includes a carriage return so keypress and implicit submit run)
+scripts/cdp.mjs press   <target> <key> [--format json] # press key (alias: key; Enter/Escape/Tab auto-return perceive diff; non-listing Enter keyDown includes a carriage return so keypress and implicit submit run). Pressed is printed only after a keydown is observed; otherwise Kind: press-not-delivered
 scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--format json] # relative scroll (auto-returns perceive diff)
 scripts/cdp.mjs scroll  <target> to bottom [--format json] [--compact] # document end, or nested overflow when the document cannot scroll; skinny scrollY or scrollTop / scrollMax / at-bottom
 scripts/cdp.mjs scroll  <target> to top [--format json] [--compact]    # document start, or nested overflow when the document cannot scroll; skinny scrollY or scrollTop / scrollMax / at-top
@@ -1328,9 +1329,13 @@ that are not those controls are unchanged. Exit code is 1 for every failed kind.
 viewport centre once and re-tested first. Next is `cdp click <target> <sel> --js` (a JS click
 does not hit-test), or `cdp dismiss-modal <target>` when the cover is a dialog; the hints add
 `cdp overlay <target> <sel>`. Only the centre point is tested, and an `@fN:M` target is not
-tested against covers in the parent document. A named
+tested against covers in the parent document. A target with no positive box inside the viewport
+(a zero-size control, or one that stays off-screen) is not clicked at (0, 0). A descendant or an
+associated `<label>` with a positive in-viewport box is used instead. Otherwise nothing is sent
+and the click exits 1 with `Kind: no-click-box` (`dispatched: false`) and one Next,
+`cdp jsclick <target> <sel>`. `clickxy` is an explicit point and is unchanged.
 
-named query (`click` / `jsclick` `"Browse 1M+ applications"`) is the one-step
+A named query (`click` / `jsclick` `"Browse 1M+ applications"`) is the one-step
 jsclick path: no `perceive -C -d 8`, unique off-screen names `scrollIntoView`
 then click, skinny URL receipt (Scroll before/after when it scrolled).
 

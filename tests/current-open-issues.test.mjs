@@ -6074,6 +6074,20 @@ describe('issues #255-#257 leftover contracts', () => {
           if (expr.includes('innerWidth')) {
             return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
           }
+          if (expr.includes('chrome-cdp-ex.press-probe.v1')) {
+            const installing = expr.includes("addEventListener('keydown'");
+            return Promise.resolve({
+              result: {
+                value: {
+                  marker: 'chrome-cdp-ex.press-probe.v1',
+                  ok: true,
+                  installed: true,
+                  matched: !installing,
+                  count: installing ? 0 : 1,
+                },
+              },
+            });
+          }
           return Promise.resolve({ result: { value: '{}' } });
         }
         if (method === 'Page.captureScreenshot') {
@@ -6984,6 +6998,20 @@ describe('issue #282 leftover pdf-viewer.v1 press settle', () => {
           if (expr.includes('innerWidth')) {
             return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
           }
+          if (expr.includes('chrome-cdp-ex.press-probe.v1')) {
+            const installing = expr.includes("addEventListener('keydown'");
+            return Promise.resolve({
+              result: {
+                value: {
+                  marker: 'chrome-cdp-ex.press-probe.v1',
+                  ok: true,
+                  installed: true,
+                  matched: !installing,
+                  count: installing ? 0 : 1,
+                },
+              },
+            });
+          }
           return Promise.resolve({ result: { value: '{}' } });
         }
         if (method === 'Accessibility.getFullAXTree') {
@@ -7268,6 +7296,20 @@ describe('issue #285 leftover pdf-viewer.v1 click --js / scroll Next', () => {
           }
           if (expr.includes('innerWidth')) {
             return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
+          }
+          if (expr.includes('chrome-cdp-ex.press-probe.v1')) {
+            const installing = expr.includes("addEventListener('keydown'");
+            return Promise.resolve({
+              result: {
+                value: {
+                  marker: 'chrome-cdp-ex.press-probe.v1',
+                  ok: true,
+                  installed: true,
+                  matched: !installing,
+                  count: installing ? 0 : 1,
+                },
+              },
+            });
           }
           return Promise.resolve({ result: { value: '{}' } });
         }

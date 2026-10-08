@@ -285,6 +285,20 @@ function responseFor(method, params = {}) {
     case 'Target.getTargets': return { targetInfos: [] };
     case 'Accessibility.getFullAXTree': return { nodes: [] };
     case 'Runtime.evaluate':
+      if (String(params.expression).includes('chrome-cdp-ex.press-probe.v1')) {
+        const installing = String(params.expression).includes("addEventListener('keydown'");
+        return {
+          result: {
+            value: {
+              marker: 'chrome-cdp-ex.press-probe.v1',
+              ok: true,
+              installed: true,
+              matched: !installing,
+              count: installing ? 0 : 1,
+            },
+          },
+        };
+      }
       if (String(params.expression).includes('visibleControls')) return { result: { value: PERCEPTION_META } };
       if (String(params.expression).includes('title: document.title')) {
         return { result: { value: JSON.stringify({ title: 'Fixture', url: 'https://example.test/fixture', readyState: 'complete' }) } };
@@ -382,8 +396,12 @@ function domainInvocations() {
     },
     {
       domain: 'Input',
-      methods: ['Runtime.evaluate', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'],
-      callDigest: 'c76b565b09cfdc990ad4c10d48b7ad0a1c6d7ee5c5ce3c8159d1805d0dc4d2ff',
+      methods: [
+        'Runtime.evaluate', 'Runtime.evaluate',
+        'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent',
+        'Runtime.evaluate', 'Runtime.evaluate',
+      ],
+      callDigest: '17c4deaa7ad5f27e4d6fa3ce94729675fabb4cda7a5e841209827effdec0b150',
       result: 'Pressed Enter',
       invoke: cdp => cdpTest.pressStr(cdp, 'SESSION', 'Enter'),
     },

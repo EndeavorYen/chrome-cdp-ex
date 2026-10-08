@@ -7542,6 +7542,20 @@ function createMockCDP(handlers = {}) {
         clickProbe.seen = [];
         return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen } } });
       }
+      if (probeSource.includes('chrome-cdp-ex.press-probe.v1')) {
+        const installing = probeSource.includes("addEventListener('keydown'");
+        return Promise.resolve({
+          result: {
+            value: {
+              marker: 'chrome-cdp-ex.press-probe.v1',
+              ok: true,
+              installed: true,
+              matched: !installing,
+              count: installing ? 0 : 1,
+            },
+          },
+        });
+      }
       const trustedPresenceCall = method === 'Runtime.callFunctionOn'
         && params.functionDeclaration?.includes('ownerDocumentGetter')
         && params.functionDeclaration.includes('getClientRects');

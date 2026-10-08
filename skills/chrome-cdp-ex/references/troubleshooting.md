@@ -85,6 +85,8 @@ cdp eval <target> "document.visibilityState"
 
 `hidden` means the tab is a background tab, or its browser window is covered by another window or minimised (Windows occlusion tracking); Chrome then drops `Input.*` events. Neither `Page.bringToFront` nor `Target.activateTarget` uncovers a covered window (Windows does not let Chrome raise itself). Background mode, the default, never brings a tab forward. Options: bring the window to the front yourself; for a background tab, rerun with `CDP_BACKGROUND=0` (activates the tab before the command); use `cdp jsclick` (page-side `element.click()`); or launch the browser with `--disable-backgrounding-occluded-windows` (see `docs/daily-browser-cdp.md`), which keeps covered windows rendering. `spawn-debug-browser` passes that flag and `--disable-features=CalculateNativeWinOcclusion` by default (`--allow-occlusion` opts out).
 
+`press` reports `Pressed <key>` only after the page receives a `keydown` for that key. When it does not, the command exits 1 with `Kind: press-not-delivered` and one Next. On a hidden tab that Next is `CDP_BACKGROUND=0 cdp press <target> <key>`: it activates the tab and does not raise a covered window. Otherwise Next is `cdp perceive <target> -C -d 8`. Do not treat a resolved `Input.dispatchKeyEvent` as proof the key landed.
+
 The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
 
 ## `eval` says Identifier has already been declared
@@ -114,6 +116,10 @@ The mouse click's point passed the pre-dispatch hit test, but the event did not 
 
 `click` or `jsclick` reached a control that should react (a button, link, input, or the other controls listed under `click` in `commands.md`) and the page showed no change. The receipt includes `Outcome: no-change` and exits 1. A clipboard or PDF-viewer click that is expected to leave the tree unchanged still exits 0. A checkbox or select that toggles, a download, a navigation, or a new tab still exits 0. A main-frame navigation, including one the page starts itself, drops the previous comparison baseline; the next click compares the document that is loaded. If that baseline cannot be captured, the receipt says the baseline is stale and does not report `Kind: click-no-change`. Inspect with `cdp perceive <target> --since-action` before retrying.
 
+## Click fails with `Kind: no-click-box`
+
+The target has no positive box inside the viewport, so no mouse event was sent (`dispatched: false`). A closed dialog and a zero-size control have no mouse point. A descendant or an associated label with a real in-viewport box is clicked at that box instead. When none exists, Next is `cdp jsclick <target> <sel>`. `clickxy` is an explicit point and is not refused this way.
+
 ## Click fails with `Kind: covered`
 
 The mouse `click` hit-tests the target's centre first. `covered` means another element is on top there, so a real
@@ -142,8 +148,9 @@ clicks without the disabled check.
 
 `click` and `fill` wait for a visible box (non-zero size, not `visibility: hidden` / `display: none`). A
 target with a zero-size box, such as a collapsed search input that expands on focus or a `display: contents`
-wrapper, waits the full 2 s and is then acted on as before. Pass `--wait-ms 0` to skip the wait for such a
-target.
+wrapper, waits the full 2 s. After that wait, `click` uses a descendant or associated label box when one
+is inside the viewport. If the target still has no positive in-viewport box, `click` exits 1 with
+`Kind: no-click-box` and sends nothing. Pass `--wait-ms 0` to skip the wait for such a target.
 
 ## Electron screenshot fallbacks
 

@@ -8,6 +8,23 @@ function recordingCdp() {
     calls,
     send(method, params = {}, sessionId) {
       calls.push({ method, params, sessionId });
+      if (method === 'Runtime.evaluate') {
+        const expr = String(params.expression || '');
+        if (expr.includes('chrome-cdp-ex.press-probe.v1')) {
+          const installing = expr.includes("addEventListener('keydown'");
+          return Promise.resolve({
+            result: {
+              value: {
+                marker: 'chrome-cdp-ex.press-probe.v1',
+                ok: true,
+                installed: true,
+                matched: !installing,
+                count: installing ? 0 : 1,
+              },
+            },
+          });
+        }
+      }
       return Promise.resolve({});
     },
   };

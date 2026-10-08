@@ -115,6 +115,20 @@ function createSearchSubmitCdp({
       }
       if (method === 'Runtime.evaluate') {
         const expr = String(params.expression || '');
+        if (expr.includes('chrome-cdp-ex.press-probe.v1')) {
+          const installing = expr.includes("addEventListener('keydown'");
+          return Promise.resolve({
+            result: {
+              value: {
+                marker: 'chrome-cdp-ex.press-probe.v1',
+                ok: true,
+                installed: true,
+                matched: !installing,
+                count: installing ? 0 : 1,
+              },
+            },
+          });
+        }
         if (expr.includes('chrome-cdp-ex.search-submit')) {
           const value = typeof probe === 'function' ? probe() : probe;
           return Promise.resolve({ result: { value } });

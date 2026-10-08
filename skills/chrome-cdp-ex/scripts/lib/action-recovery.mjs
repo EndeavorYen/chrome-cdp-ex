@@ -224,6 +224,53 @@ function classifyCoveredDragFailure(err, { base, targetId, input, message }) {
   };
 }
 
+// #614: the target has no positive box inside the viewport. jsclick runs the handler
+// without a mouse point. One Next.
+function classifyNoClickBoxFailure(err, { base, targetId, input }) {
+  const raw = err?.noClickBox && typeof err.noClickBox === 'object' ? err.noClickBox : {};
+  const selector = String(raw.selector || input || '').trim();
+  const arg = selector ? recoveryCommandArg(selector) : '';
+  const jsClick = arg ? `cdp jsclick ${targetId} ${arg}` : `cdp perceive ${targetId} -C -d 8`;
+  return {
+    ...base,
+    kind: 'no-click-box',
+    dispatched: false,
+    reason: 'The target has no positive-size box inside the viewport, so no mouse click was sent.',
+    nextCommand: jsClick,
+    hints: [
+      `Run the handler without a mouse point: \`${jsClick}\`.`,
+      'A closed dialog and a zero-size control have no viewport box. Do not click at (0, 0).',
+    ],
+  };
+}
+
+// #607: the key was not observed on the page. A hidden tab's Next activates that
+// tab; it does not raise a covered window.
+function classifyPressNotDeliveredFailure(err, { base, targetId, input, perceiveCommand, message }) {
+  const raw = err?.pressNotDelivered && typeof err.pressNotDelivered === 'object' ? err.pressNotDelivered : {};
+  const hidden = raw.visibility === 'hidden' || String(message || '').toLowerCase().includes('visibilitystate is hidden');
+  const key = String(raw.key || input || '').trim();
+  const keyArg = key ? recoveryCommandArg(key) : '';
+  const foreground = keyArg
+    ? `CDP_BACKGROUND=0 cdp press ${targetId} ${keyArg}`
+    : `CDP_BACKGROUND=0 cdp press ${targetId}`;
+  return {
+    ...base,
+    kind: 'press-not-delivered',
+    dispatched: false,
+    visibility: hidden ? 'hidden' : (raw.visibility || 'unknown'),
+    reason: hidden
+      ? 'The tab is hidden, so the keydown was not delivered. The recovery activates the tab and does not raise a covered window.'
+      : 'The key was not delivered. The page received no keydown.',
+    nextCommand: hidden ? foreground : perceiveCommand,
+    hints: [
+      ...(hidden ? [`\`${foreground}\` activates the tab first. It does not raise a window other windows cover.`] : []),
+      `Re-read the page with \`${perceiveCommand}\`.`,
+      'Do not treat a Pressed line as success when the page received no keydown.',
+    ],
+  };
+}
+
 // #552: the gesture was sent (or the target disappeared before it could be) and the
 // intended element did not receive it. Distinct from covered, which sends nothing.
 function classifyMisdirectedClickFailure(err, { base, targetId }) {
@@ -524,6 +571,11 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyCoveredClickFailure(err, { base, targetId, input });
   }
 
+  // #614: nothing was sent. A zero-size or off-viewport target is not a click at (0, 0).
+  if ((err?.noClickBox && typeof err.noClickBox === 'object') || /has no clickable box/i.test(originalMessage)) {
+    return classifyNoClickBoxFailure(err, { base, targetId, input });
+  }
+
   // #552: after covered, before the generic overlay/"hit test" matcher.
   if ((err?.clickMisdirected && typeof err.clickMisdirected === 'object') || MISDIRECTED_CLICK_MESSAGE_RE.test(originalMessage)) {
     return classifyMisdirectedClickFailure(err, { base, targetId });
@@ -709,6 +761,14 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
         'For HTML5 drag-and-drop, drag the element that is draggable (draggable="true", or a link or image).',
       ],
     };
+  }
+
+  // #607: dispatchKeyEvent resolved, but the page's keydown listener did not run.
+  if (
+    (err?.pressNotDelivered && typeof err.pressNotDelivered === 'object')
+    || (/was not delivered/i.test(originalMessage) && /no keydown/i.test(originalMessage))
+  ) {
+    return classifyPressNotDeliveredFailure(err, { base, targetId, input, perceiveCommand, message: originalMessage });
   }
 
   if (
@@ -1448,6 +1508,24 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'perceive', reason: 'See which input or state the control is waiting on.' },
     ],
     avoid: ['retrying the same action unchanged while the control is disabled'],
+  },
+  'no-click-box': {
+    strategy: 'use-jsclick',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Run the control with jsclick. A closed dialog has no mouse point.' },
+    ],
+    avoid: ['clicking at (0, 0) when the target has no box in the viewport'],
+  },
+  'press-not-delivered': {
+    strategy: 'confirm-key-delivery',
+    priority: 'high',
+    verify: 'perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Retry a hidden tab with CDP_BACKGROUND=0, or re-read the page.' },
+    ],
+    avoid: ['treating Pressed as success when the page received no keydown', 'raising the browser window'],
   },
   'no-input-events': {
     strategy: 'use-jsclick',
