@@ -112,7 +112,7 @@ The mouse click's point passed the pre-dispatch hit test, but the event did not 
 
 ## Click fails with `Kind: click-no-change`
 
-`click` or `jsclick` reached a control that should react (a button, link, input, or the other controls listed under `click` in `commands.md`) and the page showed no change. The receipt includes `Outcome: no-change` and exits 1. A clipboard or PDF-viewer click that is expected to leave the tree unchanged still exits 0. A checkbox or select that toggles, a download, a navigation, or a new tab still exits 0. Inspect with `cdp perceive <target> --since-action` before retrying.
+`click` or `jsclick` reached a control that should react (a button, link, input, or the other controls listed under `click` in `commands.md`) and the page showed no change. The receipt includes `Outcome: no-change` and exits 1. A clipboard or PDF-viewer click that is expected to leave the tree unchanged still exits 0. A checkbox or select that toggles, a download, a navigation, or a new tab still exits 0. A main-frame navigation, including one the page starts itself, drops the previous comparison baseline; the next click compares the document that is loaded. If that baseline cannot be captured, the receipt says the baseline is stale and does not report `Kind: click-no-change`. Inspect with `cdp perceive <target> --since-action` before retrying.
 
 ## Click fails with `Kind: covered`
 

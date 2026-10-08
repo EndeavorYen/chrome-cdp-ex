@@ -7528,6 +7528,10 @@ function noBaselineActionDiffText() {
   return 'No changes detected.';
 }
 
+// #589: the previous document's AX snapshot cannot be compared, and a snapshot
+// of the loaded document could not be taken. This is not a no-change.
+const STALE_NAVIGATION_BASELINE_REASON = 'The comparison baseline is stale: the page navigated, and a baseline for the loaded document could not be captured.';
+
 // The settle result of an action that had no baseline. When the first-action
 // snapshot failed (#504) nothing was compared, so the DOM observation is null
 // (Outcome: dispatched) rather than a no-change the page never showed.
@@ -7723,6 +7727,14 @@ function actionSettleBaseline(output, snapshotOpts = null, actionTarget = {}) {
   return { output: output || null, opts: opts || null };
 }
 
+function actionSkipsSettleBaseline(actionTarget = {}, feedbackPolicy = 'settle-diff', observe = null) {
+  // Report-only receipts and custom observers never diff against the baseline.
+  if (observe || feedbackPolicy === 'none' || feedbackPolicy === 'report-only') return true;
+  // A fresh daemon has no live refs: the @ref dispatch fails as stale anyway.
+  const input = String(actionTarget?.input || '');
+  return isRef(input) || isCursorRef(input) || Boolean(frameRefFromActionTarget(actionTarget));
+}
+
 function shouldCaptureFirstActionBaseline(lastPerceiveStore, actionTarget = {}, feedbackPolicy = 'settle-diff', observe = null) {
   // #504: a daemon that has not perceived yet (fresh attach or restart) has no
   // leftover tree to diff against. Without a before-snapshot the settle step
@@ -7730,11 +7742,20 @@ function shouldCaptureFirstActionBaseline(lastPerceiveStore, actionTarget = {}, 
   // changed it. An idle-hover discard leaves snapshotOpts set; it is not a
   // fresh daemon and keeps its own rule (#291).
   if (lastPerceiveStore?.output != null || lastPerceiveStore?.snapshotOpts != null) return false;
-  // Report-only receipts and custom observers never diff against the baseline.
-  if (observe || feedbackPolicy === 'none' || feedbackPolicy === 'report-only') return false;
-  // A fresh daemon has no live refs: the @ref dispatch fails as stale anyway.
-  const input = String(actionTarget?.input || '');
-  if (isRef(input) || isCursorRef(input) || frameRefFromActionTarget(actionTarget)) return false;
+  if (actionSkipsSettleBaseline(actionTarget, feedbackPolicy, observe)) return false;
+  return true;
+}
+
+function shouldRecaptureNavigatedBaseline(lastPerceiveStore, refState, actionTarget = {}, feedbackPolicy = 'settle-diff', observe = null) {
+  // #589: Page.frameNavigated on the main frame (a page script reload,
+  // location.href assignment, or the tool's own nav) invalidates refs and
+  // leaves the previous document's AX snapshot in place. The next settle
+  // must compare against the document that is loaded. A menu that was open,
+  // then the page reloaded, then the click opens it again, otherwise diffs
+  // as no-change. An idle-hover discard is not a navigation (#291).
+  if (refState?.invalidationReason !== 'navigation') return false;
+  if (lastPerceiveStore?.output == null && lastPerceiveStore?.snapshotOpts == null) return false;
+  if (actionSkipsSettleBaseline(actionTarget, feedbackPolicy, observe)) return false;
   return true;
 }
 
@@ -7751,19 +7772,35 @@ async function captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, ta
   };
 }
 
+// One capture of the loaded document. If a main-frame navigation commits
+// while that capture is in flight, the first tree can still be the previous
+// document; take one more after the commit.
+async function captureActionDocumentBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId, pageGeneration) {
+  const readGeneration = () => (typeof pageGeneration === 'function' ? pageGeneration() : pageGeneration);
+  const before = readGeneration();
+  let captured = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+  const after = readGeneration();
+  if (before != null && after != null && before !== after) {
+    captured = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+  }
+  return captured;
+}
+
 // What an action's settle step diffs against: the leftover perceive in its own
 // shape, a recaptured top-level tree when the leftover is a cards/frame view
-// (#257/#279), or a fresh capture when the daemon has not perceived yet (#504).
+// (#257/#279), a fresh capture when the daemon has not perceived yet (#504),
+// or a fresh capture when that leftover tree belongs to a document the page
+// has since navigated away from (#589).
 async function resolveActionSettleBaseline({
   cdp, sid, consoleBuf, exceptionBuf, refMap, refState, lastPerceiveStore, targetId,
-  action, actionTarget, feedbackPolicy = 'settle-diff', observe = null,
+  action, actionTarget, feedbackPolicy = 'settle-diff', observe = null, pageGeneration = null,
 }) {
   let baselineFromTarget = baselineOutputForActionTarget(refState, perceiveStoreDiffSource(lastPerceiveStore), actionTarget);
   let baselineSnapshotOpts = lastPerceiveStore.snapshotOpts || null;
   if (shouldCaptureFirstActionBaseline(lastPerceiveStore, actionTarget, feedbackPolicy, observe)) {
     let first;
     try {
-      first = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+      first = await captureActionDocumentBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId, pageGeneration);
     } catch {
       // A failed snapshot must not fail the action: dispatch it without a
       // baseline, and let the receipt say the DOM change was not observed.
@@ -7771,6 +7808,17 @@ async function resolveActionSettleBaseline({
     }
     baselineFromTarget = first.output;
     baselineSnapshotOpts = first.snapshotOpts;
+  } else if (shouldRecaptureNavigatedBaseline(lastPerceiveStore, refState, actionTarget, feedbackPolicy, observe)) {
+    let fresh;
+    try {
+      fresh = await captureActionDocumentBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId, pageGeneration);
+    } catch {
+      // Keep the previous document's tree out of the comparison. The receipt
+      // says the baseline is stale instead of reporting a failed click.
+      return { output: null, opts: null, captureFailed: true, baselineStale: true };
+    }
+    baselineFromTarget = fresh.output;
+    baselineSnapshotOpts = fresh.snapshotOpts;
   }
   let settleBaseline = actionSettleBaseline(
     baselineFromTarget,
@@ -8050,11 +8098,14 @@ function buildActionOutcome(actionResult = {}) {
     };
   }
 
+  const baselineStale = actionResult.target?.baselineStale === true || effects.baselineStale === true;
   return {
     ...base,
     status: 'dispatched',
     evidence: 'dispatch',
-    reason: 'Action dispatched; no DOM observation was captured for this command.',
+    reason: baselineStale
+      ? STALE_NAVIGATION_BASELINE_REASON
+      : 'Action dispatched; no DOM observation was captured for this command.',
   };
 }
 
@@ -8978,6 +9029,8 @@ const DEFAULT_SKINNY_MUTATING_ACTIONS = new Set([
 ]);
 
 function isDefaultSkinnyMutatingAction(result = {}) {
+  // A stale navigation baseline has to say so. The one-line receipt would hide it.
+  if (result.target?.baselineStale === true || result.effects?.baselineStale === true) return false;
   return DEFAULT_SKINNY_MUTATING_ACTIONS.has(String(result.action || '').toLowerCase());
 }
 
@@ -28049,6 +28102,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const actionTarget = target && typeof target === 'object'
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
+    const pageGeneration = () => session.pageGeneration;
     const settleBaseline = await resolveActionSettleBaseline({
       cdp,
       sid: sessionId,
@@ -28062,9 +28116,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       actionTarget,
       feedbackPolicy,
       observe,
+      pageGeneration,
     });
     const baselineOutput = settleBaseline.output;
     const baselineOpts = settleBaseline.opts;
+    if (settleBaseline.baselineStale) actionTarget.baselineStale = true;
     const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf, dialogBuf });
     const actionStartedAt = Date.now();
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts, {

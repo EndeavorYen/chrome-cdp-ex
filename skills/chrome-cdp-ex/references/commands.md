@@ -1315,8 +1315,11 @@ element is gone before dispatch, nothing is sent and the kind is still `misdirec
 summary, option, label, or an ARIA role of button, link, checkbox, radio, switch, tab,
 menuitem, option, combobox, slider, spinbutton, textbox, or searchbox) exit 1 with
 `Kind: click-no-change` when settle is Outcome: no-change, unless that no-change is an
-existing expected case (clipboard, PDF viewer). `clickxy` and elements that are not those
-controls are unchanged. Exit code is 1 for every failed kind. If anything else is on top
+existing expected case (clipboard, PDF viewer). A main-frame navigation, including one the
+page starts itself, drops the previous comparison baseline. The next click compares the
+loaded document. If that baseline cannot be captured, the receipt says the baseline is stale
+(`Outcome: dispatched`) and does not report `Kind: click-no-change`. `clickxy` and elements
+that are not those controls are unchanged. Exit code is 1 for every failed kind. If anything else is on top
 (a fixed sidebar, sticky header, toast, or dialog), nothing is sent and the click exits 1:
 `Error: click point (549, 219) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation> "load:1" (inside position:fixed <ASIDE.sidebar>)…`,
 `Kind: covered`, `dispatched: false`. A fully visible target that is covered is scrolled to the
