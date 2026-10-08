@@ -8,3 +8,6 @@ coverage/
 
 # OMC
 .omc
+
+# Scratch JPEG frames from experiment/attach-beam-hero-render.mjs
+.attach-beam-frames/
