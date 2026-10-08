@@ -16,7 +16,7 @@ chrome-cdp-ex is effective, efficient, and easy for agents to use. When those go
 - Default output is concise.
 - Bulk or sensitive detail is opt-in, using the flags that exist in the runtime: `--verbose` (`-v` on `shot`, the long coordinate-mapping text), `--full` (the complete `snap` tree, or the full action JSON envelope), and `--unsafe-full` (unredacted or unbounded output on `netlog`, `checkpoint`, and `components`; on action commands it selects the same full envelope as `--full`).
 - Any change to perceive, act, or output format must report before/after `agentChars` and `wallMs`. `agentChars` is the Unicode code-point length of agent-facing stdout plus stderr. `wallMs` is wall-clock milliseconds for the scored commands.
-- `npm run benchmark:slice1` is not on `main` yet. When it is available, measure that change with `npm run benchmark:slice1` once it lands. Do not treat it as a merge gate. That matches the existing stance on `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) and validation-lab phases 4–7: those are not merge requirements either.
+- Measure that change with `npm run benchmark:slice1`. Do not treat it as a merge gate. That matches the existing stance on `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) and validation-lab phases 4–7: those are not merge requirements either.
 
 ### Easy for agents
 

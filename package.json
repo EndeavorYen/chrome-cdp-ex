@@ -36,7 +36,8 @@
     "benchmark:update-readme": "node scripts/update-readme-benchmark.mjs",
     "benchmark:generic-cdp": "node scripts/benchmark-generic-cdp-baseline.mjs",
     "benchmark:playwright": "node scripts/benchmark-playwright-baseline.mjs",
-    "benchmark:baseline": "node scripts/benchmark-baseline-builder.mjs"
+    "benchmark:baseline": "node scripts/benchmark-baseline-builder.mjs",
+    "benchmark:slice1": "node scripts/benchmark-slice1.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
