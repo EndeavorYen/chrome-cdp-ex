@@ -1,11 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  FRAMES_MARKER,
+  FRAMES_MARKER_TEXT,
   JPEG_TO_TV_FILTER,
   POSTER_T,
   USAGE,
@@ -13,6 +15,7 @@ import {
   buildAttachBeamPlan,
   ffmpegMuxArgs,
   loadPlaywright,
+  prepareFramesDir,
   resolveAttachBeamPaths,
   runAttachBeam,
 } from '../experiment/attach-beam-hero-render.mjs';
@@ -156,12 +159,13 @@ describe('#591 attach beam hero render script', () => {
 
     const { root, experiment } = layout();
     const copyDir = path.join(root, 'motion');
+    const framesDir = mkdtempSync(path.join(tmpdir(), 'attach-beam-scratch-'));
     const rendered = await runAttachBeam({
       scriptDir: experiment,
       repoRoot: root,
       cwd: root,
       env: {},
-      argv: ['--copy-dir', copyDir, '--frames-dir', path.join(root, 'frames'), '--browser-channel', 'chrome'],
+      argv: ['--copy-dir', copyDir, '--frames-dir', framesDir, '--browser-channel', 'chrome'],
       loadPlaywright: async () => ({ chromium: { launch() {} } }),
       captureFrames: async (plan) => {
         expect(plan.browserChannel).toBe('chrome');
@@ -185,7 +189,7 @@ describe('#591 attach beam hero render script', () => {
       repoRoot: root,
       cwd: root,
       env: {},
-      argv: ['--frames-dir', path.join(root, 'frames')],
+      argv: ['--frames-dir', framesDir],
       loadPlaywright: async () => ({ chromium: {} }),
       captureFrames: async () => {},
       mux: async () => {},
@@ -219,5 +223,188 @@ describe('#591 attach beam hero render script', () => {
         throw new Error('should not load');
       },
     })).rejects.toThrow(/Refusing to wipe/);
+  });
+
+  it('refuses .git, a repo source folder, a non-empty home stand-in, and a parent of the output', async () => {
+    const scratch = mkdtempSync(path.join(tmpdir(), 'attach-beam-guard-'));
+    const repo = path.join(scratch, 'repo');
+    const experiment = path.join(repo, 'experiment');
+    mkdirSync(experiment, { recursive: true });
+    writeFileSync(path.join(experiment, 'attach-beam-hero.html'), '<html></html>');
+    writeFileSync(path.join(experiment, 'attach-beam-hero-render.mjs'), 'script');
+
+    const gitDir = path.join(repo, '.git');
+    const scriptsDir = path.join(repo, 'scripts');
+    const homeDir = path.join(scratch, 'home');
+    const outParent = path.join(scratch, 'out-parent');
+    const outDir = path.join(outParent, 'out');
+    const emptyOutParent = path.join(scratch, 'empty-out-parent');
+    const emptyOut = path.join(emptyOutParent, 'out');
+    const emptyCopyParent = path.join(scratch, 'empty-copy-parent');
+    const emptyCopy = path.join(emptyCopyParent, 'copy');
+    const emptyDocs = path.join(repo, 'docs');
+    const seedNames = ['keep.txt', 'frame-00000.jpg'];
+    const seedDir = (dir) => {
+      mkdirSync(dir, { recursive: true });
+      for (const name of seedNames) writeFileSync(path.join(dir, name), `seed:${name}`);
+    };
+    seedDir(gitDir);
+    seedDir(scriptsDir);
+    seedDir(homeDir);
+    seedDir(outParent);
+    mkdirSync(outDir);
+    mkdirSync(emptyOutParent);
+    mkdirSync(emptyCopyParent);
+    mkdirSync(emptyDocs);
+
+    const base = { scriptDir: experiment, repoRoot: repo, cwd: repo, env: {} };
+    const cases = [
+      ['git', gitDir, ['--frames-dir', gitDir, '--out-dir', outDir]],
+      ['git trailing slash', `${gitDir}${path.sep}`, ['--frames-dir', `${gitDir}${path.sep}`, '--out-dir', outDir]],
+      ['scripts', scriptsDir, ['--frames-dir', scriptsDir, '--out-dir', outDir]],
+      ['scripts trailing slash', `${scriptsDir}${path.sep}`, ['--frames-dir', `${scriptsDir}${path.sep}`, '--out-dir', outDir]],
+      ['home stand-in', homeDir, ['--frames-dir', homeDir, '--out-dir', outDir]],
+      ['parent of out-dir', outParent, ['--frames-dir', outParent, '--out-dir', outDir]],
+      ['parent of out-dir trailing slash', `${outParent}${path.sep}`, ['--frames-dir', `${outParent}${path.sep}`, '--out-dir', `${outDir}${path.sep}`]],
+      ['empty parent of out-dir', emptyOutParent, ['--frames-dir', emptyOutParent, '--out-dir', emptyOut]],
+      ['empty parent of copy-dir', emptyCopyParent, ['--frames-dir', emptyCopyParent, '--out-dir', outDir, '--copy-dir', emptyCopy]],
+    ];
+
+    for (const [name, framesDir, argv] of cases) {
+      const before = readdirSync(framesDir).sort();
+      const plan = buildAttachBeamPlan({ ...base, argv });
+      expect(() => assertSafeFramesDir({ ...plan, framesDir }), name).toThrow(/Refusing to wipe/);
+      await expect(runAttachBeam({
+        ...base,
+        argv,
+        loadPlaywright: async () => {
+          throw new Error(`playwright should not load (${name})`);
+        },
+        captureFrames: async () => {
+          throw new Error(`capture should not run (${name})`);
+        },
+      }), name).rejects.toThrow(/Refusing to wipe/);
+      expect(readdirSync(framesDir).sort(), name).toEqual(before);
+      for (const fileName of seedNames) {
+        if (!before.includes(fileName)) continue;
+        expect(readFileSync(path.join(framesDir, fileName), 'utf8'), `${name}:${fileName}`).toBe(`seed:${fileName}`);
+      }
+    }
+
+    const linkDir = (target, link) => {
+      try {
+        symlinkSync(target, link, 'dir');
+        return true;
+      } catch {
+        try {
+          symlinkSync(target, link, 'junction');
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    };
+    const docsLink = path.join(scratch, 'docs-link');
+    if (linkDir(emptyDocs, docsLink)) {
+      const plan = buildAttachBeamPlan({ ...base, argv: ['--frames-dir', docsLink, '--out-dir', outDir] });
+      expect(() => assertSafeFramesDir(plan)).toThrow(/Refusing to wipe/);
+      expect(readdirSync(emptyDocs)).toEqual([]);
+      expect(existsSync(docsLink)).toBe(true);
+    } else if (process.platform !== 'win32') {
+      throw new Error('expected to create a directory symlink');
+    }
+    const parentLink = path.join(scratch, 'parent-link');
+    if (linkDir(emptyOutParent, parentLink)) {
+      const framesDir = `${parentLink}${path.sep}`;
+      const plan = buildAttachBeamPlan({ ...base, argv: ['--frames-dir', emptyOut, '--out-dir', emptyOut] });
+      expect(() => assertSafeFramesDir({ ...plan, framesDir, outDir: emptyOut, copyDir: null })).toThrow(/Refusing to wipe/);
+      expect(readdirSync(emptyOutParent)).toEqual([]);
+    }
+    const outLink = path.join(scratch, 'out-link');
+    const copyLink = path.join(scratch, 'copy-link');
+    if (linkDir(emptyOut, outLink) && linkDir(emptyCopy, copyLink)) {
+      const viaLinks = buildAttachBeamPlan({
+        ...base,
+        argv: ['--frames-dir', `${emptyOutParent}${path.sep}`, '--out-dir', `${outLink}${path.sep}`, '--copy-dir', copyLink],
+      });
+      expect(() => assertSafeFramesDir(viaLinks)).toThrow(/ancestor of the output directory/);
+      const viaCopy = buildAttachBeamPlan({
+        ...base,
+        argv: ['--frames-dir', emptyCopyParent, '--out-dir', outDir, '--copy-dir', `${copyLink}${path.sep}`],
+      });
+      expect(() => assertSafeFramesDir(viaCopy)).toThrow(/ancestor of the copy directory/);
+      expect(readdirSync(emptyOutParent)).toEqual([]);
+      expect(readdirSync(emptyCopyParent)).toEqual([]);
+    }
+
+    writeFileSync(path.join(gitDir, FRAMES_MARKER), FRAMES_MARKER_TEXT);
+    const markedGit = readdirSync(gitDir).sort();
+    const markedPlan = buildAttachBeamPlan({ ...base, argv: ['--frames-dir', gitDir, '--out-dir', outDir] });
+    await expect(prepareFramesDir(markedPlan)).rejects.toThrow(/Refusing to wipe/);
+    expect(readdirSync(gitDir).sort()).toEqual(markedGit);
+    expect(readFileSync(path.join(gitDir, 'frame-00000.jpg'), 'utf8')).toBe('seed:frame-00000.jpg');
+
+    const defaultFrames = path.join(repo, '.attach-beam-frames');
+    mkdirSync(defaultFrames);
+    const allowed = buildAttachBeamPlan({
+      ...base,
+      argv: ['--frames-dir', `${defaultFrames}${path.sep}`, '--out-dir', outDir],
+    });
+    expect(() => assertSafeFramesDir(allowed)).not.toThrow();
+    const defaultLink = path.join(scratch, 'default-link');
+    if (linkDir(defaultFrames, defaultLink)) {
+      expect(() => assertSafeFramesDir({ ...allowed, framesDir: defaultLink })).not.toThrow();
+      rmSync(defaultLink);
+    }
+    rmSync(defaultFrames, { recursive: true });
+    const skillsDir = path.join(repo, 'skills');
+    mkdirSync(skillsDir);
+    if (linkDir(skillsDir, defaultFrames)) {
+      expect(() => assertSafeFramesDir({ ...allowed, framesDir: defaultFrames })).toThrow(/Refusing to wipe/);
+      expect(readdirSync(skillsDir)).toEqual([]);
+    }
+  });
+
+  it('deletes only frame-#####.jpg files in a directory this script marked', async () => {
+    const scratch = mkdtempSync(path.join(tmpdir(), 'attach-beam-clean-'));
+    const repo = path.join(scratch, 'repo');
+    const experiment = path.join(repo, 'experiment');
+    const frames = path.join(scratch, 'frames');
+    const outDir = path.join(scratch, 'out');
+    mkdirSync(experiment, { recursive: true });
+    mkdirSync(frames);
+    writeFileSync(path.join(experiment, 'attach-beam-hero.html'), '<html></html>');
+    const plan = buildAttachBeamPlan({
+      scriptDir: experiment,
+      repoRoot: repo,
+      cwd: scratch,
+      env: {},
+      argv: ['--frames-dir', frames, '--out-dir', outDir],
+    });
+
+    writeFileSync(path.join(frames, 'keep.txt'), 'keep');
+    writeFileSync(path.join(frames, 'frame-00000.jpg'), 'old');
+    await expect(prepareFramesDir(plan)).rejects.toThrow(/Refusing to wipe/);
+    expect(readFileSync(path.join(frames, 'keep.txt'), 'utf8')).toBe('keep');
+    expect(readFileSync(path.join(frames, 'frame-00000.jpg'), 'utf8')).toBe('old');
+    expect(existsSync(path.join(frames, FRAMES_MARKER))).toBe(false);
+
+    writeFileSync(path.join(frames, FRAMES_MARKER), 'not-from-this-script\n');
+    await expect(prepareFramesDir(plan)).rejects.toThrow(/Refusing to wipe/);
+    expect(readFileSync(path.join(frames, 'frame-00000.jpg'), 'utf8')).toBe('old');
+
+    writeFileSync(path.join(frames, FRAMES_MARKER), FRAMES_MARKER_TEXT);
+    writeFileSync(path.join(frames, 'frame-0000.jpg'), 'short');
+    writeFileSync(path.join(frames, 'frame-00000.JPG'), 'upper');
+    mkdirSync(path.join(frames, 'nested'));
+    writeFileSync(path.join(frames, 'nested', 'frame-00000.jpg'), 'nested');
+    await prepareFramesDir(plan);
+    expect(existsSync(frames)).toBe(true);
+    expect(existsSync(path.join(frames, 'frame-00000.jpg'))).toBe(false);
+    expect(readFileSync(path.join(frames, 'keep.txt'), 'utf8')).toBe('keep');
+    expect(readFileSync(path.join(frames, 'frame-0000.jpg'), 'utf8')).toBe('short');
+    expect(readFileSync(path.join(frames, 'frame-00000.JPG'), 'utf8')).toBe('upper');
+    expect(readFileSync(path.join(frames, 'nested', 'frame-00000.jpg'), 'utf8')).toBe('nested');
+    expect(readFileSync(path.join(frames, FRAMES_MARKER), 'utf8')).toBe(FRAMES_MARKER_TEXT);
   });
 });

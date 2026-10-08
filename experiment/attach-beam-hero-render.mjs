@@ -34,6 +34,13 @@
  *   ATTACH_BEAM_PLAYWRIGHT
  *   ATTACH_BEAM_BROWSER_CHANNEL
  *
+ * Scratch frames are not a directory wipe. The script deletes only files named
+ * frame-#####.jpg, and only after it has written .attach-beam-frames-marker.
+ * A directory inside this repository is refused unless it is the default
+ * <repo>/.attach-beam-frames. An ancestor of --out-dir or --copy-dir is
+ * refused. A non-empty directory without that marker is refused. Symlinks and
+ * trailing slashes are resolved before those checks.
+ *
  * The committed poster is the hook frame at 1.0s. Its on-screen clock reads
  * 00:01, which matches experiment/attach-beam-hero-poster.png. Contrast
  * begins at 2s (clock 00:02).
@@ -43,7 +50,8 @@
  * frames to limited-range yuv420p before libx264.
  */
 import { spawn } from 'node:child_process';
-import { access, copyFile, mkdir, rm } from 'node:fs/promises';
+import { lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { access, copyFile, mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -59,6 +67,11 @@ export const HEIGHT = 1080;
 export const POSTER_T = 1.0;
 /** Full-range JPEG to limited-range 4:2:0. */
 export const JPEG_TO_TV_FILTER = 'scale=out_range=tv,format=yuv420p';
+/** Scratch file this script writes before it will delete frames in a directory. */
+export const FRAMES_MARKER = '.attach-beam-frames-marker';
+export const FRAMES_MARKER_TEXT = 'attach-beam-hero-render\n';
+const FRAME_FILE_NAME = /^frame-\d{5}\.jpg$/;
+const FRAMES_DIR_NEXT = 'mkdir -p /tmp/attach-beam-frames && node experiment/attach-beam-hero-render.mjs --frames-dir /tmp/attach-beam-frames';
 
 const PLAYWRIGHT_INSTALL = 'npm install --no-save --prefix /tmp/attach-beam-playwright playwright';
 const PLAYWRIGHT_RUN = 'ATTACH_BEAM_BROWSER_CHANNEL=chrome ATTACH_BEAM_PLAYWRIGHT=/tmp/attach-beam-playwright node experiment/attach-beam-hero-render.mjs';
@@ -183,28 +196,118 @@ export function buildAttachBeamPlan(options) {
   };
 }
 
-function isInside(parent, child) {
-  const relative = path.relative(path.resolve(parent), path.resolve(child));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+function refuseFrames(dir, reason) {
+  throw fail(`Refusing to wipe ${dir}. ${reason}`, FRAMES_DIR_NEXT);
+}
+
+function isSameOrAncestor(parent, child) {
+  const relative = path.relative(parent, child);
+  if (relative === '') return true;
+  if (path.isAbsolute(relative)) return false;
+  return !relative.split(path.sep).includes('..');
+}
+
+function containment(parent, child, label) {
+  if (!isSameOrAncestor(parent, child)) return null;
+  if (parent === child) return `is the ${label} ${child}`;
+  return `is an ancestor of the ${label} ${child}`;
+}
+
+function resolveRealPath(target, seen = new Set()) {
+  const resolved = path.resolve(target);
+  if (seen.has(resolved)) {
+    refuseFrames(resolved, 'The path contains a symlink cycle.');
+  }
+  seen.add(resolved);
+  let listed;
+  try {
+    listed = lstatSync(resolved);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      refuseFrames(resolved, `The path could not be resolved (${err.message}).`);
+    }
+    const parent = path.dirname(resolved);
+    if (parent === resolved) return resolved;
+    return path.join(resolveRealPath(parent, seen), path.basename(resolved));
+  }
+  if (listed.isSymbolicLink()) {
+    let link;
+    try {
+      link = readlinkSync(resolved);
+    } catch (err) {
+      refuseFrames(resolved, `The symlink could not be read (${err.message}).`);
+    }
+    return resolveRealPath(path.resolve(path.dirname(resolved), link), seen);
+  }
+  try {
+    return realpathSync(resolved);
+  } catch (err) {
+    refuseFrames(resolved, `The path could not be resolved (${err.message}).`);
+  }
+}
+
+function framesMarkerIsOurs(dir) {
+  try {
+    return readFileSync(path.join(dir, FRAMES_MARKER), 'utf8') === FRAMES_MARKER_TEXT;
+  } catch {
+    return false;
+  }
 }
 
 export function assertSafeFramesDir(plan) {
-  const frames = path.resolve(plan.framesDir);
-  const blocked = [
-    path.parse(frames).root,
-    plan.repoRoot,
-    plan.scriptDir,
-    plan.outDir,
-  ].some(dir => path.resolve(dir) === frames);
-  const coversSource = isInside(frames, plan.repoRoot)
-    || isInside(frames, plan.html)
-    || isInside(frames, plan.scriptPath);
-  if (blocked || coversSource) {
-    throw fail(
-      `Refusing to wipe ${frames}. That directory is the repo, the script, the output, a parent of those, or a filesystem root.`,
-      'node experiment/attach-beam-hero-render.mjs --frames-dir .attach-beam-frames',
+  const frames = resolveRealPath(plan.framesDir);
+  const repo = resolveRealPath(plan.repoRoot);
+  const out = resolveRealPath(plan.outDir);
+  const copy = plan.copyDir ? resolveRealPath(plan.copyDir) : null;
+  // Do not follow a symlink at the final component. A default path that points
+  // at another repo directory is not the scratch directory.
+  const defaultFrames = path.join(repo, '.attach-beam-frames');
+  if (frames !== defaultFrames && isSameOrAncestor(repo, frames)) {
+    refuseFrames(
+      frames,
+      `That directory is inside the repository. Only ${defaultFrames} is allowed there.`,
     );
   }
+  const blocked = [
+    containment(frames, out, 'output directory'),
+    copy ? containment(frames, copy, 'copy directory') : null,
+  ].filter(Boolean);
+  if (blocked.length > 0) {
+    refuseFrames(frames, `That directory ${blocked.join(' and ')}.`);
+  }
+  let listed;
+  try {
+    listed = statSync(frames);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    refuseFrames(frames, `The path could not be read (${err.message}).`);
+  }
+  if (!listed.isDirectory()) {
+    refuseFrames(frames, 'That path is not a directory.');
+  }
+  let names;
+  try {
+    names = readdirSync(frames);
+  } catch (err) {
+    refuseFrames(frames, `The directory could not be read (${err.message}).`);
+  }
+  if (names.length > 0 && !framesMarkerIsOurs(frames)) {
+    refuseFrames(
+      frames,
+      `That directory is not empty and has no marker written by this script (${FRAMES_MARKER}).`,
+    );
+  }
+}
+
+export async function prepareFramesDir(plan) {
+  assertSafeFramesDir(plan);
+  await mkdir(plan.framesDir, { recursive: true });
+  const entries = await readdir(plan.framesDir, { withFileTypes: true });
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isFile() || !FRAME_FILE_NAME.test(entry.name)) return;
+    await unlink(path.join(plan.framesDir, entry.name));
+  }));
+  await writeFile(path.join(plan.framesDir, FRAMES_MARKER), FRAMES_MARKER_TEXT);
 }
 
 export function formatDryRun(plan) {
@@ -275,8 +378,7 @@ function runProcess(cmd, args) {
 }
 
 async function captureFrames(plan, playwright) {
-  await rm(plan.framesDir, { recursive: true, force: true });
-  await mkdir(plan.framesDir, { recursive: true });
+  await prepareFramesDir(plan);
   await mkdir(plan.outDir, { recursive: true });
 
   const launchOptions = {
