@@ -10327,7 +10327,10 @@ describe('reloadStr', () => {
     expect(session.refs.map.size).toBe(0);
     expect(session.refs.invalidationReason).toBe('navigation');
     expect(pendingReqs.size).toBe(0);
-    expect(consoleBuf.all()).toEqual([]);
+    // #610: the console ring keeps the pre-reload line. Reads are cut at this
+    // reload, so it is not a current-document entry. Navigation is still cleared.
+    expect(consoleBuf.all().map(entry => entry.text)).toEqual(['before reload']);
+    expect(await T.consoleStr(consoleBuf, exceptionBuf, lastReadSeq, '--all')).toBe('Console buffer is empty');
     expect(navBuf.all()).toEqual([]);
   });
 });

@@ -227,7 +227,7 @@ describe('#594 console and exception lists follow the current document', () => {
 
   it('wires the cut through the main-frame navigation ref invalidation', () => {
     const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
-    expect(src).toMatch(/function invalidateSessionRefs\(session, reason\) \{[\s\S]*reason === 'navigation'[\s\S]*cutDocumentConsoleBuffers\(session\.buffers\)/);
+    expect(src).toMatch(/function invalidateSessionRefs\(session, reason, options = \{\}\) \{[\s\S]*reason === 'navigation' && options\.cutDocument !== false[\s\S]*cutDocumentConsoleBuffers\(session\.buffers\)/);
     expect(src).toMatch(/Page\.frameNavigated[\s\S]{0,500}if \(!params\.frame\.parentId\)[\s\S]*invalidateSessionRefs\(session, 'navigation'\)/);
     expect(src).not.toMatch(/consoleBuf\.all\(\)|exceptionBuf\.all\(\)/);
   });

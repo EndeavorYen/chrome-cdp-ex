@@ -432,7 +432,7 @@ still applies. A strict-mode `function` in a script that also uses `let`,
 
 The daemon buffers console output, exceptions, and action evidence in the background from the moment it starts. Use these commands to query the buffer or summarize the session.
 
-A main-frame navigation (a reload, assigning `location`, or `nav`) cuts the console and exception lists at that commit. `perceive`'s `Console:` line, `summary`, `status`, `console` (including `--all` and `--errors`), `qa`, and `responsive-audit` then count the current document only. Entries from the previous document are omitted, not labelled as failures of the page on screen. A child-frame navigation does not cut the page, and neither does a same-document navigation (`pushState` or a hash change). `netlog` is cut at the same navigation but keeps a short lookback so the document request stays on the list; console has no lookback. An action receipt still reports a console error or exception observed after that action's baseline, including one thrown on the document that then navigated away. `reload` still clears the console, exception, and navigation buffers outright.
+A main-frame navigation (a reload, assigning `location`, or `nav`) cuts the console and exception lists at that commit. `perceive`'s `Console:` line, `summary`, `status`, `console` (including `--all` and `--errors`), `qa`, and `responsive-audit` then count the current document only. Entries from the previous document are omitted, not labelled as failures of the page on screen. A child-frame navigation does not cut the page, and neither does a same-document navigation (`pushState` or a hash change). `netlog` is cut at the same navigation but keeps a short lookback so the document request stays on the list; console has no lookback. An action receipt still reports a console error or exception observed after that action's baseline, including one thrown on the document that then navigated away. `reload` leaves those console and exception entries in place, so an error thrown while the new document loads is still reported. It still clears the navigation and network buffers.
 
 Console errors, warnings, and exceptions are source-mapped in `console`, `status`, and action receipts: `src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)`. `console` adds up to two caller frames as `at …` lines (`stack` in JSON). The map is read from the script's `//# sourceMappingURL=` (inline `data:` or loaded with the page's cookies; 5 MB cap, 1.5 s wait, failing hosts back off 5–60 s). No map, or a slow one, leaves the generated frame unchanged.
 
@@ -861,10 +861,10 @@ scripts/cdp.mjs table <target> --continue ct1.<artifactId>.<offset> --format jso
 ```bash
 scripts/cdp.mjs back    <target>              # go back
 scripts/cdp.mjs forward <target>              # go forward
-scripts/cdp.mjs reload  <target>              # reload current page and clear observation buffers
+scripts/cdp.mjs reload  <target>              # reload current page
 ```
 
-`reload` clears the daemon's console, exception, navigation, and network observation buffers after the page comes back, so the next `status` starts from the fresh page.
+`reload` keeps console and exception entries from the document that just loaded, including an error thrown while that document loaded. Entries from the previous document stay omitted. It clears the navigation and network observation buffers.
 
 ### Tab management
 

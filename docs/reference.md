@@ -151,8 +151,10 @@ or a same-document navigation (`pushState`, a hash change) does not cut.
 `netlog` uses the same navigation but keeps a short lookback so the document
 request remains; console has no lookback. An action receipt still reports a
 console error or exception observed after that action's baseline, including
-one thrown on the document that then navigated away. `reload` still clears
-the console, exception, and navigation buffers.
+one thrown on the document that then navigated away. `reload` leaves those
+console and exception entries in place, so an error thrown while the new
+document loads is still reported. It still clears the navigation and network
+buffers.
 
 Each console entry and exception message is capped at 8 KB when the daemon
 captures it. A cut entry carries `truncated: true` and `originalLength` in
