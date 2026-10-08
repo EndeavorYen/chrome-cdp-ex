@@ -179,9 +179,13 @@ describe('headless background tab hover (#608)', () => {
       ...(/^(1|true|yes|on)$/i.test(process.env.CDP_SMOKE_NO_SANDBOX || '') ? ['--no-sandbox'] : []),
       'about:blank',
     ], { stdio: 'ignore' });
-    const env = { ...process.env, CDP_PORT: String(port), XDG_RUNTIME_DIR: runtime };
+    const env = {
+      ...process.env,
+      CDP_PORT: String(port),
+      ...(process.platform === 'win32' ? { LOCALAPPDATA: runtime } : { XDG_RUNTIME_DIR: runtime }),
+    };
     const run = args => spawnSync(process.execPath, [CDP, ...args], {
-      cwd: REPO, env, encoding: 'utf8', timeout: 30000,
+      cwd: REPO, env, encoding: 'utf8', timeout: 45000,
     });
     let socket;
     try {
@@ -220,28 +224,61 @@ describe('headless background tab hover (#608)', () => {
       });
       const page = await send('Target.createTarget', { url, background: true });
       await send('Target.createTarget', { url: 'about:blank' });
-      await new Promise(resolveWait => setTimeout(resolveWait, 300));
-      const list = run(['list']);
-      expect(list.status).toBe(0);
-      const prefix = list.stdout.split('\n').find(line => line.includes('hover.html'))?.trim().split(/\s+/)[0];
-      expect(prefix).toBeTruthy();
       const attached = await send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
       await send('Runtime.enable', {}, attached.sessionId);
       const read = async () => {
         const result = await send('Runtime.evaluate', {
-          expression: `JSON.stringify({
-            visibility: document.visibilityState,
-            hover: document.querySelector('#a').matches(':hover'),
-            over: window.__hoverDelivery.over
-          })`,
+          expression: `(() => {
+            const button = document.querySelector('#a');
+            const probe = window.__hoverDelivery;
+            if (!button || !probe) {
+              return JSON.stringify({
+                ready: false,
+                href: String(location.href || ''),
+                state: document.readyState,
+              });
+            }
+            return JSON.stringify({
+              ready: true,
+              visibility: document.visibilityState,
+              hover: button.matches(':hover'),
+              over: probe.over,
+            });
+          })()`,
           returnByValue: true,
+          awaitPromise: true,
         }, attached.sessionId);
-        return JSON.parse(result.result.value);
+        const details = result.exceptionDetails;
+        if (details) {
+          throw new Error(details.exception?.description || details.text || 'hover fixture evaluate failed');
+        }
+        const value = result.result?.value;
+        if (typeof value !== 'string') {
+          throw new Error(`hover fixture evaluate returned ${JSON.stringify(result.result)}`);
+        }
+        return JSON.parse(value);
       };
-      const before = await read();
+      const deadline = Date.now() + 15000;
+      let before = null;
+      while (Date.now() < deadline) {
+        before = await read();
+        if (before.ready) break;
+        await new Promise(resolveWait => setTimeout(resolveWait, 200));
+      }
+      expect(before?.ready, JSON.stringify(before)).toBe(true);
       expect(before.visibility).toBe('hidden');
       expect(before.hover).toBe(false);
       expect(before.over).toBe(0);
+      const listDeadline = Date.now() + 10000;
+      let prefix = '';
+      let list = null;
+      while (Date.now() < listDeadline && !prefix) {
+        list = run(['list']);
+        expect(list.status, `${list.stdout}\n${list.stderr}`).toBe(0);
+        prefix = list.stdout.split('\n').find(line => line.includes('hover.html'))?.trim().split(/\s+/)[0] || '';
+        if (!prefix) await new Promise(resolveWait => setTimeout(resolveWait, 200));
+      }
+      expect(prefix, list?.stdout || '').toBeTruthy();
       const hover = run(['hover', prefix, '#a']);
       expect(hover.status, `${hover.stdout}\n${hover.stderr}`).toBe(0);
       expect(hover.stdout).toMatch(/Hovering over <BUTTON>/);
@@ -255,5 +292,5 @@ describe('headless background tab hover (#608)', () => {
       await new Promise(resolveClose => server.close(resolveClose));
       try { rmSync(profile, { recursive: true, force: true }); } catch { /* profile may still be closing */ }
     }
-  }, 45000);
+  }, 120000);
 });
