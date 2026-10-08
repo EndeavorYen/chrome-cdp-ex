@@ -395,7 +395,7 @@ describe('#591 attach beam hero render script', () => {
 
     writeFileSync(path.join(frames, FRAMES_MARKER), FRAMES_MARKER_TEXT);
     writeFileSync(path.join(frames, 'frame-0000.jpg'), 'short');
-    writeFileSync(path.join(frames, 'frame-00000.JPG'), 'upper');
+    writeFileSync(path.join(frames, 'frame-00000.jpeg'), 'jpeg');
     mkdirSync(path.join(frames, 'nested'));
     writeFileSync(path.join(frames, 'nested', 'frame-00000.jpg'), 'nested');
     await prepareFramesDir(plan);
@@ -403,8 +403,25 @@ describe('#591 attach beam hero render script', () => {
     expect(existsSync(path.join(frames, 'frame-00000.jpg'))).toBe(false);
     expect(readFileSync(path.join(frames, 'keep.txt'), 'utf8')).toBe('keep');
     expect(readFileSync(path.join(frames, 'frame-0000.jpg'), 'utf8')).toBe('short');
-    expect(readFileSync(path.join(frames, 'frame-00000.JPG'), 'utf8')).toBe('upper');
+    expect(readFileSync(path.join(frames, 'frame-00000.jpeg'), 'utf8')).toBe('jpeg');
     expect(readFileSync(path.join(frames, 'nested', 'frame-00000.jpg'), 'utf8')).toBe('nested');
     expect(readFileSync(path.join(frames, FRAMES_MARKER), 'utf8')).toBe(FRAMES_MARKER_TEXT);
+
+    // A case-only sibling of frame-#####.jpg is the same path on Windows.
+    // Keep the uppercase name in its own directory so the match stays case-sensitive.
+    const upper = path.join(scratch, 'upper-frames');
+    mkdirSync(upper);
+    writeFileSync(path.join(upper, FRAMES_MARKER), FRAMES_MARKER_TEXT);
+    writeFileSync(path.join(upper, 'frame-00000.JPG'), 'upper');
+    writeFileSync(path.join(upper, 'keep.txt'), 'keep');
+    await prepareFramesDir(buildAttachBeamPlan({
+      scriptDir: experiment,
+      repoRoot: repo,
+      cwd: scratch,
+      env: {},
+      argv: ['--frames-dir', upper, '--out-dir', outDir],
+    }));
+    expect(readFileSync(path.join(upper, 'frame-00000.JPG'), 'utf8')).toBe('upper');
+    expect(readFileSync(path.join(upper, 'keep.txt'), 'utf8')).toBe('keep');
   });
 });
