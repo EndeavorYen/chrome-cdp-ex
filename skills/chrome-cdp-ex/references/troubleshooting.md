@@ -178,13 +178,13 @@ Some Electron builds time out on `Page.captureScreenshot`, and on Windows some r
 
 ## Stale-ref and stale-daemon recovery
 
-A plain `perceive` numbers `@ref` handles `@1..@N`. `perceive --since-action` and `perceive --diff` keep an element that is still on the page on the same number, so the follow-up an action receipt recommends does not point `@N` at a different control. Refresh refs after navigation, a rewrite that removes the node, modal open/close, restore, or any action classified as `stale-ref`:
+A plain `perceive` numbers `@ref` handles `@1..@N`. `perceive --since-action` and `perceive --diff` keep an element that is still on the page on the same number, so the follow-up an action receipt recommends does not point `@N` at a different control. After navigation, a daemon restart, modal open/close, restore, or any stale ref that does not name a single replacement, refresh refs:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
 ```
 
-For long scripts and loops, use stable CSS selectors instead of old refs. If an action still fails, follow the classified recovery:
+A DOM rewrite says `@1 is stale: the DOM changed after the last perceive.` When exactly one connected element still has that role and accessible name, and its CSS selector matches only that element, the same error names it and `Next` is `cdp click <target> "<selector>"` (or `jsclick`). Nothing is clicked for you, and the old `@ref` is not reused. Zero matches, several matches, a non-unique selector, a frame ref, or a non-click action keep `Next` on `perceive`. For long scripts and loops, use stable CSS selectors instead of old refs. If an action still fails, follow the classified recovery:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs overlay <target> @5

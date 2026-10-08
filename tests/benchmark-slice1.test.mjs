@@ -142,6 +142,8 @@ describe('slice1 scoring', () => {
 
   it('describes a stale-ref refusal from any peer', () => {
     expect(staleClickNote('Kind: stale-ref\nNext: cdp perceive ABCD -C -d 8')).toBe('first click rejected the stale ref; Next included perceive');
+    expect(staleClickNote('Kind: stale-ref\nNext: cdp click ABCD "button#save"')).toBe('first click rejected the stale ref');
+    expect(staleClickNote('@1 is stale: the DOM changed after the last perceive.')).toMatch(/stale ref/);
     expect(staleClickNote('Error: Ref f11e3 not found in the current page snapshot.')).toMatch(/stale ref/);
     expect(staleClickNote('The element did not become interactive within the configured timeout.')).toMatch(/stale ref/);
     expect(staleClickNote('Clicked <BUTTON> "Save draft"')).toBe('');

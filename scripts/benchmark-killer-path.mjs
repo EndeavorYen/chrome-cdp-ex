@@ -72,7 +72,7 @@ function hasUsefulObservation(step) {
   return step.name === 'perceive'
     || step.name === 'report'
     || /^Page:/m.test(text)
-    || /Coords: top-level viewport CSS px/.test(text)
+    || /Coords: (?:top-level )?viewport CSS px/.test(text)
     || hasReportTimeline(step);
 }
 

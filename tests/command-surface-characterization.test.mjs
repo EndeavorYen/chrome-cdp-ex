@@ -78,9 +78,10 @@ describe('Phase 6 command-surface characterization', () => {
     }
     const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
     // #658: catalog help names dismiss-by-default and --accept-dialog on click, nav, dialog, and reload.
-    expect(Buffer.byteLength(catalogHelp)).toBe(29344);
+    // perceive --verbose is one help line on that same catalog.
+    expect(Buffer.byteLength(catalogHelp)).toBe(29458);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:5214c16a48809a78642deea8c7f1231bb4b6afedd181d5e1025b53f342e91f38');
+      .toBe('sha256:6d90c994cd759d5cfaed7983bb63380bb60d2116983344ea2fa216576100ad16');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
