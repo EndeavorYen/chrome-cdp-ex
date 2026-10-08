@@ -18776,7 +18776,7 @@ async function readHoverRevealOnObject(cdp, sid, objectId) {
         ${hoverRevealStateJs('this')}
       }`,
       returnByValue: true,
-    }, sid, 1500);
+    }, sid, REF_RESOLVE_TIMEOUT);
     return parseHoverRevealState(result?.result?.value);
   } catch {
     return null;
