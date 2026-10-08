@@ -87,6 +87,8 @@ cdp eval <target> "document.visibilityState"
 
 The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
 
+`hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take about 5s for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and exactly one Next command: `CDP_BACKGROUND=0 cdp hover <target> <sel>` when the tab is hidden, otherwise `cdp perceive <target> -C -d 8`.
+
 ## `eval` says Identifier has already been declared
 
 `let`, `const`, and `class` from one `eval` end with that call. The same script can run again, and the result is still the last expression. `var`, a sloppy `function`, and assignments to `globalThis` or `window` stay on the tab for a later `eval`. A strict-mode `function` in a script that also uses `let`, `const`, or `class` stays in that call.
