@@ -827,7 +827,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       }, `${entry.cmd} ${entry.args.join(' ')}`.trim(), { format: 'json' }));
       expect(flow.steps[0]).toMatchObject({
         ok: true,
-        resultPreview: entry.cmd === 'wait' ? '' : outputs.get(key).split('\n')[0],
+        resultPreview: outputs.get(key).split('\n')[0],
       });
 
       const sent = [];
@@ -872,9 +872,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         run: () => nested(entry, true),
         settle: async () => '',
       }, `${entry.cmd} ${entry.args.join(' ')}`.trim(), { format: 'json' }));
-      expect(failedFlow.steps[0]).toMatchObject(entry.cmd === 'wait'
-        ? { ok: true, resultPreview: '' }
-        : { ok: false, error: failures.get(key) });
+      expect(failedFlow.steps[0]).toMatchObject({ ok: false, error: failures.get(key) });
 
       if (!mcpDenied) {
         const failedSent = [];

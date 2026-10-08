@@ -52,6 +52,10 @@ Take action immediately; do not just read this file.
 3. If the request names a page, match it and `perceive <target> -C -d 8`.
 4. If no target is clear, ask which tab after listing.
 
+## Flow steps
+
+A semicolon separates flow steps only outside quotes. `wait 2000` is the standalone `wait` command. `eval`, `eval64`, and `call` keep one script body, so a semicolon inside that script is not the next step. `cdp help flow` states the exact rule.
+
 ## Need more depth?
 
 - `references/commands.md` — exhaustive command and edge-case reference.

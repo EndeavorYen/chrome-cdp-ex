@@ -239,7 +239,16 @@ preserving the failed step and recovery handoff. `--continue` is the explicit
 override for independent iterations and still reports accurate success/failure
 counts. `wait dom stable` and `wait network idle` also fail the flow on timeout;
 their diagnostics identify the timed-out condition and pending request count
-when applicable.
+when applicable. `wait 2000` is the standalone `wait` command and runs inside
+`flow` the same way.
+
+A semicolon separates flow steps only outside quotes (`'`, `"`, or `` ` ``).
+`\;` is a literal semicolon. `eval`, `eval64`, and `call` take one script body:
+wrapping quotes are flow delimiters, not JavaScript, and an unquoted body
+continues across semicolons until the next segment starts with a command name,
+alias, or `assert`. Quote that body when the next statement starts with one of
+those words. An unclosed quote fails the flow before any step runs.
+`cdp help flow` prints this rule.
 
 Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.

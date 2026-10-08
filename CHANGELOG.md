@@ -4,6 +4,10 @@
 
 ### Bug Fixes
 
+* `flow` runs a millisecond `wait` that is valid on its own. `wait 2000` waits two seconds and prints the standalone wait receipt. `wait dom stable` and `wait network idle` are unchanged. Any other `wait` name is still a usage error, and the message includes the millisecond form ([#616](https://github.com/EndeavorYen/chrome-cdp-ex/issues/616)).
+
+* `flow` splits steps on a semicolon only outside quotes (`'`, `"`, `` ` ``). `\;` is a literal semicolon. `eval`, `eval64`, and `call` keep one script body: wrapping quotes are not JavaScript, and an unquoted body continues until the next segment starts with a command name, alias, or `assert`. An unclosed quote fails before any step runs. `cdp help flow` states the rule ([#617](https://github.com/EndeavorYen/chrome-cdp-ex/issues/617)).
+
 * After a main-frame navigation, `perceive`'s `Console:` header, `summary`, `status`, and `console` (including `--all` and `--errors`) count only the current document. A console error or exception from the previous document is omitted. An action receipt still reports one observed after that action's baseline. `qa` and `responsive-audit` use the same cut ([#594](https://github.com/EndeavorYen/chrome-cdp-ex/issues/594)).
 
 * The Attach Beam hero render script resolves its mp4, poster, and frame directories from the repository. `--out-dir`, `--frames-dir`, `--copy-dir`, and the `ATTACH_BEAM_*` variables override those paths. `POSTER_T` stays `1.0` (the committed poster is the hook frame, clock `00:01`). Playwright stays a one-off install documented in the script header. ffmpeg converts JPEG frames with `-vf scale=out_range=tv,format=yuv420p` before `-pix_fmt yuv420p`. The hero mp4 was re-rendered with that filter (`pix_fmt=yuv420p`, `color_range=tv`). The poster file is unchanged. The frames directory is not removed: only `frame-#####.jpg` files are deleted, and only when the directory is empty or already contains the marker this script writes. A directory inside the repository other than `.attach-beam-frames`, and any ancestor of `--out-dir` or `--copy-dir`, is refused ([#591](https://github.com/EndeavorYen/chrome-cdp-ex/issues/591)).

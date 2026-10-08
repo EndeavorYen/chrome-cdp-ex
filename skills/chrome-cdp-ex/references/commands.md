@@ -514,15 +514,19 @@ Measured on one Windows machine against a self-started headless Chrome (local re
 scripts/cdp.mjs flow <target> "click @1; wait dom stable; summary; console --errors"
 scripts/cdp.mjs flow <target> "fill @3 hello; click @7; wait network idle; perceive --since-action"
 scripts/cdp.mjs flow <target> "click .save; assert selector .saved; assert text Saved"
+scripts/cdp.mjs flow <target> "eval const x = 1; x; wait 2000; summary"
 scripts/cdp.mjs flow <target> --format json "summary; click #missing; status" # chrome-cdp-ex.flow.v1 action verdict/failure handoff
 ```
 
 Runs the steps in order, halting on the first failure. A halted flow exits non-zero, including when nested inside `repeat`, while preserving the readable transcript or `chrome-cdp-ex.flow.v1` handoff. Add `--format json` when another agent or script needs per-step status/verdict, attention counts for successful action verdicts such as `no-change`, the failed step, skipped downstream steps, classified `Action failure` kind when available, and executable `nextSteps`.
 
-- Each step is a normal command, a wait alias, or `assert selector <css>`, `assert selector-missing <css>`, or `assert text <value>`.
+A semicolon separates flow steps only outside quotes (`'`, `"`, or `` ` ``). A backslash-semicolon (`\;`) is a literal semicolon and does not start a step. An unclosed quote fails the flow before any step runs.
+
+- Each step is a normal command, a millisecond `wait` (the same command as standalone `wait`, for example `wait 2000`), a settle alias, or `assert selector <css>`, `assert selector-missing <css>`, or `assert text <value>`.
 - Wait aliases use the same settle helper as `record --until`:
   - `wait dom stable` — wait for DOM mutations to quiet for 500ms (max ~10s); timeout fails the flow.
   - `wait network idle` — wait until pending XHR/Fetch/Document requests drain; timeout fails with the pending count.
+- `eval`, `eval64`, and `call` take one script body. Wrapping quotes around that body are flow delimiters, not JavaScript. An unquoted body continues across semicolons until the next segment starts with a command name, alias, or `assert`. Quote the body, or write `\;`, when a statement after a semicolon starts with one of those words (`text`, `key`, `summary`, and the rest of `cdp help`).
 - Use `flow` for short pipelines that read top-to-bottom or need ordered failure handoff; use `batch` when you need parallelism or multiple independent command results.
 
 ### Doctor / readiness check
@@ -678,8 +682,9 @@ scripts/cdp.mjs record  <target> --action click @5       # record while performi
 scripts/cdp.mjs checkpoint <target> --format json          # page state artifact for workflow replay/debugging
 scripts/cdp.mjs restore <target> --file checkpoint.json --format json # restores URL/cookies/storage and clears old refs
 scripts/cdp.mjs flow    <target> "<steps>" [--format json] # sequential runner; semicolon-separated steps
-                                                           # e.g. flow A7BA "click @1; wait dom stable; summary; console --errors"
-                                                           # wait aliases: "wait dom stable", "wait network idle"
+                                                           # A semicolon separates flow steps only outside quotes.
+                                                           # e.g. flow A7BA "click @1; wait 2000; eval const x = 1; x; summary"
+                                                           # wait aliases: "wait dom stable", "wait network idle"; also wait <ms>
                                                            # halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1
 scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
