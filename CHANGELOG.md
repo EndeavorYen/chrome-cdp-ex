@@ -12,6 +12,12 @@
 
 ### Bug Fixes
 
+* `click` does not send a mouse event at (0, 0) when the target has no positive box inside the viewport (a zero-size control, or one that stays off-screen). It exits 1 with `Kind: no-click-box` and one Next, `cdp jsclick <target> <sel>`. A descendant or associated label with a positive in-viewport box is clicked at that box. `clickxy` is unchanged ([#614](https://github.com/EndeavorYen/chrome-cdp-ex/issues/614)).
+
+* `flow` and `batch` treat a quoted word as one argument and do not store the quote characters. `fill #note " "` types one space, and `fill #note "hello world"` types `hello world`. A selector that already contains quotes, such as `input[name="q"]`, stays one token. A quoted word that starts with `-` is text, so `"--secret"` is not the `--secret` flag. A direct `fill` argument is unchanged ([#615](https://github.com/EndeavorYen/chrome-cdp-ex/issues/615)).
+
+* `press` prints `Pressed <key>` only after a capture-phase `keydown` for that key is observed. If the page receives none, it exits 1 with `Kind: press-not-delivered` and one Next. A hidden tab's Next is `CDP_BACKGROUND=0 cdp press <target> <key>`, which activates the tab and does not raise a covered window. Otherwise Next is `cdp perceive <target> -C -d 8`. `press Enter` that submits a search listing still returns before sending the key ([#607](https://github.com/EndeavorYen/chrome-cdp-ex/issues/607)).
+
 * The `not-scrollable` recovery hint for `scroll` again names `--scroll-container <css>`. Automatic selection skips `overflow: hidden`, so that flag is how a named hidden region is scrolled ([#669](https://github.com/EndeavorYen/chrome-cdp-ex/issues/669)).
 
 * A native `confirm()` is dismissed unless the command passes `--accept-dialog` or `dialog <target> accept` was set. The OK branch does not run, so a DELETE or POST behind `confirm("Delete this item?")` is not sent. The command exits 1 with `Kind: native-dialog`, names the dialog text, and `Next` is the same command with `--accept-dialog`. `prompt()` is dismissed (returns null) and fails the same way; `--accept-dialog` submits its default text. `beforeunload` stays on the page (`Kind: navigation-cancelled` on `nav` and `reload`, with the same flag). `alert()` is closed and the command continues. A tab with no saved dialog mode dismisses. An explicit accept is kept across a daemon restart ([#658](https://github.com/EndeavorYen/chrome-cdp-ex/issues/658)).

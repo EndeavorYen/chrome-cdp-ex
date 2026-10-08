@@ -195,6 +195,20 @@ describe('#653 dismiss-modal exits 0 only when the dialog is gone', () => {
         if (method === 'Input.dispatchKeyEvent') return Promise.resolve({});
         if (method !== 'Runtime.evaluate') return Promise.resolve({});
         const expression = String(params.expression || '');
+        // press reports success only after this keydown probe matches.
+        if (expression.includes('chrome-cdp-ex.press-probe.v1')) {
+          return Promise.resolve({
+            result: {
+              value: {
+                marker: 'chrome-cdp-ex.press-probe.v1',
+                ok: true,
+                installed: true,
+                matched: true,
+                count: 1,
+              },
+            },
+          });
+        }
         if (expression.includes('no-close-button')) return Promise.resolve({ result: { value: JSON.stringify(noClose) } });
         return Promise.resolve({ result: { value: counts.length > 1 ? counts.shift() : counts[0] } });
       },
