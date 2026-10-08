@@ -12542,14 +12542,15 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
   };
 }
 
-function invalidateSessionRefs(session, reason) {
+function invalidateSessionRefs(session, reason, options = {}) {
   session.refs.map.clear();
   if (session.refs.frameRefs instanceof Map) session.refs.frameRefs.clear();
   if (session.refs.frameLastOutputs instanceof Map) session.refs.frameLastOutputs.clear();
   session.refs.invalidatedAt = Date.now();
   session.refs.invalidationReason = reason;
   session.refGeneration += 1;
-  if (reason === 'navigation') cutDocumentConsoleBuffers(session.buffers);
+  // #610: reload must not move this cut after the new document's load errors.
+  if (reason === 'navigation' && options.cutDocument !== false) cutDocumentConsoleBuffers(session.buffers);
 }
 // Roles that get visual layout annotations in perceive output
 // Bound on the diff-only page text a `perceive -i` keeps (#487). It lives only
@@ -23391,16 +23392,39 @@ async function navActionDispatch({ cdp, sessionId, url, targetId = null, onSessi
   }), navigationCancelWatch);
 }
 
-async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq, navigationCancelWatch = null }) {
+function reloadObservationBuffers(session, consoleBuf, exceptionBuf) {
+  if (session?.buffers && (session.buffers.console || session.buffers.exception)) return session.buffers;
+  return { console: consoleBuf, exception: exceptionBuf };
+}
+
+async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, navigationCancelWatch = null }) {
+  const buffers = reloadObservationBuffers(session, consoleBuf, exceptionBuf);
+  const consoleBefore = typeof consoleBuf?.latest === 'function' ? consoleBuf.latest() : 0;
+  const exceptionBefore = typeof exceptionBuf?.latest === 'function' ? exceptionBuf.latest() : 0;
+  const consoleCutBefore = documentConsoleCutSeq(buffers.console);
+  const exceptionCutBefore = documentConsoleCutSeq(buffers.exception);
   const reloadResult = await reloadStr(cdp, sessionId);
   // Checked before clearing buffers or refs: a cancelled reload left the page as it was.
   const cancelledBy = navigationCancelWatch
     ? await navigationCancelWatch({ awaitMs: NAVIGATION_CANCEL_EVIDENCE_WAIT_MS })
     : null;
   if (cancelledBy) throw navigationCancelledError('reload', cancelledBy);
-  clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq });
-  invalidateSessionRefs(session, 'navigation');
-  return `${reloadResult} (console/exception/navigation buffers cleared)`;
+  // #610: the main-frame commit already cut console and exception reads at that
+  // document. Clearing those buffers after the load event dropped exceptions
+  // thrown while the new document loaded, and cutting again here would move
+  // the cut past those same entries. Navigation and network reads are not cut
+  // that way, so those buffers are still cleared.
+  clearObservationBuffers({ navBuf, netReqBuf, pendingReqs, networkStatusByRequest });
+  const consoleCutMoved = documentConsoleCutSeq(buffers.console) !== consoleCutBefore;
+  const exceptionCutMoved = documentConsoleCutSeq(buffers.exception) !== exceptionCutBefore;
+  if (!consoleCutMoved || !exceptionCutMoved) {
+    cutDocumentConsoleBuffersAt(buffers, {
+      ...(consoleCutMoved ? {} : { console: consoleBefore }),
+      ...(exceptionCutMoved ? {} : { exception: exceptionBefore }),
+    });
+  }
+  if (session) invalidateSessionRefs(session, 'navigation', { cutDocument: false });
+  return reloadResult;
 }
 
 // --- Inject: live CSS/JS injection with tracking ---
@@ -33594,6 +33618,17 @@ function cutDocumentConsoleBuffers(buffers) {
   for (const buf of [buffers.console, buffers.exception]) {
     if (typeof buf?.latest === 'function') documentCutSeqs.set(buf, buf.latest());
   }
+}
+
+function documentConsoleCutSeq(buf) {
+  if (!buf || !documentCutSeqs.has(buf)) return null;
+  return documentCutSeqs.get(buf);
+}
+
+function cutDocumentConsoleBuffersAt(buffers, seqs = {}) {
+  if (!buffers) return;
+  if (buffers.console && seqs.console != null) documentCutSeqs.set(buffers.console, seqs.console);
+  if (buffers.exception && seqs.exception != null) documentCutSeqs.set(buffers.exception, seqs.exception);
 }
 
 const isDirectRun = process.argv[1]
