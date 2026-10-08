@@ -158,13 +158,13 @@ Some Electron builds time out on `Page.captureScreenshot`, and on Windows some r
 
 ## Stale-ref and stale-daemon recovery
 
-`@ref` handles are short-lived. Refresh them after navigation, DOM rewrite, modal open/close, restore, or any action classified as `stale-ref`:
+`@ref` handles are short-lived. After navigation, a daemon restart, or any stale ref that does not name a single replacement, refresh them:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
 ```
 
-For long scripts and loops, use stable CSS selectors instead of old refs. If an action still fails, follow the classified recovery:
+A DOM rewrite says `@1 is stale: the DOM changed after the last perceive.` When exactly one connected element still has that role and accessible name, and its CSS selector matches only that element, the same error names it and `Next` is `cdp click <target> "<selector>"` (or `jsclick`). Nothing is clicked for you, and the old `@ref` is not reused. Zero matches, several matches, a non-unique selector, a frame ref, or a non-click action keep `Next` on `perceive`. For long scripts and loops, use stable CSS selectors instead of old refs. If an action still fails, follow the classified recovery:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs overlay <target> @5

@@ -537,16 +537,25 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyDownloadFailure(err, { base, targetId, input });
   }
 
-  if (lower.includes('unknown ref') || lower.includes('refs were cleared') || lower.includes('refs were invalidated')) {
+  if (isStaleRefFailure(err, lower)) {
+    const retry = staleRefClickRetry(err, { action, targetId, input });
     return {
       ...base,
       kind: 'stale-ref',
-      reason: 'The @ref no longer maps to the current DOM.',
-      nextCommand: perceiveCommand,
-      hints: [
-        `Refresh refs with \`${perceiveCommand}\`.`,
-        'Use a stable CSS selector instead of @ref for long loops or replayable workflows.',
-      ],
+      dispatched: false,
+      reason: retry
+        ? 'The @ref is stale after a DOM change. One live element matches the last role and name; nothing was clicked.'
+        : 'The @ref no longer maps to the current DOM.',
+      nextCommand: retry || perceiveCommand,
+      hints: retry
+        ? [
+            `Retry with \`${retry}\`. Nothing was clicked, and the old @ref was not reused.`,
+            `If that selector is wrong, refresh refs with \`${perceiveCommand}\`.`,
+          ]
+        : [
+            `Refresh refs with \`${perceiveCommand}\`.`,
+            'Use a stable CSS selector instead of @ref for long loops or replayable workflows.',
+          ],
     };
   }
 
@@ -1043,6 +1052,27 @@ export function recoveryCommandArg(value) {
   if (/^[^\s"'`\\$!#;&|<>()*?[\]{}~]+$/.test(text)) return text;
   if (!/["$`\\!\r\n]/.test(text)) return `"${text}"`;
   return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function isStaleRefFailure(err, lower) {
+  return err?.code === 'CDP_STALE_REF'
+    || (err?.staleRefMatch && typeof err.staleRefMatch === 'object')
+    || lower.includes('unknown ref')
+    || lower.includes('refs were cleared')
+    || lower.includes('refs were invalidated')
+    || /\bis stale:/.test(lower);
+}
+
+// A unique role+name selector is a retry only for click and jsclick, and only in the top document.
+// Frame refs stay on perceive --frame: a bare selector would hit the wrong document.
+function staleRefClickRetry(err, { action, targetId, input }) {
+  if (action !== 'click' && action !== 'jsclick') return null;
+  if (/^@f\d+:\d+$/.test(String(input || '').trim())) return null;
+  const match = err?.staleRefMatch;
+  if (!match || Number(match.count) !== 1 || match.selectorUnique !== true) return null;
+  const selector = String(match.selector || '').trim();
+  if (!selector || selector.startsWith('@') || /[\r\n]/.test(selector)) return null;
+  return `cdp ${action} ${targetId} ${recoveryCommandArg(selector)}`;
 }
 
 function recoveryCommand(command, reason) {

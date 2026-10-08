@@ -128,7 +128,7 @@ describe('issue #579 visible controls use the AX role and accessible name', () =
     expect(control.label).toBe('Quantity');
   });
 
-  it('perceive -C prints spinbutton "Qty" on the same @ref as the AX tree', async () => {
+  it('perceive -C keeps spinbutton Qty on the AX line and prints the compact selector', async () => {
     const cdp = {
       send(method, params = {}) {
         if (method === 'Runtime.evaluate') {
@@ -225,12 +225,26 @@ describe('issue #579 visible controls use the AX role and accessible name', () =
     const lines = out.split('\n');
     const qtyLine = lines.find(line => line.includes('input[name="qty"]'));
     const noteLine = lines.find(line => line.includes('input[name="note"]'));
-    const saveLine = lines.find(line => line.includes('role=button'));
-    expect(qtyLine).toContain('role=spinbutton "Qty"');
-    expect(qtyLine).toContain(`@${ax[1]}`);
+    const saveLine = lines.find(line => /@\d+\s+button$/.test(line.trim()));
+    expect(qtyLine).toBe(`  @${ax[1]} input[name="qty"]`);
     expect(qtyLine).not.toContain('textbox');
+    expect(qtyLine).not.toContain('role=');
+    expect(out).toMatch(/\[spinbutton\] Qty = "4"/);
     expect(noteLine).toContain('role=textbox "textbox"');
-    expect(saveLine).toContain('role=button "Save"');
+    expect(saveLine.trim()).toMatch(/^@\d+ button$/);
     expect(saveLine).not.toContain('spinbutton');
+
+    const verbose = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      { last: null },
+      { cursorInteractive: true, maxDepth: 8, verbose: true },
+    );
+    const verboseQty = verbose.split('\n').find(line => line.includes('input[name="qty"]'));
+    expect(verboseQty).toContain('role=spinbutton "Qty"');
+    expect(verboseQty).toContain(`@${ax[1]}`);
   });
 });

@@ -228,7 +228,7 @@ if (parsedCliJsonError.recovery?.kind !== 'target-resolution' || !parsedCliJsonE
   throw new Error(`targetless perceive --format json should include structured recovery next steps:\n${cliJsonErrorOut}`);
 }
 const perceive = step('perceive keep refs', () => run(['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20']));
-assertIncludes(perceive, 'Coords: top-level viewport CSS px', 'perceive');
+assertIncludes(perceive, 'Coords: viewport CSS px', 'perceive');
 assertIncludes(perceive, 'fixed', 'perceive fixed annotation');
 assertIncludes(perceive, '@', 'perceive refs');
 const fillCliJsonErrorOut = step('validation cli json error', () => runFailure(['fill', target, '--format', 'json']));

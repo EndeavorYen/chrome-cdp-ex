@@ -6595,6 +6595,7 @@ describe('parsePerceiveArgs', () => {
       sinceAction: false,
       frameRef: null,
       cards: false,
+      verbose: false,
     });
   });
 
@@ -6666,6 +6667,7 @@ describe('parsePerceiveArgs', () => {
       sinceAction: false,
       frameRef: null,
       cards: false,
+      verbose: false,
     });
   });
 
@@ -14113,10 +14115,10 @@ describe('formatUnknownRefError', () => {
     expect(msg).toMatch(/stable CSS selector/);
   });
 
-  it('explains DOM-mutation invalidation and suggests stable selectors', () => {
+  it('explains DOM-mutation invalidation in one sentence', () => {
     const msg = formatUnknownRefError('@31', { generation: 2, invalidationReason: 'dom-mutation' });
-    expect(msg).toMatch(/DOM changes/);
-    expect(msg).toMatch(/stable CSS selector/);
+    expect(msg).toBe('@31 is stale: the DOM changed after the last perceive.');
+    expect(msg).not.toMatch(/Unknown ref|batch\/loops/);
   });
 
   it('falls back to a generic message when state is unset', () => {
@@ -14183,7 +14185,7 @@ describe('resolveRefNode stale backend handling', () => {
       'DOM.resolveNode': () => { throw new Error('No node with given id'); },
     });
     await expect(resolveRefNode(cdp, 'sid', refMap, '@31', refState))
-      .rejects.toThrow(/DOM changes/);
+      .rejects.toThrow(/is stale:/);
     expect(refState.invalidationReason).toBe('dom-mutation');
     expect(refMap.has(31)).toBe(false);
   });
@@ -14197,7 +14199,7 @@ describe('resolveRefNode stale backend handling', () => {
     const refMap = new Map([[1, 101]]);
     const refState = { generation: 1, invalidationReason: null };
 
-    await expect(run({ cdp, refMap, refState })).rejects.toThrow(/DOM changes/);
+    await expect(run({ cdp, refMap, refState })).rejects.toThrow(/is stale:/);
 
     expect(effects).toEqual([]);
     expect(refMap.has(1)).toBe(false);
@@ -16301,9 +16303,10 @@ describe('formatUnknownRefError recovery wording', () => {
     expect(msg).toMatch(/stable CSS selector/);
   });
 
-  it('dom-mutation message tells loop authors to switch to selectors', () => {
+  it('dom-mutation message is one sentence and does not claim an automatic remap', () => {
     const msg = formatUnknownRefError('@31', { generation: 5, invalidationReason: 'dom-mutation' });
-    expect(msg).toMatch(/stable CSS selector in batch\/loops|stable CSS selector/);
+    expect(msg).toBe('@31 is stale: the DOM changed after the last perceive.');
+    expect(msg).not.toMatch(/Unknown ref|batch\/loops/);
   });
 });
 

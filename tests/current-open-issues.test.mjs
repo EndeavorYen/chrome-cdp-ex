@@ -7966,7 +7966,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
   ];
   const SHARED_COMMIT_TITLE = 'Add diffusers weights (modular pipeline) (#2)';
   const LIVE_INTERACTIVE = 'Interactive: 113 a, 1 input[text], 21 button, 9 div, 2 input[search], 1 iframe';
-  const LIVE_COORDS = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+  const LIVE_COORDS = 'Coords: viewport CSS px (clickxy-ready; fixed/sticky tagged)';
   const LIVE_CENSUS_COUNTS = {
     a: 113,
     'input[text]': 1,
@@ -8791,10 +8791,13 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(after).toMatch(/Visible-control cap swap: \d+ left, \d+ entered/);
     const removedSamples = [...after.matchAll(/^- (.+)$/gm)].map(match => match[1]);
     const addedSamples = [...after.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    // Rect-matched rows compact to `@ref selector` and stay membership, not
+    // named samples. Unmatched rows still print the human name.
     expect(removedSamples[0]).toBe('Hugging Face');
-    expect(addedSamples[0]).toBe('MiniMaxAI');
+    expect(addedSamples[0]).toBe('Like');
     expect(after).toContain('- Hugging Face');
-    expect(after).toContain('+ MiniMaxAI');
+    expect(after).toContain('+ Like');
+    expect(after).not.toMatch(/^\+ MiniMaxAI$/m);
     expect(removedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
     expect(addedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
     expect(after).not.toMatch(/^[-+] (?:img|div|link|a)\b/m);
@@ -9026,15 +9029,12 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(after).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
     expect(after).toContain('- ryanlee-dev');
-    expect(after).toContain('+ condition_encoder');
-    expect(after).toContain('+ Add diffusers weights (modular pipeline) (#2)');
-    expect(after).toContain('+ config.json');
+    // Entered rows that match a tree rect compact, so their labels are not samples.
+    expect(after).not.toMatch(/^\+ condition_encoder$/m);
+    expect(after).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(after).not.toMatch(/^\+ config\.json$/m);
     const addedSamples = [...after.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
-    expect(addedSamples).toEqual([
-      'condition_encoder',
-      'Add diffusers weights (modular pipeline) (#2)',
-      'config.json',
-    ]);
+    expect(addedSamples).toEqual([]);
     expect(after).not.toMatch(/^\+ 2 days ago$/m);
     expect(after).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
     expect(after).not.toMatch(/\+\+\+ Added/);
@@ -9057,7 +9057,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(result.receipt.recoveryHint).toBeNull();
     expect(text).toMatch(/Outcome: changed/);
     expect(text).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
-    expect(text).toMatch(/\+ config\.json/);
+    expect(text).not.toMatch(/^\+ config\.json$/m);
     expect(text).not.toMatch(/^\+ 2 days ago$/m);
     expect(text).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
@@ -9139,7 +9139,10 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       refState,
     );
     expect(afterDump).toMatch(
-      /a role=link "Add diffusers weights \(modular pipeline\) \(#2\)" \[clickable\] \(24,128 160×22\)(?: @\d+)? a\[href="\/MiniMaxAI\/MiniMax-Music3\/commit\/entered"\]/,
+      /@\d+ a\[href="\/MiniMaxAI\/MiniMax-Music3\/commit\/entered"\]/,
+    );
+    expect(afterDump).not.toMatch(
+      /a role=link "Add diffusers weights \(modular pipeline\) \(#2\)".*commit\/entered/,
     );
     expect(afterDump).toMatch(/language_model/);
     expect(afterDump).toMatch(/qwen_7B/);
@@ -9149,23 +9152,24 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(after).toContain('- condition_encoder');
     expect(after).toContain('- figures');
     expect(after).toContain('- tokenizer.json');
-    expect(after).toContain('+ language_model');
-    expect(after).toContain('+ qwen_7B');
     expect(after).toContain('+ speech_tokenizer');
     const removedSamples = [...after.matchAll(/^- (.+)$/gm)].map(match => match[1]);
     const addedSamples = [...after.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    // The shared title is only on the full left rows. The entered row compacts
+    // to a selector, so the title is a removed sample and not an added one.
     expect(removedSamples).toEqual([
       'condition_encoder',
+      'Add diffusers weights (modular pipeline) (#2)',
       'figures',
       'tokenizer.json',
     ]);
     expect(addedSamples).toEqual([
-      'language_model',
-      'qwen_7B',
       'speech_tokenizer',
     ]);
-    expect(after).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(after).toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(after).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(after).not.toMatch(/^\+ language_model$/m);
+    expect(after).not.toMatch(/^\+ qwen_7B$/m);
     expect(after).not.toMatch(/\+\+\+ Added/);
     expect(after).not.toMatch(/span\[title=/);
     expect(after).not.toMatch(/time\[title=/);
@@ -9189,7 +9193,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
     expect(text).toMatch(/- tokenizer\.json/);
     expect(text).toMatch(/\+ speech_tokenizer/);
-    expect(text).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(text).toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(text).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
@@ -9214,7 +9218,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(after).toMatch(/\[link\] tokenizer\.json/);
     expect(after).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
-    expect(after).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(after).toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(after).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(T.actionDomDiffShowsChange(after)).toBe(true);
     actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
@@ -9229,7 +9233,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(result.outcome.status).toBe('changed');
     expect(text).toMatch(/\[link\] tokenizer\.json/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(text).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(text).toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(text).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
   });
 
@@ -9273,16 +9277,16 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     );
     expect(afterDump).toContain(LIVE_INTERACTIVE);
     expect(afterDump).toContain(LIVE_COORDS);
-    expect(afterDump).toMatch(/qwen_7B/);
-    expect(afterDump).toMatch(/Add files using upload-large-folder tool/);
-    expect(afterDump).toMatch(/rvq_depth_decoder/);
+    expect(afterDump).toMatch(/a\[href="#qwen_7B"\]/);
+    expect(afterDump).toMatch(/a\[href="#Add-files-using-upload-large-folder-tool"\]/);
+    expect(afterDump).toMatch(/a\[href="#rvq_depth_decoder"\]/);
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(after).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
     expect(after).toContain('- language_model');
     expect(after).toContain('- Add diffusers weights (modular pipeline) (#2)');
-    expect(after).toContain('+ qwen_7B');
-    expect(after).toContain('+ Add files using upload-large-folder tool');
-    expect(after).toContain('+ rvq_depth_decoder');
+    expect(after).not.toMatch(/^\+ qwen_7B$/m);
+    expect(after).not.toMatch(/^\+ Add files using upload-large-folder tool$/m);
+    expect(after).not.toMatch(/^\+ rvq_depth_decoder$/m);
     expect(after).toContain(LIVE_INTERACTIVE);
     expect(after).toContain(LIVE_COORDS);
     expect(T.actionDomDiffShowsChange(after)).toBe(true);
@@ -9313,8 +9317,8 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).toMatch(/^Viewport:/m);
     expect(text).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
     expect(text).toContain('- language_model');
-    expect(text).toContain('+ qwen_7B');
-    expect(text).toContain('+ rvq_depth_decoder');
+    expect(text).not.toMatch(/^\+ qwen_7B$/m);
+    expect(text).not.toMatch(/^\+ rvq_depth_decoder$/m);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
