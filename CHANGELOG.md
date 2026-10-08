@@ -4,6 +4,8 @@
 
 ### Bug Fixes
 
+* After a main-frame navigation, `perceive`'s `Console:` header, `summary`, `status`, and `console` (including `--all` and `--errors`) count only the current document. A console error or exception from the previous document is omitted. An action receipt still reports one observed after that action's baseline. `qa` and `responsive-audit` use the same cut ([#594](https://github.com/EndeavorYen/chrome-cdp-ex/issues/594)).
+
 * `eval` gives each call its own `let`, `const`, and `class` scope. `const zz = 1; zz + 1` prints `2` on every run, and the result is still the last expression. A later `var` of that name succeeds. `var`, a sloppy `function` declaration, and assignments to `globalThis` or `window` stay on the tab. A leading `"use strict"` directive still applies; a strict-mode `function` in that same script stays in the call. `cdp help eval` and `Kind: eval` describe the scope ([#593](https://github.com/EndeavorYen/chrome-cdp-ex/issues/593)).
 
 * After a main-frame navigation the page starts itself (`location.reload()` or assigning `location.href` to the same URL), the next `click` compares the document that is loaded. A menu that was open, then the page reloaded, then the click opens it again is `Outcome: changed` and exits 0. If a baseline for the loaded document cannot be captured, the receipt says the baseline is stale and does not report `Kind: click-no-change`

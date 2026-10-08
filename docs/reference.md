@@ -143,6 +143,17 @@ Create a fresh diagnostic baseline with `console <target> --clear`. It clears
 both console and uncaught-exception buffers and resets unread cursors; unknown
 console flags fail instead of silently reading the buffer.
 
+A main-frame navigation cuts those buffers to the document that committed.
+`perceive`'s `Console:` line, `summary`, `status`, and `console` (including
+`--all` and `--errors`) then report only that document. Previous-document
+console lines and exceptions are omitted, not shown as current. A child frame
+or a same-document navigation (`pushState`, a hash change) does not cut.
+`netlog` uses the same navigation but keeps a short lookback so the document
+request remains; console has no lookback. An action receipt still reports a
+console error or exception observed after that action's baseline, including
+one thrown on the document that then navigated away. `reload` still clears
+the console, exception, and navigation buffers.
+
 Each console entry and exception message is capped at 8 KB when the daemon
 captures it. A cut entry carries `truncated: true` and `originalLength` in
 `console`/`status --format json`, and text lines from `console`, `status`, and
