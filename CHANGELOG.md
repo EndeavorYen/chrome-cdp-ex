@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Performance
+
+* `bin/chrome-cdp` on Node 22 runs `cdp.mjs` in this process and turns on Node's module compile cache before that import. A warm call skips the extra Node process and recompiles less of the CLI. Stdout, stderr, exit codes, and the Node before 22 re-exec path stay the same. Daemon `scriptPath` stays `cdp.mjs`. An unwritable cache, or a Node build without `module.enableCompileCache`, continues without a message ([#600](https://github.com/EndeavorYen/chrome-cdp-ex/issues/600)).
+
 ### Bug Fixes
 
 * `reload` no longer clears console and exception entries after the new document has loaded. An exception thrown while that document loads stays on the reload receipt and on the next `perceive`, `summary`, `status`, and `console`. Entries from the previous document stay omitted. Navigation and network buffers are still cleared ([#610](https://github.com/EndeavorYen/chrome-cdp-ex/issues/610)).
