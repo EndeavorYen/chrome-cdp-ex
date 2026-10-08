@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Bug Fixes
+
+* `eval` gives each call its own `let`, `const`, and `class` scope. `const zz = 1; zz + 1` prints `2` on every run, and the result is still the last expression. A later `var` of that name succeeds. `var`, a sloppy `function` declaration, and assignments to `globalThis` or `window` stay on the tab. A leading `"use strict"` directive still applies; a strict-mode `function` in that same script stays in the call. `cdp help eval` and `Kind: eval` describe the scope ([#593](https://github.com/EndeavorYen/chrome-cdp-ex/issues/593)).
+
 ## [2.21.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.20.0...v2.21.0) (2026-10-07)
 
 v2.21.0 adds opt-in usage measurement with a trailing 7-day and 30-day report, re-binds a vanished
