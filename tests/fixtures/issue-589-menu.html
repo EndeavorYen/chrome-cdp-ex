@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>menu repro</title></head>
+<body>
+<div class="pick">
+  <button type="button" id="btn" aria-haspopup="menu" aria-expanded="false" aria-controls="menu">5 s · standard</button>
+  <div id="menu" role="menu" aria-label="Length" hidden>
+    <button type="button" role="menuitemradio" aria-checked="true" tabindex="-1">5 s</button>
+    <button type="button" role="menuitemradio" aria-checked="false" tabindex="-1">10 s</button>
+  </div>
+</div>
+<script>
+document.getElementById('btn').addEventListener('click', () => {
+  const menu = document.getElementById('menu');
+  const open = menu.hidden;
+  menu.hidden = !open;
+  document.getElementById('btn').setAttribute('aria-expanded', String(open));
+  if (open) menu.querySelector('[aria-checked="true"]').focus();
+});
+</script>
+</body></html>
