@@ -413,6 +413,13 @@ Multi-statement async eval returns a simple final expression, so
 `const value = await Promise.resolve(42); value` prints `42`. Use an explicit
 `return` when the final statement is a control block or otherwise ambiguous.
 
+`let`, `const`, and `class` exist only for that call, so
+`eval <target> "const zz = 1; zz + 1"` prints `2` every time. The value is still
+the last expression. `var`, `function`, and assignments to `globalThis` or
+`window` stay on the tab. A leading `"use strict"` or `'use strict'` directive
+still applies. A strict-mode `function` in a script that also uses `let`,
+`const`, or `class` stays in that call.
+
 > **Watch out:** avoid index-based selection (`querySelectorAll(...)[i]`) across multiple `eval` calls when the DOM can change between them (e.g. after clicking Ignore, card indices shift). Collect all data in one `eval` or use stable selectors.
 
 > **CJK / shell-hostile expressions:** quote-mangling across bash / zsh / PowerShell makes naive

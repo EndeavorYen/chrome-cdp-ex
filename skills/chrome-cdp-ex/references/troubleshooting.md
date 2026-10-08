@@ -87,6 +87,12 @@ cdp eval <target> "document.visibilityState"
 
 The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
 
+## `eval` says Identifier has already been declared
+
+`let`, `const`, and `class` from one `eval` end with that call. The same script can run again, and the result is still the last expression. `var`, a sloppy `function`, and assignments to `globalThis` or `window` stay on the tab for a later `eval`. A strict-mode `function` in a script that also uses `let`, `const`, or `class` stays in that call.
+
+When the error remains, this script declares the name twice, or the page already declared it in a scope this script shares. `cdp help eval` states the scope. Assign to `globalThis` when a later `eval` must read the name.
+
 ## `eval` times out in a background tab
 
 A background or unfocused tab still runs scripts, but Chrome does not paint it and throttles its timers. Promises tied to painting, such as `HTMLImageElement.decode()` and `requestAnimationFrame`, may never settle, so an `eval` that awaits them ends with `Kind: timeout`. Timers run late: in one field session, a 200 ms page poll ran about once a second.

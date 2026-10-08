@@ -5333,9 +5333,157 @@ function hasExplicitReturnStatement(source) {
   return /(?:^|[;{}:])\s*return\b/.test(topLevelCodeOnly(source));
 }
 
+// A let/const/class at statement start in the blanked top-level view. `let = 1`
+// in sloppy mode is an assignment, so `let` counts only when a binding follows.
+function isLexicalStatementStart(source, index) {
+  let cursor = index - 1;
+  while (cursor >= 0) {
+    const char = source[cursor];
+    if (char === ' ' || char === '\t' || char === '\f' || char === '\v') {
+      cursor -= 1;
+      continue;
+    }
+    return char === ';' || char === '{' || char === '}' || char === '\n' || char === '\r';
+  }
+  return true;
+}
+
+function continuesAsLetDeclaration(source, index) {
+  let cursor = index;
+  while (cursor < source.length && (source[cursor] === ' ' || source[cursor] === '\t' || source[cursor] === '\f' || source[cursor] === '\v')) {
+    cursor += 1;
+  }
+  if (cursor >= source.length) return false;
+  const char = source[cursor];
+  if (char === '\n' || char === '\r') return false;
+  if (char === '{' || char === '[') return true;
+  return /[A-Za-z_$\\]/.test(char) || /\p{ID_Start}/u.test(char);
+}
+
+function hasTopLevelLexicalDeclaration(source) {
+  const top = topLevelCodeOnly(String(source));
+  for (const match of top.matchAll(/\b(?:let|const|class)\b/g)) {
+    if (!isLexicalStatementStart(top, match.index)) continue;
+    if (match[0] === 'let' && !continuesAsLetDeclaration(top, match.index + match[0].length)) continue;
+    return true;
+  }
+  return false;
+}
+
+function skipSpaceAndComments(source, index, { stopAtNewline = false } = {}) {
+  let cursor = index;
+  let crossedNewline = false;
+  while (cursor < source.length) {
+    const char = source[cursor];
+    const next = source[cursor + 1];
+    if (char === ' ' || char === '\t' || char === '\f' || char === '\v') {
+      cursor += 1;
+      continue;
+    }
+    if (char === '\n' || char === '\r') {
+      if (stopAtNewline) return { index: cursor, newline: true };
+      crossedNewline = true;
+      cursor += 1;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      cursor += 2;
+      while (cursor < source.length && source[cursor] !== '\n' && source[cursor] !== '\r') cursor += 1;
+      if (stopAtNewline) return { index: cursor, newline: true };
+      crossedNewline = true;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      cursor += 2;
+      let commentNewline = false;
+      while (cursor < source.length && !(source[cursor] === '*' && source[cursor + 1] === '/')) {
+        if (source[cursor] === '\n' || source[cursor] === '\r') commentNewline = true;
+        cursor += 1;
+      }
+      if (cursor >= source.length) return { index: cursor, newline: crossedNewline || commentNewline, unterminated: true };
+      cursor += 2;
+      if (commentNewline && stopAtNewline) return { index: cursor, newline: true };
+      if (commentNewline) crossedNewline = true;
+      continue;
+    }
+    return { index: cursor, newline: crossedNewline };
+  }
+  return { index: cursor, newline: crossedNewline };
+}
+
+// Use Strict Directive is the exact source `"use strict"` or `'use strict'` in the prologue.
+function readStringStatement(source, index) {
+  const quote = source[index];
+  if (quote !== '"' && quote !== "'") return null;
+  let end = index + 1;
+  let exact = true;
+  while (end < source.length) {
+    const char = source[end];
+    if (char === '\\') {
+      exact = false;
+      if (end + 1 >= source.length) return null;
+      end += 2;
+      continue;
+    }
+    if (char === '\n' || char === '\r') return null;
+    end += 1;
+    if (char === quote) {
+      const literal = source.slice(index, end);
+      return {
+        end,
+        strict: exact && (literal === '"use strict"' || literal === "'use strict'"),
+      };
+    }
+  }
+  return null;
+}
+
+function hasUseStrictDirective(source) {
+  let cursor = skipSpaceAndComments(source, 0);
+  if (cursor.unterminated) return false;
+  let strict = false;
+  while (cursor.index < source.length) {
+    const literal = readStringStatement(source, cursor.index);
+    if (!literal) break;
+    const after = skipSpaceAndComments(source, literal.end, { stopAtNewline: true });
+    if (after.unterminated) break;
+    const boundary = source[after.index];
+    const statementEnd = after.newline || boundary == null || boundary === ';';
+    if (!statementEnd) break;
+    if (literal.strict) strict = true;
+    const nextIndex = boundary === ';' ? after.index + 1 : after.index;
+    cursor = skipSpaceAndComments(source, nextIndex);
+    if (cursor.unterminated) break;
+  }
+  return strict;
+}
+
+// #593: top-level let/const/class stay in the page script scope, so the next
+// eval on that tab cannot declare the same name. A block gives this call its
+// own lexical scope and keeps the last expression as the completion value.
+// Runtime.evaluate replMode redeclares let/const and still keeps the binding,
+// so a later var of that name throws. Await input is already inside a function.
+function wrapTopLevelLexicalScope(source) {
+  if (!hasTopLevelLexicalDeclaration(source)) return source;
+  const prologue = hasUseStrictDirective(source) ? '"use strict";' : '';
+  return `${prologue}{${source}\n}`;
+}
+
+function evalScopeHelpLines() {
+  return [
+    'The result is the last expression.',
+    'let, const, and class exist only for that call, so the same script can run again.',
+    'var and assignments to globalThis or window stay on the tab. A sloppy function declaration stays too.',
+    'A strict-mode function in a script that also uses let, const, or class stays in that call.',
+    'A script that uses await returns its trailing expression; add an explicit return when the ending is ambiguous.',
+    'A leading "use strict" or \'use strict\' directive still applies to the script.',
+  ];
+}
+
 function wrapAwaitExpression(expression, autoWrap = false) {
   const source = String(expression || '');
-  if (!autoWrap || !/\bawait\b/.test(source)) return source;
+  if (!autoWrap) return source;
+  if (!/\bawait\b/.test(source)) return wrapTopLevelLexicalScope(source);
   if (!source.includes(';') && !source.includes('\n')) return `(async()=>(${source}))()`;
   if (hasExplicitReturnStatement(source)) return `(async()=>{${source}})()`;
 
@@ -30169,6 +30317,8 @@ Usage: cdp <command> [args]
                                     (safe transport for CJK / shell-hostile expressions)
                                     --raw: compact JSON for objects (skip pretty multi-line stringify)
                                     --fire-and-forget: dispatch without awaiting returned promise
+                                    let/const/class exist only for that call; the result is still the last expression
+                                    var and globalThis or window assignments stay on the tab; a sloppy function stays too
 {{command:eval64}}
 {{command:call}}
 {{command:elshot}}
@@ -30500,6 +30650,7 @@ function helpTopicStr(topic) {
   const lines = [`cdp ${record.help.synopsis}`, record.help.summary];
   if (record.aliases?.length) lines.push(`Aliases: ${record.aliases.join(', ')}`);
   if (record.name === 'spawn-debug-browser') lines.push(...spawnDebugBrowserHelpDetails());
+  if (record.name === 'eval' || record.name === 'eval64') lines.push(...evalScopeHelpLines());
   lines.push('Run `cdp help` for the survivor card; leftover verbs: `cdp help <command>`.');
   return `${lines.join('\n')}\n`;
 }
@@ -31610,11 +31761,17 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     (cmd === 'eval' || cmd === 'eval64' || cmd === 'call')
     && /syntaxerror|referenceerror|typeerror|evalerror|rangeerror|urierror/i.test(message)
   ) {
+    let reason = 'The JavaScript expression threw. Fix the expression; the tab is still live.';
+    if (cmd === 'eval' || cmd === 'eval64') {
+      reason = /already been declared/i.test(message)
+        ? 'That name is already declared in this script, or the page declared it in a scope this script shares. let, const, and class from an earlier eval end with that call. The tab is still live.'
+        : 'The JavaScript expression threw. Each eval has its own let, const, and class scope and still returns the last expression. var and globalThis assignments stay on the tab. Fix the expression; the tab is still live.';
+    }
     return {
       kind: 'eval',
       strategy: 'fix-expression',
       run: 'cdp help eval',
-      reason: 'The JavaScript expression threw. Fix the expression; the tab is still live.',
+      reason,
     };
   }
   if (err?.code === 'pdf_viewer' || lower.includes('pdf viewer') || lower.includes('application/pdf')) {
