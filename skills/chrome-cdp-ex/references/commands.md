@@ -1338,11 +1338,12 @@ loaded document. If that baseline cannot be captured, the receipt says the basel
 (`Outcome: dispatched`) and does not report `Kind: click-no-change`. `clickxy` and elements
 that are not those controls are unchanged. Exit code is 1 for every failed kind. If anything else is on top
 (a fixed sidebar, sticky header, toast, or dialog), nothing is sent and the click exits 1:
-`Error: click point (549, 219) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation> "load:1" (inside position:fixed <ASIDE.sidebar>)…`,
+`Error: click not sent: <BUTTON> "Loop attack" at (549,219) is covered by <P#phase7-load-generation> "load:1" (inside position:fixed <ASIDE.sidebar>)…`,
 `Kind: covered`, `dispatched: false`. A fully visible target that is covered is scrolled to the
-viewport centre once and re-tested first. Next is `cdp click <target> <sel> --js` (a JS click
-does not hit-test), or `cdp dismiss-modal <target>` when the cover is a dialog; the hints add
-`cdp overlay <target> <sel>`. Only the centre point is tested, and an `@fN:M` target is not
+viewport centre once and re-tested first. Next is `cdp dismiss-modal <target>` when the cover is a dialog,
+`cdp overlay <target> <sel>` when a fixed or sticky layer covers most of the viewport, and
+`cdp click <target> <sel> --js` for smaller page chrome (a sidebar, sticky header, toast, or bottom strip).
+The hints still name `--js` and `cdp overlay <target> <sel>`. Only the centre point is tested, and an `@fN:M` target is not
 tested against covers in the parent document. A named
 
 named query (`click` / `jsclick` `"Browse 1M+ applications"`) is the one-step
