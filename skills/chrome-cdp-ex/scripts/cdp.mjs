@@ -6884,8 +6884,8 @@ function parseConsoleArgs(args = []) {
 
 function clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq) {
   const cleared = {
-    console: consoleBuf.all().length,
-    exceptions: exceptionBuf.all().length,
+    console: consoleDocumentEntries(consoleBuf).length,
+    exceptions: consoleDocumentEntries(exceptionBuf).length,
   };
   consoleBuf.clear();
   exceptionBuf.clear();
@@ -6939,18 +6939,18 @@ function observedJsonEntry(entry, located) {
 
 function selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
-  if (mode === 'all') return { mode, entries: consoleBuf.all(), exceptions: exceptionBuf.all() };
+  if (mode === 'all') return { mode, entries: consoleDocumentEntries(consoleBuf), exceptions: consoleDocumentEntries(exceptionBuf) };
   if (mode === 'errors') {
     return {
       mode,
-      entries: consoleBuf.all().filter(e => e.level === 'error' || e.level === 'warning'),
-      exceptions: exceptionBuf.all(),
+      entries: consoleDocumentEntries(consoleBuf).filter(e => e.level === 'error' || e.level === 'warning'),
+      exceptions: consoleDocumentEntries(exceptionBuf),
     };
   }
   return {
     mode: 'new',
-    entries: consoleBuf.since(lastReadSeq.console),
-    exceptions: exceptionBuf.since(lastReadSeq.exception),
+    entries: consoleDocumentSince(consoleBuf, lastReadSeq.console),
+    exceptions: consoleDocumentSince(exceptionBuf, lastReadSeq.exception),
   };
 }
 
@@ -6973,8 +6973,8 @@ function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, la
       diagnostic,
     },
     page,
-    console: consoleBuf.since(lastReadSeq.console).map(entry => observedJsonEntry(entry, located)),
-    exceptions: exceptionBuf.since(lastReadSeq.exception).map(entry => observedJsonEntry(entry, located)),
+    console: consoleDocumentSince(consoleBuf, lastReadSeq.console).map(entry => observedJsonEntry(entry, located)),
+    exceptions: consoleDocumentSince(exceptionBuf, lastReadSeq.exception).map(entry => observedJsonEntry(entry, located)),
     navigation: navBuf.since(lastReadSeq.nav || 0),
     runtime,
     vitals,
@@ -7014,8 +7014,8 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
   const vitalsText = opts.vitals ? formatWebVitalsText(await webVitalsModelOrUnavailable(cdp, sid)) : null;
 
   // Read the buffers and snapshot how far they were read in the same synchronous step.
-  const newConsole = consoleBuf.since(lastReadSeq.console);
-  const newExceptions = exceptionBuf.since(lastReadSeq.exception);
+  const newConsole = consoleDocumentSince(consoleBuf, lastReadSeq.console);
+  const newExceptions = consoleDocumentSince(exceptionBuf, lastReadSeq.exception);
   // Entries logged while source maps load are not printed here, so they stay unread.
   const readThrough = { console: consoleBuf.latest(), exception: exceptionBuf.latest() };
   const located = await locateObservedEntries(opts.locate, newConsole.slice(-20), newExceptions.slice(-10));
@@ -7126,13 +7126,13 @@ async function summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
-  const allConsole = consoleBuf.all();
+  const allConsole = consoleDocumentEntries(consoleBuf);
   let errors = 0, warnings = 0;
   for (const e of allConsole) {
     if (e.level === 'error') errors++;
     else if (e.level === 'warning' || e.level === 'warn') warnings++;
   }
-  const exceptions = exceptionBuf.all().length;
+  const exceptions = consoleDocumentEntries(exceptionBuf).length;
 
   return {
     schema: 'chrome-cdp-ex.summary.v1',
@@ -10009,9 +10009,9 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
   }
   const originalViewport = await captureViewportSize(cdp, sid);
   const consoleHealth = {
-    errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-    warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-    exceptions: exceptionBuf.all().length,
+    errors: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'error').length,
+    warnings: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+    exceptions: consoleDocumentEntries(exceptionBuf).length,
   };
   const viewports = [];
   const errors = [];
@@ -10211,9 +10211,9 @@ async function qaPageStr({
   }
   const originalViewport = await captureViewportSize(cdp, sid);
   const consoleHealth = {
-    errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-    warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-    exceptions: exceptionBuf.all().length,
+    errors: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'error').length,
+    warnings: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+    exceptions: consoleDocumentEntries(exceptionBuf).length,
   };
   const screenshots = {};
   let screenshotTimedOut = false;
@@ -12549,8 +12549,8 @@ function invalidateSessionRefs(session, reason) {
   session.refs.invalidatedAt = Date.now();
   session.refs.invalidationReason = reason;
   session.refGeneration += 1;
+  if (reason === 'navigation') cutDocumentConsoleBuffers(session.buffers);
 }
-
 // Roles that get visual layout annotations in perceive output
 // Bound on the diff-only page text a `perceive -i` keeps (#487). It lives only
 // in daemon memory, but `-d` does not bound it, so a long page would otherwise
@@ -15711,13 +15711,13 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
 
   // Console health
-  const allConsole = consoleBuf.all();
+  const allConsole = consoleDocumentEntries(consoleBuf);
   let errors = 0, warnings = 0;
   for (const e of allConsole) {
     if (e.level === 'error') errors++;
     else if (e.level === 'warning' || e.level === 'warn') warnings++;
   }
-  const exceptions = exceptionBuf.all().length;
+  const exceptions = consoleDocumentEntries(exceptionBuf).length;
 
   // Exclude filtering: remove AX subtrees rooted at excluded DOM nodes
   let axNodes = axResult.nodes;
@@ -30882,9 +30882,9 @@ function createPerceiveCommandHandler({
     let value;
     if (fopts.qa) {
       const consoleHealth = {
-        errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-        warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-        exceptions: exceptionBuf.all().length,
+        errors: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'error').length,
+        warnings: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+        exceptions: consoleDocumentEntries(exceptionBuf).length,
       };
       const pageHealth = await collectHealth(cdp, sessionId).catch(() => null);
       let text = '';
@@ -33570,6 +33570,30 @@ async function ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops = {} })
     `readyState=${readyState}; attempts=${delays.length}/${delays.length}; elapsedMs=${Math.max(0, now() - startedAt)}. ` +
     'The target metadata advertises a loaded HTTP(S) page while its renderer is still blank; retry the same perceive command.'
   );
+}
+
+// #594: a main-frame navigation cuts console and exception reads to the document
+// that just committed. The ring still holds earlier entries so an action delta
+// can report a throw that landed after its baseline and before the commit.
+const documentCutSeqs = new WeakMap();
+
+function consoleDocumentEntries(buf) {
+  if (typeof buf?.since === 'function' && documentCutSeqs.has(buf)) return buf.since(documentCutSeqs.get(buf) || 0);
+  if (typeof buf?.all === 'function') return buf.all();
+  return [];
+}
+
+function consoleDocumentSince(buf, seq) {
+  if (typeof buf?.since !== 'function') return [];
+  const cut = documentCutSeqs.has(buf) ? Number(documentCutSeqs.get(buf)) || 0 : 0;
+  return buf.since(Math.max(Number(seq) || 0, cut));
+}
+
+function cutDocumentConsoleBuffers(buffers) {
+  if (!buffers) return;
+  for (const buf of [buffers.console, buffers.exception]) {
+    if (typeof buf?.latest === 'function') documentCutSeqs.set(buf, buf.latest());
+  }
 }
 
 const isDirectRun = process.argv[1]
