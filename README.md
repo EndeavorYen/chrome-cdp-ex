@@ -23,6 +23,10 @@ Your agent already has Chrome. What it usually gets is a fat page snapshot, or a
 
 Playwright is for clean isolated tests. This is for the session that already has your login.
 
+- **Effective.** A result matches what the page did: a click on a covered element is refused, and a click that changes nothing is reported as no change.
+- **Efficient.** The usual reply is short; longer detail is there when you ask for it.
+- **Easy for agents.** A receipt is one line, and an error names the cause and the next command to run.
+
 ## Quick start
 
 Needs Node.js 22 (built-in WebSocket). This project does **not** publish to the npm registry.
