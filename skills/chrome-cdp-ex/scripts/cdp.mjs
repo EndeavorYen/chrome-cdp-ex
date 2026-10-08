@@ -241,7 +241,6 @@ const HOVER_DELIVERY_POLL_MS = 100;
 const HOVER_MUTATION_TIMEOUT_MS = 3000;
 const HOVER_MUTATION_MARKER = 'chrome-cdp-ex.hover-mutation.v1';
 const HOVER_REVEAL_MARKER = 'chrome-cdp-ex.hover-reveal.v1';
-const HOVER_PROBE_KEY = '__chromeCdpExHoverProbe';
 const CLICK_MOUSE_ACK_TIMEOUT_MS = 6000;
 const CLICK_EVENT_PROBE_KEY = '__chromeCdpExClickProbe';
 const DRAG_EVENT_PROBE_KEY = '__chromeCdpExDragProbe';
@@ -18618,38 +18617,10 @@ async function dispatchHoverMove(cdp, sid, x, y) {
   }
 }
 
-function hoverProbeInstallJs(elName) {
-  return `
-    try {
-      const probeKey = ${JSON.stringify(HOVER_PROBE_KEY)};
-      const root = (${elName}.ownerDocument && ${elName}.ownerDocument.defaultView) ? ${elName}.ownerDocument.defaultView : window;
-      let probe = root[probeKey];
-      if (!probe || typeof probe.over !== 'number' || typeof probe.move !== 'number') {
-        probe = { el: null, over: 0, move: 0 };
-        const countHit = (event, field) => {
-          const current = probe.el;
-          const node = event && event.target;
-          if (!current || !node) return;
-          if (node === current || (typeof current.contains === 'function' && current.contains(node))) probe[field] += 1;
-        };
-        root.addEventListener('mouseover', event => countHit(event, 'over'), true);
-        root.addEventListener('mousemove', event => countHit(event, 'move'), true);
-        root[probeKey] = probe;
-      }
-      if (probe.el !== ${elName}) {
-        probe.el = ${elName};
-        probe.over = 0;
-        probe.move = 0;
-      }
-    } catch {}
-  `;
-}
-
 function hoverRevealStateJs(elExpr) {
   return `
     const hoverEl = ${elExpr};
     if (!hoverEl) return { ok: false, marker: ${JSON.stringify(HOVER_REVEAL_MARKER)} };
-    ${hoverProbeInstallJs('hoverEl')}
     const style = getComputedStyle(hoverEl);
     const opacity = Number(style.opacity);
     const visibility = String(style.visibility || '');
@@ -18661,9 +18632,6 @@ function hoverRevealStateJs(elExpr) {
       matchesHover = hoverEl.matches(':hover') === true;
       groupHover = matchesHover || !!hoverEl.closest(':hover');
     } catch {}
-    const hoverRoot = (hoverEl.ownerDocument && hoverEl.ownerDocument.defaultView) ? hoverEl.ownerDocument.defaultView : window;
-    const hoverProbe = hoverRoot[${JSON.stringify(HOVER_PROBE_KEY)}];
-    const pointerEvents = hoverProbe ? (Number(hoverProbe.over) || 0) + (Number(hoverProbe.move) || 0) : 0;
     return {
       ok: true,
       marker: ${JSON.stringify(HOVER_REVEAL_MARKER)},
@@ -18673,7 +18641,6 @@ function hoverRevealStateJs(elExpr) {
       visible,
       groupHover,
       matchesHover,
-      pointerEvents,
       href: String(location.href || ''),
       tag: hoverEl.tagName,
     };
@@ -18725,7 +18692,6 @@ function parseHoverRevealState(raw) {
     ),
     groupHover: value.groupHover === true,
     matchesHover: value.matchesHover === true ? true : value.matchesHover === false ? false : null,
-    pointerEvents: Number.isFinite(Number(value.pointerEvents)) ? Number(value.pointerEvents) : null,
     href: value.href != null ? String(value.href) : undefined,
     tag: value.tag,
     x: value.x,

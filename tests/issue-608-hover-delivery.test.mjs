@@ -16,7 +16,7 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CDP = join(REPO, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const MARKER = 'chrome-cdp-ex.hover-reveal.v1';
 
-function revealValue({ matchesHover = false, pointerEvents = 0, tag = 'BUTTON' } = {}) {
+function revealValue({ matchesHover = false, tag = 'BUTTON' } = {}) {
   return {
     ok: true,
     marker: MARKER,
@@ -29,7 +29,6 @@ function revealValue({ matchesHover = false, pointerEvents = 0, tag = 'BUTTON' }
     visible: true,
     groupHover: matchesHover === true,
     matchesHover,
-    pointerEvents,
     href: 'http://fixture.invalid/hover',
   };
 }
@@ -51,7 +50,7 @@ function hoverCdp({ matchesHoverForRead, visibility = 'hidden' } = {}) {
         if (expr.includes(MARKER)) {
           reads += 1;
           const matchesHover = matchesHoverForRead(reads);
-          return Promise.resolve({ result: { value: revealValue({ matchesHover, pointerEvents: matchesHover ? 1 : 0 }) } });
+          return Promise.resolve({ result: { value: revealValue({ matchesHover }) } });
         }
       }
       return Promise.resolve({ result: { value: '' } });
