@@ -270,9 +270,10 @@ function classifyClickNoChangeFailure(err, { base, targetId }) {
 }
 
 // #436: another element is on top at the click point, so the mouse click was not sent. A covering
-// dialog is dismissed first. A fixed/sticky layer that covers most of the viewport is inspected
-// with overlay (#601). Smaller page chrome (sidebar, header, toast, bottom strip) is bypassed
-// with a JS click, which calls HTMLElement.click() without hit-testing.
+// dialog is dismissed first. Overlay (#601) is for a fixed/sticky layer that covers most of the
+// viewport, does not contain the target, and can receive hits. Smaller page chrome (sidebar,
+// header, toast, bottom strip), a pointer-events:none shell, and the target's own app shell are
+// bypassed with a JS click, which calls HTMLElement.click() without hit-testing.
 function classifyCoveredClickFailure(err, { base, targetId, input }) {
   const raw = err?.clickCovered && typeof err.clickCovered === 'object' ? err.clickCovered : {};
   const covering = {

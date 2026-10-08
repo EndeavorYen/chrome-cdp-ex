@@ -13339,15 +13339,26 @@ function clickPointHitFunctionSource() {
       return '<' + tag + id + classes + '>' + (text ? ' "' + text + '"' : '');
     };
     // Only on the failure path: the nearest fixed/sticky layer and whether a dialog is on top.
+    // #601 large: walk from the hit upward. Measure only the first fixed/sticky ancestor that
+    // does not contain the click target and can receive hits (pointer-events is not none).
+    // A pointer-events:none shell (react-hot-toast) and a fixed app shell that contains the
+    // target do not qualify, so Next stays a JS click.
     const dialogSelector = 'dialog,[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
     let layer = null;
     let dialog = false;
+    let largeCover = null;
     for (let node = top, guard = 0; node && node.nodeType === 1 && guard < 64; node = composedParent(node), guard++) {
       const position = positionOf(node);
-      if (!layer && (position === 'fixed' || position === 'sticky')) layer = { node, position };
+      if (position === 'fixed' || position === 'sticky') {
+        if (!layer) layer = { node, position };
+        if (!largeCover && !composedContains(node, target)) {
+          let pointerEvents = '';
+          try { pointerEvents = getComputedStyle(node).pointerEvents || ''; } catch { pointerEvents = ''; }
+          if (pointerEvents !== 'none') largeCover = node;
+        }
+      }
       if (!dialog && typeof node.matches === 'function' && node.matches(dialogSelector)) dialog = true;
     }
-    // #601: measure the fixed/sticky layer (the cover itself, or the ancestor a small child sits in).
     // More than half the viewport is a blocker the user cannot click past. A header, sidebar, toast,
     // or bottom strip stays under that and keeps the JS-click recovery.
     const coverBox = node => {
@@ -13359,8 +13370,8 @@ function clickPointHitFunctionSource() {
       return { x: boxX, y: boxY, w: boxW, h: boxH };
     };
     let large = false;
-    if (layer && layer.node && typeof layer.node.getBoundingClientRect === 'function') {
-      const box = coverBox(layer.node);
+    if (largeCover && typeof largeCover.getBoundingClientRect === 'function') {
+      const box = coverBox(largeCover);
       const vw = Number(window.innerWidth) || 0;
       const vh = Number(window.innerHeight) || 0;
       if (vw > 0 && vh > 0 && box.w > 0 && box.h > 0) {
@@ -31438,8 +31449,9 @@ ACTION FEEDBACK
   fail-closes with no-input-events. Mouse click @ref / CSS hit-tests the
   click point first: when another element is on top it fails with
   Kind: covered, names that element, and sends nothing. Next is overlay when a
-  fixed layer covers most of the viewport, dismiss-modal for a dialog, and
-  click --js for a header, sidebar, toast, or bottom strip. After the click is
+  fixed or sticky layer that does not contain the target and can receive hits
+  covers most of the viewport, dismiss-modal for a dialog, and click --js for a
+  header, sidebar, toast, bottom strip, or pointer-events:none shell. After the click is
   sent, the intended element must receive it (Kind: misdirected when it lands
   elsewhere). A click or jsclick on a control that should react exits 1 with
   Kind: click-no-change when nothing visible changes. click, fill and select

@@ -22,7 +22,7 @@ function fakeDom({ innerWidth = VIEWPORT.width, innerHeight = VIEWPORT.height } 
     hitAt: () => null,
     elementFromPoint(x, y) { return this.hitAt(x, y); },
   };
-  function el(tag, { id = '', className = '', text = '', parent = null, rect = null, position = 'static', attrs = {} } = {}) {
+  function el(tag, { id = '', className = '', text = '', parent = null, rect = null, position = 'static', pointerEvents = 'auto', attrs = {} } = {}) {
     const node = Object.create(Node.prototype);
     Object.assign(node, {
       nodeType: 1,
@@ -33,6 +33,7 @@ function fakeDom({ innerWidth = VIEWPORT.width, innerHeight = VIEWPORT.height } 
       _parent: parent,
       _rect: rect || { x: 0, y: 0, width: 0, height: 0 },
       _position: position,
+      _pointerEvents: pointerEvents,
       scrolls: 0,
       getAttribute(name) { return Object.hasOwn(attrs, name) ? attrs[name] : null; },
       getBoundingClientRect() { return { ...this._rect }; },
@@ -56,7 +57,10 @@ function fakeDom({ innerWidth = VIEWPORT.width, innerHeight = VIEWPORT.height } 
     document: doc,
     location: { href: 'http://127.0.0.1/covered' },
     Node,
-    getComputedStyle: node => ({ position: node._position || 'static' }),
+    getComputedStyle: node => ({
+      position: node._position || 'static',
+      pointerEvents: node._pointerEvents || 'auto',
+    }),
     Promise,
     Date,
     setTimeout,
@@ -290,6 +294,61 @@ describe('#601 a full-screen fixed cover recovers through overlay', () => {
     const result = await coveredClick(page);
     expect(result.failure.nextCommand).toBe(`cdp overlay ${PREFIX} "#submit"`);
     expect(result.err.message).toContain('inside position:fixed <DIV#cover>');
+  });
+
+  // react-hot-toast: the fixed shell is inset and pointer-events:none; the toast child receives hits.
+  it('keeps --js when a pointer-events:none fixed shell holds a small toast', async () => {
+    const page = layout((dom, { body }) => {
+      const shell = dom.el('div', {
+        id: 'toaster',
+        parent: body,
+        position: 'fixed',
+        pointerEvents: 'none',
+        rect: { x: 16, y: 16, width: VIEWPORT.width - 32, height: VIEWPORT.height - 32 },
+      });
+      const toast = dom.el('div', {
+        className: 'toast',
+        text: 'Saved',
+        parent: shell,
+        pointerEvents: 'auto',
+        rect: { x: 100, y: 110, width: 200, height: 48 },
+      });
+      return { hit: toast, shell };
+    });
+    const result = await coveredClick(page);
+    expect(result.printed).toContain(`Next: cdp click ${PREFIX} "#submit" --js`);
+    expect(result.printed).not.toContain('overlay');
+    expect(result.failure.nextCommand).toBe(`cdp click ${PREFIX} "#submit" --js`);
+    expect(result.failure.nextCommand).not.toContain('dismiss-modal');
+    expect(result.value.hit.large).not.toBe(true);
+  });
+
+  // The app shell fills the viewport and contains the button. A separate absolute popover is the cover.
+  it('keeps --js when a full-viewport fixed app shell contains the button and an absolute popover covers it', async () => {
+    const page = layout((dom, { body, main, button }) => {
+      const shell = dom.el('div', {
+        id: 'app',
+        parent: body,
+        position: 'fixed',
+        rect: { x: 0, y: 0, width: VIEWPORT.width, height: VIEWPORT.height },
+      });
+      main._parent = shell;
+      button._parent = main;
+      const popover = dom.el('div', {
+        className: 'popover',
+        text: 'Account menu',
+        parent: shell,
+        position: 'absolute',
+        rect: { x: 100, y: 100, width: 220, height: 120 },
+      });
+      return { hit: popover, shell };
+    });
+    const result = await coveredClick(page);
+    expect(result.printed).toContain(`Next: cdp click ${PREFIX} "#submit" --js`);
+    expect(result.printed).not.toMatch(/overlay|dismiss-modal/);
+    expect(result.failure.nextCommand).toBe(`cdp click ${PREFIX} "#submit" --js`);
+    expect(result.value.hit.large).not.toBe(true);
+    expect(result.value.hit.dialog).not.toBe(true);
   });
 
   it('still classifies the previous click sentence and a covered drag', () => {

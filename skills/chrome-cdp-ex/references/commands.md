@@ -1341,8 +1341,8 @@ that are not those controls are unchanged. Exit code is 1 for every failed kind.
 `Error: click not sent: <BUTTON> "Loop attack" at (549,219) is covered by <P#phase7-load-generation> "load:1" (inside position:fixed <ASIDE.sidebar>)…`,
 `Kind: covered`, `dispatched: false`. A fully visible target that is covered is scrolled to the
 viewport centre once and re-tested first. Next is `cdp dismiss-modal <target>` when the cover is a dialog,
-`cdp overlay <target> <sel>` when a fixed or sticky layer covers most of the viewport, and
-`cdp click <target> <sel> --js` for smaller page chrome (a sidebar, sticky header, toast, or bottom strip).
+`cdp overlay <target> <sel>` when the first fixed or sticky layer that does not contain the target and can receive pointer events covers most of the viewport, and
+`cdp click <target> <sel> --js` for smaller page chrome (a sidebar, sticky header, toast, or bottom strip), a `pointer-events: none` shell, or a fixed app shell that contains the target.
 The hints still name `--js` and `cdp overlay <target> <sel>`. Only the centre point is tested, and an `@fN:M` target is not
 tested against covers in the parent document. A named
 

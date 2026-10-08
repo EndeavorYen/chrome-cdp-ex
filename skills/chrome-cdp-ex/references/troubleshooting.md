@@ -121,11 +121,13 @@ The mouse click's point passed the pre-dispatch hit test, but the event did not 
 The mouse `click` hit-tests the target's centre first. `covered` means another element is on top there, so a real
 click would land on it; nothing was sent (`dispatched: false`). The `Error:` line is one sentence: the target, the
 point, the covering element and its position, and, when the target was scrolled to the centre first, that fact.
-If it is a dialog, close it (`cdp dismiss-modal <target>`) and click again. If a fixed or sticky layer covers most
-of the viewport, Next is `cdp overlay <target> <sel>`: look at the blocker before clicking through it. If it is
-small page layout such as a fixed sidebar, sticky header, toast, or bottom strip (common in narrow headless
-windows), use `cdp click <target> <sel> --js`, or widen the window with `cdp viewport`. The hints still name
-`--js` for that layout case.
+If it is a dialog, close it (`cdp dismiss-modal <target>`) and click again. Next is `cdp overlay <target> <sel>`
+when the first fixed or sticky layer that does not contain the target and can receive pointer events covers most
+of the viewport: look at that blocker before clicking through it. A `pointer-events: none` shell around a small
+toast, and a fixed app shell that contains the target, are not that layer. If it is small page layout such as a
+fixed sidebar, sticky header, toast, or bottom strip (common in narrow headless windows), use
+`cdp click <target> <sel> --js`, or widen the window with `cdp viewport`. The hints still name `--js` for that
+layout case.
 
 ## Action fails with `Kind: disabled`
 
