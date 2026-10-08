@@ -168,17 +168,25 @@ describe('headless background tab hover (#608)', () => {
       server.listen(0, '127.0.0.1', resolveListen);
     });
     const url = `http://127.0.0.1:${server.address().port}/hover.html`;
+    const sandboxOff = /^(1|true|yes|on)$/i.test(process.env.CDP_SMOKE_NO_SANDBOX || '') || Boolean(process.env.CI);
+    const chromeLog = [];
     const chrome = spawn(browser, [
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profile}`,
       '--headless=new',
       '--no-first-run',
       '--no-default-browser-check',
+      '--disable-dev-shm-usage',
       '--disable-features=CalculateNativeWinOcclusion',
       '--window-size=1000,700',
-      ...(/^(1|true|yes|on)$/i.test(process.env.CDP_SMOKE_NO_SANDBOX || '') ? ['--no-sandbox'] : []),
+      ...(sandboxOff ? ['--no-sandbox'] : []),
       'about:blank',
-    ], { stdio: 'ignore' });
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    chrome.stderr?.setEncoding('utf8');
+    chrome.stderr?.on('data', chunk => {
+      chromeLog.push(String(chunk));
+      if (chromeLog.length > 40) chromeLog.shift();
+    });
     const env = {
       ...process.env,
       CDP_PORT: String(port),
@@ -190,14 +198,18 @@ describe('headless background tab hover (#608)', () => {
     let socket;
     try {
       let version;
-      for (let attempt = 0; attempt < 40 && !version; attempt += 1) {
+      for (let attempt = 0; attempt < 100 && !version; attempt += 1) {
+        if (chrome.exitCode != null) break;
         try {
           version = await fetch(`http://127.0.0.1:${port}/json/version`).then(response => response.json());
         } catch {
           await new Promise(resolveWait => setTimeout(resolveWait, 200));
         }
       }
-      expect(version?.webSocketDebuggerUrl).toBeTruthy();
+      expect(
+        version?.webSocketDebuggerUrl,
+        `chrome exit=${chrome.exitCode ?? 'running'}\n${chromeLog.join('').slice(-1500)}`,
+      ).toBeTruthy();
       socket = new WebSocket(version.webSocketDebuggerUrl);
       await new Promise((resolveOpen, rejectOpen) => {
         socket.addEventListener('open', resolveOpen);
