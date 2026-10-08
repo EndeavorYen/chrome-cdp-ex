@@ -1,6 +1,6 @@
 # CLAUDE.md — chrome-cdp-ex
 
-> **TL;DR** — The product runtime is `skills/chrome-cdp-ex/scripts/cdp.mjs`, supported by focused helpers in `scripts/lib/` and a stdio MCP adapter. Preserve the zero-runtime-dependency design, structured handoff contracts, privacy defaults, and evidence-first workflow.
+> **TL;DR** — The product runtime is `skills/chrome-cdp-ex/scripts/cdp.mjs`, supported by focused helpers in `scripts/lib/` and a stdio MCP adapter. Preserve the zero-runtime-dependency design, structured handoff contracts, privacy defaults, and evidence-first workflow. Authoritative product goals (effective, then easy for agents, then efficient) are in [`AGENTS.md`](AGENTS.md) under `## Product goals`.
 
 ## Problem-Solving Principles
 
@@ -50,8 +50,7 @@ Key design decisions:
 - No runtime dependencies — only Node.js built-ins in shipped code
 - Functions follow `<name>Str(cdp, sid, ...args) → string` pattern for command implementations
 - Register commands in `COMMANDS`; `NEEDS_TARGET` is derived from that registry
-- Keep JSON outputs versioned, bounded, redacted by default, and paired with executable recovery or next steps
-- Add explicit `--unsafe-full` / verbose opt-ins only when full sensitive or large output is genuinely useful
+- Keep JSON outputs versioned. Concise defaults, honest results, opt-in bulk or sensitive detail, and executable recovery or next steps are defined once in [`AGENTS.md`](AGENTS.md) `## Product goals`.
 - Update `USAGE`, `SKILL.md`, `docs/reference.md`, tests, and MCP definitions when the public surface changes
 
 ## Verification
