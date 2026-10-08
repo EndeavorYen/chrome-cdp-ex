@@ -77,9 +77,10 @@ describe('Phase 6 command-surface characterization', () => {
       }
     }
     const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
-    expect(Buffer.byteLength(catalogHelp)).toBe(27559);
+    // #609 documents the mock MatchPattern rule in catalog help.
+    expect(Buffer.byteLength(catalogHelp)).toBe(28259);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:41ea622f00099746abb2b42385bf7db6f098e6fc3340dc3638852f06bbc5d941');
+      .toBe('sha256:c13cec5d9580de276daa733fde07492df800280b1cec680dba4062ac066d2bf7');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;

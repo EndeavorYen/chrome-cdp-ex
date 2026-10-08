@@ -53,6 +53,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Network.getCookies': 'sensitive-observation',
   'Network.getResponseBody': 'sensitive-observation',
   'Network.loadNetworkResource': 'observation',
+  'Network.setCacheDisabled': 'page-mutation',
   'Network.setCookie': 'sensitive-mutation',
   'Page.addScriptToEvaluateOnNewDocument': 'page-mutation',
   'Page.captureScreenshot': 'observation',
@@ -375,8 +376,8 @@ function domainInvocations() {
     },
     {
       domain: 'Fetch',
-      methods: ['Fetch.enable'],
-      callDigest: '7ce0097e37ca30df94f4fdb6249406ba57d0b6ebf299a909a4aea9ece121e9e6',
+      methods: ['Network.setCacheDisabled', 'Fetch.enable'],
+      callDigest: 'b81b980123348310e4e83941409719682d7443795bf44873dd9e342cd5a92c3c',
       result: 'Network mock: 1 rule\n1. **/api* -> 503 text/plain; charset=utf-8 (0 hits)\nNext: cdp mock TARGET clear',
       invoke: cdp => cdpTest.mockStr(cdp, 'SESSION', state(), ['add', '**/api*', '--status', '503']),
     },
@@ -432,8 +433,9 @@ describe('Phase 6 direct CDP characterization', () => {
     // #547 added elshotRefLabel → Runtime.callFunctionOn, a read-only label read for the elshot receipt.
     // #575 added applySavedNetworkControls → Network.enable, Network.emulateNetworkConditions, Fetch.disable.
     // #552 added readPinnedClickPoint → Runtime.callFunctionOn, freezing the click point before dispatch.
-    expect(inventory).toHaveLength(176);
-    expect(digest).toBe('sha256:c32a2c22bd79e991e378bcf953edba492311d530c1599fe8d0f48e324b9263a6');
+    // #609 added setMockCacheDisabled → Network.setCacheDisabled while a mock rule is active.
+    expect(inventory).toHaveLength(177);
+    expect(digest).toBe('sha256:d5d33f259080344746a41ce19c2fe810045d98e72b09c2607c9234eccf34bf51');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

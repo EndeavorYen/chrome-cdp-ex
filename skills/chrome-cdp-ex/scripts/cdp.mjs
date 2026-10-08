@@ -1817,6 +1817,12 @@ function persistedThrottle(throttle) {
   };
 }
 
+function persistedHitCount(value) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return 0;
+  if (value > Number.MAX_SAFE_INTEGER) return Number.MAX_SAFE_INTEGER;
+  return value;
+}
+
 function persistedMocks(mocks) {
   if (!Array.isArray(mocks)) return [];
   return mocks.map(rule => ({
@@ -1826,6 +1832,7 @@ function persistedMocks(mocks) {
     status: Number(rule?.status),
     body: String(rule?.body ?? ''),
     contentType: String(rule?.contentType || 'text/plain; charset=utf-8'),
+    hits: persistedHitCount(rule?.hits),
   }));
 }
 
@@ -1873,6 +1880,8 @@ function parsePersistedMocks(value) {
       status,
       body: String(rule.body ?? ''),
       contentType: String(rule.contentType || 'text/plain; charset=utf-8'),
+      // A missing or unusable count is zero. Rejecting the file would also drop dialog and throttle.
+      hits: persistedHitCount(rule.hits),
     });
   }
   return mocks;
@@ -2115,6 +2124,9 @@ async function applySavedNetworkControls(cdp, sid, session, saved) {
       session.networkMocks = [];
       session.networkMockHits = [];
       try { await cdpDomains(cdp).Fetch.disable({}, sid); } catch {}
+      if (session.mockCacheDisabled) {
+        try { await setMockCacheDisabled(cdp, sid, session, false); } catch {}
+      }
       outcome.mocksReset = true;
     }
   }
@@ -21497,6 +21509,7 @@ function parseMockArgs(args = []) {
     status: 200,
     body: '',
     contentType: 'text/plain; charset=utf-8',
+    hits: 0,
   };
   for (let i = 2; i < tokens.length; i++) {
     const token = tokens[i];
@@ -21510,26 +21523,303 @@ function parseMockArgs(args = []) {
   return { mode: 'add', format: fopts.format, rule };
 }
 
-function wildcardToRegExp(pattern) {
-  const escaped = String(pattern || '').replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+// Chrome MatchPattern (base::MatchPattern): * is any length, ? is zero or one character,
+// and \ escapes the next character. Case-sensitive, matched against the whole candidate.
+const MOCK_PATTERN_END = -1;
+
+function nextMockCodePoint(text, index) {
+  if (index >= text.length) return { index, code: MOCK_PATTERN_END };
+  const code = text.codePointAt(index);
+  return { index: index + (code > 0xFFFF ? 2 : 1), code };
+}
+
+function eatMockWildcards(pattern, index) {
+  let questions = 0;
+  let star = false;
+  while (index < pattern.length) {
+    const ch = pattern[index];
+    if (ch === '?') questions += 1;
+    else if (ch === '*') star = true;
+    else break;
+    index += 1;
+  }
+  return { index, max: star ? -1 : questions };
+}
+
+function searchMockPattern(pattern, patternIndex, text, textIndex, maximumDistance) {
+  const patternStart = patternIndex;
+  let stringStart = textIndex;
+  let escape = false;
+  while (true) {
+    if (patternIndex >= pattern.length) {
+      if (textIndex >= text.length) return { ok: true, patternIndex, textIndex };
+    } else {
+      const patternChar = pattern[patternIndex];
+      if (!escape && (patternChar === '*' || patternChar === '?')) {
+        return { ok: true, patternIndex, textIndex };
+      }
+      if (!escape && patternChar === '\\') {
+        escape = true;
+        const stepped = nextMockCodePoint(pattern, patternIndex);
+        if (stepped.code === MOCK_PATTERN_END) return { ok: false };
+        patternIndex = stepped.index;
+        continue;
+      }
+      escape = false;
+      if (textIndex >= text.length) return { ok: false };
+      const patternNext = nextMockCodePoint(pattern, patternIndex);
+      const textNext = nextMockCodePoint(text, textIndex);
+      if (patternNext.code === textNext.code && patternNext.code !== MOCK_PATTERN_END) {
+        patternIndex = patternNext.index;
+        textIndex = textNext.index;
+        continue;
+      }
+    }
+    if (maximumDistance === 0) return { ok: false };
+    maximumDistance -= 1;
+    patternIndex = patternStart;
+    const steppedString = nextMockCodePoint(text, stringStart);
+    if (steppedString.code === MOCK_PATTERN_END) return { ok: false };
+    stringStart = steppedString.index;
+    textIndex = stringStart;
+  }
+}
+
+function matchMockPattern(text, pattern) {
+  let patternIndex = 0;
+  let textIndex = 0;
+  const value = String(text);
+  const source = String(pattern);
+  do {
+    const eaten = eatMockWildcards(source, patternIndex);
+    patternIndex = eaten.index;
+    const found = searchMockPattern(source, patternIndex, value, textIndex, eaten.max);
+    if (!found.ok) return false;
+    patternIndex = found.patternIndex;
+    textIndex = found.textIndex;
+  } while (patternIndex < source.length);
+  return true;
+}
+
+function tokenizeMockGlob(pattern) {
+  const tokens = [];
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i];
+    if (ch === '*') { tokens.push({ kind: 'star' }); continue; }
+    if (ch === '?') { tokens.push({ kind: 'q' }); continue; }
+    if (ch === '\\') {
+      const next = pattern[i + 1];
+      if (next == null) break;
+      tokens.push({ kind: 'char', char: next });
+      i += 1;
+      continue;
+    }
+    tokens.push({ kind: 'char', char: ch });
+  }
+  return tokens;
+}
+
+function mockPatternHasLiteral(pattern) {
+  return tokenizeMockGlob(pattern).some(token => token.kind === 'char');
+}
+
+function looksLikeUrlScheme(pattern) {
+  return /^[A-Za-z][A-Za-z0-9+.-]*:/.test(pattern);
+}
+
+function mockPatternIsAbsolute(pattern) {
+  return pattern.includes('://') || pattern.startsWith('*') || looksLikeUrlScheme(pattern);
+}
+
+function mockGlobCanReach(startPhase, moves, representatives) {
+  const seen = new Set([startPhase]);
+  const queue = [startPhase];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const ch of representatives(current)) {
+      const next = moves(current, ch);
+      if (next !== -1 && !seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return [...seen];
+}
+
+function mockGlobCanMatch(tokens, { accept, moves, representatives }) {
+  const memo = new Map();
+  const visit = (tokenIndex, phase) => {
+    const key = `${tokenIndex}:${phase}`;
+    if (memo.has(key)) return memo.get(key);
+    memo.set(key, false);
+    let ok = false;
+    if (tokenIndex === tokens.length) ok = accept(phase);
+    else {
+      const token = tokens[tokenIndex];
+      if (token.kind === 'star') {
+        for (const next of mockGlobCanReach(phase, moves, representatives)) {
+          if (visit(tokenIndex + 1, next)) { ok = true; break; }
+        }
+      } else if (token.kind === 'q') {
+        if (visit(tokenIndex + 1, phase)) ok = true;
+        else {
+          for (const ch of representatives(phase)) {
+            const next = moves(phase, ch);
+            if (next !== -1 && visit(tokenIndex + 1, next)) { ok = true; break; }
+          }
+        }
+      } else {
+        const next = moves(phase, token.char);
+        if (next !== -1) ok = visit(tokenIndex + 1, next);
+      }
+    }
+    memo.set(key, ok);
+    return ok;
+  };
+  return visit(0, 0);
+}
+
+function mockUrlPhase(phase, char) {
+  if (phase === 0) return /[A-Za-z]/.test(char) ? 1 : -1;
+  if (phase === 1) {
+    if (char === ':') return 2;
+    return /[A-Za-z0-9+.-]/.test(char) ? 1 : -1;
+  }
+  if (phase === 2) return char === '/' ? 3 : -1;
+  if (phase === 3) return char === '/' ? 4 : -1;
+  if (phase === 4 || phase === 5) return /\s/.test(char) ? -1 : 5;
+  return -1;
+}
+
+function mockUrlRepresentatives(phase) {
+  if (phase === 0) return ['h'];
+  if (phase === 1) return ['t', ':'];
+  if (phase === 2 || phase === 3) return ['/'];
+  if (phase === 4 || phase === 5) return ['a', '/', '?', '.', '%'];
+  return [];
+}
+
+function mockPathPhase(phase, char) {
+  if (phase === 0) return char === '/' ? 1 : -1;
+  return /\s/.test(char) ? -1 : 1;
+}
+
+function mockPathRepresentatives(phase) {
+  return phase === 0 ? ['/'] : ['a', '/', '?', '.', '%'];
+}
+
+function globCanMatchBrowserUrl(pattern) {
+  return mockGlobCanMatch(tokenizeMockGlob(pattern), {
+    accept: phase => phase === 5,
+    moves: mockUrlPhase,
+    representatives: mockUrlRepresentatives,
+  });
+}
+
+function globCanMatchRequestPath(pattern) {
+  return mockGlobCanMatch(tokenizeMockGlob(pattern), {
+    accept: phase => phase === 1,
+    moves: mockPathPhase,
+    representatives: mockPathRepresentatives,
+  });
+}
+
+function mockPatternCanMatch(pattern) {
+  const source = String(pattern || '');
+  if (mockPatternIsAbsolute(source)) return globCanMatchBrowserUrl(source);
+  if (source.startsWith('/')) return globCanMatchRequestPath(source);
+  if (!mockPatternHasLiteral(source)) return false;
+  return globCanMatchBrowserUrl(`*${source}`);
+}
+
+function mockInterceptPattern(pattern) {
+  const source = String(pattern || '');
+  if (mockPatternIsAbsolute(source)) return source;
+  if (source.startsWith('/') || mockPatternHasLiteral(source)) return `*${source}`;
+  return source;
+}
+
+function mockPatternWarning(pattern) {
+  const source = String(pattern ?? '');
+  if (mockPatternCanMatch(source)) return null;
+  const quoted = `"${source}"`;
+  if (/\s/.test(source)) {
+    return `mock pattern ${quoted} contains whitespace, so it cannot match a request URL. Encode a space as %20.`;
+  }
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/(?!\/)/.test(source)) {
+    return `mock pattern ${quoted} has one slash after the scheme, so it cannot match a browser URL. Use http:// or https://.`;
+  }
+  return `mock pattern ${quoted} cannot match a browser request URL. Use a full URL, a leading *, or a path that starts with /.`;
+}
+
+function stripRequestFragment(url) {
+  const raw = String(url || '');
+  const hash = raw.indexOf('#');
+  return hash === -1 ? raw : raw.slice(0, hash);
+}
+
+function pathAndQueryOf(absolute) {
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(absolute);
+  if (!scheme) return absolute;
+  const rest = absolute.slice(scheme[0].length);
+  const split = rest.search(/[/?]/);
+  if (split === -1) return '/';
+  if (rest[split] === '?') return `/${rest.slice(split)}`;
+  return rest.slice(split);
+}
+
+function matchesOneSubdomainLabel(absolute, pattern) {
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(absolute);
+  if (!scheme) return false;
+  const rest = absolute.slice(scheme[0].length);
+  const split = rest.search(/[/?]/);
+  const host = split === -1 ? rest : rest.slice(0, split);
+  const tail = split === -1 ? '' : rest.slice(split);
+  const dot = host.indexOf('.');
+  if (dot <= 0) return false;
+  return matchMockPattern(`${scheme[1]}://${host.slice(dot + 1)}${tail}`, `*://${pattern}`);
+}
+
+function mockPatternMatchesUrl(pattern, url) {
+  const source = String(pattern || '');
+  const absolute = stripRequestFragment(url);
+  if (mockPatternIsAbsolute(source)) return matchMockPattern(absolute, source);
+  const pathAndQuery = pathAndQueryOf(absolute);
+  if (source.startsWith('/')) return matchMockPattern(pathAndQuery, source);
+  if (!mockPatternHasLiteral(source)) return false;
+  if (matchMockPattern(pathAndQuery, `*${source}`)) return true;
+  if (!source.includes('.')) return false;
+  if (matchMockPattern(absolute, `*://${source}`)) return true;
+  return matchesOneSubdomainLabel(absolute, source);
 }
 
 function mockRuleMatches(rule, request = {}) {
   if (!rule) return false;
   if (rule.method && String(request.method || '').toUpperCase() !== rule.method) return false;
-  return wildcardToRegExp(rule.urlPattern).test(String(request.url || ''));
+  return mockPatternMatchesUrl(rule.urlPattern, request.url);
 }
 
 function findNetworkMockRule(session, request = {}) {
   return (session.networkMocks || []).find(rule => mockRuleMatches(rule, request));
 }
 
+function mockDisplayedHits(rule, hits = []) {
+  if (Number.isInteger(rule?.hits) && rule.hits >= 0) return rule.hits;
+  return hits.filter(hit => hit.ruleId === rule?.id).length;
+}
+
+function nextMockHitCount(hits) {
+  const current = Number.isInteger(hits) && hits >= 0 ? hits : 0;
+  if (current >= Number.MAX_SAFE_INTEGER) return current;
+  return current + 1;
+}
+
 function formatNetworkMocksSummary(session = {}) {
   const rules = session.networkMocks || [];
   if (rules.length === 0) return 'off';
   const first = rules[0];
-  const hits = (session.networkMockHits || []).filter(hit => hit.ruleId === first.id).length;
+  const hits = mockDisplayedHits(first, session.networkMockHits || []);
   const suffix = rules.length > 1 ? ` (+${rules.length - 1} more)` : '';
   return `${rules.length} rule${rules.length === 1 ? '' : 's'} — ${first.urlPattern} -> ${first.status} (${hits} hit${hits === 1 ? '' : 's'})${suffix}`;
 }
@@ -21541,20 +21831,24 @@ function buildMockModel(session, parsed) {
     schema: 'chrome-cdp-ex.mock.v1',
     targetId: session.targetId,
     mode: parsed.mode,
-    rules: rules.map(rule => ({
-      id: rule.id,
-      urlPattern: rule.urlPattern,
-      method: rule.method,
-      status: rule.status,
-      contentType: rule.contentType,
-      bodyBytes: Buffer.byteLength(rule.body || '', 'utf8'),
-      hits: hits.filter(hit => hit.ruleId === rule.id).length,
-    })),
+    rules: rules.map(rule => {
+      const warning = mockPatternWarning(rule.urlPattern);
+      return {
+        id: rule.id,
+        urlPattern: rule.urlPattern,
+        method: rule.method,
+        status: rule.status,
+        contentType: rule.contentType,
+        bodyBytes: Buffer.byteLength(rule.body || '', 'utf8'),
+        hits: mockDisplayedHits(rule, hits),
+        ...(warning ? { warning } : {}),
+      };
+    }),
     recentHits: hits.slice(-10),
   };
 }
 
-function formatMockText(model) {
+function formatMockText(model, { warnPattern = null } = {}) {
   if (!model.rules.length) {
     return [
       'Network mock: off',
@@ -21564,7 +21858,12 @@ function formatMockText(model) {
   const lines = [`Network mock: ${model.rules.length} rule${model.rules.length === 1 ? '' : 's'}`];
   for (const [i, rule] of model.rules.entries()) {
     const method = rule.method ? `${rule.method} ` : '';
-    lines.push(`${i + 1}. ${method}${rule.urlPattern} -> ${rule.status} ${rule.contentType} (${rule.hits} hit${rule.hits === 1 ? '' : 's'})`);
+    const unmatched = rule.warning ? ' — pattern cannot match' : '';
+    lines.push(`${i + 1}. ${method}${rule.urlPattern} -> ${rule.status} ${rule.contentType} (${rule.hits} hit${rule.hits === 1 ? '' : 's'})${unmatched}`);
+  }
+  if (warnPattern != null) {
+    const added = [...model.rules].reverse().find(rule => rule.urlPattern === warnPattern);
+    if (added?.warning) lines.push(`Warning: ${added.warning}`);
   }
   if (model.recentHits.length) {
     const hit = model.recentHits[model.recentHits.length - 1];
@@ -21574,15 +21873,29 @@ function formatMockText(model) {
   return lines.join('\n');
 }
 
+async function setMockCacheDisabled(cdp, sid, session, cacheDisabled) {
+  await cdpDomains(cdp).Network.setCacheDisabled({ cacheDisabled }, sid);
+  session.mockCacheDisabled = cacheDisabled === true;
+}
+
 async function applyNetworkMocks(cdp, sid, session) {
   const rules = session.networkMocks || [];
   if (!rules.length) {
     await cdpDomains(cdp).Fetch.disable( {}, sid);
+    if (session.mockCacheDisabled) await setMockCacheDisabled(cdp, sid, session, false);
     return;
   }
-  await cdpDomains(cdp).Fetch.enable( {
-    patterns: rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
-  }, sid);
+  await setMockCacheDisabled(cdp, sid, session, true);
+  try {
+    await cdpDomains(cdp).Fetch.enable( {
+      patterns: rules.map(rule => ({ urlPattern: mockInterceptPattern(rule.urlPattern), requestStage: 'Request' })),
+    }, sid);
+  } catch (error) {
+    if (session.mockCacheDisabled) {
+      try { await setMockCacheDisabled(cdp, sid, session, false); } catch {}
+    }
+    throw error;
+  }
 }
 
 async function handleMockRequestPaused(cdp, sid, session, params = {}) {
@@ -21598,6 +21911,7 @@ async function handleMockRequestPaused(cdp, sid, session, params = {}) {
     responseHeaders: [{ name: 'content-type', value: rule.contentType }],
     body: Buffer.from(rule.body || '', 'utf8').toString('base64'),
   }, sid);
+  rule.hits = nextMockHitCount(rule.hits);
   const hit = {
     ruleId: rule.id,
     method: request.method || '',
@@ -21609,6 +21923,11 @@ async function handleMockRequestPaused(cdp, sid, session, params = {}) {
   session.networkMockHits.push(hit);
   if (session.networkMockHits.length > MAX_NETWORK_MOCK_HITS) {
     session.networkMockHits.splice(0, session.networkMockHits.length - MAX_NETWORK_MOCK_HITS);
+  }
+  try {
+    rememberTabEnvironment(session);
+  } catch {
+    // The response is already fulfilled. A failed env write must not continueRequest.
   }
   return hit;
 }
@@ -21630,7 +21949,8 @@ async function mockStr(cdp, sid, session, args = []) {
     rememberTabEnvironment(session);
   }
   const model = buildMockModel(session, parsed);
-  return parsed.format === 'json' ? formatJson(model) : formatMockText(model);
+  if (parsed.format === 'json') return formatJson(model);
+  return formatMockText(model, { warnPattern: parsed.mode === 'add' ? parsed.rule.urlPattern : null });
 }
 
 function parseClockTimestamp(value) {
@@ -30385,6 +30705,12 @@ Usage: cdp <command> [args]
                                     Successful document nav is URL+title (+ readyState). --compact is one line.
 {{command:mock}}
                                     add <urlPattern> --status code --body text [--content-type type]
+                                    * = any length (including / and ?), ? = zero or one character, \\ escapes * ? and \\. Case-sensitive.
+                                    A pattern with ://, a leading *, or a scheme matches that whole URL.
+                                    No scheme and a leading / matches the path and query only.
+                                    No scheme otherwise matches the path and query. With a dot it also matches the host after :// and one subdomain label.
+                                    A pattern that cannot match warns when it is added. Hit counts persist with the rule.
+                                    The HTTP cache is disabled while a mock is active.
 {{command:clock}}
                                     freeze --at date-or-epoch-ms | offset --ms delta
 {{command:throttle}}

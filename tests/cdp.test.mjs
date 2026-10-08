@@ -805,8 +805,9 @@ describe('network mock', () => {
 
     const out = await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json']);
 
-    expect(cdp.calls.map(c => c.method)).toEqual(['Fetch.enable']);
-    expect(cdp.calls[0].params).toMatchObject({
+    expect(cdp.calls.map(c => c.method)).toEqual(['Network.setCacheDisabled', 'Fetch.enable']);
+    expect(cdp.calls[0].params).toEqual({ cacheDisabled: true });
+    expect(cdp.calls[1].params).toMatchObject({
       patterns: [{ urlPattern: '**/api/fail*', requestStage: 'Request' }],
     });
     expect(state.networkMocks).toHaveLength(1);
@@ -831,17 +832,18 @@ describe('network mock', () => {
     });
 
     expect(cdp.calls.map(c => c.method)).toEqual([
+      'Network.setCacheDisabled',
       'Fetch.enable',
       'Fetch.fulfillRequest',
       'Fetch.continueRequest',
     ]);
-    expect(cdp.calls[1].params).toMatchObject({
+    expect(cdp.calls[2].params).toMatchObject({
       requestId: 'match-1',
       responseCode: 503,
       responseHeaders: [{ name: 'content-type', value: 'application/json' }],
     });
-    expect(Buffer.from(cdp.calls[1].params.body, 'base64').toString('utf8')).toBe('{"ok":false}');
-    expect(cdp.calls[2].params).toEqual({ requestId: 'miss-1' });
+    expect(Buffer.from(cdp.calls[2].params.body, 'base64').toString('utf8')).toBe('{"ok":false}');
+    expect(cdp.calls[3].params).toEqual({ requestId: 'miss-1' });
     expect(state.networkMockHits).toHaveLength(1);
     expect(state.networkMockHits[0]).toMatchObject({ url: 'https://example.com/api/fail?id=1', status: 503 });
   });
@@ -857,7 +859,13 @@ describe('network mock', () => {
 
     const out = await T.mockStr(cdp, 'sid-1', state, ['clear']);
 
-    expect(cdp.calls.map(c => c.method)).toEqual(['Fetch.enable', 'Fetch.disable']);
+    expect(cdp.calls.map(c => c.method)).toEqual([
+      'Network.setCacheDisabled',
+      'Fetch.enable',
+      'Fetch.disable',
+      'Network.setCacheDisabled',
+    ]);
+    expect(cdp.calls.at(-1).params).toEqual({ cacheDisabled: false });
     expect(state.networkMocks).toEqual([]);
     expect(out).toContain('Network mock: off');
   });

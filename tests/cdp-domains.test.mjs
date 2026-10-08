@@ -60,6 +60,7 @@ const EXPECTED_METHODS = Object.freeze([
   'Network.getCookies',
   'Network.getResponseBody',
   'Network.loadNetworkResource',
+  'Network.setCacheDisabled',
   'Network.setCookie',
   'Page.addScriptToEvaluateOnNewDocument',
   'Page.captureScreenshot',

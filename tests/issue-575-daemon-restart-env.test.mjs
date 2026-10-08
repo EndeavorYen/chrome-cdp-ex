@@ -88,10 +88,11 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
     expect(nextCdp.calls.map(call => call.method)).toEqual([
       'Network.enable',
       'Network.emulateNetworkConditions',
+      'Network.setCacheDisabled',
       'Fetch.enable',
     ]);
     expect(nextCdp.calls[1].params).toMatchObject({ offline: true, downloadThroughput: 0, uploadThroughput: 0 });
-    expect(nextCdp.calls[2].params.patterns).toEqual([
+    expect(nextCdp.calls[3].params.patterns).toEqual([
       { urlPattern: '**/api/a*', requestStage: 'Request' },
       { urlPattern: '**/api/b*', requestStage: 'Request' },
     ]);
