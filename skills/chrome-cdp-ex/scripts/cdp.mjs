@@ -7397,7 +7397,7 @@ function responseHeaderValue(headers, name) {
   return key == null ? null : String(headers[key]);
 }
 
-// T-07: a request the action sent that failed (status >= 400, or a network error) is named on the
+// #648: a request the action sent that failed (status >= 400, or a network error) is named on the
 // receipt with its status text, Retry-After and a short redacted body: what `netlog --id N --body`
 // prints. At most two, newest last. `readBody(detail)` resolves like readNetlogResponseBody.
 async function describeFailedActionRequests(entries = [], { store = null, readBody = null } = {}) {
@@ -9204,7 +9204,7 @@ function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}
     || (result.outcome?.status ? String(result.outcome.status) : `${result.action}: dispatched`);
   const next = defaultMutatingNextCommand(result, { dispatchText });
   const one = outcome.replace(/\.+$/, '');
-  // T-07: a request the action sent that failed is evidence for the next step.
+  // #648: a request the action sent that failed is evidence for the next step.
   const failed = failedRequestLines(result);
   if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return insertBeforeNextLine(one, failed);
   return insertBeforeNextLine(`${one}. Next: ${next}`, failed);

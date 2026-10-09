@@ -6,7 +6,7 @@ const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const { createNetlogRequestStore, parseNetlogArgs } = await import('../skills/chrome-cdp-ex/scripts/lib/netlog.mjs');
 const { buildActionRecoveryPlan } = await import('../skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs');
 
-// #648 / T-07: a save that fails is named on the action receipt (status, Retry-After, a short
+// #648: a save that fails is named on the action receipt (status, Retry-After, a short
 // redacted body). Chrome sends no loadingFinished for a `Cache-Control: no-store` response the
 // page never reads, and Network.getResponseBody then has no data; Network.streamResourceContent
 // still returns the bytes Chrome received.
@@ -100,7 +100,7 @@ describe('#648 unread no-store bodies', () => {
   });
 });
 
-describe('T-07 failed requests on the action receipt', () => {
+describe('#648 failed requests on the action receipt', () => {
   const readBodyWith = cdp => detail => T.readNetlogResponseBody(cdp, 'SESSION', detail);
 
   it('describes failed requests with status text, Retry-After and a redacted body, newest last', async () => {

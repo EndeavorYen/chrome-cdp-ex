@@ -1362,7 +1362,7 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
     priority: 'high',
     verify: 'since-action',
     intents: [
-      // T-07: the diagnosis Next comes first: the request detail, or the page once the receipt
+      // #648: the diagnosis Next comes first: the request detail, or the page once the receipt
       // already names the failed request and its body.
       { key: 'next-or-netlog', reason: 'Inspect failed or pending requests caused by the action.' },
       { key: 'since-action', reason: 'Verify what the action changed before retrying.' },
