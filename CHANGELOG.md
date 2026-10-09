@@ -8,6 +8,9 @@
 
 ### Bug Fixes
 
+* `perceive --since-action` and `perceive --diff` keep the `@ref` of every element that is still on the page. A new element gets the next number above any number already handed out, and that number is printed on the added line. A number whose element is gone is not given to a different element, so a later `click @N` cannot hit another control and succeed. A plain `perceive` still numbers `@1..@N` in document order and prints every line
+  ([#642](https://github.com/EndeavorYen/chrome-cdp-ex/issues/642)).
+
 * `hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take several seconds for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and one Next command (`CDP_BACKGROUND=0 cdp hover …` when the tab is hidden, otherwise `cdp perceive … -C -d 8`) ([#608](https://github.com/EndeavorYen/chrome-cdp-ex/issues/608)).
 
 * `reload` no longer clears console and exception entries after the new document has loaded. An exception thrown while that document loads stays on the reload receipt and on the next `perceive`, `summary`, `status`, and `console`. Entries from the previous document stay omitted. Navigation and network buffers are still cleared ([#610](https://github.com/EndeavorYen/chrome-cdp-ex/issues/610)).
