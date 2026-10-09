@@ -8,9 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { executeCdpCli } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { createTableArtifactStore } from '../skills/chrome-cdp-ex/scripts/lib/table-artifacts.mjs';
 import { parseTableArgs } from '../skills/chrome-cdp-ex/scripts/lib/table-contract.mjs';
-import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
-import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
-import { buildMcpToolCommand } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
+import { buildMcpToolCommand, createMcpToolResult } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 
 const { __test__: cdpTest } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -959,31 +957,17 @@ describe('collection command semantics', () => {
       args: ['ABC12345', '#orders', '--collect', '--scroll-container', '#viewport', '--format', 'json'],
       confirm: true,
     })).toThrow(/not allowlisted/);
-    const sent = [];
-    const handle = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
-      sendMessage: message => sent.push(message),
+    // #643: tools/list does not serve table, so tools/call refuses it; its mapper and the result
+    // mapping still keep the collection output exact.
+    const command = buildMcpToolCommand('table', {
+      target: 'ABC12345', selector: '#orders', collect: true, scrollContainer: '#viewport', confirm: true, format: 'json',
     });
-    await handle({
-      jsonrpc: '2.0',
-      id: 160,
-      method: 'tools/call',
-      params: {
-        name: 'table',
-        arguments: {
-          target: 'ABC12345',
-          selector: '#orders',
-          collect: true,
-          scrollContainer: '#viewport',
-          confirm: true,
-        },
-      },
-    });
+    const result = createMcpToolResult(command, direct);
 
     expect(direct.code).toBe(0);
     expect(direct.stdout).toBe(output);
     expect(direct.stdout).not.toContain('targetResolution');
-    expect(sent[0].result).toEqual({
+    expect(result).toEqual({
       content: [{ type: 'text', text: output }],
       structuredContent: JSON.parse(output),
       isError: false,
@@ -1016,31 +1000,18 @@ describe('collection command semantics', () => {
         });
       },
     });
-    const sent = [];
-    const handle = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
-      sendMessage: message => sent.push(message),
+    // #643: tools/list does not serve table, so tools/call refuses it; its mapper and the result
+    // mapping still keep the collection output exact.
+    const command = buildMcpToolCommand('table', {
+      target: 'ABC12345', selector: '#orders', collect: true, scrollContainer: '#viewport', confirm: true,
     });
-    await handle({
-      jsonrpc: '2.0',
-      id: 161,
-      method: 'tools/call',
-      params: {
-        name: 'table',
-        arguments: {
-          target: 'ABC12345',
-          selector: '#orders',
-          collect: true,
-          scrollContainer: '#viewport',
-          confirm: true,
-        },
-      },
-    });
+    const result = createMcpToolResult(command, direct);
 
     expect(direct.code).toBe(0);
     expect(direct.stdout).toBe(output);
-    expect(sent[0].result).toEqual({
+    expect(result).toEqual({
       content: [{ type: 'text', text: output }],
+      structuredContent: { schema: 'chrome-cdp-ex.mcp-result.v1', ok: true, exitCode: 0 },
       isError: false,
     });
   });
