@@ -22618,18 +22618,30 @@ function textPageScript(opts) {
       const found = safeQuery(document, setting);
       return found ? { el: found, sel: setting } : { el: null, sel: setting };
     }
-    function shouldSkipElement(el, rootEl, skipSelectors) {
-      if (!el || el === rootEl) return false;
-      if (el.hidden || el.getAttribute('aria-hidden') === 'true') return true;
-      for (const sel of skipSelectors) if (safeMatches(el, sel)) return true;
+    // null for an element the text skips, else its computed display ('' for the root).
+    function displayOf(el, rootEl, skipSelectors) {
+      if (!el || el === rootEl) return '';
+      if (el.hidden || el.getAttribute('aria-hidden') === 'true') return null;
+      for (const sel of skipSelectors) if (safeMatches(el, sel)) return null;
       const style = window.getComputedStyle(el);
-      return style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse';
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return null;
+      return String(style.display || '');
     }
     function clean(rootEl, stripNoise) {
       if (!rootEl) return '';
       const skipSelectors = STRIP.concat(EXTRA_EXCLUDES, stripNoise ? AUTO_NOISE : []);
       const parts = [];
       const blockish = new Set(['ADDRESS','ARTICLE','ASIDE','BLOCKQUOTE','BR','DIV','DL','FIELDSET','FIGCAPTION','FIGURE','FOOTER','FORM','H1','H2','H3','H4','H5','H6','HEADER','HR','LI','MAIN','NAV','OL','P','PRE','SECTION','TABLE','TR','UL']);
+      // #649: like innerText, a table cell ends with a tab, and any other element laid out as a block
+      // (dt, dd, grid and flex items, display:block spans) ends its line. An ARIA grid built from divs
+      // reads like a table: a cell, gridcell, columnheader or rowheader ends with a tab, a row with a
+      // newline. CELL stands in for that tab until source whitespace, tabs included, has been
+      // collapsed. SOFT is a block's line end: it gives way to a newline the tag rules print right
+      // after it, so nesting adds no blank lines.
+      const BLOCK_DISPLAY = new Set(['block', 'flex', 'grid', 'list-item', 'table', 'table-row', 'table-caption', 'flow-root']);
+      const CELL_ROLES = new Set(['cell', 'gridcell', 'columnheader', 'rowheader']);
+      const CELL = '\\u001f';
+      const SOFT = '\\u001e';
       function walk(node) {
         if (!node) return;
         if (node.nodeType === Node.TEXT_NODE) {
@@ -22638,14 +22650,31 @@ function textPageScript(opts) {
         }
         if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_NODE) return;
         const el = node.nodeType === Node.ELEMENT_NODE ? node : null;
-        if (el && shouldSkipElement(el, rootEl, skipSelectors)) return;
+        const display = el ? displayOf(el, rootEl, skipSelectors) : '';
+        if (display === null) return;
         if (el?.tagName === 'BR') { parts.push('\\n'); return; }
+        const role = el ? String(el.getAttribute('role') || '').toLowerCase() : '';
+        const cellStart = display === 'table-cell' || CELL_ROLES.has(role) ? parts.length : -1;
         for (const child of node.childNodes) walk(child);
-        if (el && blockish.has(el.tagName)) parts.push('\\n');
+        if (cellStart >= 0) {
+          // A block inside the cell ends the cell, not the row.
+          while (parts.length > cellStart && !/[^\\s\\u001e]/.test(parts[parts.length - 1])) parts.pop();
+          if (parts.length > cellStart) parts[parts.length - 1] = parts[parts.length - 1].replace(/[\\s\\u001e]+$/, '');
+          parts.push(CELL);
+        } else if (el && (blockish.has(el.tagName) || role === 'row')) {
+          parts.push('\\n');
+        } else if (BLOCK_DISPLAY.has(display)) {
+          const last = String(parts[parts.length - 1] || '');
+          if (!last.endsWith('\\n') && !last.endsWith(SOFT)) parts.push(SOFT);
+        }
       }
       walk(rootEl);
       return parts.join('')
+        .replace(/\\u001e+(?=[ \\t\\f\\v]*\\n)/g, '')
+        .replace(/\\u001e+/g, '\\n')
         .replace(/[ \\t\\f\\v]+/g, ' ')
+        .replace(/ *\\u001f */g, '\\t')
+        .replace(/\\t+(?=\\n|$)/g, '')
         .replace(/ *\\n */g, '\\n')
         .replace(/(\\n\\s*){3,}/g, '\\n\\n')
         .trim();
