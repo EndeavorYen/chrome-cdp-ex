@@ -442,17 +442,23 @@ export function buildNetlogListModel(entries = [], { idFor = () => null, detailF
   }
   const all = [...byKey.values()];
   const shown = all.filter(({ entry }) => netlogEntryMatches(entry, filters, { unsafeFull }));
-  const requests = shown.map(({ entry, id }) => ({
-    id,
-    method: String(entry.method || 'GET'),
-    url: unsafeFull ? String(entry.url || '') : redactUrl(entry.url || ''),
-    type: String(entry.type || ''),
-    status: listStatus(entry),
-    errorText: entry.errorText ? String(entry.errorText) : null,
-    durationMs: Number.isFinite(entry.duration) ? entry.duration : null,
-    size: Number(id != null ? detailFor(id)?.encodedDataLength : null) || Number(entry.size) || 0,
-    ageMs: Number.isFinite(entry.ts) ? Math.max(0, now - entry.ts) : null,
-  }));
+  const requests = shown.map(({ entry, id }) => {
+    const detail = id != null ? detailFor(id) : null;
+    return {
+      id,
+      method: String(entry.method || 'GET'),
+      url: unsafeFull ? String(entry.url || '') : redactUrl(entry.url || ''),
+      type: String(entry.type || ''),
+      status: listStatus(entry),
+      errorText: entry.errorText ? String(entry.errorText) : null,
+      durationMs: Number.isFinite(entry.duration) ? entry.duration : null,
+      size: Number(detail?.encodedDataLength) || Number(entry.size) || 0,
+      // #648: a response whose body never finished (for example a no-store body the page did
+      // not read) has no transferred size yet; 0B would read as an empty body.
+      ...(detail?.state === 'pending' && detail.status != null ? { bodyFinished: false } : {}),
+      ageMs: Number.isFinite(entry.ts) ? Math.max(0, now - entry.ts) : null,
+    };
+  });
   const target = targetId || '<target>';
   const newestFirst = [...requests].reverse();
   const pick = newestFirst.find(request => request.id != null && (request.status === 'failed' || Number(request.status) >= 400))
@@ -487,7 +493,8 @@ export function formatNetlogListText(model) {
       ? `failed${request.errorText ? ` (${request.errorText})` : ''}`
       : String(request.status ?? '?');
     const id = request.id != null ? `#${request.id}` : '#-';
-    lines.push(`  ${id} ${request.method} ${request.url} → ${status} (${request.durationMs ?? '?'}ms, ${formatSize(request.size)})${ago}`);
+    const size = request.bodyFinished === false ? 'body not finished' : formatSize(request.size);
+    lines.push(`  ${id} ${request.method} ${request.url} → ${status} (${request.durationMs ?? '?'}ms, ${size})${ago}`);
   }
   if (model.nextSteps.length) lines.push(`Next: ${model.nextSteps[0]}`);
   return lines.join('\n');
@@ -802,9 +809,9 @@ export function formatNetlogRequestText(model) {
     if (!body.available) {
       lines.push(`Body: not available (${body.error})`);
     } else if (body.kind === 'binary') {
-      lines.push(`Body: ${body.summary}`);
+      lines.push(`Body: ${body.summary}${body.unread ? ' (not read by the page)' : ''}`);
     } else {
-      lines.push(`Body (${body.bytes} bytes${body.truncated ? `, first ${body.shownBytes} shown` : ''}${body.redacted ? ', secrets redacted' : ''}):`);
+      lines.push(`Body (${body.bytes} bytes${body.truncated ? `, first ${body.shownBytes} shown` : ''}${body.redacted ? ', secrets redacted' : ''}${body.unread ? ', not read by the page' : ''}):`);
       lines.push(body.text ? body.text.split('\n').map(line => `  ${line}`).join('\n') : '  (empty)');
       if (body.truncated) lines.push('  … truncated');
     }

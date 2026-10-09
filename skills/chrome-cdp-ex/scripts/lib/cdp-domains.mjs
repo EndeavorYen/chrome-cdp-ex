@@ -42,6 +42,7 @@ export const CDP_METHODS = Object.freeze([
   'Network.getResponseBody',
   'Network.loadNetworkResource',
   'Network.setCookie',
+  'Network.streamResourceContent',
   'Page.addScriptToEvaluateOnNewDocument',
   'Page.captureScreenshot',
   'Page.createIsolatedWorld',

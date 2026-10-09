@@ -54,6 +54,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Network.getResponseBody': 'sensitive-observation',
   'Network.loadNetworkResource': 'observation',
   'Network.setCookie': 'sensitive-mutation',
+  'Network.streamResourceContent': 'sensitive-observation',
   'Page.addScriptToEvaluateOnNewDocument': 'page-mutation',
   'Page.captureScreenshot': 'observation',
   'Page.createIsolatedWorld': 'session-control',
@@ -433,8 +434,10 @@ describe('Phase 6 direct CDP characterization', () => {
     // #575 added applySavedNetworkControls → Network.enable, Network.emulateNetworkConditions, Fetch.disable.
     // #552 added readPinnedClickPoint → Runtime.callFunctionOn, freezing the click point before dispatch.
     // #608 added readHoverRevealOnObject → Runtime.callFunctionOn, reading :hover on the ref node.
-    expect(inventory).toHaveLength(177);
-    expect(digest).toBe('sha256:9022fc0701532ff69c3e81f8342f747163ebd9a82f9ae1eb5a3f85f24bd0750f');
+    // #648 moved Network.getResponseBody from netlogRequestStr into readNetlogResponseBody and added its
+    // Network.streamResourceContent fallback for a no-store body the page never read.
+    expect(inventory).toHaveLength(178);
+    expect(digest).toBe('sha256:65a60987ba267291edaac06ca6cbfd4d2aee111baab812f477d7786d440acc66');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
