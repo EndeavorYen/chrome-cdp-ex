@@ -6,6 +6,10 @@
 
 * `bin/chrome-cdp` on Node 22 runs `cdp.mjs` in this process and turns on Node's module compile cache before that import. A warm call skips the extra Node process and recompiles less of the CLI. Stdout, stderr, exit codes, and the Node before 22 re-exec path stay the same. Daemon `scriptPath` stays `cdp.mjs`. An unwritable cache, or a Node build without `module.enableCompileCache`, continues without a message ([#600](https://github.com/EndeavorYen/chrome-cdp-ex/issues/600)).
 
+### Features
+
+* `diff-shot` names what changed. After the changed-pixel ratio, the compare receipt lists up to five changed regions, largest first, each with the element that holds it, its box in CSS pixels, and its changed-pixel count: `<SECTION#w-revenue> "Revenue" at 156,184 462×150 (68108 px)`. An element with no id, `aria-label` or single heading is shown in its nearest ancestor that has one: `<DIV.n> "1,388" in <SECTION#c-orders> "Orders"`. `around` marks changed pixels past an element's box, such as an outline or a focus ring, or a change no element holds (`around <HTML>`). `Changed regions (5 of 9)` says some were left out. `Changed regions: none` says no pixel changed, or, with a note, that each changed pixel is alone in its 16 px cell. Labels are page text and are redacted like action receipts. JSON results carry `regions` and `regionCount`. The baseline receipt says to make the change and run `diff-shot` again, and its Next uses the 8-character target prefix ([#661](https://github.com/EndeavorYen/chrome-cdp-ex/issues/661)).
+
 ### Bug Fixes
 
 * `text` keeps field boundaries. A table cell ends with a tab, and so does an ARIA `cell`, `gridcell`, `columnheader` or `rowheader`. A table row or ARIA `row` ends with a newline, and so do `<dt>`, `<dd>`, grid and flex items, and any other element laid out as a block. A detail panel reads `Part number\nBP-4471-C\nPrice\n$64.90` and a grid row `SHP-00183\tAdatum\tIn transit\t2026-10-14`; they used to read `Part numberBP-4471-CPrice$64.90` and `SHP-00183AdatumIn transit2026-10-14`. Inline elements stay joined, and nested blocks add no blank lines ([#649](https://github.com/EndeavorYen/chrome-cdp-ex/issues/649)).

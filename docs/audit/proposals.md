@@ -598,3 +598,23 @@ Noise: n = 1 per arm. The only Phase D pair run under identical conditions (scen
 
 - before, 2 deletions;
 - after, 0 deletions, 0 sign-outs, and `Kind: dialog-open` with both button names.
+
+## Results of 7
+
+Implemented on `19af5ce` for #661. The compare receipt names the element behind each changed region, and SKILL.md gets the one paragraph.
+
+### Reference path
+
+Scenario 9 reads the changed cards from the region lines: 4 calls, 1,469 chars. Before, it decoded the diff PNG and read the card boxes with `eval`: 5 calls, 1,483 chars.
+
+### Haiku 5.5
+
+One run, the same v2 prompt as Phase D, with this branch's SKILL.md: the CLI and SKILL.md both changed. The same temporary guard was in place; `cdp.mjs` was restored byte for byte afterwards (sha256 checked). Data: [haiku-probe-after-7.json](haiku-probe-after-7.json).
+
+| Scenario | Result | Calls | Chars | Failed calls | `help` | `eval` | Agent tool uses |
+|---|---|---|---|---|---|---|---|
+| 9 | pass → pass | 16 → 8 | 37,106 → 4,435 | 0 → 0 | 3 → 1 | 3 → 0 | 17 → 10 |
+
+- Haiku ran `diff-shot` before and after the click and answered from its region lines. It named Revenue and Churn, and said the pressed button changed too but is not a widget.
+- It then wrote a small node script to compare the two PNGs pixel by pixel, and ran a second compare to check that nothing was still moving. Those are 2 of its 10 tool uses and 1 of its 8 calls.
+- Noise: n = 1. A drop from 16 to 8 calls is four times the 2-call spread of the one identical Phase D pair. The drop in chars comes from the 3 `eval` dumps that are gone.
