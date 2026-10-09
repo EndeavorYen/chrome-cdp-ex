@@ -2566,7 +2566,7 @@
           "readOnlyHint": false,
           "title": "Press"
         },
-        "description": "Send a key press to the page. Requires confirm: true.",
+        "description": "Send a key press to the focused element. Enter is a key, not a click on a results link. Set searchSubmit to opt into that link. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2578,6 +2578,10 @@
             "key": {
               "description": "Key name, for example Enter, Escape, Tab.",
               "type": "string"
+            },
+            "searchSubmit": {
+              "description": "Opt in to clicking a visible search-results listing instead of dispatching Enter. The receipt names the link.",
+              "type": "boolean"
             },
             "target": {
               "description": "Target prefix or named alias.",

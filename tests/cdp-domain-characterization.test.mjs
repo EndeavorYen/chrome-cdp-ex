@@ -338,7 +338,7 @@ function domainInvocations() {
     {
       domain: 'Accessibility',
       methods: ['Accessibility.getFullAXTree', 'Runtime.evaluate'],
-      callDigest: '4bc40458746d8cc940b69e16731baa0d472c105027a6a560e2443049eeec717d',
+      callDigest: '6a98ba1ca42adb994bef20c0109583992d61e93e186452b1caef06696674a178',
       result: 'Page: Fixture — http://127.0.0.1/fixture\nViewport: 800×600 | Scroll: 0/0 (0%) | Focused: null\nInteractive: none\nConsole: clean\nCoords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)\n',
       invoke: cdp => cdpTest.perceiveStr(
         cdp,
@@ -383,8 +383,9 @@ function domainInvocations() {
     },
     {
       domain: 'Input',
-      methods: ['Runtime.evaluate', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'],
-      callDigest: 'c76b565b09cfdc990ad4c10d48b7ad0a1c6d7ee5c5ce3c8159d1805d0dc4d2ff',
+      // Default Enter is two key events. Probing a results link is press --search-submit.
+      methods: ['Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'],
+      callDigest: '72e120b9c22dc9beedf3966f0f9dd7df81ba521dd8efc3c886ff0a2792cca675',
       result: 'Pressed Enter',
       invoke: cdp => cdpTest.pressStr(cdp, 'SESSION', 'Enter'),
     },
