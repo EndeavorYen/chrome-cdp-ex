@@ -1,0 +1,1965 @@
+{
+  "schema": "chrome-cdp-ex.audit.haiku-probe.v1",
+  "date": "2026-10-09",
+  "model": "claude-haiku-5-5",
+  "note": "Official runs have run == nn. Archived: 01smoke (auditor edited cdp.mjs mid-run), 03v1 (prompt v1 \"One attempt\"), 11invalid (fixture bug). Chars are CLI stdout+stderr; tokensEst = chars/4.",
+  "runs": [
+    {
+      "nn": "01",
+      "id": "agent-01-admin-session-setting",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v1",
+      "model": "claude-haiku-5-5",
+      "calls": 15,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 2,
+      "redundantPerceive": 0,
+      "helpCalls": 4,
+      "nextAvailable": 1,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "help",
+        "eval",
+        "select",
+        "click",
+        "nav",
+        "stop"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 6708,
+      "tokensEst": 1677,
+      "charsPerCall": 447,
+      "cliMs": 5750,
+      "wallMs": 55471,
+      "thinkMs": 49721,
+      "agentTokens": 59558,
+      "agentToolUses": 13,
+      "agentDurationMs": 73394,
+      "vsReference": {
+        "calls": 2.5,
+        "chars": 2
+      },
+      "answer": "已把 Acme Admin 的 Session timeout 從 30 minutes 改為 60 minutes 並存檔。\n\n- **位置**：Settings 頁（http://127.0.0.1:14072/settings）。\n- **存檔確認**：按下 Save settings 後頁面顯示「Settings saved」，主控台沒有錯誤。另外重新載入頁面，欄位仍是 60 minutes，表示值已存到伺服器。\n- **沒有登出**：仍以 ann@acme.example 登入。我沒有點 Sign out，也沒有點 Reset to defaults。\n- **其他設定未動**：通知信箱 ops@acme.example、兩步驟驗證（已勾選）、Theme（system）都維持原值。\n- **未確認的部分**：我只確認設定已存下，沒有驗證它何時對目前這個登入工作階段生效。\n- **清理**：已對這個分頁執行 `stop`，只停止 CLI 的 daemon，瀏覽器沒有關閉。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 2134,
+          "chars": 81
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 192,
+          "chars": 199
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 580,
+          "chars": 2194
+        },
+        {
+          "cmd": "help select",
+          "exit": 0,
+          "ms": 130,
+          "chars": 178
+        },
+        {
+          "cmd": "help eval",
+          "exit": 0,
+          "ms": 144,
+          "chars": 624
+        },
+        {
+          "cmd": "help nav",
+          "exit": 0,
+          "ms": 134,
+          "chars": 221
+        },
+        {
+          "cmd": "eval <t> JSON.stringify({opts:[...document.querySelectorAll(\"#timeout option\")].map(o=>[o.value,o.textContent.trim(),o.selected]),buttons:[...document.querySelectorAll(\"button\")].map(b=>[b.id,b.textContent.trim(),b.type]),formId:(document.querySelector(\"#timeout\")||{}).form?.id||null,url:location.href})",
+          "exit": 0,
+          "ms": 164,
+          "chars": 286
+        },
+        {
+          "cmd": "select <t> #timeout 60",
+          "exit": 0,
+          "ms": 738,
+          "chars": 66
+        },
+        {
+          "cmd": "eval <t> JSON.stringify({value:document.querySelector(\"#timeout\").value,label:document.querySelector(\"#timeout\").selectedOptions[0].textContent.trim(),url:location.href,email:document.querySelector(\"#email\").value,twofa:document.querySelector(\"#twofa\").checked,theme:document.querySelector(\"#theme\").value})",
+          "exit": 0,
+          "ms": 192,
+          "chars": 133
+        },
+        {
+          "cmd": "click <t> #save",
+          "exit": 0,
+          "ms": 416,
+          "chars": 70
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 183,
+          "chars": 2236
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:14072/settings",
+          "exit": 0,
+          "ms": 298,
+          "chars": 87
+        },
+        {
+          "cmd": "eval <t> JSON.stringify({value:document.querySelector(\"#timeout\").value,label:document.querySelector(\"#timeout\").selectedOptions[0].textContent.trim(),url:location.href,signedIn:document.body.innerText.includes(\"Signed in as ann@acme.example\")})",
+          "exit": 0,
+          "ms": 163,
+          "chars": 92
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 128,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 154,
+          "chars": 49
+        }
+      ],
+      "run": "01"
+    },
+    {
+      "nn": "01",
+      "id": "agent-01-admin-session-setting",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v1",
+      "model": "claude-haiku-5-5",
+      "calls": 13,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 4,
+      "redundantPerceive": 0,
+      "helpCalls": 2,
+      "nextAvailable": 2,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "help",
+        "select",
+        "stop",
+        "click",
+        "nav"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 10534,
+      "tokensEst": 2634,
+      "charsPerCall": 810,
+      "cliMs": 5471,
+      "wallMs": 50876,
+      "thinkMs": 45405,
+      "agentTokens": 63145,
+      "agentToolUses": 11,
+      "agentDurationMs": 72503,
+      "vsReference": {
+        "calls": 2.2,
+        "chars": 3.1
+      },
+      "answer": "Acme 後台的 Session timeout 已從 30 分鐘改成 60 分鐘，並已存檔。\n\n- **操作**：在 Settings 頁把 Session timeout 選為 60 minutes，按「Save settings」。頁面跳到 `/settings?saved=1`，顯示「Settings saved」。\n- **驗證**：之後把該分頁重新載入到乾淨的 `/settings`，Session timeout 仍是 60 minutes，表示伺服器已保存。這一步讓該分頁的網址從 `?saved=1` 變成 `/settings`。\n- **登入狀態**：沒有登出。頁面仍顯示 Signed in as ann@acme.example，「Sign out」沒有點。\n- **其他設定**：沒有動。通知信箱 ops@acme.example、雙因子驗證（已勾選）、主題 system 都和原來一樣。\n\n過程中遇到一個問題：第一次改值時，CLI 回報 AFD801DC 分頁的 daemon 是舊版，原因是 daemon 記錄的腳本修改時間和目前的 `cdp.mjs` 不一致（腳本在 daemon 啟動後又被改過）。我執行 `cdp stop AFD801DC` 重啟這個分頁的 daemon，再重跑一次就成功。`stop` 只停 daemon，分頁和登入狀態都保留。我沒有使用 `--allow-stale-daemon`。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1760,
+          "chars": 82
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 183,
+          "chars": 199
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 590,
+          "chars": 2194
+        },
+        {
+          "cmd": "help select",
+          "exit": 0,
+          "ms": 187,
+          "chars": 178
+        },
+        {
+          "cmd": "select <t> #timeout 60",
+          "exit": 1,
+          "ms": 153,
+          "chars": 698
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 135,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 132,
+          "chars": 49
+        },
+        {
+          "cmd": "select <t> #timeout 60",
+          "exit": 0,
+          "ms": 1078,
+          "chars": 155
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 164,
+          "chars": 2194
+        },
+        {
+          "cmd": "click <t> @12",
+          "exit": 0,
+          "ms": 432,
+          "chars": 76
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 170,
+          "chars": 2236
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:14433/settings",
+          "exit": 0,
+          "ms": 319,
+          "chars": 87
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 168,
+          "chars": 2194
+        }
+      ],
+      "run": "01smoke"
+    },
+    {
+      "nn": "02",
+      "id": "agent-02-spa-search-detail",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v1",
+      "model": "claude-haiku-5-5",
+      "calls": 10,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 3,
+      "redundantPerceive": 0,
+      "helpCalls": 1,
+      "nextAvailable": 0,
+      "nextFollowed": 0,
+      "commands": [
+        "list",
+        "perceive",
+        "fill",
+        "click",
+        "text",
+        "help",
+        "stop"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 6846,
+      "tokensEst": 1712,
+      "charsPerCall": 685,
+      "cliMs": 3960,
+      "wallMs": 29452,
+      "thinkMs": 25492,
+      "agentTokens": 54786,
+      "agentToolUses": 10,
+      "agentDurationMs": 42170,
+      "vsReference": {
+        "calls": 1.7,
+        "chars": 3.7
+      },
+      "answer": "在零件目錄搜尋 \"brake pad\" 共有 4 筆結果。我打開的是「Ceramic Brake Pad Set」（不是 Rear 那筆），詳細頁標示 Fits: Front axle。\n\n- 料號（Part number）：**BP-4471-C**\n- 庫存（In stock）：**37**\n\n頁面頂端標示 \"Warehouse B\"，但詳細頁沒有說明 37 是否只計這個倉庫，我沒有再進一步確認。\n\n過程中只做了搜尋和開啟詳細頁，並用 `stop` 停止了這個分頁的 CLI daemon，瀏覽器和分頁都沒有關閉。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 170,
+          "chars": 91
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 586,
+          "chars": 1430
+        },
+        {
+          "cmd": "fill <t> @1 brake pad",
+          "exit": 0,
+          "ms": 737,
+          "chars": 71
+        },
+        {
+          "cmd": "click <t> @2",
+          "exit": 0,
+          "ms": 808,
+          "chars": 75
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 187,
+          "chars": 2161
+        },
+        {
+          "cmd": "click <t> @3",
+          "exit": 0,
+          "ms": 793,
+          "chars": 90
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 229,
+          "chars": 2432
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 170,
+          "chars": 255
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 131,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 149,
+          "chars": 49
+        }
+      ],
+      "run": "02"
+    },
+    {
+      "nn": "03",
+      "id": "agent-03-modal-blocks-approve",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 10,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 5,
+      "redundantPerceive": 1,
+      "helpCalls": 0,
+      "nextAvailable": 1,
+      "nextFollowed": 1,
+      "commands": [
+        "list",
+        "perceive",
+        "click",
+        "nav"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 11977,
+      "tokensEst": 2994,
+      "charsPerCall": 1198,
+      "cliMs": 3642,
+      "wallMs": 46744,
+      "thinkMs": 43102,
+      "agentTokens": 62919,
+      "agentToolUses": 10,
+      "agentDurationMs": 67841,
+      "vsReference": {
+        "calls": 1.7,
+        "chars": 2.7
+      },
+      "answer": "#1042 已核准。\n\n- 申請人 Ann Lee，Conference hotel, 2 nights，NT$ 9,800，狀態從 Pending 變成 Approved。\n- 重新載入頁面後仍是 Approved，所以應該已經寫入系統。\n- #1041（Ben Ortiz）和 #1043（Chen Wei）仍是 Pending，沒有動到。\n\n過程中的處理：\n- 一開始「核准」按鈕被「Your session is about to expire」對話框的遮罩擋住，點擊沒有送出。CLI 建議用 `--js` 強制點擊，我沒有這樣做。\n- 我改按該對話框自己的「Stay signed in」來關閉它，這會延長你目前的登入，然後才正常點擊核准。\n\n需要你留意的兩點：\n- 重新載入後，登入逾時對話框又出現（60 秒倒數）。如果還要在這個頁面操作，請自行按「Stay signed in」，否則會被登出。我沒有再按它。\n- 頁面顯示的登入帳號是 ann@acme.example，#1042 的申請人是 Ann Lee。如果你就是 Ann Lee，等於核准了自己的請款單，請確認公司規定是否允許。我無法從頁面確認兩者是否同一人。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 189,
+          "chars": 100
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 652,
+          "chars": 2950
+        },
+        {
+          "cmd": "click <t> @3",
+          "exit": 1,
+          "ms": 206,
+          "chars": 281
+        },
+        {
+          "cmd": "click <t> @7",
+          "exit": 0,
+          "ms": 792,
+          "chars": 83
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 159,
+          "chars": 2522
+        },
+        {
+          "cmd": "click <t> @3",
+          "exit": 0,
+          "ms": 776,
+          "chars": 76
+        },
+        {
+          "cmd": "perceive <t> --since-action",
+          "exit": 0,
+          "ms": 168,
+          "chars": 398
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 166,
+          "chars": 2527
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:14086/requests",
+          "exit": 0,
+          "ms": 369,
+          "chars": 89
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 165,
+          "chars": 2951
+        }
+      ],
+      "run": "03"
+    },
+    {
+      "nn": "03",
+      "id": "agent-03-modal-blocks-approve",
+      "pass": false,
+      "failures": [
+        "not-approved"
+      ],
+      "correction": null,
+      "prompt": "v1 (One attempt wording)",
+      "model": "claude-haiku-5-5",
+      "calls": 5,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 1,
+      "redundantPerceive": 0,
+      "helpCalls": 0,
+      "nextAvailable": 2,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "click",
+        "text"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 3665,
+      "tokensEst": 916,
+      "charsPerCall": 733,
+      "cliMs": 2692,
+      "wallMs": 27685,
+      "thinkMs": 24993,
+      "agentTokens": 55796,
+      "agentToolUses": 4,
+      "agentDurationMs": 47217,
+      "vsReference": {
+        "calls": 0.8,
+        "chars": 0.8
+      },
+      "answer": "#1042 還沒有核准成功，目前狀態仍是 Pending。\n\n- 請款單：#1042，Ann Lee，Conference hotel, 2 nights，NT$ 9,800。\n- 嘗試：點擊該列的 Approve 一次，CLI 回報 `Kind: covered`。按鈕中心點被 `position:fixed` 的 `DIV#backdrop` 遮住，所以沒有送出任何點擊。\n- 遮罩很可能來自畫面上的「Your session is about to expire」對話框，它說 60 秒後會登出，現在 session 可能已經過期。我沒有完全確認這點，請先確認頁面還能操作。\n- CLI 建議改用 `--js` 強制點擊。我沒有執行，因為那會略過遮罩，在有對話框擋住畫面時送出核准，而且這次任務只允許嘗試一次。\n- 我沒有點對話框的「Stay signed in」或「Sign out」。重讀頁面確認，#1041、#1042、#1043 都仍是 Pending。\n\n請你決定下一步：\n1. 你先在瀏覽器處理登入逾時的對話框（按 Stay signed in 或重新登入），再告訴我，我重試點 #1042 的 Approve。\n2. 或你直接在頁面上核准 #1042。\n3. 如果你確定要略過遮罩，我可以用 `--js` 執行一次。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1550,
+          "chars": 82
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 181,
+          "chars": 100
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 585,
+          "chars": 2950
+        },
+        {
+          "cmd": "click <t> @3",
+          "exit": 1,
+          "ms": 223,
+          "chars": 281
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 153,
+          "chars": 252
+        }
+      ],
+      "run": "03v1"
+    },
+    {
+      "nn": "04",
+      "id": "agent-04-form-validation-resubmit",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 17,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 3,
+      "redundantPerceive": 0,
+      "helpCalls": 3,
+      "nextAvailable": 1,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "help",
+        "fill",
+        "eval",
+        "click",
+        "stop"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 6590,
+      "tokensEst": 1648,
+      "charsPerCall": 388,
+      "cliMs": 7796,
+      "wallMs": 43348,
+      "thinkMs": 35552,
+      "agentTokens": 57026,
+      "agentToolUses": 12,
+      "agentDurationMs": 56734,
+      "vsReference": {
+        "calls": 1.7,
+        "chars": 3.5
+      },
+      "answer": "已新增供應商 Lumen Tech，系統編號 V-1007。\n\n1. 第一次送出被表單驗證擋下，提示「統編必須是 8 位數字，不能有連字號或空格」。頁面仍停在新增表單，應該沒有建立任何資料。\n2. 我把統編改成 24681357（即 2468-1357 去掉連字號）後再送一次，系統顯示「Vendor “Lumen Tech” created (V-1007)」。\n\n最後存入的值：公司名稱 Lumen Tech、統編 24681357、聯絡信箱 ap@lumen.example、付款條件 Net 30（沒有改）。\n\n- 統編在系統中只接受 8 位數字，所以存的是沒有連字號的版本。\n- 我沒有到供應商列表另外確認。第一次送出沒有成功，所以應該只有這一筆。\n- 完成後已停止這個分頁的 CDP daemon，瀏覽器和分頁本身都沒有關閉。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1649,
+          "chars": 81
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 165,
+          "chars": 102
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 545,
+          "chars": 1587
+        },
+        {
+          "cmd": "help fill",
+          "exit": 0,
+          "ms": 136,
+          "chars": 187
+        },
+        {
+          "cmd": "help click",
+          "exit": 0,
+          "ms": 124,
+          "chars": 203
+        },
+        {
+          "cmd": "fill <t> #name Lumen Tech",
+          "exit": 0,
+          "ms": 709,
+          "chars": 77
+        },
+        {
+          "cmd": "fill <t> #taxId 2468-1357",
+          "exit": 0,
+          "ms": 700,
+          "chars": 76
+        },
+        {
+          "cmd": "fill <t> #email ap@lumen.example",
+          "exit": 0,
+          "ms": 670,
+          "chars": 83
+        },
+        {
+          "cmd": "eval <t> JSON.stringify([...document.querySelectorAll('#name,#taxId,#email,#terms')].map(e=>[e.id,e.value]))",
+          "exit": 0,
+          "ms": 152,
+          "chars": 93
+        },
+        {
+          "cmd": "click <t> #create",
+          "exit": 0,
+          "ms": 798,
+          "chars": 60
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 172,
+          "chars": 1883
+        },
+        {
+          "cmd": "fill <t> #taxId <t>",
+          "exit": 0,
+          "ms": 670,
+          "chars": 93
+        },
+        {
+          "cmd": "eval <t> JSON.stringify([...document.querySelectorAll('#name,#taxId,#email,#terms')].map(e=>[e.id,e.value]))",
+          "exit": 0,
+          "ms": 144,
+          "chars": 92
+        },
+        {
+          "cmd": "click <t> #create",
+          "exit": 0,
+          "ms": 752,
+          "chars": 77
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 159,
+          "chars": 1655
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 128,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 123,
+          "chars": 49
+        }
+      ],
+      "run": "04"
+    },
+    {
+      "nn": "05",
+      "id": "agent-05-multi-tab-wrong-tab",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 7,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 3,
+      "redundantPerceive": 0,
+      "helpCalls": 0,
+      "nextAvailable": 1,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "click",
+        "nav"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 4617,
+      "tokensEst": 1154,
+      "charsPerCall": 660,
+      "cliMs": 5955,
+      "wallMs": 28380,
+      "thinkMs": 22425,
+      "agentTokens": 53525,
+      "agentToolUses": 5,
+      "agentDurationMs": 39716,
+      "vsReference": {
+        "calls": 1.8,
+        "chars": 2.2
+      },
+      "answer": "已把 staging 的 `new-checkout` 打開。\n\n- 操作的分頁是 staging 的 Feature flags（tab `83B9BDCE`，`/env/staging/flags`），`new-checkout` 從 Off 變成 On。\n- 點擊後頁面顯示 `checked=false` 變為 `checked=true`。我另外重新載入了同一個 staging 網址（沒有切換任何開關），重新載入後 `new-checkout` 仍是 On，所以設定已保存。\n- 其他旗標沒有變動：`dark-launch` 仍是 On，`beta-search` 仍是 Off。\n- production 分頁（`BEA9560B`）沒有操作，也沒有讀取。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1418,
+          "chars": 81
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 180,
+          "chars": 311
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 547,
+          "chars": 1802
+        },
+        {
+          "cmd": "click <t> button[aria-label=\"new-checkout\"]",
+          "exit": 0,
+          "ms": 3083,
+          "chars": 76
+        },
+        {
+          "cmd": "perceive <t> --since-action",
+          "exit": 0,
+          "ms": 223,
+          "chars": 453
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:3092/env/staging/flags",
+          "exit": 0,
+          "ms": 339,
+          "chars": 94
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 165,
+          "chars": 1800
+        }
+      ],
+      "run": "05"
+    },
+    {
+      "nn": "06",
+      "id": "agent-06-cross-origin-iframe-pay",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 30,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 2,
+      "redundantPerceive": 0,
+      "helpCalls": 9,
+      "nextAvailable": 4,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "text",
+        "help",
+        "eval",
+        "shot",
+        "clickxy",
+        "type",
+        "press",
+        "stop"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 9301,
+      "tokensEst": 2325,
+      "charsPerCall": 310,
+      "cliMs": 9822,
+      "wallMs": 106273,
+      "thinkMs": 96451,
+      "agentTokens": 86537,
+      "agentToolUses": 22,
+      "agentDurationMs": 156449,
+      "vsReference": {
+        "calls": 3.8,
+        "chars": 3.6
+      },
+      "answer": "訂單 ORDER-7731（$42.00）已經付款成功。\n\n- 目標是 Acme Store 結帳頁（http://127.0.0.1:9084/checkout），也是目前唯一開著的分頁。\n- 付款表單在跨網域的 iframe（Acme Pay，localhost:9085）裡，只有「持卡人」和「卡號」兩個欄位，沒有到期日和 CVC，所以只填了這兩項。\n- 持卡人填 Ann Lee，卡號填 4242 4242 4242 4242，填完後截圖確認。\n- Pay 按鈕是用 Tab 移到它後按一次 Enter 送出，沒有用滑鼠點擊。CLI 無法驗證 iframe 內的點擊，重試可能會重複扣款，所以只按了一次。\n- 結果：頁面顯示「Payment received for ORDER-7731 (•••• 4242)」，iframe 顯示「Payment approved (•••• 4242)」，console 沒有錯誤。\n- 過程中對持卡人欄位的第一次點擊，CLI 回報 no-input-events，但截圖顯示欄位確實已取得焦點，我沒有重試。\n- 頁面上的 Pay 按鈕還在，我沒有再按。請不要再按它，以免重複付款。\n- 已用 `stop` 停掉這個分頁的 CLI daemon，瀏覽器和分頁都沒有關閉。\n\n付款元件位於 localhost:9085，看起來是本機測試環境。我只能確認頁面與元件的回應，無法確認後端實際的扣款紀錄。\n\n截圖：~\\AppData\\Local\\Temp\\claude\\<project>\\<session>\\scratchpad\\checkout-after-pay.png\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1765,
+          "chars": 81
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 306,
+          "chars": 99
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 545,
+          "chars": 786
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 160,
+          "chars": 70
+        },
+        {
+          "cmd": "help fill",
+          "exit": 0,
+          "ms": 131,
+          "chars": 187
+        },
+        {
+          "cmd": "help perceive",
+          "exit": 0,
+          "ms": 130,
+          "chars": 176
+        },
+        {
+          "cmd": "help",
+          "exit": 0,
+          "ms": 131,
+          "chars": 1913
+        },
+        {
+          "cmd": "help clickxy",
+          "exit": 0,
+          "ms": 133,
+          "chars": 181
+        },
+        {
+          "cmd": "help type",
+          "exit": 0,
+          "ms": 131,
+          "chars": 166
+        },
+        {
+          "cmd": "help eval",
+          "exit": 0,
+          "ms": 141,
+          "chars": 624
+        },
+        {
+          "cmd": "eval <t> (() => { const f = document.getElementById(\"pay-frame\"); try { const d = f.contentDocument; if (!d) return \"no contentDocument, src=\" + f.src; return { url: d.location.href, fields: [...d.querySelectorAll(\"input,select,textarea,button\")].map(e => ({tag: e.tagName, type: e.type, name: e.name, id: e.id, autocomplete: e.autocomplete, placeholder: e.placeholder, aria: e.getAttribute(\"aria-label\")})) }; } catch (e) { return \"blocked: \" + e.message + \" src=\" + f.src; } })()",
+          "exit": 0,
+          "ms": 149,
+          "chars": 138
+        },
+        {
+          "cmd": "shot <t> ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/checkout-before.png",
+          "exit": 0,
+          "ms": 245,
+          "chars": 190
+        },
+        {
+          "cmd": "clickxy <t> 447 290",
+          "exit": 1,
+          "ms": 224,
+          "chars": 250
+        },
+        {
+          "cmd": "help jsclick",
+          "exit": 0,
+          "ms": 132,
+          "chars": 170
+        },
+        {
+          "cmd": "help press",
+          "exit": 0,
+          "ms": 121,
+          "chars": 192
+        },
+        {
+          "cmd": "eval <t> (() => { const a = document.activeElement; return { tag: a && a.tagName, id: a && a.id, src: a && a.src }; })()",
+          "exit": 0,
+          "ms": 152,
+          "chars": 169
+        },
+        {
+          "cmd": "shot <t> ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/checkout-after-click.png",
+          "exit": 0,
+          "ms": 204,
+          "chars": 195
+        },
+        {
+          "cmd": "type <t> Ann Lee",
+          "exit": 0,
+          "ms": 703,
+          "chars": 799
+        },
+        {
+          "cmd": "press <t> Tab",
+          "exit": 0,
+          "ms": 692,
+          "chars": 56
+        },
+        {
+          "cmd": "shot <t> ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/checkout-name-entered.png",
+          "exit": 0,
+          "ms": 206,
+          "chars": 196
+        },
+        {
+          "cmd": "type <t> <t>",
+          "exit": 0,
+          "ms": 669,
+          "chars": 800
+        },
+        {
+          "cmd": "shot <t> ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/checkout-card-entered.png",
+          "exit": 0,
+          "ms": 205,
+          "chars": 196
+        },
+        {
+          "cmd": "press <t> Tab",
+          "exit": 0,
+          "ms": 693,
+          "chars": 56
+        },
+        {
+          "cmd": "shot <t> ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/checkout-pay-focused.png",
+          "exit": 0,
+          "ms": 222,
+          "chars": 195
+        },
+        {
+          "cmd": "press <t> Enter",
+          "exit": 0,
+          "ms": 750,
+          "chars": 58
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 171,
+          "chars": 97
+        },
+        {
+          "cmd": "shot <t> ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/checkout-after-pay.png",
+          "exit": 0,
+          "ms": 236,
+          "chars": 193
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 204,
+          "chars": 827
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 129,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 142,
+          "chars": 49
+        }
+      ],
+      "run": "06"
+    },
+    {
+      "nn": "07",
+      "id": "agent-07-virtual-list-find",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 13,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 1,
+      "redundantPerceive": 0,
+      "helpCalls": 4,
+      "nextAvailable": 1,
+      "nextFollowed": 0,
+      "commands": [
+        "list",
+        "help",
+        "text",
+        "perceive",
+        "scroll",
+        "eval"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 7231,
+      "tokensEst": 1808,
+      "charsPerCall": 556,
+      "cliMs": 3078,
+      "wallMs": 70608,
+      "thinkMs": 67530,
+      "agentTokens": 64890,
+      "agentToolUses": 9,
+      "agentDurationMs": 81979,
+      "vsReference": {
+        "calls": 3.3,
+        "chars": 2.6
+      },
+      "answer": "SHP-00183 在出貨清單中的資料如下：\n\n- 客戶：Adatum\n- 目前狀態：In transit（運送中）\n- 預計到貨日：2026-10-14\n\n清單是虛擬捲動的，這筆不在最前面，所以我把表格捲到該區讀取，之後已把捲動位置還原到最上方。過程只讀取資料，沒有改動任何內容。以上數值來自清單列本身，我沒有開啟明細頁確認。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 208,
+          "chars": 100
+        },
+        {
+          "cmd": "help text",
+          "exit": 0,
+          "ms": 120,
+          "chars": 165
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 542,
+          "chars": 1084
+        },
+        {
+          "cmd": "help perceive",
+          "exit": 0,
+          "ms": 133,
+          "chars": 176
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 322,
+          "chars": 2105
+        },
+        {
+          "cmd": "help scroll",
+          "exit": 0,
+          "ms": 128,
+          "chars": 324
+        },
+        {
+          "cmd": "scroll <t> down 6400 --scroll-container #viewport",
+          "exit": 1,
+          "ms": 161,
+          "chars": 136
+        },
+        {
+          "cmd": "scroll <t> down 6400",
+          "exit": 0,
+          "ms": 681,
+          "chars": 77
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 194,
+          "chars": 1084
+        },
+        {
+          "cmd": "help eval",
+          "exit": 0,
+          "ms": 127,
+          "chars": 624
+        },
+        {
+          "cmd": "eval <t> const v = document.querySelector('#viewport'); v.scrollTop = 6488; v.scrollTop + ' / ' + v.scrollHeight + ' (client ' + v.clientHeight + ')'",
+          "exit": 0,
+          "ms": 154,
+          "chars": 26
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 153,
+          "chars": 1275
+        },
+        {
+          "cmd": "eval <t> const hits = [...document.querySelectorAll('[role=row]')].filter(r => r.textContent.includes('SHP-00183')); const out = hits.map(r => [...r.querySelectorAll('[role=gridcell]')].map(c => c.textContent.trim()).join(' | ')); const summary = hits.length + ' row(s): ' + out.join(' || '); document.querySelector('#viewport').scrollTop = 0; summary",
+          "exit": 0,
+          "ms": 155,
+          "chars": 55
+        }
+      ],
+      "run": "07"
+    },
+    {
+      "nn": "08",
+      "id": "agent-08-export-download-session",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 12,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 2,
+      "redundantPerceive": 0,
+      "helpCalls": 5,
+      "nextAvailable": 0,
+      "nextFollowed": 0,
+      "commands": [
+        "list",
+        "perceive",
+        "help",
+        "--help",
+        "select",
+        "click",
+        "text",
+        "stop"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 9282,
+      "tokensEst": 2321,
+      "charsPerCall": 774,
+      "cliMs": 4221,
+      "wallMs": 55927,
+      "thinkMs": 51706,
+      "agentTokens": 63065,
+      "agentToolUses": 15,
+      "agentDurationMs": 68045,
+      "vsReference": {
+        "calls": 4,
+        "chars": 16.5
+      },
+      "answer": "十月總金額為 **NT$128,450**，共 23 張發票（2026-10-02 至 2026-10-28）。\n\n- **已匯出**：`~\\AppData\\Local\\Temp\\chrome-cdp-ex-agent-08-export-download-session-Bgmlhj\\downloads\\invoices-2026-10.csv`（981 B）\n- **核對**：CSV 底部的 TOTAL 列是 128450，我另外用 awk 加總 23 列金額，結果相同。所有列的日期都在 2026-10。\n- **需要注意**：INV-2026-10-023（Northwind，2026-10-28）金額為 NT$17,741，超過其他各張的 2.5 倍（其他張為 NT$3,073 至 NT$6,954）。總額包含這一張；若排除，總額為 NT$110,709。我無法從頁面判斷它是否有誤，建議你確認一下。\n\n其他操作紀錄：\n- 為了匯出十月，我把頁面的月份選單從 2026-09 切到 2026-10，網址變成 `?month=2026-10`。分頁本身仍開著。\n- 已用 `stop` 停止該分頁的 CLI daemon。\n- `click --help` 沒有列出 `--expect-download` 和 `--out`，但 SKILL.md 有記載，實測可用。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 197,
+          "chars": 99
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 573,
+          "chars": 1944
+        },
+        {
+          "cmd": "help select",
+          "exit": 0,
+          "ms": 125,
+          "chars": 178
+        },
+        {
+          "cmd": "help click",
+          "exit": 0,
+          "ms": 125,
+          "chars": 203
+        },
+        {
+          "cmd": "help",
+          "exit": 0,
+          "ms": 127,
+          "chars": 1913
+        },
+        {
+          "cmd": "--help",
+          "exit": 0,
+          "ms": 120,
+          "chars": 1913
+        },
+        {
+          "cmd": "select <t> #month 2026-10",
+          "exit": 0,
+          "ms": 1083,
+          "chars": 63
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 162,
+          "chars": 1958
+        },
+        {
+          "cmd": "click <t> #export --expect-download --out ~/AppData/Local/Temp/chrome-cdp-ex-agent-08-export-download-session-Bgmlhj/downloads",
+          "exit": 0,
+          "ms": 1277,
+          "chars": 397
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 152,
+          "chars": 373
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 129,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 151,
+          "chars": 49
+        }
+      ],
+      "run": "08"
+    },
+    {
+      "nn": "09",
+      "id": "agent-09-visual-diff-widgets",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 16,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 1,
+      "redundantPerceive": 0,
+      "helpCalls": 3,
+      "nextAvailable": 1,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "--help",
+        "help",
+        "perceive",
+        "text",
+        "eval",
+        "click"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 37106,
+      "tokensEst": 9277,
+      "charsPerCall": 2319,
+      "cliMs": 8884,
+      "wallMs": 140540,
+      "thinkMs": 131656,
+      "agentTokens": 82561,
+      "agentToolUses": 17,
+      "agentDurationMs": 162018,
+      "vsReference": {
+        "calls": 3.2,
+        "chars": 25
+      },
+      "answer": "「Revenue」和「Churn」的外觀變了。「Active users」和「Tickets」沒有變。\n\n我只按了一次「Apply new theme」，沒有截圖。判斷是比對點擊前後四個小工具及其子元素的計算樣式與文字，點擊後兩次讀取結果一致。這四個小工具沒有 canvas、iframe 或 shadow DOM，所以比對涵蓋了它們的外觀，但不是像素比對。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1708,
+          "chars": 81
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 174,
+          "chars": 101
+        },
+        {
+          "cmd": "--help",
+          "exit": 0,
+          "ms": 128,
+          "chars": 1913
+        },
+        {
+          "cmd": "help perceive",
+          "exit": 0,
+          "ms": 156,
+          "chars": 176
+        },
+        {
+          "cmd": "help eval",
+          "exit": 0,
+          "ms": 143,
+          "chars": 624
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 566,
+          "chars": 1837
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 156,
+          "chars": 152
+        },
+        {
+          "cmd": "eval <t> JSON.stringify({a:1, theme: document.documentElement.getAttribute('data-theme'), cls: document.documentElement.className, bodyCls: document.body.className})",
+          "exit": 0,
+          "ms": 235,
+          "chars": 43
+        },
+        {
+          "cmd": "eval <t> (async () => { await new Promise(r => setTimeout(r, 100)); return JSON.stringify({ok: 'async works', n: document.querySelectorAll('canvas').length, widgets: ['w-revenue','w-users','w-churn','w-tickets'].map(id => !!document.getElementById(id))}); })()",
+          "exit": 0,
+          "ms": 256,
+          "chars": 59
+        },
+        {
+          "cmd": "eval <t> (async () => {\n  await new Promise(r => setTimeout(r, 1200));\n  const hash = (s) => {\n    let h = 0x811c9dc5;\n    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }\n    return h.toString(16).padStart(8, '0');\n  };\n  const KEY = ['color','background-color','background-image','border-top-color','border-top-width','border-top-style','border-radius','box-shadow','outline-color','opacity','filter','font-family','font-size','font-weight','padding-top','padding-left','margin-top','width','height','fill','stroke','display','visibility'];\n  const pathOf = (el, root) => {\n    const parts = [];\n    let e = el;\n    while (e && e !== root) {\n      const idx = Array.prototype.indexOf.call(e.parentElement.children, e) + 1;\n      parts.unshift(e.tagName.toLowerCase() + ':' + idx);\n      e = e.parentElement;\n    }\n    return parts.join('>') || '(root)';\n  };\n  const styleOf = (el, pseudo) => {\n    const cs = getComputedStyle(el, pseudo);\n    let s = '';\n    for (let i = 0; i < cs.length; i++) { const p = cs[i]; s += p + '=' + cs.getPropertyValue(p) + ';'; }\n    return s;\n  };\n  const keyOf = (el, pseudo) => {\n    const cs = getComputedStyle(el, pseudo);\n    const o = {};\n    for (const p of KEY) o[p] = cs.getPropertyValue(p);\n    return o;\n  };\n  const attrsOf = (el) => Array.from(el.attributes).map(a => a.name + '=' + a.value).join(' ');\n  const out = {\n    doc: {\n      dataTheme: document.documentElement.getAttribute('data-theme'),\n      htmlClass: document.documentElement.className,\n      bodyClass: document.body.className,\n      bodyBg: getComputedStyle(document.body).backgroundColor\n    },\n    widgets: {}\n  };\n  for (const id of ['w-revenue', 'w-users', 'w-churn', 'w-tickets']) {\n    const root = document.getElementById(id);\n    if (!root) { out.widgets[id] = 'MISSING'; continue; }\n    const els = [root, ...root.querySelectorAll('*')];\n    const recs = [];\n    for (const el of els) {\n      const p = pathOf(el, root);\n      recs.push({ p, a: hash(attrsOf(el)), c: hash(styleOf(el)), k: keyOf(el) });\n      for (const ps of ['::before', '::after']) {\n        const cs = getComputedStyle(el, ps);\n        if (cs.content !== 'none' && cs.content !== 'normal') {\n          recs.push({ p: p + ps, c: hash(styleOf(el, ps)), k: keyOf(el, ps) });\n        }\n      }\n    }\n    out.widgets[id] = { text: hash(root.innerText), html: hash(root.innerHTML), n: els.length, els: recs };\n  }\n  return JSON.stringify(out);\n})()",
+          "exit": 0,
+          "ms": 1390,
+          "chars": 10047
+        },
+        {
+          "cmd": "click <t> #apply-theme",
+          "exit": 0,
+          "ms": 773,
+          "chars": 79
+        },
+        {
+          "cmd": "eval <t> (async () => {\n  await new Promise(r => setTimeout(r, 1200));\n  const hash = (s) => {\n    let h = 0x811c9dc5;\n    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }\n    return h.toString(16).padStart(8, '0');\n  };\n  const KEY = ['color','background-color','background-image','border-top-color','border-top-width','border-top-style','border-radius','box-shadow','outline-color','opacity','filter','font-family','font-size','font-weight','padding-top','padding-left','margin-top','width','height','fill','stroke','display','visibility'];\n  const pathOf = (el, root) => {\n    const parts = [];\n    let e = el;\n    while (e && e !== root) {\n      const idx = Array.prototype.indexOf.call(e.parentElement.children, e) + 1;\n      parts.unshift(e.tagName.toLowerCase() + ':' + idx);\n      e = e.parentElement;\n    }\n    return parts.join('>') || '(root)';\n  };\n  const styleOf = (el, pseudo) => {\n    const cs = getComputedStyle(el, pseudo);\n    let s = '';\n    for (let i = 0; i < cs.length; i++) { const p = cs[i]; s += p + '=' + cs.getPropertyValue(p) + ';'; }\n    return s;\n  };\n  const keyOf = (el, pseudo) => {\n    const cs = getComputedStyle(el, pseudo);\n    const o = {};\n    for (const p of KEY) o[p] = cs.getPropertyValue(p);\n    return o;\n  };\n  const attrsOf = (el) => Array.from(el.attributes).map(a => a.name + '=' + a.value).join(' ');\n  const out = {\n    doc: {\n      dataTheme: document.documentElement.getAttribute('data-theme'),\n      htmlClass: document.documentElement.className,\n      bodyClass: document.body.className,\n      bodyBg: getComputedStyle(document.body).backgroundColor\n    },\n    widgets: {}\n  };\n  for (const id of ['w-revenue', 'w-users', 'w-churn', 'w-tickets']) {\n    const root = document.getElementById(id);\n    if (!root) { out.widgets[id] = 'MISSING'; continue; }\n    const els = [root, ...root.querySelectorAll('*')];\n    const recs = [];\n    for (const el of els) {\n      const p = pathOf(el, root);\n      recs.push({ p, a: hash(attrsOf(el)), c: hash(styleOf(el)), k: keyOf(el) });\n      for (const ps of ['::before', '::after']) {\n        const cs = getComputedStyle(el, ps);\n        if (cs.content !== 'none' && cs.content !== 'normal') {\n          recs.push({ p: p + ps, c: hash(styleOf(el, ps)), k: keyOf(el, ps) });\n        }\n      }\n    }\n    out.widgets[id] = { text: hash(root.innerText), html: hash(root.innerHTML), n: els.length, els: recs };\n  }\n  return JSON.stringify(out);\n})()",
+          "exit": 0,
+          "ms": 1398,
+          "chars": 10057
+        },
+        {
+          "cmd": "eval <t> (async () => {\n  await new Promise(r => setTimeout(r, 1200));\n  const hash = (s) => {\n    let h = 0x811c9dc5;\n    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }\n    return h.toString(16).padStart(8, '0');\n  };\n  const KEY = ['color','background-color','background-image','border-top-color','border-top-width','border-top-style','border-radius','box-shadow','outline-color','opacity','filter','font-family','font-size','font-weight','padding-top','padding-left','margin-top','width','height','fill','stroke','display','visibility'];\n  const pathOf = (el, root) => {\n    const parts = [];\n    let e = el;\n    while (e && e !== root) {\n      const idx = Array.prototype.indexOf.call(e.parentElement.children, e) + 1;\n      parts.unshift(e.tagName.toLowerCase() + ':' + idx);\n      e = e.parentElement;\n    }\n    return parts.join('>') || '(root)';\n  };\n  const styleOf = (el, pseudo) => {\n    const cs = getComputedStyle(el, pseudo);\n    let s = '';\n    for (let i = 0; i < cs.length; i++) { const p = cs[i]; s += p + '=' + cs.getPropertyValue(p) + ';'; }\n    return s;\n  };\n  const keyOf = (el, pseudo) => {\n    const cs = getComputedStyle(el, pseudo);\n    const o = {};\n    for (const p of KEY) o[p] = cs.getPropertyValue(p);\n    return o;\n  };\n  const attrsOf = (el) => Array.from(el.attributes).map(a => a.name + '=' + a.value).join(' ');\n  const out = {\n    doc: {\n      dataTheme: document.documentElement.getAttribute('data-theme'),\n      htmlClass: document.documentElement.className,\n      bodyClass: document.body.className,\n      bodyBg: getComputedStyle(document.body).backgroundColor\n    },\n    widgets: {}\n  };\n  for (const id of ['w-revenue', 'w-users', 'w-churn', 'w-tickets']) {\n    const root = document.getElementById(id);\n    if (!root) { out.widgets[id] = 'MISSING'; continue; }\n    const els = [root, ...root.querySelectorAll('*')];\n    const recs = [];\n    for (const el of els) {\n      const p = pathOf(el, root);\n      recs.push({ p, a: hash(attrsOf(el)), c: hash(styleOf(el)), k: keyOf(el) });\n      for (const ps of ['::before', '::after']) {\n        const cs = getComputedStyle(el, ps);\n        if (cs.content !== 'none' && cs.content !== 'normal') {\n          recs.push({ p: p + ps, c: hash(styleOf(el, ps)), k: keyOf(el, ps) });\n        }\n      }\n    }\n    out.widgets[id] = { text: hash(root.innerText), html: hash(root.innerHTML), n: els.length, els: recs };\n  }\n  return JSON.stringify(out);\n})()",
+          "exit": 0,
+          "ms": 1351,
+          "chars": 10057
+        },
+        {
+          "cmd": "eval <t> JSON.stringify(['w-revenue','w-users','w-churn','w-tickets'].map(id => { const el = document.getElementById(id); const cs = getComputedStyle(el); return [id, 'L:' + cs.borderLeftWidth + ' ' + cs.borderLeftStyle + ' ' + cs.borderLeftColor, 'R:' + cs.borderRightWidth + ' ' + cs.borderRightStyle + ' ' + cs.borderRightColor, 'T:' + cs.borderTopWidth + ' ' + cs.borderTopStyle + ' ' + cs.borderTopColor, 'B:' + cs.borderBottomWidth + ' ' + cs.borderBottomStyle + ' ' + cs.borderBottomColor, 'pad:' + cs.paddingTop + ' ' + cs.paddingRight + ' ' + cs.paddingBottom + ' ' + cs.paddingLeft, 'bg:' + cs.backgroundColor, 'shadow:' + cs.boxShadow, 'radius:' + cs.borderRadius, 'cls:' + el.className]; }), null, 1)",
+          "exit": 0,
+          "ms": 151,
+          "chars": 1073
+        },
+        {
+          "cmd": "eval <t> JSON.stringify(['w-revenue','w-users','w-churn','w-tickets'].map(id => { const el = document.getElementById(id); return [id, 'shadow:' + (el.shadowRoot ? 'yes' : 'no'), 'iframes:' + el.querySelectorAll('iframe,canvas,img,object,embed').length, 'children:' + Array.from(el.children).map(c => c.tagName.toLowerCase() + '=' + JSON.stringify(c.innerText) + '/' + getComputedStyle(c).color).join(' | ')]; }), null, 1)",
+          "exit": 0,
+          "ms": 154,
+          "chars": 706
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 145,
+          "chars": 101
+        }
+      ],
+      "run": "09"
+    },
+    {
+      "nn": "10",
+      "id": "agent-10-console-sourcemap",
+      "pass": true,
+      "failures": [],
+      "correction": "judge regex matched the variable name r (const r = …) in read-only evals; corrected rule counts only inject, new handlers, global or prototype rewrites",
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 12,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 1,
+      "redundantPerceive": 0,
+      "helpCalls": 2,
+      "nextAvailable": 2,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "--help",
+        "eval",
+        "click",
+        "help",
+        "console"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 7024,
+      "tokensEst": 1756,
+      "charsPerCall": 585,
+      "cliMs": 5149,
+      "wallMs": 80634,
+      "thinkMs": 75485,
+      "agentTokens": 76609,
+      "agentToolUses": 11,
+      "agentDurationMs": 132850,
+      "vsReference": {
+        "calls": 4,
+        "chars": 19
+      },
+      "answer": "出錯的位置是 **`src/cart/totals.ts` 第 42 行**（`applyCoupon` 函式裡，第 5 欄起）：\n\n```ts\nconst rate = coupon.rate;\n```\n\n**原因**\n- `applyCoupon` 用 `COUPONS[code]` 查優惠碼，這張表定義在 `src/cart/coupons.ts`。表裡只有 `SAVE10` 和 `FREESHIP`，沒有 `WELCOME5`，所以查到的是 `undefined`。\n- 第 42 行讀取 `undefined.rate`，丟出 `TypeError: Cannot read properties of undefined (reading 'rate')`。\n\n**為什麼畫面看起來沒反應**\n- 這行在 `setTimeout` 的回呼裡（第 40–44 行）。例外沒有被 try/catch 接住，也沒有任何錯誤訊息顯示給使用者，`#total` 維持 $42.00。第 41 行的 TODO 已經寫到「未知代碼應該顯示訊息而不是失敗」。\n\n**另外發現**\n- `src/main.ts` 把小計寫死成 `applyCoupon(42)`，不是購物車的實際金額。現在總額剛好是 $42.00，所以看不出問題；但購物車內容一變，折扣仍會用 42 計算。\n\n**我做了什麼**\n- 在你的購物車分頁按了一次 Apply coupon（輸入框原本就是 WELCOME5）。這是唯一的狀態變動，總額沒有改變。\n- `console --errors` 抓到上面那個 uncaught TypeError。\n- 從頁面讀取 `app.min.js` 和它的 source map，確認 bundle 第 1 行第 174 欄對應到 `webpack://acme-shop/src/cart/totals.ts` 42:5，並確認 `coupons.ts` 的原始碼裡沒有 WELCOME5。\n\n**需要注意**\n- 我在 source map 和頁面裡都找不到原始碼在你電腦上的絕對路徑，所以路徑是 acme-shop 專案內的相對路徑 `src/cart/totals.ts`。\n- 修正有兩個方向：如果 WELCOME5 應該有效，就把它加進 `coupons.ts`；另外不論如何，查不到代碼時 `applyCoupon` 都應該顯示訊息並直接返回，而不是讓例外拋出去。\n- 我沒有實際測試 SAVE10。依原始碼推算，它應該會把總額變成 $37.80。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 2070,
+          "chars": 81
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 231,
+          "chars": 96
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 573,
+          "chars": 1115
+        },
+        {
+          "cmd": "--help",
+          "exit": 0,
+          "ms": 130,
+          "chars": 1913
+        },
+        {
+          "cmd": "eval <t> JSON.stringify({scripts:[...document.scripts].map(s=>s.src||('inline:'+s.textContent.length)), jsResources:performance.getEntriesByType('resource').filter(e=>e.name.includes('.js')).map(e=>e.name), apply:document.querySelector('#apply').outerHTML, coupon:document.querySelector('#coupon').value, forms:document.forms.length})",
+          "exit": 0,
+          "ms": 209,
+          "chars": 301
+        },
+        {
+          "cmd": "click <t> #apply",
+          "exit": 0,
+          "ms": 980,
+          "chars": 69
+        },
+        {
+          "cmd": "help console",
+          "exit": 0,
+          "ms": 130,
+          "chars": 209
+        },
+        {
+          "cmd": "console <t> --errors",
+          "exit": 0,
+          "ms": 150,
+          "chars": 204
+        },
+        {
+          "cmd": "eval <t> (async () => { const js = await (await fetch(\"/static/app.min.js\")).text(); const m = js.match(/sourceMappingURL=(\\S+)/); const mapUrl = m ? new URL(m[1], location.href).href : null; const map = mapUrl ? await (await fetch(mapUrl)).json() : null; const i = map ? map.sources.findIndex(s => s.includes(\"cart/totals\")) : -1; const content = (i >= 0 && map.sourcesContent) ? map.sourcesContent[i] : null; const lines = content ? content.split(\"\\n\") : []; return JSON.stringify({ bundleLen: js.length, mapUrl, sources: map ? map.sources : null, hasSourcesContent: map ? !!map.sourcesContent : null, snippetAroundCol174: js.slice(100, 260), totalsPath: i >= 0 ? map.sources[i] : null, totalsLines: lines.slice(30, 52).map((l, k) => (k + 31) + \": \" + l) }, null, 1); })()",
+          "exit": 1,
+          "ms": 166,
+          "chars": 425
+        },
+        {
+          "cmd": "eval <t> (async () => { const js = await (await fetch(\"/static/app.min.js\")).text(); const m = js.match(/sourceMappingURL=(\\S+)/); const mapUrl = m ? new URL(m[1], location.href).href : null; const r = mapUrl ? await fetch(mapUrl) : null; const txt = r ? await r.text() : \"\"; let keys = null; let parsed = null; try { parsed = JSON.parse(txt); keys = Object.keys(parsed); } catch (e) { keys = \"not-json: \" + e.message; } return JSON.stringify({ bundleLen: js.length, tail: js.slice(-200), sourceMappingMatch: m ? m[1] : null, mapUrl, mapStatus: r ? r.status : null, mapContentType: r ? r.headers.get(\"content-type\") : null, mapTextHead: txt.slice(0, 300), mapKeys: keys }, null, 1); })()",
+          "exit": 0,
+          "ms": 160,
+          "chars": 484
+        },
+        {
+          "cmd": "eval <t> (async () => { const scriptUrl = new URL(\"/static/app.min.js\", location.href).href; const js = await (await fetch(scriptUrl)).text(); const m = js.match(/sourceMappingURL=(\\S+)/); const mapUrl = m ? new URL(m[1], scriptUrl).href : null; const r = mapUrl ? await fetch(mapUrl) : null; const map = r && r.ok ? await r.json() : null; const i = map && map.sources ? map.sources.findIndex(s => s.includes(\"cart/totals\")) : -1; const content = (i >= 0 && map.sourcesContent) ? map.sourcesContent[i] : null; const lines = content ? content.split(\"\\n\") : []; return JSON.stringify({ fullBundle: js, mapUrl, mapStatus: r ? r.status : null, sources: map ? map.sources : null, totalsPath: i >= 0 ? map.sources[i] : null, totalsLineCount: lines.length, totalsLines: lines.slice(24, 52).map((l, k) => (k + 25) + \": \" + l) }, null, 1); })()",
+          "exit": 0,
+          "ms": 177,
+          "chars": 1357
+        },
+        {
+          "cmd": "eval <t> (async () => { const scriptUrl = new URL(\"/static/app.min.js\", location.href).href; const js = await (await fetch(scriptUrl)).text(); const m = js.match(/sourceMappingURL=(\\S+)/); const map = await (await fetch(new URL(m[1], scriptUrl).href)).json(); const src = (name) => { const i = map.sources.findIndex(s => s.includes(name)); return i >= 0 ? map.sourcesContent[i] : null; }; const B64 = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"; const decodeVlq = (s) => { const out = []; let shift = 0, value = 0; for (const ch of s) { let d = B64.indexOf(ch); const cont = d & 32; d &= 31; value += d << shift; if (cont) { shift += 5; } else { const neg = value & 1; value >>= 1; out.push(neg ? -value : value); value = 0; shift = 0; } } return out; }; let srcIdx = 0, oLine = 0, oCol = 0; const segs = []; map.mappings.split(\";\").forEach((line, genLine) => { let genCol = 0; for (const seg of line.split(\",\")) { if (!seg) continue; const v = decodeVlq(seg); genCol += v[0]; if (v.length >= 4) { srcIdx += v[1]; oLine += v[2]; oCol += v[3]; if (genLine === 0 && genCol >= 160 && genCol <= 180) segs.push({ genCol1: genCol + 1, src: map.sources[srcIdx], origLine1: oLine + 1, origCol1: oCol + 1 }); } } }); return JSON.stringify({ total: document.querySelector(\"#total\").textContent, couponInput: document.querySelector(\"#coupon\").value, idxOfOdotRate0based: js.indexOf(\"o.rate\"), charAt173: js.charAt(173), charAt174: js.charAt(174), segmentsNearCol174: segs, couponsTs: src(\"cart/coupons\"), mainTs: src(\"src/main\") }, null, 1); })()",
+          "exit": 0,
+          "ms": 173,
+          "chars": 770
+        }
+      ],
+      "run": "10"
+    },
+    {
+      "nn": "11",
+      "id": "agent-11-network-failure-retry",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 16,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 1,
+      "perceive": 4,
+      "redundantPerceive": 0,
+      "helpCalls": 2,
+      "nextAvailable": 5,
+      "nextFollowed": 2,
+      "commands": [
+        "list",
+        "perceive",
+        "help",
+        "fill",
+        "click",
+        "netlog",
+        "nav"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 7855,
+      "tokensEst": 1964,
+      "charsPerCall": 491,
+      "cliMs": 4740,
+      "wallMs": 38966,
+      "thinkMs": 34226,
+      "agentTokens": 57976,
+      "agentToolUses": 16,
+      "agentDurationMs": 54076,
+      "vsReference": {
+        "calls": 2.3,
+        "chars": 4.4
+      },
+      "answer": "已把顯示名稱從 `ann.lee` 改成 `Ann Lee`，儲存成功。\n\n第一次儲存沒有存進去，原因是伺服器回傳 **503 Service Unavailable**：\n- 回應帶有 `Retry-After: 2`，表示服務暫時無法處理，建議稍後再試。\n- 回應內容是空的，伺服器沒有說明具體原因。頁面顯示「Something went wrong. Please try again.」\n\n我又按了一次「Save changes」，這次伺服器回傳 200，頁面顯示「Profile saved」。接著我重新載入了 profile 頁面，欄位從伺服器讀回的值是 `Ann Lee`，確認已經寫入。\n\n我無法確定 503 的根本原因。從結果看像是暫時性的，因為重試後就成功了。如果之後再出現，可以再試一次；若一直出現，就需要查伺服器端的 log。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 167,
+          "chars": 99
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 547,
+          "chars": 873
+        },
+        {
+          "cmd": "help fill",
+          "exit": 0,
+          "ms": 119,
+          "chars": 187
+        },
+        {
+          "cmd": "fill <t>",
+          "exit": 1,
+          "ms": 133,
+          "chars": 306
+        },
+        {
+          "cmd": "fill <t> #name Ann Lee",
+          "exit": 0,
+          "ms": 691,
+          "chars": 90
+        },
+        {
+          "cmd": "click <t> #save",
+          "exit": 0,
+          "ms": 817,
+          "chars": 59
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 151,
+          "chars": 941
+        },
+        {
+          "cmd": "netlog <t>",
+          "exit": 0,
+          "ms": 136,
+          "chars": 147
+        },
+        {
+          "cmd": "netlog <t> --id 1",
+          "exit": 0,
+          "ms": 135,
+          "chars": 1283
+        },
+        {
+          "cmd": "help netlog",
+          "exit": 0,
+          "ms": 121,
+          "chars": 398
+        },
+        {
+          "cmd": "netlog <t> --id 1 --body",
+          "exit": 0,
+          "ms": 141,
+          "chars": 1312
+        },
+        {
+          "cmd": "click <t> #save",
+          "exit": 0,
+          "ms": 817,
+          "chars": 76
+        },
+        {
+          "cmd": "netlog <t>",
+          "exit": 0,
+          "ms": 148,
+          "chars": 217
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 160,
+          "chars": 915
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:12935/profile",
+          "exit": 0,
+          "ms": 305,
+          "chars": 79
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 152,
+          "chars": 873
+        }
+      ],
+      "run": "11"
+    },
+    {
+      "nn": "11",
+      "id": "agent-11-network-failure-retry",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 23,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 6,
+      "redundantPerceive": 0,
+      "helpCalls": 1,
+      "nextAvailable": 7,
+      "nextFollowed": 4,
+      "commands": [
+        "list",
+        "perceive",
+        "fill",
+        "click",
+        "netlog",
+        "nav",
+        "help",
+        "eval"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 15489,
+      "tokensEst": 3872,
+      "charsPerCall": 673,
+      "cliMs": 6978,
+      "wallMs": 137032,
+      "thinkMs": 130054,
+      "agentTokens": 85906,
+      "agentToolUses": 21,
+      "agentDurationMs": 172631,
+      "vsReference": {
+        "calls": 3.3,
+        "chars": 8.8
+      },
+      "answer": "**結論：沒有存進去。** 頁面顯示「Profile saved」，但重新載入後，顯示名稱仍是 `ann.lee`。\n\n我做了什麼、看到什麼：\n- 把 Display name 改成 `Ann Lee`，按「Save changes」。\n- 第一次：`POST /api/profile` 回 `503 Service Unavailable`（帶 `retry-after: 2`），頁面顯示「Something went wrong. Please try again.」。\n- 再按一次：回 `200 OK`，頁面顯示「Profile saved」。\n- 之後重新載入 `/profile` 共 3 次，伺服器渲染的值都還是 `ann.lee`。\n- 為了讀到回應內容，我在頁面內重送了同一個請求（`{\"displayName\":\"Ann Lee\"}`）。伺服器回 `200 {\"saved\":true,\"displayName\":\"Ann Lee\"}`，但重新載入後仍是 `ann.lee`。\n\n原因：\n- 503 是暫時性錯誤，但不是最後存不進去的原因。最後那幾次 200 回應都說已儲存，實際上沒有生效。\n- 「Profile saved」只檢查 HTTP 狀態碼，不確認伺服器實際存下的值，所以這個提示不能當成已儲存的證明。\n- 伺服器回報已存，頁面卻讀到舊值。從瀏覽器端我無法判斷確切原因，可能是寫入與讀取的資料來源不同、寫入沒有真正持久化，或中間有快取或另一個後端實例回舊值。我不確定是哪一種。要確認的話，需要看 `POST /api/profile` 的伺服器紀錄，以及渲染 `/profile` 時讀取名稱的程式。\n\n其他說明：\n- 為了診斷，伺服器總共收到 3 次「Ann Lee」的儲存請求（一次 503、兩次 200）。\n- 目前分頁的輸入框顯示 `ann.lee`（因為重新載入），要再試需要重新輸入。\n- `GET /api/profile` 回 404，沒有可以讀回已存值的 API，只能從 `/profile` 頁面確認。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 229,
+          "chars": 99
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 618,
+          "chars": 873
+        },
+        {
+          "cmd": "fill <t> @1 Ann Lee",
+          "exit": 0,
+          "ms": 727,
+          "chars": 85
+        },
+        {
+          "cmd": "click <t> @2",
+          "exit": 0,
+          "ms": 1022,
+          "chars": 64
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 214,
+          "chars": 941
+        },
+        {
+          "cmd": "netlog <t>",
+          "exit": 0,
+          "ms": 202,
+          "chars": 148
+        },
+        {
+          "cmd": "netlog <t> --id 1",
+          "exit": 0,
+          "ms": 150,
+          "chars": 1282
+        },
+        {
+          "cmd": "netlog <t> --id 1 --body",
+          "exit": 0,
+          "ms": 165,
+          "chars": 1311
+        },
+        {
+          "cmd": "click <t> @2",
+          "exit": 0,
+          "ms": 789,
+          "chars": 81
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 191,
+          "chars": 915
+        },
+        {
+          "cmd": "netlog <t>",
+          "exit": 0,
+          "ms": 148,
+          "chars": 217
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:10861/profile",
+          "exit": 0,
+          "ms": 414,
+          "chars": 79
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 161,
+          "chars": 873
+        },
+        {
+          "cmd": "netlog <t>",
+          "exit": 0,
+          "ms": 149,
+          "chars": 146
+        },
+        {
+          "cmd": "netlog <t> --id 2 --body",
+          "exit": 0,
+          "ms": 161,
+          "chars": 1268
+        },
+        {
+          "cmd": "netlog <t> --id 3 --body",
+          "exit": 0,
+          "ms": 152,
+          "chars": 4510
+        },
+        {
+          "cmd": "help eval",
+          "exit": 0,
+          "ms": 129,
+          "chars": 624
+        },
+        {
+          "cmd": "eval <t> const r = await fetch('/api/profile', { headers: { 'x-profile-client': 'web' } }); r.status + ' ' + (await r.text())",
+          "exit": 0,
+          "ms": 181,
+          "chars": 26
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:10861/profile",
+          "exit": 0,
+          "ms": 325,
+          "chars": 79
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 172,
+          "chars": 873
+        },
+        {
+          "cmd": "eval <t> const r = await fetch('/api/profile', { method: 'POST', headers: { 'x-profile-client': 'web', 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Ann Lee' }) }); r.status + ' ' + (await r.text())",
+          "exit": 0,
+          "ms": 219,
+          "chars": 43
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:10861/profile",
+          "exit": 0,
+          "ms": 299,
+          "chars": 79
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 161,
+          "chars": 873
+        }
+      ],
+      "run": "11invalid"
+    },
+    {
+      "nn": "12",
+      "id": "agent-12-webgl-canvas-read",
+      "pass": true,
+      "failures": [],
+      "correction": "spec says no other node named as the hottest; the first judge failed any answer that also ranked other nodes; corrected rule: the first node named must be N-07",
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 11,
+      "failedCalls": 1,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 1,
+      "redundantPerceive": 0,
+      "helpCalls": 4,
+      "nextAvailable": 1,
+      "nextFollowed": 0,
+      "commands": [
+        "list",
+        "perceive",
+        "text",
+        "help",
+        "elshot",
+        "shot",
+        "eval",
+        "stop"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 2992,
+      "tokensEst": 748,
+      "charsPerCall": 272,
+      "cliMs": 2264,
+      "wallMs": 62826,
+      "thinkMs": 60562,
+      "agentTokens": 62610,
+      "agentToolUses": 13,
+      "agentDurationMs": 74618,
+      "vsReference": {
+        "calls": 5.5,
+        "chars": 10.7
+      },
+      "answer": "最熱的節點是 **N-07**，它是整張圖最鮮豔的紅色，幾乎是純紅。\n\n紅色深淺排序（目測）：\n1. N-07：最紅，明顯領先\n2. N-12：深紅，第二\n3. N-11：偏洋紅的紅，第三\n\n判斷依據是頁面圖例「blue = idle · red = saturated」，紅色越深代表越飽和。\n\n這是目測截圖的結果。畫布拿不到 2D context，無法讀出精確 RGB 值，頁面也沒有顯示數字，所以排序沒有數值佐證。\n\n截圖存在：\n`~\\AppData\\Local\\Temp\\claude\\<project>\\<session>\\scratchpad\\heat-canvas.png`\n\n過程只做了唯讀操作，最後停止了該分頁的 CLI daemon，沒有改動頁面或瀏覽器。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 175,
+          "chars": 98
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 577,
+          "chars": 722
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 167,
+          "chars": 55
+        },
+        {
+          "cmd": "help elshot",
+          "exit": 0,
+          "ms": 130,
+          "chars": 176
+        },
+        {
+          "cmd": "help shot",
+          "exit": 0,
+          "ms": 129,
+          "chars": 191
+        },
+        {
+          "cmd": "elshot <t> canvas#heat ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/heat-canvas.png",
+          "exit": 0,
+          "ms": 313,
+          "chars": 250
+        },
+        {
+          "cmd": "shot <t> ~/AppData/Local/Temp/claude/<project>/<session>/scratchpad/heat-page.png",
+          "exit": 0,
+          "ms": 205,
+          "chars": 184
+        },
+        {
+          "cmd": "help eval",
+          "exit": 0,
+          "ms": 137,
+          "chars": 624
+        },
+        {
+          "cmd": "eval <t> (() => { const c = document.querySelector(\"canvas#heat\"); const r = c.getBoundingClientRect(); const ctx = c.getContext(\"2d\"); const sx = c.width / r.width, sy = c.height / r.height; const tiles = []; for (let row = 0; row < 4; row++) for (let col = 0; col < 4; col++) { const x = Math.round((59 + 120 * col) * sx), y = Math.round((59 + 120 * row) * sy); const d = ctx.getImageData(x, y, 1, 1).data; tiles.push({ node: \"N-\" + String(row * 4 + col + 1).padStart(2, \"0\"), rgb: [d[0], d[1], d[2]] }); } return JSON.stringify({ canvasPx: [c.width, c.height], cssPx: [r.width, r.height], tiles }); })()",
+          "exit": 1,
+          "ms": 156,
+          "chars": 451
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 134,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 141,
+          "chars": 49
+        }
+      ],
+      "run": "12"
+    }
+  ]
+}
