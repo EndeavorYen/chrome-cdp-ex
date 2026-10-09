@@ -87,6 +87,11 @@ Proposal 5 (#659) changed `text` itself:
 
 No spec changed. Every self-test passes with it. Scenario 7's reference path now reads one tab-separated line per rendered row.
 
+Proposal 7 (#661) changed `diff-shot`: the compare receipt names the element behind each changed region. **Scenario 9.**
+
+- The reference path reads the changed cards from the receipt's region lines, instead of decoding the diff PNG and reading the card boxes with `eval`: 4 calls, 1,469 chars (was 5 calls, 1,483 chars).
+- The T-07 trap (a 32-character target id on Next) is gone. A new trap: the toggled button is listed too, and it is not a widget.
+
 The Summary table above keeps the Phase C costs, which were the oracle for the Phase D probe.
 
 ## Product findings from building the scenarios
@@ -604,15 +609,16 @@ Reproduced and added to [findings.md](findings.md):
 
 - `perceive --since-action` after the click shows only the toggle's pressed state; the cards look unchanged in text form. (scenario)
 - A diff-shot baseline taken after the click compares the new state with itself (0 px changed). (scenario)
-- diff-shot's Next line prints the 32-character target id. (T-07)
+- The compare receipt also names the toggled "Apply new theme" button among the changed regions; it is not a widget. (#661)
 - Runtime hints name scanshot for full captures. (A-08)
+- Before #661 the compare receipt gave only a changed-pixel ratio and three PNG paths, and SKILL.md did not name diff-shot; Haiku hashed every card's computed styles with eval (37,106 chars). (Phase D)
 
 **Reference path** (the killer path the judge passes):
 
 1. `list → the "Dashboard · Acme Analytics" tab`
 2. `diff-shot <t> (baseline)`
 3. `click <t> "#apply-theme"`
-4. `diff-shot <t> (compare) → open the diff image; changed pixels sit in the Revenue and Churn cards`
+4. `diff-shot <t> (compare) → Changed regions: <SECTION#w-revenue> "Revenue", <BUTTON#apply-theme>, <SECTION#w-churn> "Churn"`
 
 **Trap path** (negative control): Compares `perceive` before and `perceive --since-action` after, takes a `scanshot`, says nothing changed.
 

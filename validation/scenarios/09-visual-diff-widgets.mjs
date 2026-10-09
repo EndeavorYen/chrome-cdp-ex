@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 // Agent scenario 9 (docs/audit/scenarios.md): toggle a theme and say which widgets changed. Only CSS
 // changes, so the DOM and the accessibility tree are identical before and after: the answer needs pixels.
-import { readFileSync } from 'node:fs';
-
 import {
-  commandLines, commonChecks, decodePng, page, prefixFromList, runScenario, sendHtml, sendJson, verdict,
+  commandLines, commonChecks, page, prefixFromList, runScenario, sendHtml, sendJson, verdict,
 } from '../../scripts/lib/agent-scenario-harness.mjs';
 
 export const scenario = {
@@ -36,14 +34,15 @@ export const scenario = {
   weakModelTraps: [
     { trap: '`perceive --since-action` after the click shows only the toggle\'s pressed state; the cards look unchanged in text form.', refs: 'scenario' },
     { trap: 'A diff-shot baseline taken after the click compares the new state with itself (0 px changed).', refs: 'scenario' },
-    { trap: 'diff-shot\'s Next line prints the 32-character target id.', refs: 'T-07' },
+    { trap: 'The compare receipt also names the toggled "Apply new theme" button among the changed regions; it is not a widget.', refs: '#661' },
     { trap: 'Runtime hints name scanshot for full captures.', refs: 'A-08' },
+    { trap: 'Before #661 the compare receipt gave only a changed-pixel ratio and three PNG paths, and SKILL.md did not name diff-shot; Haiku hashed every card\'s computed styles with eval (37,106 chars).', refs: 'Phase D' },
   ],
   referencePath: [
     'list → the "Dashboard · Acme Analytics" tab',
     'diff-shot <t> (baseline)',
     'click <t> "#apply-theme"',
-    'diff-shot <t> (compare) → open the diff image; changed pixels sit in the Revenue and Churn cards',
+    'diff-shot <t> (compare) → Changed regions: <SECTION#w-revenue> "Revenue", <BUTTON#apply-theme>, <SECTION#w-churn> "Churn"',
   ],
 };
 
@@ -100,20 +99,9 @@ export async function reference(ctx) {
   await ctx.cli('diff-shot', t);
   await ctx.cli('click', t, '#apply-theme');
   const compare = (await ctx.cli('diff-shot', t)).stdout;
-  const diffPath = compare.match(/^Diff image:\s*(.+\.png)\s*$/m)?.[1]?.trim();
-  // "Look at" the diff image: count magenta (changed) pixels inside each card's box.
-  const png = decodePng(readFileSync(diffPath));
-  const boxes = JSON.parse((await ctx.cli('eval', t, `JSON.stringify([...document.querySelectorAll('.w')].map(w => { const r = w.getBoundingClientRect(); return { title: w.querySelector('h2').textContent, x: r.left, y: r.top, w: r.width, h: r.height }; }))`)).stdout.trim());
-  const changed = boxes.filter(box => {
-    let count = 0;
-    for (let y = Math.max(0, Math.floor(box.y)); y < Math.min(png.height, box.y + box.h); y += 2) {
-      for (let x = Math.max(0, Math.floor(box.x)); x < Math.min(png.width, box.x + box.w); x += 2) {
-        const [r, g, b] = png.pixel(x, y);
-        if (r > 200 && g < 60 && b > 120) count += 1;
-      }
-    }
-    return count > 50;
-  }).map(box => box.title);
+  // The compare receipt names the element that holds each changed region. The widgets are the
+  // <section> cards; the pressed "Apply new theme" button is listed too, and is not a widget.
+  const changed = [...compare.matchAll(/^\s+<SECTION[^>]*> "([^"]+)"/gm)].map(match => match[1]);
   return { answer: `外觀改變的是：${changed.join('、')}。` };
 }
 

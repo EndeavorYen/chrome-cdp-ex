@@ -1,0 +1,103 @@
+{
+  "schema": "chrome-cdp-ex.audit.haiku-probe.v1",
+  "date": "2026-10-09",
+  "model": "claude-haiku-5-5",
+  "phase": "after proposal 7",
+  "base": "19af5ce + #661 (uncommitted)",
+  "note": "Same prompt (v2) as the Phase D probe, with this branch's SKILL.md, which adds the diff-shot paragraph: the CLI and SKILL.md both changed. Chars are CLI stdout+stderr; tokensEst = chars/4. vsReference uses the Phase D reference paths. agentToolUses counts 2 calls outside the CLI: the agent wrote a node script and ran it to compare the two diff-shot PNGs pixel by pixel.",
+  "runs": [
+    {
+      "nn": "09",
+      "id": "agent-09-visual-diff-widgets",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 8,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 1,
+      "redundantPerceive": 0,
+      "helpCalls": 1,
+      "nextAvailable": 1,
+      "nextFollowed": 0,
+      "commands": [
+        "list",
+        "help",
+        "perceive",
+        "text",
+        "diff-shot",
+        "click"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 4435,
+      "tokensEst": 1109,
+      "charsPerCall": 554,
+      "cliMs": 2183,
+      "wallMs": 49487,
+      "thinkMs": 47304,
+      "agentTokens": 81273,
+      "agentToolUses": 10,
+      "agentDurationMs": 151050,
+      "vsReference": {
+        "calls": 1.6,
+        "chars": 3
+      },
+      "answer": "按下「Apply new theme」後，外觀有變的是：\n\n- **Revenue**\n- **Churn**\n\n**Active users** 和 **Tickets** 沒有變。\n\n- 我替你按了一次「Apply new theme」。按鈕本身也有變化，但它不是小工具。\n- 只用 `diff-shot` 的視窗大小截圖比對，沒有拍整頁長圖。再用小腳本逐像素比對前後兩張截圖，結果與 `diff-shot` 一致，Active users 和 Tickets 的像素完全相同。\n- 改完後再比一次，像素沒有再變，所以不是動畫還沒結束。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 125,
+          "chars": 100
+        },
+        {
+          "cmd": "help diff-shot",
+          "exit": 0,
+          "ms": 84,
+          "chars": 205
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 492,
+          "chars": 1836
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 108,
+          "chars": 152
+        },
+        {
+          "cmd": "diff-shot <t> --reset",
+          "exit": 0,
+          "ms": 188,
+          "chars": 319
+        },
+        {
+          "cmd": "click <t> #apply-theme",
+          "exit": 0,
+          "ms": 770,
+          "chars": 79
+        },
+        {
+          "cmd": "diff-shot <t>",
+          "exit": 0,
+          "ms": 211,
+          "chars": 968
+        },
+        {
+          "cmd": "diff-shot <t>",
+          "exit": 0,
+          "ms": 205,
+          "chars": 776
+        }
+      ],
+      "run": "09"
+    }
+  ]
+}

@@ -507,7 +507,7 @@ Use these when exploration should become reusable evidence:
 | Export the action log | `record-actions <target> --format json` |
 | Draft a Playwright spec | `export-playwright <target> --format json` |
 | Replay portable live steps | `replay <target> --file artifact.json --format json` |
-| Capture visual fallback diffs | `diff-shot <target>` |
+| Compare two visual states and name the changed regions | `diff-shot <target>` before and after the change |
 
 Missing restore/replay files are usage errors (`cdp help restore` / `cdp help replay`), not page failures. `diff-shot` fails closed if screenshot capture times out instead of reporting a fake 0% match.
 
