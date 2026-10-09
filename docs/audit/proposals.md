@@ -46,7 +46,7 @@ Six findings got open pull requests after the Phase B issues were filed. They ar
 | 4 | One observation scope per action: frames, downloads, new tabs | B-07, B-08 | 3 | 3 | 1 | 9 | scenario 6 | proposal; #652 open (receipts phase) |
 | 5 | `text` keeps field boundaries | B-16 | 2 | 1 | 3 | 6 | scenarios 7, 2 | merged (#659) |
 | 6 | MCP returns the CLI receipt and lists the golden-path verbs | B-12 | 2 | 3 | 1 | 6 | none (Phase B) | proposal |
-| 7 | Visual comparison names what changed | scenario 9 | 1 | 3 | 2 | 6 | scenario 9 | proposal |
+| 7 | Visual comparison names what changed | scenario 9 | 1 | 3 | 2 | 6 | scenario 9 | merged (#662) |
 
 Scoring notes:
 
@@ -601,7 +601,7 @@ Noise: n = 1 per arm. The only Phase D pair run under identical conditions (scen
 
 ## Results of 7
 
-Implemented on `19af5ce` for #661. The compare receipt names the element behind each changed region, and SKILL.md gets the one paragraph.
+Implemented on `19af5ce` for #661 and merged as `3eb029e` (#662). The compare receipt names the element behind each changed region, and SKILL.md gets the one paragraph.
 
 ### Reference path
 
