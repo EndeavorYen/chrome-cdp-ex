@@ -852,6 +852,21 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     };
   }
 
+  // #640: neither the document nor a scroll container moves on the requested axis.
+  if (action === 'scroll' && lower.includes('nothing scrolled')) {
+    return {
+      ...base,
+      kind: 'not-scrollable',
+      dispatched: true,
+      reason: 'Nothing on the page scrolls in that direction: the document does not, and no scroll container was found.',
+      nextCommand: perceiveCommand,
+      hints: [
+        'If the list scrolls inside an element perceive does not show as scrollable, name it with `--scroll-container <css>`.',
+        'Content inside an iframe scrolls inside that frame, not in the top page.',
+      ],
+    };
+  }
+
   if (
     lower.includes('unknown key')
     || lower.includes('key name required')
