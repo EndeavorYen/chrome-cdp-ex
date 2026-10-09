@@ -18,7 +18,7 @@
       "summary": "Navigate to URL and wait for load completion"
     },
     "perceive": {
-      "synopsis": "perceive <target> [flags] [--format json]",
+      "synopsis": "perceive <target> [flags] [--unsafe-full] [--format json]",
       "summary": "Full page perception with @ref indices + coordinates"
     },
     "text": {

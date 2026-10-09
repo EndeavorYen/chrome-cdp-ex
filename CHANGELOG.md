@@ -24,6 +24,7 @@
 
 * `perceive --since-action` and `perceive --diff` keep the `@ref` of every element that is still on the page. A new element gets the next number above any number already handed out, and that number is printed on the added line. A number whose element is gone is not given to a different element, so a later `click @N` cannot hit another control and succeed. A plain `perceive` still numbers `@1..@N` in document order and prints every line
   ([#642](https://github.com/EndeavorYen/chrome-cdp-ex/issues/642)).
+* Cookie values, JWTs, `Authorization` values, and token query parameters are `<redacted>` by default in `cookies`, `console`, `status`, `list`, `perceive`, `summary`, `frame`, and `checkpoint`. Console and exception locations keep `:line:col`. `frame` masks page and iframe URLs in text and JSON. `--unsafe-full` prints the raw values ([#634](https://github.com/EndeavorYen/chrome-cdp-ex/issues/634)).
 
 * `hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take several seconds for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and one Next command (`CDP_BACKGROUND=0 cdp hover …` when the tab is hidden, otherwise `cdp perceive … -C -d 8`) ([#608](https://github.com/EndeavorYen/chrome-cdp-ex/issues/608)).
 

@@ -1593,10 +1593,28 @@ function displayConsoleLine(text, entry = {}, max = 300, { unsafeFull = false } 
   return boundedConsoleLineText(displayObservedText(text, entry, { unsafeFull }), entry, max);
 }
 
+// A console location is `file:line`, `file:line:col`, or
+// `source:line:col (generated:line:col)`. Those coordinates are not part of a
+// URL token. Split them off before redaction so `?token=…:7:9` stays `:7:9`
+// and `secrets.html:15:24` is not read as a secret assignment (#634).
+const LOCATION_COORD_SOURCE = String.raw`(:\d+){1,2}(?=\s+\(|\)|$)`;
+
+function redactLocationText(text) {
+  const pattern = new RegExp(LOCATION_COORD_SOURCE, 'g');
+  let out = '';
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    out += redactSensitiveString(text.slice(last, match.index));
+    out += match[0];
+    last = match.index + match[0].length;
+  }
+  return `${out}${redactSensitiveString(text.slice(last))}`;
+}
+
 function displayLocation(value, { unsafeFull = false } = {}) {
   const text = String(value ?? '');
-  if (!text) return '';
-  return unsafeFull ? text : redactSensitiveString(text);
+  if (!text || unsafeFull) return text;
+  return redactLocationText(text);
 }
 
 function sockPath(targetId) {
@@ -13650,10 +13668,28 @@ async function framesModel(cdp, sid) {
   };
 }
 
-async function framesStr(cdp, sid, { format = 'text' } = {}) {
+function displayedFrame(frame, { unsafeFull = false } = {}) {
+  if (!frame || unsafeFull) return frame;
+  const url = typeof frame.url === 'string' ? displayUrl(frame.url) : frame.url;
+  const unreachableUrl = typeof frame.unreachableUrl === 'string' ? displayUrl(frame.unreachableUrl) : frame.unreachableUrl;
+  if (url === frame.url && unreachableUrl === frame.unreachableUrl) return frame;
+  return { ...frame, url, unreachableUrl };
+}
+
+function parseFrameArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const lifted = takeUnsafeFullArg(fopts.args);
+  if (lifted.args.length) {
+    throw new Error(`frame: unknown argument ${lifted.args[0]}. Next: cdp frame <target> [--unsafe-full] [--format json]`);
+  }
+  return { format: fopts.format, unsafeFull: lifted.unsafeFull };
+}
+
+async function framesStr(cdp, sid, { format = 'text', unsafeFull = false } = {}) {
   const model = await framesModel(cdp, sid);
-  if (format === 'json') return formatJson(model);
-  return formatFrameTreeText(model.frames);
+  const frames = (model.frames || []).map(frame => displayedFrame(frame, { unsafeFull }));
+  if (format === 'json') return formatJson({ ...model, frames });
+  return formatFrameTreeText(frames);
 }
 
 async function resolveFrameRef(cdp, sid, frameRef) {
@@ -29117,10 +29153,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return elshotStr(cdp, sessionId, selector, targetId, refMap, refState, filePath);
     },
     'export-playwright': args => formatExportPlaywright(session, parseExportPlaywrightArgs(args)),
-    frame: async args => {
-      const fopts = parseFormatArgs(args, ['text', 'json']);
-      return framesStr(cdp, sessionId, { format: fopts.format });
-    },
+    frame: async args => framesStr(cdp, sessionId, parseFrameArgs(args)),
     fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
     html: args => htmlStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     text: args => textStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
@@ -34527,7 +34560,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr, pressUsageError,
   formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, assertClickPointNotCovered, formatRefRect, isPriorityPerceiveTextLine,
-  parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
+  parseFrameOnlyRef, parseFrameRef, parseFrameArgs, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, perceiveStoreDiffSource, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,

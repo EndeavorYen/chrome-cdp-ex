@@ -34,7 +34,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `attach` | `attach --port N --target <id> --name <alias>` | `protected-mutation / mutation` |
 | `current` | `current [--format json]` | `read / standard` |
 | `forget` | `forget <alias>` | `protected-mutation / mutation` |
-| `perceive` | `perceive <target> [flags] [--format json]` | `read / standard` |
+| `perceive` | `perceive <target> [flags] [--unsafe-full] [--format json]` | `read / standard` |
 | `snap` | `snap <target> [--full]` | `read / standard` |
 | `controls` | `controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]` | `read / standard` |
 | `eval` | `eval <target> <expr>` | `script / raw-script` |
@@ -57,7 +57,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `record-actions` | `record-actions <target>` | `read / standard` |
 | `export-playwright` | `export-playwright <target> [--format json]` | `read / standard` |
 | `replay` | `replay <target> --file <path> [--format json]` | `mutation / mutation` |
-| `frame` | `frame <target> [--format json]` | `read / standard` |
+| `frame` | `frame <target> [--unsafe-full] [--format json]` | `read / standard` |
 | `overlay` | `overlay <target> [sel\|@ref] [--format json]` | `read / standard` |
 | `qa` | `qa <target> [--desktop WxH] [--mobile WxH] [--format json]` | `mutation / mutation` |
 | `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
