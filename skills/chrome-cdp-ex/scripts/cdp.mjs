@@ -14212,7 +14212,8 @@ function isSearchListingHref(href) {
 }
 
 function isSearchListingText(text) {
-  return /\bsee\b[\s\S]{0,80}\bresults\b/i.test(String(text || ''));
+  // "See 51552 model results" is a search listing. "See full election results" is not.
+  return /\bsee\b[\s\S]{0,80}\b(?:model|dataset|space|post|search)\s+results\b/i.test(String(text || ''));
 }
 
 function isSearchListingControl(item) {
@@ -18559,17 +18560,30 @@ function pressFeedbackPolicy(keyName, probe) {
   return 'settle-diff';
 }
 
+const PRESS_SEARCH_SUBMIT_FLAG = '--search-submit';
+
+function pressCommandKey(command) {
+  const args = Array.isArray(command?.args) ? command.args : [];
+  return args.find(arg => arg && !String(arg).startsWith('--'));
+}
+
+function pressCommandRequestsSearchSubmit(command) {
+  const args = Array.isArray(command?.args) ? command.args : [];
+  return args.includes(PRESS_SEARCH_SUBMIT_FLAG);
+}
+
 function isSearchSubmitPressCommand(command) {
   if (!command || typeof command !== 'object') return false;
   const cmd = String(command.cmd || '').trim().toLowerCase();
   if (cmd !== 'press' && cmd !== 'key') return false;
-  return isEnterKeyName(command.args?.[0]);
+  if (!pressCommandRequestsSearchSubmit(command)) return false;
+  return isEnterKeyName(pressCommandKey(command));
 }
 
 function fillFeedbackPolicy(nextCommand) {
-  // Mid-pipe fill before search-submit press: leftover typeahead AX and
-  // pending /api/quicksearch are not the success signal. Standalone fill
-  // still settle-diffs. Do not invent --submit / --skip-settle flags.
+  // Mid-pipe fill before an opted-in `press Enter --search-submit`: leftover
+  // typeahead AX and pending /api/quicksearch are not the success signal.
+  // A plain `press Enter` still settle-diffs, then dispatches the key.
   return isSearchSubmitPressCommand(nextCommand) ? 'report-only' : 'settle-diff';
 }
 
@@ -18608,7 +18622,42 @@ async function runWithBatchLookahead(session, nextCommand, run) {
 }
 
 function formatSearchSubmitPressText(probe = {}) {
-  return `Pressed Enter. Submitted search via ${probe.selector}`;
+  return `Submitted search via ${probe.selector}`;
+}
+
+function parsePressArgs(args = []) {
+  const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+  let viaListing = false;
+  const positional = [];
+  for (const arg of fopts.args) {
+    if (arg === PRESS_SEARCH_SUBMIT_FLAG) viaListing = true;
+    else if (String(arg).startsWith('--')) throw new Error(`press: unknown argument ${arg}`);
+    else positional.push(arg);
+  }
+  const key = positional[0];
+  if (viaListing && key && !isEnterKeyName(key)) {
+    throw new Error('press --search-submit only applies to Enter. Omit --search-submit to send the key.');
+  }
+  return {
+    fopts: { format: fopts.format, compact: fopts.compact, qa: fopts.qa, full: fopts.full, maxDiffLines: fopts.maxDiffLines },
+    key,
+    viaListing,
+  };
+}
+
+function pressSearchSubmitPlan({ key, viaListing = false, awaitListing = false } = {}) {
+  if (viaListing !== true || !isEnterKeyName(key)) {
+    return { mode: 'dispatch-key', requireListing: false };
+  }
+  if (awaitListing) return { mode: 'probe-after-fill', requireListing: true };
+  return { mode: 'probe-once', requireListing: true };
+}
+
+function pressHelpLines() {
+  return [
+    'Enter dispatches keyDown with a carriage return to the focused element, including inside batch.',
+    '--search-submit opts into clicking a results listing instead. The receipt names that link and does not claim a key press.',
+  ];
 }
 
 function searchSubmitProbeExpression() {
@@ -18767,7 +18816,7 @@ async function pressStr(cdp, sid, keyName, opts = {}) {
   if (usage) throw usage;
   const mapped = keyForPress(keyName);
   const modifiers = mapped.shift ? 8 : 0;
-  if (isEnterKeyName(keyName)) {
+  if (opts.viaListing === true && isEnterKeyName(keyName)) {
     const probe = opts.searchSubmit && typeof opts.searchSubmit === 'object'
       ? opts.searchSubmit
       : await probeSearchSubmit(cdp, sid);
@@ -18775,11 +18824,9 @@ async function pressStr(cdp, sid, keyName, opts = {}) {
       await submitSearchListing(cdp, sid, probe, opts.refMap, opts.refState);
       return formatSearchSubmitPressText(probe);
     }
-    if (opts.requireSearchSubmit) {
-      throw new Error(
-        'Search submit did not find a results listing after fill. Try jsclick a[href*="models?search="].'
-      );
-    }
+    throw new Error(
+      'Search submit did not find a results listing. Try jsclick a[href*="models?search="], or press Enter without --search-submit.'
+    );
   }
   const base = {
     key: mapped.key,
@@ -29432,39 +29479,45 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }), null);
     },
     press: async args => {
-      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const usage = pressUsageError(fopts.args[0]);
+      const parsed = parsePressArgs(args);
+      const usage = pressUsageError(parsed.key);
       if (usage) throw usage;
-      let searchSubmit = { ok: false };
-      const awaitListing = session.awaitSearchSubmitListing === true;
+      const awaitListing = parsed.viaListing && session.awaitSearchSubmitListing === true;
       const filledQuery = session.searchSubmitQuery;
       session.awaitSearchSubmitListing = false;
       session.searchSubmitQuery = undefined;
-      if (isEnterKeyName(fopts.args[0])) {
-        searchSubmit = awaitListing
-          ? await waitForSearchSubmitProbe(cdp, sessionId, { filledQuery })
-          : await probeSearchSubmit(cdp, sessionId);
+      const plan = pressSearchSubmitPlan({
+        key: parsed.key,
+        viaListing: parsed.viaListing,
+        awaitListing,
+      });
+      let searchSubmit = { ok: false };
+      if (plan.mode === 'probe-after-fill') {
+        searchSubmit = await waitForSearchSubmitProbe(cdp, sessionId, { filledQuery });
+      } else if (plan.mode === 'probe-once') {
+        searchSubmit = await probeSearchSubmit(cdp, sessionId);
       }
+      const commandArgs = parsed.viaListing ? [parsed.key, PRESS_SEARCH_SUBMIT_FLAG] : [parsed.key];
       const value = await actionFeedback(
         'press',
-        () => pressStr(cdp, sessionId, fopts.args[0], {
+        () => pressStr(cdp, sessionId, parsed.key, {
+          viaListing: parsed.viaListing,
           searchSubmit,
-          requireSearchSubmit: awaitListing,
           refMap,
           refState,
         }),
         {
-          input: fopts.args[0],
+          input: parsed.key,
           resolvedBy: 'key',
-          label: fopts.args[0] || '',
-          commandArgs: [fopts.args[0]],
+          label: parsed.key || '',
+          commandArgs,
           ...(searchSubmit.ok
             ? { expectedOutcome: 'search-submit' }
             : { expectedOutcome: 'press-no-change' }),
         },
-        pressFeedbackPolicy(fopts.args[0], searchSubmit),
+        pressFeedbackPolicy(parsed.key, searchSubmit.ok ? searchSubmit : null),
         null,
-        fopts,
+        parsed.fopts,
       );
       return commandResult(value, { kind: 'action-receipt' });
     },
@@ -31223,6 +31276,8 @@ Usage: cdp <command> [args]
 {{command:type}}
                                     Works in cross-origin iframes unlike eval-based approaches
 {{command:press}}
+                                    Enter dispatches keyDown with a carriage return to the focused element, including inside batch.
+                                    --search-submit: opt in to a results-link submit; the receipt names the link and does not claim a key press.
 {{command:scroll}}
                                     Successful document-scroll-edge is scrollY/scrollMax/at-bottom. --compact is metrics only.
 {{command:hover}}
@@ -31508,6 +31563,7 @@ function helpTopicStr(topic) {
   if (record.aliases?.length) lines.push(`Aliases: ${record.aliases.join(', ')}`);
   if (record.name === 'spawn-debug-browser') lines.push(...spawnDebugBrowserHelpDetails());
   if (record.name === 'eval' || record.name === 'eval64') lines.push(...evalScopeHelpLines());
+  if (record.name === 'press') lines.push(...pressHelpLines());
   lines.push('Run `cdp help` for the survivor card; leftover verbs: `cdp help <command>`.');
   return `${lines.join('\n')}\n`;
 }
@@ -34559,6 +34615,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cdpRuntimeIdentity,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr, pressUsageError,
+  parsePressArgs, pressSearchSubmitPlan, pressHelpLines, PRESS_SEARCH_SUBMIT_FLAG,
   formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, assertClickPointNotCovered, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, parseFrameArgs, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
