@@ -741,8 +741,8 @@ describe('issue #632 press Enter dispatches the key', () => {
     expect(T.helpTopicStr('press')).toMatch(/--search-submit/);
     expect(T.helpTopicStr('press')).toMatch(/focused element/);
     expect(buildMcpToolCommand('press', { target: 'T', key: 'Enter', confirm: true }))
-      .toEqual(['press', 'T', 'Enter', '--format', 'json']);
+      .toEqual(['press', 'T', 'Enter']);
     expect(buildMcpToolCommand('press', { target: 'T', key: 'Enter', confirm: true, searchSubmit: true }))
-      .toEqual(['press', 'T', 'Enter', '--search-submit', '--format', 'json']);
+      .toEqual(['press', 'T', 'Enter', '--search-submit']);
   });
 });

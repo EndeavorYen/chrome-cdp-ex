@@ -104,9 +104,20 @@ function requireConfirm(args, action) {
   if (args?.confirm !== true) throw new Error(`${action} requires confirm: true`);
 }
 
-function optionalFormatJson(command) {
-  return [...command, '--format', 'json'];
+// #643: the CLI text receipt is the default; `format: "json"` asks for the versioned JSON receipt.
+function optionalFormatJson(command, args) {
+  return args?.format === 'json' ? [...command, '--format', 'json'] : command;
 }
+
+function checkFormat(args) {
+  if (args?.format !== undefined && args.format !== 'text' && args.format !== 'json') {
+    throw new Error('format must be text or json');
+  }
+}
+
+// #643: tools/call runs only the tools tools/list serves. The catalog keeps mappers for the
+// historical tools, but an agent cannot discover them, so calling one is an unknown tool.
+const SERVED_TOOL_NAMES = new Set(MCP_TOOL_DEFINITIONS.map(tool => tool.name));
 
 function normalizeAllowlistedCommand(name) {
   const raw = String(name || '').trim();
@@ -269,11 +280,12 @@ export function listMcpResources() {
 export function buildMcpToolCommand(name, args = {}) {
   args = snapshotMcpData(args, 'mcp.arguments');
   const mapper = Object.hasOwn(MCP_TOOL_MAPPER_BY_NAME, name) ? MCP_TOOL_MAPPER_BY_NAME[name] : null;
+  checkFormat(args);
   switch (mapper) {
     case 'doctor':
-      return ['doctor', '--format', 'json'];
+      return optionalFormatJson(['doctor'], args);
     case 'list-tabs':
-      return ['list', '--format', 'json'];
+      return optionalFormatJson(['list'], args);
     case 'open-or-attach': {
       if (args.target || args.name || args.port) {
         const command = ['use'];
@@ -285,7 +297,7 @@ export function buildMcpToolCommand(name, args = {}) {
       requireConfirm(args, 'open_or_attach');
       const command = ['open', args.url || 'about:blank'];
       if (args.reuseUrl) command.push('--reuse-url');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'select-target': {
       if (!args.url && !args.title) throw new Error('select_target requires url and/or title');
@@ -293,7 +305,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.url) command.push('--url', String(args.url));
       if (args.title) command.push('--title', String(args.title));
       if (args.exact) command.push('--exact');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'perceive': {
       const command = ['perceive', requireString(args, 'target')];
@@ -307,7 +319,7 @@ export function buildMcpToolCommand(name, args = {}) {
       else if (args.adaptive !== false) command.push('--adaptive');
       if (args.qa || args.summary) command.push('--qa');
       if (args.maxDiffLines != null) command.push('--max-diff-lines', String(args.maxDiffLines));
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'controls': {
       const command = ['controls', requireString(args, 'target')];
@@ -316,13 +328,13 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.filter) command.push('--filter', String(args.filter));
       if (args.limit != null) command.push('--limit', String(args.limit));
       if (args.compact !== false) command.push('--compact');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'overlay': {
       const command = ['overlay', requireString(args, 'target')];
       if (args.followUrl === true) command.push('--follow-url');
       if (args.selector) command.push(String(args.selector));
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'screenshot': {
       if (args.path) requireConfirm(args, 'screenshot path');
@@ -337,7 +349,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.js) command.push('--js');
       command.push(requireString(args, 'selector'));
       if (args.qa || args.summary) command.push('--qa');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'verify-click': {
       requireConfirm(args, 'verify_click');
@@ -347,11 +359,11 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.expectStatus != null) command.push('--expect-status', String(args.expectStatus));
       if (args.noConsoleErrors) command.push('--no-console-errors');
       if (args.evidence) command.push('--evidence', String(args.evidence));
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'dismiss-modal': {
       requireConfirm(args, 'dismiss_modal');
-      return ['dismiss-modal', requireString(args, 'target'), '--format', 'json'];
+      return optionalFormatJson(['dismiss-modal', requireString(args, 'target')], args);
     }
     case 'fill': {
       requireConfirm(args, 'fill');
@@ -362,12 +374,12 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.secret !== undefined) {
         if (args.text !== undefined) throw new Error('pass text or secret, not both');
         command.push(requireString(args, 'selector'), '--secret', requireString(args, 'secret'));
-        return optionalFormatJson(command);
+        return optionalFormatJson(command, args);
       }
       // text: "" clears the field; a missing text is an error, never a silent clear.
       if (typeof args.text !== 'string') throw new Error('text is required (pass "" to clear the field), or secret: "NAME"');
       command.push(requireString(args, 'selector'), args.text);
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'drag': {
       requireConfirm(args, 'drag');
@@ -375,7 +387,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.steps != null) command.push('--steps', String(args.steps));
       if (args.mode === 'html5' || args.mode === 'pointer') command.push(`--${args.mode}`);
       else if (args.mode != null && args.mode !== 'auto') throw new Error('mode must be auto, html5, or pointer');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'viewport': {
       const command = ['viewport', requireString(args, 'target')];
@@ -383,7 +395,7 @@ export function buildMcpToolCommand(name, args = {}) {
         requireConfirm(args, 'viewport size changes');
         command.push(String(args.size));
       }
-      return args.size ? optionalFormatJson(command) : command;
+      return args.size ? optionalFormatJson(command, args) : command;
     }
     case 'qa-page': {
       requireConfirm(args, 'qa_page');
@@ -395,7 +407,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.expectStatus != null) command.push('--expect-status', String(args.expectStatus));
       if (args.expectText) command.push('--expect-text', String(args.expectText));
       if (args.noConsoleErrors) command.push('--no-console-errors');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'responsive-audit': {
       requireConfirm(args, 'responsive_audit');
@@ -404,7 +416,7 @@ export function buildMcpToolCommand(name, args = {}) {
       for (const size of viewports) command.push('--viewport', String(size));
       if (args.outDir) command.push('--out-dir', String(args.outDir));
       if (args.maxControls != null) command.push('--max-controls', String(args.maxControls));
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'report': {
       const command = ['report', requireString(args, 'target')];
@@ -412,17 +424,17 @@ export function buildMcpToolCommand(name, args = {}) {
       else if (args.last != null) command.push('--last', String(args.last));
       if (args.qa || args.summary) command.push('--qa');
       else if (!args.all && args.compact !== false) command.push('--compact');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'navigate': {
       requireConfirm(args, 'navigate');
-      return optionalFormatJson(['nav', requireString(args, 'target'), requireString(args, 'url')]);
+      return optionalFormatJson(['nav', requireString(args, 'target'), requireString(args, 'url')], args);
     }
     case 'press': {
       requireConfirm(args, 'press');
       const command = ['press', requireString(args, 'target'), requireString(args, 'key')];
       if (args.searchSubmit === true) command.push('--search-submit');
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'wait-for': {
       const command = ['waitfor', requireString(args, 'target')];
@@ -451,13 +463,13 @@ export function buildMcpToolCommand(name, args = {}) {
       const command = ['cascade', requireString(args, 'target'), requireString(args, 'selector')];
       if (args.followUrl === true) command.push('--follow-url');
       if (args.property) command.push(String(args.property));
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'components': {
       requireConfirm(args, 'components');
       const command = ['components', requireString(args, 'target')];
       if (args.selector) command.push(String(args.selector));
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'spawn-debug-browser': {
       requireConfirm(args, 'spawn_debug_browser');
@@ -480,7 +492,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.unsafeFull) {
         command.push('--unsafe-full');
       }
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'table': {
       const target = requireString(args, 'target');
@@ -502,7 +514,7 @@ export function buildMcpToolCommand(name, args = {}) {
         command.push('--row-key-column', String(args.rowKeyColumn));
       }
       if (continuation) command.push('--continue', continuation);
-      return optionalFormatJson(command);
+      return optionalFormatJson(command, args);
     }
     case 'run-command': {
       const commandName = normalizeAllowlistedCommand(args.command);
@@ -669,7 +681,107 @@ function structuredOutput(stdout) {
   }
 }
 
-/** Maps a CLI result to a `tools/call` result: the text, plus image and structured views. */
+/** True for a tool `tools/list` serves; `tools/call` refuses every other name (#643). */
+export function isServedMcpTool(name) {
+  return typeof name === 'string' && SERVED_TOOL_NAMES.has(name);
+}
+
+// Splits the argument text of a Next line into words. The CLI quotes an argument with double
+// quotes (JSON style) or single quotes ('\'' for a quote). Returns null for text it cannot split
+// exactly, or for a placeholder such as <target>, [--unsafe-full], @ref or "…".
+function splitNextWords(text) {
+  const words = [];
+  let index = 0;
+  while (index < text.length) {
+    while (text[index] === ' ') index += 1;
+    if (index >= text.length) break;
+    let word = '';
+    let quoted = false;
+    while (index < text.length && text[index] !== ' ') {
+      const char = text[index];
+      if (char === '"') {
+        quoted = true;
+        let end = index + 1;
+        while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+        if (end >= text.length) return null;
+        try {
+          word += JSON.parse(text.slice(index, end + 1));
+        } catch {
+          return null;
+        }
+        index = end + 1;
+      } else if (char === "'") {
+        quoted = true;
+        const end = text.indexOf("'", index + 1);
+        if (end === -1) return null;
+        word += text.slice(index + 1, end);
+        index = end + 1;
+      } else if (char === '\\' && text[index + 1] === "'") {
+        word += "'";
+        index += 2;
+      } else {
+        word += char;
+        index += 1;
+      }
+    }
+    if (!quoted && (/^[<[]|…/.test(word) || word === '@ref' || /[|;&`$()]/.test(word))) return null;
+    words.push(word);
+  }
+  return words;
+}
+
+/**
+ * The first `Next: cdp …` step of a CLI receipt as a run_command call, or null when the receipt
+ * names none, or names it in a form that is not one command (a placeholder, a choice, a command
+ * run_command does not accept). The " (Kind: …)" suffix and a trailing "# comment" are not part
+ * of the command. A call that needs confirmation carries confirm: true, so it runs as given, as
+ * the CLI Next line does.
+ */
+export function mcpNextCall(text) {
+  const match = String(text || '').match(/(?:^|\s)Next: cdp ([^\n]+)/);
+  if (!match) return null;
+  const line = match[1]
+    .replace(/\s+#\s.*$/, '')
+    .replace(/\s+\(Kind: [^)]*\)\s*$/, '')
+    .trim();
+  const words = splitNextWords(line);
+  if (!words || words.length === 0) return null;
+  const [command, ...args] = words;
+  // The run_command mapper is the one authority for the allowlist and for confirmation.
+  const call = { command, args };
+  try {
+    buildMcpToolCommand('run_command', call);
+  } catch (error) {
+    if (!/requires confirm: true$/.test(error.message)) return null;
+    call.confirm = true;
+    try {
+      buildMcpToolCommand('run_command', call);
+    } catch {
+      return null;
+    }
+  }
+  return { name: 'run_command', arguments: call };
+}
+
+// The error Kind: a `Kind:` line (indented under `Recovery:` in some receipts), else the
+// " (Kind: …)" suffix of the Next line.
+function cliErrorKind(text) {
+  const value = String(text || '');
+  return value.match(/^\s*Kind: ([a-z][a-z0-9-]*)\s*$/m)?.[1]
+    || value.match(/\(Kind: ([a-z][a-z0-9-]*)\)\s*$/m)?.[1]
+    || null;
+}
+
+function asksForJson(command) {
+  return command.some((arg, index) => arg === '--format' && command[index + 1] === 'json');
+}
+
+/**
+ * Maps a CLI result to a `tools/call` result. By default (#643) the text block is the CLI text
+ * receipt, and structuredContent is a small chrome-cdp-ex.mcp-result.v1 block: the exit, the
+ * error Kind, and the receipt's Next as a run_command call. A command run with `--format json`
+ * keeps the versioned JSON receipt as text and as structuredContent, as before.
+ */
 export function createMcpToolResult(command, result, imageOptions = {}) {
   const text = result.code === 0
     ? result.stdout
@@ -677,7 +789,20 @@ export function createMcpToolResult(command, result, imageOptions = {}) {
   const content = [{ type: 'text', text }];
   const image = imageOptions.runtimeDir ? mcpImageContent(command, result, imageOptions) : null;
   if (image) content.push(image);
-  const structuredContent = structuredOutput(result.stdout);
+  let structuredContent;
+  if (asksForJson(command)) {
+    structuredContent = structuredOutput(result.stdout);
+  } else {
+    const kind = result.code === 0 ? null : cliErrorKind(text);
+    const next = mcpNextCall(withoutDaemonRestartNotice(text));
+    structuredContent = {
+      schema: 'chrome-cdp-ex.mcp-result.v1',
+      ok: result.code === 0,
+      exitCode: result.code,
+      ...(kind ? { kind } : {}),
+      ...(next ? { next } : {}),
+    };
+  }
   return {
     content,
     ...(structuredContent ? { structuredContent } : {}),

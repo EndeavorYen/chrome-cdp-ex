@@ -5,7 +5,7 @@
       "exitCode": 0,
       "id": "no-args-help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--unsafe-full] [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--unsafe-full] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -14,7 +14,7 @@
       "exitCode": 0,
       "id": "help",
       "stderr": "",
-      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.\n\ncdp help <command> prints leftover topic help."
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--unsafe-full] [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--unsafe-full] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt|--secret NAME> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref> [file]\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\nWindow size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\nOpt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.\n\ncdp help <command> prints leftover topic help."
     },
     {
       "argv": [
@@ -1301,7 +1301,7 @@
           ],
           "command": "use"
         },
-        "error": "run_command command not allowlisted: use",
+        "error": "run_command use requires confirm: true",
         "id": "run-command-use-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1326,7 +1326,7 @@
           ],
           "command": "tab-group"
         },
-        "error": "run_command command not allowlisted: tab-group",
+        "error": "run_command tab-group requires confirm: true",
         "id": "run-command-tab-group-mutation-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1380,7 +1380,7 @@
           ],
           "command": "console"
         },
-        "error": "run_command command not allowlisted: console",
+        "error": "run_command console requires confirm: true",
         "id": "run-command-console-clear-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1393,7 +1393,7 @@
           ],
           "command": "netlog"
         },
-        "error": "run_command command not allowlisted: netlog",
+        "error": "run_command netlog requires confirm: true",
         "id": "run-command-netlog-clear-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1406,7 +1406,7 @@
           ],
           "command": "diff-shot"
         },
-        "error": "run_command command not allowlisted: diff-shot",
+        "error": "run_command diff-shot requires confirm: true",
         "id": "run-command-diff-shot-reset-without-confirm",
         "kind": "tool",
         "tool": "run_command"
@@ -1543,9 +1543,7 @@
       {
         "args": {},
         "command": [
-          "doctor",
-          "--format",
-          "json"
+          "doctor"
         ],
         "id": "doctor",
         "tool": "doctor"
@@ -1553,9 +1551,7 @@
       {
         "args": {},
         "command": [
-          "list",
-          "--format",
-          "json"
+          "list"
         ],
         "id": "list-tabs",
         "tool": "list_tabs"
@@ -1582,9 +1578,7 @@
         },
         "command": [
           "open",
-          "https://example.test/",
-          "--format",
-          "json"
+          "https://example.test/"
         ],
         "id": "open-new-tab",
         "tool": "open_or_attach"
@@ -1598,9 +1592,7 @@
           "target",
           "--url",
           "example.test",
-          "--exact",
-          "--format",
-          "json"
+          "--exact"
         ],
         "id": "select-target",
         "tool": "select_target"
@@ -1617,9 +1609,7 @@
           "-d",
           "4",
           "-C",
-          "--adaptive",
-          "--format",
-          "json"
+          "--adaptive"
         ],
         "id": "perceive",
         "tool": "perceive"
@@ -1633,9 +1623,7 @@
           "perceive",
           "fixture",
           "--cards",
-          "--adaptive",
-          "--format",
-          "json"
+          "--adaptive"
         ],
         "id": "perceive-cards",
         "tool": "perceive"
@@ -1650,9 +1638,7 @@
           "fixture",
           "--limit",
           "10",
-          "--compact",
-          "--format",
-          "json"
+          "--compact"
         ],
         "id": "controls",
         "tool": "controls"
@@ -1665,9 +1651,7 @@
         "command": [
           "overlay",
           "fixture",
-          "@1",
-          "--format",
-          "json"
+          "@1"
         ],
         "id": "overlay",
         "tool": "overlay"
@@ -1694,9 +1678,7 @@
         "command": [
           "click",
           "fixture",
-          "@1",
-          "--format",
-          "json"
+          "@1"
         ],
         "id": "click",
         "tool": "click"
@@ -1713,9 +1695,7 @@
           "fixture",
           "@1",
           "--expect-text",
-          "Done",
-          "--format",
-          "json"
+          "Done"
         ],
         "id": "verify-click",
         "tool": "verify_click"
@@ -1727,9 +1707,7 @@
         },
         "command": [
           "dismiss-modal",
-          "fixture",
-          "--format",
-          "json"
+          "fixture"
         ],
         "id": "dismiss-modal",
         "tool": "dismiss_modal"
@@ -1745,9 +1723,7 @@
           "fill",
           "fixture",
           "#name",
-          "Ada",
-          "--format",
-          "json"
+          "Ada"
         ],
         "id": "fill",
         "tool": "fill"
@@ -1768,9 +1744,7 @@
           "#zone",
           "--steps",
           "5",
-          "--html5",
-          "--format",
-          "json"
+          "--html5"
         ],
         "id": "drag",
         "tool": "drag"
@@ -1795,9 +1769,7 @@
         "command": [
           "viewport",
           "fixture",
-          "1280x720",
-          "--format",
-          "json"
+          "1280x720"
         ],
         "id": "viewport-set",
         "tool": "viewport"
@@ -1812,9 +1784,7 @@
           "qa",
           "fixture",
           "--desktop",
-          "1280x720",
-          "--format",
-          "json"
+          "1280x720"
         ],
         "id": "qa-page",
         "tool": "qa_page"
@@ -1834,9 +1804,7 @@
           "--viewport",
           "390x844",
           "--viewport",
-          "1280x720",
-          "--format",
-          "json"
+          "1280x720"
         ],
         "id": "responsive-audit",
         "tool": "responsive_audit"
@@ -1851,9 +1819,7 @@
           "fixture",
           "--last",
           "3",
-          "--compact",
-          "--format",
-          "json"
+          "--compact"
         ],
         "id": "report",
         "tool": "report"
@@ -1867,9 +1833,7 @@
         "command": [
           "nav",
           "fixture",
-          "https://example.test/next",
-          "--format",
-          "json"
+          "https://example.test/next"
         ],
         "id": "navigate",
         "tool": "navigate"
@@ -1883,9 +1847,7 @@
         "command": [
           "press",
           "fixture",
-          "Enter",
-          "--format",
-          "json"
+          "Enter"
         ],
         "id": "press",
         "tool": "press"
@@ -1953,9 +1915,7 @@
           "cascade",
           "fixture",
           "@1",
-          "color",
-          "--format",
-          "json"
+          "color"
         ],
         "id": "cascade",
         "tool": "cascade"
@@ -1969,9 +1929,7 @@
         "command": [
           "components",
           "fixture",
-          "#app",
-          "--format",
-          "json"
+          "#app"
         ],
         "id": "components",
         "tool": "components"
@@ -2013,9 +1971,7 @@
         },
         "command": [
           "checkpoint",
-          "fixture",
-          "--format",
-          "json"
+          "fixture"
         ],
         "id": "session-checkpoint",
         "tool": "session_checkpoint"
@@ -2029,9 +1985,7 @@
         "command": [
           "checkpoint",
           "fixture",
-          "--unsafe-full",
-          "--format",
-          "json"
+          "--unsafe-full"
         ],
         "id": "session-checkpoint-unsafe",
         "tool": "session_checkpoint"
@@ -2044,9 +1998,7 @@
         "command": [
           "table",
           "fixture",
-          "#grid",
-          "--format",
-          "json"
+          "#grid"
         ],
         "id": "table-observe",
         "tool": "table"
@@ -2065,9 +2017,7 @@
           "#grid",
           "--collect",
           "--scroll-container",
-          ".viewport",
-          "--format",
-          "json"
+          ".viewport"
         ],
         "id": "table-collect",
         "tool": "table"
@@ -2081,9 +2031,7 @@
           "table",
           "fixture",
           "--continue",
-          "ct1.0123456789abcdef0123456789abcdef.0",
-          "--format",
-          "json"
+          "ct1.0123456789abcdef0123456789abcdef.0"
         ],
         "id": "table-continue",
         "tool": "table"
@@ -2174,49 +2122,91 @@
       }
     ],
     "runCommandAllowlist": [
+      "back",
       "cascade",
       "click",
+      "clickxy",
+      "clock",
+      "console",
+      "cookies",
+      "dialog",
+      "diff-shot",
+      "diffshot",
       "dismiss-modal",
       "doctor",
+      "drag",
       "elshot",
+      "export-playwright",
       "fill",
+      "frame",
+      "frames",
       "help",
       "inject",
+      "jsclick",
       "key",
       "list",
       "ls",
+      "mock",
       "nav",
       "navigate",
+      "netlog",
       "open",
+      "overlay",
       "perceive",
       "press",
       "ready",
+      "record-actions",
+      "reload",
+      "report",
+      "resize",
       "screenshot",
       "scroll",
       "select",
       "shot",
       "spawn",
       "spawn-debug-browser",
+      "status",
       "stop",
+      "tab-group",
       "tabs",
       "text",
+      "throttle",
+      "type",
+      "upload",
+      "use",
+      "viewport",
       "waitfor"
     ],
     "runCommandMutating": [
+      "back",
       "click",
+      "clickxy",
+      "clock",
+      "cookies",
+      "dialog",
       "dismiss-modal",
+      "drag",
       "fill",
       "inject",
+      "jsclick",
       "key",
+      "mock",
       "nav",
       "navigate",
       "open",
       "press",
+      "reload",
+      "resize",
       "scroll",
       "select",
       "spawn",
       "spawn-debug-browser",
-      "stop"
+      "stop",
+      "throttle",
+      "type",
+      "upload",
+      "use",
+      "viewport"
     ],
     "serverVersion": "2.21.0",
     "supportedProtocolVersions": [
@@ -2235,7 +2225,16 @@
         "description": "Run chrome-cdp-ex readiness diagnostics and return structured setup guidance.",
         "inputSchema": {
           "additionalProperties": false,
-          "properties": {},
+          "properties": {
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
           "type": "object"
         },
         "name": "doctor"
@@ -2251,7 +2250,16 @@
         "description": "List debuggable browser tabs and named target aliases.",
         "inputSchema": {
           "additionalProperties": false,
-          "properties": {},
+          "properties": {
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
           "type": "object"
         },
         "name": "list_tabs"
@@ -2271,6 +2279,14 @@
             "confirm": {
               "description": "Required when opening a new tab because this mutates browser state.",
               "type": "boolean"
+            },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
             },
             "name": {
               "description": "Optional local alias name for later tool calls.",
@@ -2330,6 +2346,14 @@
             "followUrl": {
               "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
               "type": "boolean"
+            },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
             },
             "last": {
               "description": "Explicit text-row budget; overrides adaptive mode.",
@@ -2420,6 +2444,14 @@
               "description": "Must be true to acknowledge browser-state mutation.",
               "type": "boolean"
             },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
+            },
             "js": {
               "description": "Use HTMLElement.click() fallback instead of CDP mouse events.",
               "type": "boolean"
@@ -2463,6 +2495,14 @@
               "description": "Must be true to acknowledge browser-state mutation.",
               "type": "boolean"
             },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
+            },
             "target": {
               "description": "Target prefix or named alias.",
               "type": "string"
@@ -2492,6 +2532,14 @@
               "const": true,
               "description": "Must be true to acknowledge browser-state mutation.",
               "type": "boolean"
+            },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
             },
             "react": {
               "description": "Use native value setter plus input/change events.",
@@ -2540,6 +2588,14 @@
               "description": "Must be true to acknowledge browser-state mutation.",
               "type": "boolean"
             },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
+            },
             "target": {
               "description": "Target prefix or named alias.",
               "type": "string"
@@ -2574,6 +2630,14 @@
               "const": true,
               "description": "Must be true to acknowledge browser-state mutation.",
               "type": "boolean"
+            },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
             },
             "key": {
               "description": "Key name, for example Enter, Escape, Tab.",
@@ -2669,6 +2733,14 @@
               "description": "Re-bind a vanished prefix when exactly one live page has the same URL and title. Read commands only.",
               "type": "boolean"
             },
+            "format": {
+              "description": "json: the full JSON receipt.",
+              "enum": [
+                "json",
+                "text"
+              ],
+              "type": "string"
+            },
             "property": {
               "description": "CSS property to trace. Defaults to color when omitted by CLI behavior; prefer an explicit property.",
               "type": "string"
@@ -2757,7 +2829,7 @@
               "type": "array"
             },
             "command": {
-              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, open, perceive, shot, screenshot, elshot, click, press, key, scroll, fill, select, dismiss-modal, nav, navigate, waitfor, cascade, text, spawn-debug-browser, spawn, stop, inject",
+              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, open, use, perceive, overlay, status, console, shot, screenshot, elshot, diff-shot, diffshot, click, jsclick, clickxy, type, press, key, scroll, drag, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, reload, viewport, resize, waitfor, cascade, frame, frames, text, netlog, cookies, report, record-actions, export-playwright, tab-group, spawn-debug-browser, spawn, stop, mock, clock, throttle, inject",
               "type": "string"
             },
             "confirm": {

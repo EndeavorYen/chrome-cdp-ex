@@ -272,7 +272,7 @@ describe('#429 fill "" clears a field', () => {
 
   it('maps MCP text "" to a clear and a missing MCP text to an error', () => {
     expect(buildMcpToolCommand('fill', { target: 'T1', selector: '#name', text: '', confirm: true }))
-      .toEqual(['fill', 'T1', '#name', '', '--format', 'json']);
+      .toEqual(['fill', 'T1', '#name', '']);
     expect(() => buildMcpToolCommand('fill', { target: 'T1', selector: '#name', confirm: true }))
       .toThrow(/text is required/);
   });

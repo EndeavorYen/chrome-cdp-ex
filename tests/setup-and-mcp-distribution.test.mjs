@@ -160,17 +160,17 @@ describe('MCP Tier-1 + run_command + resources', () => {
     expect(names).not.toContain('record_snapshot');
     expect(names).not.toContain('session_checkpoint');
     expect(buildMcpToolCommand('navigate', { target: 'app', url: 'https://example.com', confirm: true }))
-      .toEqual(['nav', 'app', 'https://example.com', '--format', 'json']);
+      .toEqual(['nav', 'app', 'https://example.com']);
     expect(buildMcpToolCommand('press', { target: 'app', key: 'Enter', confirm: true }))
-      .toEqual(['press', 'app', 'Enter', '--format', 'json']);
+      .toEqual(['press', 'app', 'Enter']);
     expect(buildMcpToolCommand('wait_for', { target: 'app', text: 'Saved', timeoutMs: 5000 }))
       .toEqual(['waitfor', 'app', '--text', 'Saved', '5000']);
     expect(buildMcpToolCommand('cascade', { target: 'app', selector: '@3', property: 'color' }))
-      .toEqual(['cascade', 'app', '@3', 'color', '--format', 'json']);
+      .toEqual(['cascade', 'app', '@3', 'color']);
     expect(() => buildMcpToolCommand('components', { target: 'app', selector: '@c1' }))
       .toThrow('components requires confirm: true');
     expect(buildMcpToolCommand('components', { target: 'app', selector: '@c1', confirm: true }))
-      .toEqual(['components', 'app', '@c1', '--format', 'json']);
+      .toEqual(['components', 'app', '@c1']);
     expect(buildMcpToolCommand('spawn_debug_browser', {
       browser: 'edge', port: 9222, url: 'https://example.com', confirm: true,
     })).toEqual(['spawn-debug-browser', 'edge', '--port', '9222', '--url', 'https://example.com']);
@@ -179,7 +179,7 @@ describe('MCP Tier-1 + run_command + resources', () => {
     expect(() => buildMcpToolCommand('session_checkpoint', { target: 'app' }))
       .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('session_checkpoint', { target: 'app', confirm: true }))
-      .toEqual(['checkpoint', 'app', '--format', 'json']);
+      .toEqual(['checkpoint', 'app']);
   });
 
   it('gates run_command with allowlist + confirm for mutating commands', () => {
@@ -192,20 +192,33 @@ describe('MCP Tier-1 + run_command + resources', () => {
       .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('run_command', { command: 'click', args: ['app', '@1'], confirm: true }))
       .toEqual(['click', 'app', '@1']);
+    // #643: Next lines name use, tab-group, console, netlog and diff-shot, so run_command accepts
+    // them; the mutating forms still need confirm.
     for (const [command, args] of [
       ['use', ['app', '--name', 'saved']],
-      ['forget', ['saved']],
       ['tab-group', ['create', 'saved']],
       ['tab-group', ['--format', 'json', 'create', 'saved']],
       ['tab-group', ['--format', 'text', '--format', 'json', 'list']],
+      ['console', ['app', '--clear']],
+      ['netlog', ['app', '--clear']],
+      ['diff-shot', ['app', '--reset']],
+    ]) {
+      expect(() => buildMcpToolCommand('run_command', { command, args }), command)
+        .toThrow(/confirm: true/);
+      expect(buildMcpToolCommand('run_command', { command, args, confirm: true }), command)
+        .toEqual([command, ...args]);
+    }
+    for (const [command, args] of [
       ['tab-group', ['list']],
+      ['console', ['app', '--errors']],
+    ]) {
+      expect(buildMcpToolCommand('run_command', { command, args }), command).toEqual([command, ...args]);
+    }
+    for (const [command, args] of [
+      ['forget', ['saved']],
       ['loadall', ['app', '.more']],
       ['record', ['app', '--action', 'click', '@1']],
       ['keepalive', ['app', '60000']],
-      ['console', ['app', '--clear']],
-      ['console', ['app', '--errors']],
-      ['netlog', ['app', '--clear']],
-      ['diff-shot', ['app', '--reset']],
       ['fullshot', ['app', '/tmp/explicit-full.png']],
       ['table', ['app', '#grid']],
       ['checkpoint', ['app', '--unsafe-full']],
@@ -223,9 +236,6 @@ describe('MCP Tier-1 + run_command + resources', () => {
     })).toThrow(/not allowlisted/);
     expect(() => buildMcpToolCommand('run_command', {
       command: 'table', args: ['app', '#one', '#two'], confirm: true,
-    })).toThrow(/not allowlisted/);
-    expect(() => buildMcpToolCommand('run_command', {
-      command: 'use', args: ['app', '--name', 'saved'], confirm: true,
     })).toThrow(/not allowlisted/);
     expect(() => buildMcpToolCommand('session_checkpoint', {
       target: 'app',

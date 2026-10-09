@@ -118,8 +118,9 @@ describe('Phase 6 command-surface characterization', () => {
   it('freezes every MCP tool, resource, allowlist entry, valid mapping, and invalid boundary', () => {
     expect(createHash('sha256').update(JSON.stringify(MCP_SURFACE)).digest('hex'))
       .toBe(MCP_SURFACE_IDENTITY);
-    // #554: the served tools/list is the survivor card. run_command mappings in the
-    // current fixture are the survivor allowlist; published fixtures stay historical.
+    // #554: the served tools/list is the survivor card; #643 adds the commands Next lines name
+    // to the run_command allowlist. run_command mappings in the current fixture are that
+    // allowlist; published fixtures stay historical.
     expect(MCP_TOOLS.map(({ annotations: _annotations, ...tool }) => tool)).toEqual(MCP_TOOL_DEFINITIONS);
     expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).toEqual([
       'doctor', 'list_tabs', 'open_or_attach', 'perceive', 'screenshot', 'click',
@@ -137,14 +138,14 @@ describe('Phase 6 command-surface characterization', () => {
     }
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:ee6264644325d2b3be68e9f7cd13c30ac8130d5bc778aee599223f7fa591480a');
+      .toBe('sha256:eb3c75a2d68e7ba12cfd497e23db4f04c997a9ed44cd999bafb2395e99c5d1dc');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))
-      .toBe('sha256:bbd2a42dbe7d2c99b5c88abc862ed73b2f3e651e7cdb803ef327a1f7eff9042a');
+      .toBe('sha256:1f2f07480c0236074c02c20b712f6d15f92ee0eb7fbc418a69b16a48a70e3d94');
     expect(MCP_TOOL_DEFINITIONS).toHaveLength(14);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
-    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(27);
+    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(54);
     expect(MCP_RESOURCE_RECORDS.map(resource => resource.mapper)).toEqual([
       'doctor-status', 'session-report', 'session-screenshot-latest',
     ]);

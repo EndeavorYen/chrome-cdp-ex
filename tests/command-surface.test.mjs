@@ -253,10 +253,10 @@ describe('MCP surface catalog', () => {
     expect(() => defineMcpSurface(oversizedSchemaArray)).toThrow(/array limit/);
   });
 
-  it('validates the served 14-tool, three-resource, ordered 27-spelling survivor surface', () => {
+  it('validates the served 14-tool, three-resource, ordered 54-spelling surface (survivors plus #643 Next commands)', () => {
     expect(MCP_TOOL_DEFINITIONS).toHaveLength(14);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
-    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(27);
+    expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(54);
     expect(Object.isFrozen(MCP_TOOL_DEFINITIONS[0].inputSchema)).toBe(true);
     expect(Object.isFrozen(MCP_TOOL_DEFINITIONS[0].inputSchema.properties)).toBe(true);
     expect(Object.isFrozen(MCP_RESOURCE_TEMPLATES[0])).toBe(true);

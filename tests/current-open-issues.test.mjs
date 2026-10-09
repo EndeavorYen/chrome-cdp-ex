@@ -432,27 +432,27 @@ describe('current open issue contracts', () => {
     }
     expect(createMcpInitializeResult().serverInfo.name).toBe('chrome-cdp-ex');
     expect(createMcpInitializeResult().serverInfo.version).toBe(packageJson.version);
-    expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor', '--format', 'json']);
+    expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor']);
     expect(buildMcpToolCommand('perceive', { target: 'app', depth: 4, cursorInteractive: true }))
-      .toEqual(['perceive', 'app', '-d', '4', '-C', '--adaptive', '--format', 'json']);
+      .toEqual(['perceive', 'app', '-d', '4', '-C', '--adaptive']);
     expect(buildMcpToolCommand('perceive', { target: 'app', cards: true, last: 12 }))
-      .toEqual(['perceive', 'app', '--cards', '--last', '12', '--format', 'json']);
+      .toEqual(['perceive', 'app', '--cards', '--last', '12']);
     expect(buildMcpToolCommand('perceive', { target: 'app', qa: true, maxDiffLines: 12 }))
-      .toEqual(['perceive', 'app', '--adaptive', '--qa', '--max-diff-lines', '12', '--format', 'json']);
+      .toEqual(['perceive', 'app', '--adaptive', '--qa', '--max-diff-lines', '12']);
     expect(buildMcpToolCommand('controls', { target: 'app', selector: '#composer', filter: 'send', limit: 5 }))
-      .toEqual(['controls', 'app', '--selector', '#composer', '--filter', 'send', '--limit', '5', '--compact', '--format', 'json']);
+      .toEqual(['controls', 'app', '--selector', '#composer', '--filter', 'send', '--limit', '5', '--compact']);
     expect(buildMcpToolCommand('overlay', { target: 'app', selector: '@3' }))
-      .toEqual(['overlay', 'app', '@3', '--format', 'json']);
+      .toEqual(['overlay', 'app', '@3']);
     expect(buildMcpToolCommand('open_or_attach', { target: 'ABC12345', port: 9223 }))
       .toEqual(['use', '--port', '9223', '--target', 'ABC12345']);
     expect(buildMcpToolCommand('open_or_attach', { url: 'https://example.com', reuseUrl: true, confirm: true }))
-      .toEqual(['open', 'https://example.com', '--reuse-url', '--format', 'json']);
+      .toEqual(['open', 'https://example.com', '--reuse-url']);
     expect(buildMcpToolCommand('select_target', { url: '8788', title: 'Lab' }))
-      .toEqual(['target', '--url', '8788', '--title', 'Lab', '--format', 'json']);
+      .toEqual(['target', '--url', '8788', '--title', 'Lab']);
     expect(buildMcpToolCommand('click', { target: 'app', selector: 'button.primary', confirm: true }))
-      .toEqual(['click', 'app', 'button.primary', '--format', 'json']);
+      .toEqual(['click', 'app', 'button.primary']);
     expect(buildMcpToolCommand('click', { target: 'app', selector: 'button.primary', qa: true, confirm: true }))
-      .toEqual(['click', 'app', 'button.primary', '--qa', '--format', 'json']);
+      .toEqual(['click', 'app', 'button.primary', '--qa']);
     expect(buildMcpToolCommand('verify_click', {
       target: 'app',
       selector: 'button.primary',
@@ -467,10 +467,9 @@ describe('current open issue contracts', () => {
       '--expect-request', 'POST /api/save',
       '--expect-status', '200',
       '--no-console-errors',
-      '--format', 'json',
     ]);
     expect(buildMcpToolCommand('dismiss_modal', { target: 'app', confirm: true }))
-      .toEqual(['dismiss-modal', 'app', '--format', 'json']);
+      .toEqual(['dismiss-modal', 'app']);
     expect(() => buildMcpToolCommand('fill', { target: 'app', selector: '#password', text: 'secret' }))
       .toThrow(/confirm: true/);
     expect(() => buildMcpToolCommand('dismiss_modal', { target: 'app' }))
@@ -488,7 +487,6 @@ describe('current open issue contracts', () => {
       '--mobile', '390x844',
       '--click', 'button.primary',
       '--expect-text', 'Saved',
-      '--format', 'json',
     ]);
     expect(() => buildMcpToolCommand('qa_page', { target: 'app' }))
       .toThrow(/confirm: true/);
@@ -504,12 +502,11 @@ describe('current open issue contracts', () => {
       '--viewport', '390x844',
       '--out-dir', '/tmp/audit',
       '--max-controls', '5',
-      '--format', 'json',
     ]);
     expect(() => buildMcpToolCommand('responsive_audit', { target: 'app' }))
       .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('report', { target: 'app', qa: true, last: 3 }))
-      .toEqual(['report', 'app', '--last', '3', '--qa', '--format', 'json']);
+      .toEqual(['report', 'app', '--last', '3', '--qa']);
   });
 
   it('serves framed MCP initialize and tool-list requests in order over stdio', async () => {
@@ -725,11 +722,11 @@ describe('issues #89-#91 contracts', () => {
     expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).not.toContain('select_target');
     expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).not.toContain('responsive_audit');
     expect(buildMcpToolCommand('select_target', { url: 'http://127.0.0.1:8788', exact: true }))
-      .toEqual(['target', '--url', 'http://127.0.0.1:8788', '--exact', '--format', 'json']);
+      .toEqual(['target', '--url', 'http://127.0.0.1:8788', '--exact']);
     expect(() => buildMcpToolCommand('responsive_audit', { target: 'app' }))
       .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('responsive_audit', { target: 'app', confirm: true }))
-      .toEqual(['responsive-audit', 'app', '--format', 'json']);
+      .toEqual(['responsive-audit', 'app']);
   });
 
   it('#90 applies max-controls and reports network failures in QA helpers', () => {

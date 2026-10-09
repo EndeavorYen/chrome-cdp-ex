@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Behaviour Changes
+
+* MCP tool results are the CLI text receipt. A refused `click` was 15,761 B (the JSON receipt as text, and again as `structuredContent`); it is now 622 B, the 312-character CLI receipt plus a `chrome-cdp-ex.mcp-result.v1` block with `ok`, `exitCode`, `kind`, and the receipt's Next as a `run_command` call: `{ "name": "run_command", "arguments": { "command": "click", "args": ["DE804A60", "#save", "--js"], "confirm": true } }`. `format: "json"` on `doctor`, `list_tabs`, `open_or_attach`, `perceive`, `click`, `dismiss_modal`, `fill`, `navigate`, `press` and `cascade`, or `--format json` in `run_command` args, returns the full JSON receipt as before. `run_command` accepts the commands Next lines name (`status`, `console`, `netlog`, `overlay`, `frame`, `report`, `jsclick`, `clickxy`, `type`, `drag`, `upload`, `dialog`, `back`, `reload`, `viewport`, `diff-shot`, `cookies`, `use`, `tab-group`, `mock`, `clock`, `throttle`, `record-actions`, `export-playwright`); `eval`, `evalraw`, `eval64`, `call`, `flow`, `cookieset` and `cookiedel` stay refused. `tools/call` runs only the tools `tools/list` serves: `report`, `controls`, `overlay`, `table` and the other hidden catalog tools are `Unknown MCP tool` ([#643](https://github.com/EndeavorYen/chrome-cdp-ex/issues/643)).
+
 ### Performance
 
 * `bin/chrome-cdp` on Node 22 runs `cdp.mjs` in this process and turns on Node's module compile cache before that import. A warm call skips the extra Node process and recompiles less of the CLI. Stdout, stderr, exit codes, and the Node before 22 re-exec path stay the same. Daemon `scriptPath` stays `cdp.mjs`. An unwritable cache, or a Node build without `module.enableCompileCache`, continues without a message ([#600](https://github.com/EndeavorYen/chrome-cdp-ex/issues/600)).

@@ -8,6 +8,7 @@ import {
   buildMcpToolCommand,
   createMcpInitializeResult,
   createMcpToolResult,
+  isServedMcpTool,
   listMcpResources,
   mcpPolicyDenial,
   resolveMcpResource,
@@ -149,6 +150,7 @@ export function createMcpRequestHandler({
       if (message.method === 'tools/call') {
         const name = message.params?.name;
         const args = message.params?.arguments || {};
+        if (!isServedMcpTool(name)) throw new Error(`Unknown MCP tool: ${name}`);
         const command = buildMcpToolCommand(name, args);
         const startedAtMs = Date.now();
         const denial = mcpPolicyDenial(command, env);

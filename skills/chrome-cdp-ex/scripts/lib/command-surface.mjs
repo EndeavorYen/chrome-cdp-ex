@@ -930,14 +930,26 @@ for (const name of SURVIVOR_COMMANDS) {
 
 const SURVIVOR_NAME_SET = new Set(SURVIVOR_COMMANDS);
 
+// #643: commands outside the survivor card that a receipt's Next line names. run_command accepts
+// them so an MCP agent can follow the recovery it is given. Next lines that name a command whose
+// MCP exposure is none (eval, evalraw, eval64, call, flow, cookieset, cookiedel) stay refused;
+// tests/issue-643-mcp-cli-receipt.test.mjs keeps this list in step with the Next lines in the source.
+export const MCP_NEXT_COMMANDS = Object.freeze([
+  'status', 'console', 'netlog', 'overlay', 'frame', 'report', 'record-actions', 'export-playwright',
+  'jsclick', 'clickxy', 'type', 'drag', 'upload', 'dialog', 'back', 'reload', 'viewport',
+  'diff-shot', 'cookies', 'use', 'tab-group', 'mock', 'clock', 'throttle',
+]);
+const MCP_NEXT_NAME_SET = new Set(MCP_NEXT_COMMANDS);
+
 function isSurvivorAllowlistSpelling(spelling) {
   if (spelling === 'help') return true;
   const command = COMMAND_SURFACE.resolve(spelling);
-  return Boolean(command && SURVIVOR_NAME_SET.has(command.name));
+  return Boolean(command && (SURVIVOR_NAME_SET.has(command.name) || MCP_NEXT_NAME_SET.has(command.name)));
 }
 
 // #554: the served MCP list is the survivor card plus the run_command hatch and help.
-// The input arrays keep the historical catalog so leftover handlers stay in the tree.
+// #643 adds the commands Next lines name. The input arrays keep the historical catalog so
+// leftover handlers stay in the tree.
 export const MCP_RUN_COMMAND_ALLOWLIST = Object.freeze(
   MCP_RUN_COMMAND_ALLOWLIST_INPUT.filter(isSurvivorAllowlistSpelling),
 );
@@ -966,11 +978,37 @@ function withSurvivorRunCommandDescription(tool) {
   };
 }
 
+// #643: a tool result is the CLI text receipt. These tools run a command with JSON output, so
+// `format: "json"` returns that full versioned receipt instead, as it was before. run_command
+// takes `--format json` in its args.
+export const MCP_JSON_FORMAT_TOOLS = Object.freeze([
+  'doctor', 'list_tabs', 'open_or_attach', 'perceive', 'click', 'dismiss_modal', 'fill', 'navigate', 'press', 'cascade',
+]);
+const MCP_JSON_FORMAT_TOOL_SET = new Set(MCP_JSON_FORMAT_TOOLS);
+
+function withFormatOption(tool) {
+  if (!MCP_JSON_FORMAT_TOOL_SET.has(tool.name)) return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...tool.inputSchema.properties,
+        format: stringSchema('json: the full JSON receipt.', { enum: ['text', 'json'] }),
+      },
+    },
+  };
+}
+
 export const MCP_TOOL_DEFINITIONS = Object.freeze(
   MCP_TOOL_DEFINITIONS_INPUT
     .filter(tool => tool.name === 'run_command' || SURVIVOR_TOOL_NAMES.has(tool.name))
-    .map(withSurvivorRunCommandDescription),
+    .map(withSurvivorRunCommandDescription)
+    .map(withFormatOption),
 );
+for (const name of MCP_JSON_FORMAT_TOOLS) {
+  if (!MCP_TOOL_DEFINITIONS.some(tool => tool.name === name)) fail('mcp.tools', `format option names unserved tool ${name}`);
+}
 
 const VALIDATED_MCP_SURFACE = defineMcpSurface({
   tools: MCP_TOOL_DEFINITIONS,
@@ -1014,7 +1052,7 @@ function validateSurfaceConsistency(commandSurface, mcpSurface) {
     }
   }
   for (const command of commandSurface.commands) {
-    if (!SURVIVOR_NAME_SET.has(command.name) && command.name !== 'help') continue;
+    if (!SURVIVOR_NAME_SET.has(command.name) && !MCP_NEXT_NAME_SET.has(command.name) && command.name !== 'help') continue;
     if ((command.mcp.exposure === 'run-command' || command.mcp.exposure === 'tool-and-run-command')
         && !declaredAllowlist.has(command.name)) {
       fail('mcp.runCommandAllowlist', `is missing canonical command ${command.name}`);
@@ -1043,7 +1081,7 @@ function surfaceDigest(value) {
 }
 
 export const COMMAND_SURFACE_IDENTITY = 'ec10ae9ada88310df6428c43bda3af19b0a5210ffa42d62fae1f9748c5955325';
-export const MCP_SURFACE_IDENTITY = '4640b960e76bee4439690408c4fe6949e789973907eefbcf9461e432f74106ea';
+export const MCP_SURFACE_IDENTITY = '27154a630beb619de3540a40b92adeace1ea47b80aa6aff30b7f637b20edacb8';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }
