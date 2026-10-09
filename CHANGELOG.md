@@ -14,6 +14,8 @@
 
 * `netlog <target> --id N --body` reads a `Cache-Control: no-store` response that the page never read. Chrome sends no `loadingFinished` for such a response and keeps no copy for `Network.getResponseBody`; the body now comes from `Network.streamResourceContent` and is labelled `not read by the page`. The list shows that response as `body not finished`, not `0B`, and `--body` no longer says `still loading` for a response that has arrived ([#648](https://github.com/EndeavorYen/chrome-cdp-ex/issues/648)).
 
+* A directional `scroll` (`down`, `up`, `left`, `right`, `x,y`) moves the document when the document can scroll on that axis, and otherwise the page's main scroll container, the one `scroll to bottom` and `perceive`'s `Scroll:` line use. The receipt names the container and its position before and after (`Scrolled #viewport by (0, 6388): scrollTop 0 → 6388 / 17344 max`). `--scroll-container SELECTOR` works with every direction and amount, and the amount may follow it. When nothing on the page scrolls on that axis, the command exits 1 with `Kind: not-scrollable`; it used to print `Scrolled by (0, 500). Position: (0, 0)` and exit 0 ([#640](https://github.com/EndeavorYen/chrome-cdp-ex/issues/640)).
+
 * `perceive --since-action` and `perceive --diff` keep the `@ref` of every element that is still on the page. A new element gets the next number above any number already handed out, and that number is printed on the added line. A number whose element is gone is not given to a different element, so a later `click @N` cannot hit another control and succeed. A plain `perceive` still numbers `@1..@N` in document order and prints every line
   ([#642](https://github.com/EndeavorYen/chrome-cdp-ex/issues/642)).
 

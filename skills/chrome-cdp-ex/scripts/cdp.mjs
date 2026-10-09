@@ -18639,6 +18639,76 @@ function scrollEdgeLogicSource() {
   `;
 }
 
+// #640: a directional scroll moves the document when it can scroll on that axis (or the move is
+// diagonal), else the same nested container that to top/to bottom and perceive's Scroll line use.
+// Kept out of scrollEdgeLogicSource: an edge scroll never calls scrollBy.
+function scrollByLogicSource() {
+  return `
+    const runScrollBy = function(requested, dx, dy) {
+      const resolved = resolveContainer(requested, null);
+      if (resolved.ok === false) return resolved;
+      let el = resolved.el;
+      if (!el) {
+        const scroller = document.scrollingElement || document.documentElement;
+        const docMax = dy !== 0
+          ? measureDocument().scrollMax
+          : Math.max(0, Math.round((Number(scroller && scroller.scrollWidth) || 0) - (Number(scroller && scroller.clientWidth) || Number(window.innerWidth) || 0)));
+        if (docMax > tolerance || (dx !== 0 && dy !== 0)) {
+          ${documentScrollByJs('dx', 'dy')};
+          return { ok: true, kind: 'document', x: Math.round(window.scrollX), y: Math.round(window.scrollY) };
+        }
+        el = dy !== 0 ? primaryOverflow() : null;
+        if (!el) return { ok: true, kind: 'none', x: Math.round(window.scrollX), y: Math.round(window.scrollY) };
+      }
+      const fromTop = Math.round(Number(el.scrollTop) || 0);
+      const fromLeft = Math.round(Number(el.scrollLeft) || 0);
+      Element.prototype.scrollBy.call(el, { left: dx, top: dy, behavior: 'instant' });
+      if (typeof Event === 'function' && typeof el.dispatchEvent === 'function') {
+        try { el.dispatchEvent(new Event('scroll')); } catch {}
+      }
+      const measured = measureEl(el);
+      const scrollLeft = Math.round(Number(el.scrollLeft) || 0);
+      return {
+        ok: true,
+        kind: 'container',
+        selector: identityOf(el),
+        fromTop: fromTop,
+        scrollTop: measured.scrollTop,
+        scrollMax: measured.scrollMax,
+        fromLeft: fromLeft,
+        scrollLeft: scrollLeft,
+        atTop: measured.atTop,
+        atBottom: measured.atBottom,
+        moved: measured.scrollTop !== fromTop || scrollLeft !== fromLeft,
+      };
+    };
+  `;
+}
+
+function scrollByExpression(dx, dy, containerSelector = null) {
+  const requested = containerSelector == null ? 'null' : JSON.stringify(containerSelector);
+  return `(function() {
+    /* chrome-cdp-ex.scroll-by */
+    ${scrollEdgeLogicSource()}
+    ${scrollByLogicSource()}
+    return JSON.stringify(runScrollBy(${requested}, ${Number(dx) || 0}, ${Number(dy) || 0}));
+  })()`;
+}
+
+// #640: the container receipt names what moved, from where to where.
+function formatScrollByContainerText(dx, dy, pos = {}) {
+  const who = pos.selector || 'container';
+  const vertical = Number(dy) !== 0;
+  const edge = vertical && Number(dy) > 0 && pos.atBottom ? ' (at-bottom: yes)' : vertical && Number(dy) < 0 && pos.atTop ? ' (at-top: yes)' : '';
+  if (!pos.moved) {
+    const where = vertical ? (Number(dy) > 0 ? 'bottom' : 'top') : (Number(dx) > 0 ? 'right edge' : 'left edge');
+    return `Did not scroll: ${who} is already at the ${where}. scrollTop: ${pos.scrollTop} / ${pos.scrollMax} max`;
+  }
+  return vertical
+    ? `Scrolled ${who} by (${dx}, ${dy}): scrollTop ${pos.fromTop} → ${pos.scrollTop} / ${pos.scrollMax} max${edge}`
+    : `Scrolled ${who} by (${dx}, ${dy}): scrollLeft ${pos.fromLeft} → ${pos.scrollLeft}`;
+}
+
 function scrollEdgeExpression(edge, containerSelector = null) {
   const dest = edge === 'top' ? 'top' : 'bottom';
   const requested = containerSelector == null ? 'null' : JSON.stringify(containerSelector);
@@ -18701,10 +18771,14 @@ async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
     }
     return formatDocumentScrollEdgeText(edge, pos);
   }
-  if (rest.includes('--scroll-container')) {
-    throw new Error('scroll: --scroll-container is only valid with to top/to bottom');
+  // #640: the amount is optional, so `down --scroll-container SEL` arrives with the flag in the
+  // amount slot. --scroll-container works with every direction.
+  const flagged = typeof amount === 'string' && amount.startsWith('--');
+  const container = parseScrollContainerArg(flagged ? [amount, ...rest] : rest);
+  if (container && isRef(container)) {
+    throw new Error('scroll: --scroll-container requires a CSS selector (same as table --scroll-container)');
   }
-  const px = parseInt(amount) || 500;
+  const px = (flagged ? 0 : parseInt(amount)) || 500;
   const dirMap = { down: [0, px], up: [0, -px], left: [-px, 0], right: [px, 0] };
   let dx, dy;
   if (dirMap[direction?.toLowerCase()]) {
@@ -18715,9 +18789,35 @@ async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
   } else {
     throw new Error('Direction required: down, up, left, right, x,y, or to top/to bottom');
   }
-  const result = await evalStr(cdp, sid, `(${documentScrollByJs(dx, dy)}, JSON.stringify({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }))`);
-  const pos = JSON.parse(result);
+  const pos = parseScrollEdgePayload(await evalStr(cdp, sid, scrollByExpression(dx, dy, container)));
+  if (pos && pos.ok === false) throw new Error(pos.error || 'scroll failed');
+  if (pos.kind === 'container') return formatScrollByContainerText(dx, dy, pos);
+  if (pos.kind === 'none') {
+    throw new Error(`scroll: nothing scrolled: the page does not scroll ${dy !== 0 ? 'vertically' : 'horizontally'}, and no scroll container was found. Position: (${pos.x}, ${pos.y})`);
+  }
   return `Scrolled by (${dx}, ${dy}). Position: (${pos.x}, ${pos.y})`;
+}
+
+// #640: the amount may follow --scroll-container; put the parts in the order the positional
+// readers (scrollStr, scrollActionTarget) expect: direction, amount, then flags.
+function normalizeScrollArgs(args = []) {
+  const list = splitScrollEdgeArgs(args);
+  if (!list.length || String(list[0]).toLowerCase() === 'to') return list;
+  const [direction, ...rest] = list;
+  let amount = null;
+  const flags = [];
+  for (let i = 0; i < rest.length; i++) {
+    const token = String(rest[i]);
+    if (token === '--scroll-container') {
+      flags.push(token);
+      if (i + 1 < rest.length) flags.push(String(rest[++i]));
+    } else if (amount == null && /^-?\d+$/.test(token)) {
+      amount = token;
+    } else {
+      flags.push(token);
+    }
+  }
+  return [direction, ...(amount == null ? [] : [amount]), ...flags];
 }
 
 async function dispatchHoverMove(cdp, sid, x, y) {
@@ -23855,7 +23955,7 @@ async function recordStr(cdp, sid, args, refs) {
       else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
       else if (opts.action === 'scroll') {
-        const scrollArgs = splitScrollEdgeArgs(opts.actionArgs);
+        const scrollArgs = normalizeScrollArgs(opts.actionArgs);
         actionText = await scrollStr(cdp, sid, scrollArgs[0], scrollArgs[1], scrollArgs.slice(2));
       }
       else if (opts.action === 'nav' || opts.action === 'navigate') actionText = await navStr(cdp, sid, opts.actionArgs[0]);
@@ -29023,7 +29123,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     scroll: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      fopts.args = splitScrollEdgeArgs(fopts.args);
+      fopts.args = normalizeScrollArgs(fopts.args);
       const value = await actionFeedback(
         'scroll',
         () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1], fopts.args.slice(2)),
@@ -34025,7 +34125,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   assessViewportReadback, rememberViewportReadback,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
-  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, splitScrollEdgeArgs, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, splitScrollEdgeArgs, normalizeScrollArgs, scrollByExpression, formatScrollByContainerText, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, webVitalsModel, clearObservationBuffers,
   selectConsoleEntries, locateObservedEntries,
