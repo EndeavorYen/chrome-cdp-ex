@@ -208,7 +208,7 @@ export function argsRequireConfirm(commandName, args = []) {
     if (command.name === 'table') return parseTableRunCommandArgs(args).request.mode === 'collect';
     if (command.name === 'tab-group') return tabGroupRequiresConfirm(args);
     if (command.name === 'record') return args.includes('--action');
-    if (command.name === 'console') return args.includes('--clear');
+    if (command.name === 'console') return args.includes('--clear') || args.includes('--unsafe-full');
     if (command.name === 'netlog') return args.includes('--clear') || args.includes('--unsafe-full') || args.includes('--out');
     if (command.name === 'diff-shot') return args.includes('--reset');
     if (command.name === 'shot') {

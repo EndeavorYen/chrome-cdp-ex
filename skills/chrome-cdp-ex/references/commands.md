@@ -183,7 +183,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | Command | Synopsis | Catalog policy |
 |---|---|---|
 | `help` | `help [command]` | `read / standard` |
-| `list` | `list\|tabs\|ls [--format json]` | `read / standard` |
+| `list` | `list\|tabs\|ls [--unsafe-full] [--format json]` | `read / standard` |
 | `target` | `target --url URL\|--title TEXT [--exact] [--format json]` | `read / standard` |
 | `tab-group` | `tab-group list\|create\|add\|remove\|delete\|show [--format json]` | `conditional-mutation / conditional` |
 | `broadcast` | `broadcast <group> <cmd> [args...] [--format json] [--full-results]` | `mutation / mutation` |
@@ -205,9 +205,9 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
 | `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
 | `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
-| `status` | `status <target> [--runtime] [--vitals]` | `read / standard` |
-| `console` | `console <target> [--all\|--errors\|--clear]` | `conditional-mutation / conditional` |
-| `summary` | `summary <target>` | `read / standard` |
+| `status` | `status <target> [--runtime] [--vitals] [--unsafe-full]` | `read / standard` |
+| `console` | `console <target> [--all\|--errors\|--clear] [--unsafe-full]` | `conditional-mutation / conditional` |
+| `summary` | `summary <target> [--unsafe-full]` | `read / standard` |
 | `report` | `report <target> [--last N\|--all] [--format json] [--qa\|--summary] [--compact]` | `evidence / standard` |
 | `checkpoint` | `checkpoint <target> [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
 | `restore` | `restore <target> --file <path> [--format json]` | `mutation / mutation` |
@@ -237,7 +237,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `scanshot` | `scanshot <target>` | `read / standard` |
 | `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
 | `components` | `components <target> [--depth N] [@ref\|selector] [--max-chars N] [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
-| `cookies` | `cookies <target>` | `sensitive-read / sensitive-read` |
+| `cookies` | `cookies <target> [--unsafe-full]` | `sensitive-read / sensitive-read` |
 | `cookieset` | `cookieset <target> <cookie>` | `mutation / mutation` |
 | `cookiedel` | `cookiedel <target> <name>` | `mutation / mutation` |
 | `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
@@ -660,7 +660,7 @@ scripts/cdp.mjs components <target> @3 --max-chars 8000 --format json # React fi
 scripts/cdp.mjs components <target> @3 --unsafe-full # React fiber; explicit sensitive/large opt-in
 scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
 scripts/cdp.mjs table   <target> [selector] [--format json]  # bounded mounted snapshot; not a full export
-scripts/cdp.mjs cookies <target>                       # list cookies for current page
+scripts/cdp.mjs cookies <target> [--unsafe-full]      # list cookies; values are <redacted> unless --unsafe-full
 scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value; domain=.example.com; secure"
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
 scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
@@ -808,11 +808,14 @@ A resize reads the applied size back from the page (layout viewport, or the emul
 ### Cookie management
 
 ```bash
-scripts/cdp.mjs cookies   <target>                                    # list all cookies
+scripts/cdp.mjs cookies   <target>                                    # names, domains, flags; values are <redacted>
+scripts/cdp.mjs cookies   <target> --unsafe-full                      # print raw cookie values
 scripts/cdp.mjs cookieset <target> "name=value"                       # set simple cookie
 scripts/cdp.mjs cookieset <target> "name=value; domain=.example.com; secure; httponly"  # with attributes
 scripts/cdp.mjs cookiedel <target> session_id                          # delete by name
 ```
+
+Cookie values are `<redacted>` by default, including short `HttpOnly` session cookies. `console` text masks JWTs, `Authorization` values, and token query parameters. `status`, `list`, `summary`, `perceive`, and the `checkpoint` header mask token query parameters in the page URL. `--unsafe-full` prints the raw values. `checkpoint --unsafe-full` is still the restorable artifact.
 
 ### File upload
 

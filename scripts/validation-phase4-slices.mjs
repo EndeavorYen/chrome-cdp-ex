@@ -936,7 +936,7 @@ function validateStep(id, stdout, {
       'Privacy: default-redacted',
       'Storage: local 2, session 1',
       'Cookies: 1',
-      'Values: cookie values and sensitive storage values are redacted by default.',
+      'Values: cookie values, URL secrets, and sensitive storage values are redacted by default.',
       'Next: use `checkpoint --unsafe-full --format json` only when restore fidelity is required.',
     ].join('\n');
     if (stdout !== expected) throw new Error(`checkpoint fixture output is invalid: ${JSON.stringify(stdout)}`);
@@ -945,7 +945,7 @@ function validateStep(id, stdout, {
   if (id === 'cookies') {
     const lines = stdout.split('\n');
     if (lines.length !== 1
-      || !/^phase7_fixture\s+fixture-value\s+127\.0\.0\.1\s+session\s+Lax$/.test(lines[0].trim())) {
+      || !/^phase7_fixture\s+<redacted>\s+127\.0\.0\.1\s+session\s+Lax$/.test(lines[0].trim())) {
       throw new Error(`cookies fixture output is invalid: ${JSON.stringify(stdout)}`);
     }
     return stdout;

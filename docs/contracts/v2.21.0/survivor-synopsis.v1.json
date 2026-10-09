@@ -6,7 +6,7 @@
       "summary": "One-call diagnostics: Node version, skill install path,"
     },
     "list": {
-      "synopsis": "list|tabs|ls [--format json]",
+      "synopsis": "list|tabs|ls [--unsafe-full] [--format json]",
       "summary": "List open pages (shows unique target prefixes)"
     },
     "open": {

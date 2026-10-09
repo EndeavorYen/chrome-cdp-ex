@@ -614,7 +614,7 @@ describe('helpStr', () => {
 
     expect(out).toContain('Usage: cdp <command> [args]');
     expect(out).toContain('doctor / ready');
-    expect(out).toContain('list|tabs|ls [--format json]');
+    expect(out).toContain('list|tabs|ls [--unsafe-full] [--format json]');
     expect(out).toContain('perceive <target>');
     expect(out).toContain('--perceive');
     expect(out).toMatch(/open\s+\[url\].*--perceive/s);
@@ -1112,10 +1112,10 @@ describe('parseReportArgs', () => {
 
 describe('structured status and console models', () => {
   it('parses supported console modes and rejects unknown flags', () => {
-    expect(T.parseConsoleArgs([])).toEqual({ mode: 'new', format: 'text' });
-    expect(T.parseConsoleArgs(['--errors'])).toEqual({ mode: 'errors', format: 'text' });
-    expect(T.parseConsoleArgs(['--all', '--format', 'json'])).toEqual({ mode: 'all', format: 'json' });
-    expect(T.parseConsoleArgs(['--clear'])).toEqual({ mode: 'clear', format: 'text' });
+    expect(T.parseConsoleArgs([])).toEqual({ mode: 'new', format: 'text', unsafeFull: false });
+    expect(T.parseConsoleArgs(['--errors'])).toEqual({ mode: 'errors', format: 'text', unsafeFull: false });
+    expect(T.parseConsoleArgs(['--all', '--format', 'json'])).toEqual({ mode: 'all', format: 'json', unsafeFull: false });
+    expect(T.parseConsoleArgs(['--clear'])).toEqual({ mode: 'clear', format: 'text', unsafeFull: false });
     expect(() => T.parseConsoleArgs(['--wat'])).toThrow(/supported.*--all.*--errors.*--clear/i);
     expect(() => T.parseConsoleArgs(['--all', '--errors'])).toThrow(/exactly one mode/i);
   });
@@ -6596,6 +6596,7 @@ describe('parsePerceiveArgs', () => {
       sinceAction: false,
       frameRef: null,
       cards: false,
+      unsafeFull: false,
     });
   });
 
@@ -6667,6 +6668,7 @@ describe('parsePerceiveArgs', () => {
       sinceAction: false,
       frameRef: null,
       cards: false,
+      unsafeFull: false,
     });
   });
 
