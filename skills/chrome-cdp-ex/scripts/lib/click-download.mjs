@@ -267,19 +267,27 @@ function watchDownloadEvents(onEvent, isOwnFrame = async () => true) {
     wake = null;
     fn?.();
   };
+  // Chrome delivers a download to this tab as Page.downloadWillBegin on the page
+  // session (Page is already enabled). Browser.downloadWillBegin arrives only when
+  // some client has turned download events on. Either one is the click's effect.
+  const rememberBegin = (params = {}) => {
+    if (!params.guid || begun.some(item => item.guid === params.guid)) return;
+    begun.push(params);
+    notify();
+  };
+  const rememberProgress = (params = {}) => {
+    if (!params.guid) return;
+    const previous = progress.get(params.guid);
+    // completed / canceled are final; a late inProgress event must not undo them.
+    if (previous && (previous.state === 'completed' || previous.state === 'canceled')) return;
+    progress.set(params.guid, params);
+    notify();
+  };
   const offs = [
-    onEvent('Browser.downloadWillBegin', (params = {}) => {
-      if (params.guid) begun.push(params);
-      notify();
-    }),
-    onEvent('Browser.downloadProgress', (params = {}) => {
-      if (!params.guid) return;
-      const previous = progress.get(params.guid);
-      // completed / canceled are final; a late inProgress event must not undo them.
-      if (previous && (previous.state === 'completed' || previous.state === 'canceled')) return;
-      progress.set(params.guid, params);
-      notify();
-    }),
+    onEvent('Browser.downloadWillBegin', rememberBegin),
+    onEvent('Page.downloadWillBegin', rememberBegin),
+    onEvent('Browser.downloadProgress', rememberProgress),
+    onEvent('Page.downloadProgress', rememberProgress),
   ];
   async function firstOwnBegin() {
     for (const begin of begun) {
@@ -342,6 +350,30 @@ async function enableDownloadCapture(browser, dir) {
     );
   }
   return { browserContextId: null, scope: 'default-context' };
+}
+
+// #639: notice a download a normal click already started. Chrome emits
+// Page.downloadWillBegin on the page session without Browser.setDownloadBehavior,
+// so this does not change the browser's download folder or call Target.getTargets.
+// Browser.downloadWillBegin is included for a client that already enabled those events.
+export async function armClickDownloadWatch(browser) {
+  if (typeof browser?.onEvent !== 'function') {
+    return { armed: false, poll: async () => null, stop: async () => {} };
+  }
+  const events = watchDownloadEvents(browser.onEvent, createOwnFrameCheck(browser.frameIds));
+  let stopped = false;
+  return {
+    armed: true,
+    async poll() {
+      const seen = await events.wait(0);
+      return seen?.begin || null;
+    },
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      events.stop();
+    },
+  };
 }
 
 async function restoreDownloadBehavior(browser, scope) {

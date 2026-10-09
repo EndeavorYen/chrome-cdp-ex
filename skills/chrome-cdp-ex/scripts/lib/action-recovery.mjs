@@ -717,6 +717,23 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     };
   }
 
+  // #639: the child frame was probed and saw nothing. Repeating with jsclick can
+  // press a control that already ran in that frame, so the next step is a shot.
+  if (err?.crossOriginFrame?.delivered === false || lower.includes('cross-origin frame received no')) {
+    const shot = `cdp shot ${targetId}`;
+    return {
+      ...base,
+      kind: 'no-input-events',
+      dispatched: false,
+      reason: 'The cross-origin frame was probed and received no mouse or click events.',
+      nextCommand: shot,
+      hints: [
+        `Inspect the frame with \`${shot}\`.`,
+        'The mouse events were already sent to that frame. Do not send the click again.',
+      ],
+    };
+  }
+
   if (
     lower.includes('received no mousedown/click events')
     || (lower.includes('mouse path failed closed') && lower.includes('jsclick'))

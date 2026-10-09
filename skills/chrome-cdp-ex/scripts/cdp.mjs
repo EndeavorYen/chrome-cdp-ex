@@ -176,10 +176,12 @@ import { createLocatorPlan } from './lib/browser-resources.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './lib/browser-paths.mjs';
 import {
   absolutizeExpectDownloadOut,
+  armClickDownloadWatch,
   captureClickDownload,
   downloadOutcomeReason,
   downloadReceiptLines,
   parseExpectDownloadArgs,
+  safeDownloadFilename,
 } from './lib/click-download.mjs';
 import {
   REDACTED_VALUE,
@@ -8635,6 +8637,48 @@ function buildActionOutcome(actionResult = {}) {
     };
   }
 
+  // #639: a download the browser started, or a download attribute with no event.
+  // Neither is an AX change, and neither may be retried.
+  if (effects.download?.state === 'started') {
+    return {
+      ...base,
+      status: 'changed',
+      changed: true,
+      evidence: 'download',
+      reason: `Download started "${effects.download.filename}".`,
+    };
+  }
+  if (effects.download?.state === 'unobserved') {
+    return {
+      ...base,
+      status: 'dispatched',
+      changed: null,
+      needsAttention: false,
+      evidence: 'download',
+      reason: 'The link asks for a download and no download event was observed.',
+    };
+  }
+
+  if (effects.childFrame) {
+    if (effects.childFrame.delivered === true) {
+      return {
+        ...base,
+        status: 'changed',
+        changed: true,
+        evidence: 'child-frame',
+        reason: 'Mouse and click events were delivered to a child frame.',
+      };
+    }
+    return {
+      ...base,
+      status: 'dispatched',
+      changed: null,
+      needsAttention: false,
+      evidence: 'child-frame',
+      reason: 'The click point is a child frame, and events in that frame could not be observed.',
+    };
+  }
+
   if (navigation.navigated) {
     return {
       ...base,
@@ -8822,10 +8866,19 @@ function actionDeltaDetails(actionResult = {}) {
       summary: `${effects.openedTab.existing ? 'Opened in tab' : 'Opened new tab'} ${effects.openedTab.targetPrefix}: ${effects.openedTab.url}`,
     });
   } else if (outcome.evidence === 'download' && effects.download) {
+    const state = effects.download.state === 'started' || effects.download.state === 'unobserved'
+      ? effects.download.state
+      : 'completed';
     details.push({
       type: 'download',
-      status: 'completed',
-      summary: downloadOutcomeReason(effects.download),
+      status: state,
+      summary: outcome.reason || (state === 'completed' ? downloadOutcomeReason(effects.download) : 'Download'),
+    });
+  } else if (outcome.evidence === 'child-frame') {
+    details.push({
+      type: 'frame',
+      status: effects.childFrame?.delivered === true ? 'delivered' : 'unobserved',
+      summary: outcome.reason || 'Child frame click',
     });
   } else if (outcome.evidence === 'viewport') {
     const viewport = viewportApplicationOf(actionResult);
@@ -9217,6 +9270,22 @@ function buildActionRecommendation(actionResult = {}) {
       recoveryHint: null,
       verifyCommand: readCommand,
       commands: uniqueNextStepCommands([readCommand]),
+    };
+  }
+  const childFrame = actionResult.effects?.childFrame;
+  if (childFrame) {
+    const shot = `cdp shot ${target}`;
+    return {
+      source: 'action-evidence',
+      action: actionResult.action || null,
+      targetPrefix: target,
+      strategy: 'inspect-child-frame',
+      priority: 'medium',
+      reason: childFrame.delivered === true
+        ? 'Mouse events were delivered to a child frame. Inspect that frame with shot; do not repeat the click.'
+        : 'The click point is a child frame whose events could not be observed. Inspect it with shot; do not repeat the click.',
+      commands: uniqueNextStepCommands([shot]),
+      optionalCommands: [],
     };
   }
   const openedTab = actionResult.effects?.openedTab;
@@ -9692,8 +9761,6 @@ function formatFailedDispatchText(result = {}) {
   });
 }
 
-const CLICK_OUTCOME_WORD_ACTIONS = new Set(['click', 'jsclick']);
-
 // #553: the default receipt names what was addressed and the next command.
 // It does not claim the page changed. The full diagnostic path still prints Outcome.
 function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}) {
@@ -9805,6 +9872,9 @@ function formatActionText(result, { compact = false, full = false, dispatchText 
   }
   if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
   if (result.recommendation?.strategy === 'investigate-viewport-size' && result.recommendation.commands?.[0]) {
+    lines.push(`Next: ${result.recommendation.commands[0]}`);
+  }
+  if (result.effects?.childFrame && result.recommendation?.strategy === 'inspect-child-frame' && result.recommendation.commands?.[0]) {
     lines.push(`Next: ${result.recommendation.commands[0]}`);
   }
   if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
@@ -10036,6 +10106,12 @@ function formatActionResultOutput(result, opts = {}) {
 const ACTION_JSON_IDENTIFIER_KEYS = new Set(['schema', 'action', 'actionName', 'method', 'kind']);
 
 function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false, scrubModel = model => model } = {}) {
+  const revisedDownload = String(result?.target?.dispatchText || '');
+  if (revisedDownload.includes('→ download started') && (
+    !dispatchText || String(dispatchText).includes('no download event was observed')
+  )) {
+    dispatchText = revisedDownload;
+  }
   if (qa) {
     const pdf = actionResultPdfViewerMeta(result, dispatchText);
     if (pdf) {
@@ -10966,6 +11042,9 @@ function clickNoChangeError(dispatchText) {
 // existing cases) stays a success. Exit code stays 1; this is not a per-Kind map.
 function applyReactiveClickNoChangeFailure(result, dispatchText) {
   if (!result || result.dispatch?.ok === false) return null;
+  const downloadState = result.effects?.download?.state;
+  if (downloadState === 'started' || downloadState === 'completed' || downloadState === 'unobserved') return null;
+  if (result.effects?.childFrame) return null;
   if (result.outcome?.status !== 'no-change') return null;
   if (!clickControlShouldReact(result, dispatchText)) return null;
   const target = result.target && typeof result.target === 'object' ? result.target : {};
@@ -11019,24 +11098,25 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       nextHint: failure.nextCommand,
     });
     await finalizeActionResult(result, { enrichActionResult, onActionResult });
+    if (result.effects?.download?.state === 'started' && result.dispatch?.ok !== false) {
+      const text = String(result.target?.dispatchText || '');
+      return formatActionResultOutput(result, { ...output, dispatchText: text });
+    }
     if (output.format === 'json') return formatActionResultOutput(result, output);
     throw new Error(scrubSecretValues(
       [formatActionFailure(e, { action, target }), ...downloadReceiptLines(result.effects?.download), ...actionDialogLines(result.effects)].join('\n'),
       sensitiveActionValues(action, target),
     ));
   }
-  // #437: a click on a link that opened another tab says so in its dispatch text.
-  const openedTab = CLICK_OUTCOME_WORD_ACTIONS.has(String(action || '').toLowerCase())
-    ? parseClickOpenedTab(dispatchText)
-    : null;
-  const openedTabEffect = openedTab ? { openedTab } : {};
+  // #437 / #639: a click whose effect is outside this document says so in its dispatch text.
+  const outsideEffect = clickDispatchEffects(action, dispatchText);
   if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') {
     const result = createActionResult({
       action,
       target: target || { input: '', resolvedBy: 'command', label: '' },
       dispatch: { ok: true, method: dispatchMethod },
       settle: { ok: true, durationMs: Date.now() - startedAt },
-      effects: { domDiff: null, console: [], network: [], navigation: null, ...openedTabEffect },
+      effects: { domDiff: null, console: [], network: [], navigation: null, ...outsideEffect },
       nextHint: feedbackPolicy === 'report-only' ? nextHint : null,
     });
     if (feedbackPolicy === 'none') {
@@ -11052,7 +11132,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       target: target || { input: '', resolvedBy: 'command', label: '' },
       dispatch: { ok: true, method: dispatchMethod },
       settle: { ok: true, durationMs: Date.now() - startedAt },
-      effects: { domDiff, console: [], network: [], navigation: null, ...openedTabEffect },
+      effects: { domDiff, console: [], network: [], navigation: null, ...outsideEffect },
       nextHint,
     });
     return await finishObservedAction(result, { output, dispatchText, enrichActionResult, onActionResult });
@@ -11069,7 +11149,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
         console: [],
         network: [],
         navigation: null,
-        ...openedTabEffect,
+        ...outsideEffect,
         ...(observationError ? { observationError } : {}),
       },
       nextHint,
@@ -13709,6 +13789,7 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       linkTarget: ${linkTargetPageExpression('this')},
       frameName: ${linkFrameNamePageExpression('this')},
       pageHref: location.href,
+      downloadAttr: this.tagName === 'A' && typeof this.hasAttribute === 'function' && this.hasAttribute('download'),
       text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
       role: (typeof this.getAttribute === 'function' ? this.getAttribute('role') : '') || '',${hitTest ? `
       hit,
@@ -17413,7 +17494,6 @@ function clickEventProbeInstallAtPointScript(x, y, selector = '') {
     let view = window;
     let px = px0;
     let py = py0;
-    let opaqueFrame = false;
     for (let depth = 0; depth < 8; depth++) {
       const hit = doc.elementFromPoint ? doc.elementFromPoint(px, py) : null;
       if (!hit) break;
@@ -17422,11 +17502,14 @@ function clickEventProbeInstallAtPointScript(x, y, selector = '') {
         view = (hit.ownerDocument && hit.ownerDocument.defaultView) || view;
         break;
       }
-      const nested = hit.contentDocument;
+      // A cross-origin frame throws or returns null for contentDocument. Do not
+      // claim a probe was installed in a document this page cannot read (#639).
+      let nested = null;
+      try { nested = hit.contentDocument; } catch (err) { nested = null; }
       if (!nested) {
-        opaqueFrame = true;
-        view = hit.contentWindow || view;
-        break;
+        let src = '';
+        try { src = String(hit.src || ''); } catch (err) { src = ''; }
+        return { cdpClickProbe: true, ok: true, installed: false, opaqueFrame: true, scope: 'opaque-frame', frameSrc: src };
       }
       const rect = hit.getBoundingClientRect();
       px -= rect.left;
@@ -17434,9 +17517,22 @@ function clickEventProbeInstallAtPointScript(x, y, selector = '') {
       doc = nested;
       view = hit.contentWindow || view;
     }
-    if (opaqueFrame) return { cdpClickProbe: true, ok: true, installed: true, opaqueFrame: true, scope: 'opaque-frame' };
     const scope = (view && view !== window) ? 'target-document' : 'top';
     return installOnView(view || window, null, scope);
+  })()`;
+}
+
+function clickEventProbeInstallOnWindowScript() {
+  return `(function() {
+    ${clickEventProbeInstallOnViewSource()}
+    return installOnView(window, null, 'target-document');
+  })()`;
+}
+
+function clickEventProbeReadOnWindowScript() {
+  return `(function() {
+    ${clickEventProbeReadOnViewSource()}
+    return readOnView(window);
   })()`;
 }
 
@@ -17535,8 +17631,16 @@ function clickMisdirectedError(x, y, selector = '', { sent = true, landedOn = ''
   return err;
 }
 
-function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown') {
+function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown', { crossOriginFrame = false } = {}) {
   const target = selector ? ` for ${selector}` : '';
+  if (crossOriginFrame) {
+    const err = new Error(
+      `click: Input.dispatchMouseEvent completed but the cross-origin frame received no mousedown/click events at (${x}, ${y})${target}. The mouse path failed closed.`
+    );
+    err.visibility = visibility;
+    err.crossOriginFrame = { delivered: false };
+    return err;
+  }
   const hidden = visibility === 'hidden'
     ? " The tab's document.visibilityState is hidden (window covered or minimised): Input.* events are dropped while hidden, so retrying the mouse path will not help."
     : '';
@@ -17554,6 +17658,7 @@ function clickProbeInstallModel(parsed, { objectId = null, x = 0, y = 0, scope =
     missingTarget: parsed?.missingTarget === true,
     scope: parsed?.scope || scope,
     opaqueFrame: parsed?.opaqueFrame === true,
+    frameSrc: typeof parsed?.frameSrc === 'string' ? parsed.frameSrc : '',
     top: parsed?.top === true,
     href: typeof parsed?.href === 'string' ? parsed.href : '',
     objectId,
@@ -17714,6 +17819,123 @@ async function readPinnedClickPoint(cdp, sid, probeTarget = {}) {
   }
 }
 
+async function dispatchClickMouseSequence(cdp, sid, x, y) {
+  const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
+  // The events overlap on purpose, so each promise is marked handled as soon as it exists:
+  // a rejection while we sleep must reach Promise.all, not crash the daemon as an
+  // unhandled rejection (#464).
+  const moved = handledLater(dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 }));
+  const pressed = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 }));
+  await sleep(50);
+  const released = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 }));
+  await Promise.all([moved, pressed, released]);
+}
+
+function childFrameHrefSuffix(href) {
+  const text = String(href || '');
+  if (!/^https?:\/\/\S+$/.test(text) || text.includes('"')) return '';
+  return ` ${text}`;
+}
+
+function formatChildFrameClickSuffix(outcome) {
+  if (!outcome || typeof outcome !== 'object') return '';
+  const href = childFrameHrefSuffix(outcome.href);
+  if (outcome.delivered === true) return ` → child-frame delivered${href}`;
+  if (outcome.observed === false) return ` → child-frame unobserved${href}`;
+  return '';
+}
+
+function sameHttpUrl(left, right) {
+  try {
+    const a = new URL(String(left || ''));
+    const b = new URL(String(right || ''));
+    if (a.protocol !== 'http:' && a.protocol !== 'https:') return false;
+    return a.href === b.href;
+  } catch {
+    return false;
+  }
+}
+
+// One iframe target with this URL, or one page target that is not the opener tab.
+// Two matches with the same URL are ambiguous: do not probe the wrong frame.
+function matchOpaqueFrameTarget(targetInfos, frameSrc, openerId) {
+  const href = String(frameSrc || '');
+  if (!/^https?:\/\//.test(href)) return null;
+  const matches = (targetInfos || []).filter(info => info?.targetId && info.targetId !== openerId && sameHttpUrl(info.url, href));
+  const iframes = matches.filter(info => info.type === 'iframe');
+  if (iframes.length === 1) return iframes[0];
+  if (iframes.length > 1) return null;
+  const pages = matches.filter(info => info.type === 'page');
+  return pages.length === 1 ? pages[0] : null;
+}
+
+async function readOpaqueFrameTargets(cdp) {
+  try {
+    const { targetInfos = [] } = await cdpDomains(cdp).Target.getTargets();
+    return targetInfos;
+  } catch {
+    return [];
+  }
+}
+
+// #639: the top document cannot see events inside a cross-origin frame. Attach
+// to that frame's target when exactly one matches, install the probe there, then
+// send the mouse events on the parent session (Chrome routes them into the frame).
+async function dispatchClickIntoOpaqueFrame(cdp, sid, x, y, probe, probeTarget = {}) {
+  const href = typeof probe.frameSrc === 'string' ? probe.frameSrc : '';
+  const openerId = SESSION_TARGET_IDS.get(sid) || '';
+  const unobserved = { childFrame: { observed: false, delivered: null, href } };
+  const target = matchOpaqueFrameTarget(await readOpaqueFrameTargets(cdp), href, openerId);
+  if (!target) {
+    await dispatchClickMouseSequence(cdp, sid, x, y);
+    return unobserved;
+  }
+  let childSession = '';
+  try {
+    const attached = await cdpDomains(cdp).Target.attachToTarget({ targetId: target.targetId, flatten: true }, undefined, 5000);
+    childSession = String(attached?.sessionId || '');
+  } catch {
+    childSession = '';
+  }
+  if (!childSession) {
+    await dispatchClickMouseSequence(cdp, sid, x, y);
+    return unobserved;
+  }
+  try {
+    let installed = null;
+    try {
+      const raw = await evalStr(cdp, childSession, clickEventProbeInstallOnWindowScript(), false, { timeoutMs: 5000, raw: true });
+      installed = parseClickEventProbeOutput(raw);
+    } catch {
+      installed = null;
+    }
+    await dispatchClickMouseSequence(cdp, sid, x, y);
+    if (!installed?.installed) return unobserved;
+    let readout = null;
+    try {
+      const raw = await evalStr(cdp, childSession, clickEventProbeReadOnWindowScript(), false, { timeoutMs: 5000, raw: true });
+      readout = parseClickEventProbeOutput(raw);
+    } catch {
+      readout = null;
+    }
+    if (readout?.ok && clickProbeSawPageEvent(readout.seen)) {
+      return { childFrame: { observed: true, delivered: true, href } };
+    }
+    // A probe that vanished was wiped by a document replacement after the events.
+    if (readout && readout.ok === false) {
+      return { childFrame: { observed: true, delivered: true, href } };
+    }
+    if (!readout?.ok) return unobserved;
+    throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid), { crossOriginFrame: true });
+  } finally {
+    try {
+      await cdpDomains(cdp).Target.detachFromTarget({ sessionId: childSession });
+    } catch {
+      // Detach is best-effort. The child session ends with the browser anyway.
+    }
+  }
+}
+
 // Shared: dispatch a realistic mouse click at CSS pixel coordinates.
 // Chrome's default action for <a href> requires the buttons bitmask
 // (left=1 while pressed, 0 after release). Omitting it yields mousedown
@@ -17758,19 +17980,17 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     x = pinned.x;
     y = pinned.y;
   }
-  const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
+  if (probe.opaqueFrame) {
+    const visibility = await probePageVisibility(cdp, sid);
+    if (visibility === 'hidden') {
+      throw clickNoPageEventsError(x, y, probeTarget.selector, visibility);
+    }
+    return dispatchClickIntoOpaqueFrame(cdp, sid, x, y, probe, probeTarget);
+  }
   const navigation = watchMainFrameNavigation(cdp, sid);
   try {
-    // The events overlap on purpose, so each promise is marked handled as soon as it exists:
-    // a rejection while we sleep must reach Promise.all, not crash the daemon as an
-    // unhandled rejection (#464).
-    const moved = handledLater(dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 }));
-    const pressed = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 }));
-    await sleep(50);
-    const released = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 }));
-    await Promise.all([moved, pressed, released]);
+    await dispatchClickMouseSequence(cdp, sid, x, y);
     const framed = probeTarget.framed === true;
-    if (probe.opaqueFrame && framed) return;
     if (!probe.installed) {
       if (framed) return;
       throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
@@ -17920,6 +18140,116 @@ async function prepareClickFollowedHref(cdp, sid, target = {}) {
   return clickNewTabWatchFromTargets(sid, await boundedPageTargets(cdp, CLICK_NAVIGATION_WAIT_MS));
 }
 
+// #639: a followed link may download instead of navigating. A control that does
+// not follow an href may open a tab with window.open. Snapshot page targets
+// before the click (the promise starts immediately). Download observation
+// listens for Page.downloadWillBegin and does not call Target.getTargets.
+// --expect-download keeps its own capture.
+async function beginClickOutsideWatch(cdp, sid, target = {}, opts = {}) {
+  const followed = clickFollowsHref(target);
+  let downloadWatch = null;
+  if (followed && opts.captureDownload !== true && typeof cdp?.onEvent === 'function') {
+    downloadWatch = await armClickDownloadWatch(clickDownloadBrowser(cdp, sid, SESSION_TARGET_IDS.get(sid) || ''));
+  }
+  const pagesBeforePromise = followed ? null : boundedPageTargets(cdp, CLICK_NAVIGATION_WAIT_MS);
+  const newTabWatch = followed ? await prepareClickFollowedHref(cdp, sid, target) : null;
+  return {
+    downloadWatch,
+    pagesBeforePromise,
+    newTabWatch,
+    captureDownload: opts.captureDownload === true,
+    async stop() {
+      if (downloadWatch) await downloadWatch.stop();
+    },
+  };
+}
+
+async function openedTabAfterClick(cdp, sid, pagesBeforePromise) {
+  if (!pagesBeforePromise) return null;
+  const before = await pagesBeforePromise;
+  if (!before) return null;
+  const watch = clickNewTabWatchFromTargets(sid, before);
+  if (!watch?.openerId) return null;
+  const pages = await boundedPageTargets(cdp, CLICK_NAVIGATION_WAIT_MS);
+  if (!pages) return null;
+  return findClickOpenedTab(pages, watch, '');
+}
+
+function clickDeliveryMissedPage(error) {
+  return /no mousedown\/click events/i.test(String(error?.message || '')) && !error?.crossOriginFrame;
+}
+
+function retainLateClickDownloadWatch(cdp, outside) {
+  const watch = outside?.downloadWatch;
+  if (!watch?.armed || !cdp) return;
+  const previous = cdp.lateClickDownloadWatch;
+  if (previous && previous !== watch) previous.stop?.();
+  cdp.lateClickDownloadWatch = watch;
+  outside.downloadWatch = null;
+}
+
+// Page.downloadWillBegin can arrive while post-click settle is still running.
+// The click's own poll has already given up by then. Keep that listener and
+// read it once the receipt is about to be built.
+async function applyLateClickDownload(cdp, actionResult) {
+  const watch = cdp?.lateClickDownloadWatch || null;
+  if (!watch) return;
+  cdp.lateClickDownloadWatch = null;
+  const text = String(actionResult?.target?.dispatchText || '');
+  try {
+    const begin = await watch.poll();
+    if (!begin) return;
+    const filename = safeDownloadFilename(begin.suggestedFilename || 'download');
+    actionResult.effects = actionResult.effects || {};
+    actionResult.effects.download = { state: 'started', filename };
+    const phrase = '; the link asks for a download and no download event was observed';
+    if (text.includes(phrase)) {
+      actionResult.target.dispatchText = text.replace(phrase, ` → download started "${filename}"`);
+    } else if (!text.includes('download started')) {
+      const input = actionResult.target?.input ? ` ${actionResult.target.input}` : '';
+      actionResult.target.dispatchText = `Clicked${input} → download started "${filename}"`;
+    }
+    if (actionResult.effects.failure) delete actionResult.effects.failure;
+    if (actionResult.dispatch) {
+      actionResult.dispatch.ok = true;
+      delete actionResult.dispatch.error;
+    }
+    if (actionResult.settle) actionResult.settle.ok = true;
+  } finally {
+    await watch.stop();
+  }
+}
+
+async function observeClickOutsideDocument(cdp, sid, point, probeTarget, target, opts = {}) {
+  const outside = await beginClickOutsideWatch(cdp, sid, target, opts);
+  let retainWatch = false;
+  try {
+    let dispatched;
+    try {
+      dispatched = await dispatchClick(cdp, sid, point.x, point.y, probeTarget);
+    } catch (error) {
+      if (outside.downloadWatch?.armed && clickDeliveryMissedPage(error)) {
+        retainLateClickDownloadWatch(cdp, outside);
+        retainWatch = true;
+      }
+      throw error;
+    }
+    const followed = await confirmClickFollowedHref(cdp, sid, target, outside.newTabWatch, outside);
+    const opened = !followed && outside.pagesBeforePromise
+      ? await openedTabAfterClick(cdp, sid, outside.pagesBeforePromise)
+      : null;
+    const merged = followed || (opened ? { openedTab: opened } : null);
+    const suffix = formatOutsideClickSuffix(merged, dispatched?.childFrame);
+    if (outside.downloadWatch?.armed && suffix.includes('no download event was observed')) {
+      retainLateClickDownloadWatch(cdp, outside);
+      retainWatch = true;
+    }
+    return suffix;
+  } finally {
+    if (!retainWatch) await outside.stop();
+  }
+}
+
 // A new page target opened by this tab (or showing the link URL), or a tab that existed
 // before the click and now shows the link URL (a named target reusing that window).
 function findClickOpenedTab(targetInfos, watch, href) {
@@ -17953,13 +18283,66 @@ function parseClickOpenedTab(text) {
   return { targetPrefix: match[2], url: match[3], existing: match[1] === 'in tab' };
 }
 
+const CHILD_FRAME_CLICK_RE = / → child-frame (delivered|unobserved)(?: (\S+))?$/m;
+const CLICK_DOWNLOAD_STARTED_RE = / → download started "([^"]+)"/;
+const CLICK_DOWNLOAD_UNOBSERVED_RE = /no download event was observed/;
+
+function parseChildFrameClick(text) {
+  const match = String(text || '').match(CHILD_FRAME_CLICK_RE);
+  if (!match) return null;
+  return {
+    observed: match[1] !== 'unobserved',
+    delivered: match[1] === 'delivered',
+    href: match[2] || '',
+  };
+}
+
+function parseClickDownloadStarted(text) {
+  const match = String(text || '').match(CLICK_DOWNLOAD_STARTED_RE);
+  if (!match) return null;
+  return { state: 'started', filename: match[1] };
+}
+
+function clickDispatchEffects(action, dispatchText) {
+  const name = String(action || '').toLowerCase();
+  if (name !== 'click' && name !== 'jsclick' && name !== 'clickxy') return {};
+  const effects = {};
+  const openedTab = parseClickOpenedTab(dispatchText);
+  if (openedTab) effects.openedTab = openedTab;
+  const childFrame = parseChildFrameClick(dispatchText);
+  if (childFrame) effects.childFrame = childFrame;
+  const started = parseClickDownloadStarted(dispatchText);
+  if (started) effects.download = started;
+  else if (CLICK_DOWNLOAD_UNOBSERVED_RE.test(String(dispatchText || ''))) {
+    effects.download = { state: 'unobserved' };
+  }
+  return effects;
+}
+
+function formatOutsideClickSuffix(followed, childFrame) {
+  let suffix = '';
+  if (followed?.download?.filename) suffix += ` → download started "${followed.download.filename}"`;
+  else if (followed?.downloadUnobserved) suffix += '; the link asks for a download and no download event was observed';
+  else suffix += formatClickOpenedTab(followed?.openedTab);
+  suffix += formatChildFrameClickSuffix(childFrame);
+  return suffix;
+}
+
 // Returns null when the click is not a followed link, { url } after this tab navigated,
 // or { openedTab } when the link opened (or reused) another tab (#437). Throws when a
 // followed link did neither within CLICK_NAVIGATION_WAIT_MS.
-async function confirmClickFollowedHref(cdp, sid, target = {}, newTabWatch = null) {
+async function confirmClickFollowedHref(cdp, sid, target = {}, newTabWatch = null, outside = null) {
   if (!clickFollowsHref(target)) return null;
+  const downloadWatch = outside?.downloadWatch?.armed ? outside.downloadWatch : null;
+  const captureDownload = outside?.captureDownload === true;
   const before = String(target.pageHref || '');
   const deadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
+  const downloadFromWatch = async () => {
+    if (!downloadWatch) return null;
+    const begin = await downloadWatch.poll();
+    if (!begin) return null;
+    return { download: { filename: safeDownloadFilename(begin.suggestedFilename || 'download') } };
+  };
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
@@ -17969,10 +18352,20 @@ async function confirmClickFollowedHref(cdp, sid, target = {}, newTabWatch = nul
       newTabWatch ? boundedPageTargets(cdp, probeMs) : null,
     ]);
     if (current && current !== before) return { url: current };
+    const download = await downloadFromWatch();
+    if (download) return download;
     const openedTab = newTabWatch ? findClickOpenedTab(pages, newTabWatch, target.href) : null;
     if (openedTab) return { openedTab };
     const pause = Math.min(40, deadline - Date.now());
     if (pause > 0) await sleep(pause);
+  }
+  const download = await downloadFromWatch();
+  if (download) return download;
+  // A download attribute that produced no event still must not be retried: the
+  // browser may have saved the file without a CDP event. --expect-download keeps
+  // the throw so its own watcher can decide.
+  if (target.downloadAttr === true && !captureDownload) {
+    return { downloadUnobserved: true };
   }
   if (newTabWatch) {
     const linkTarget = String(target.linkTarget || '').trim();
@@ -18591,14 +18984,15 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
     } catch {
       objectId = null;
     }
-    const newTabWatch = await prepareClickFollowedHref(cdp, sid, r);
-    await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2, {
+    const suffix = await observeClickOutsideDocument(cdp, sid, {
+      x: r.x + r.w / 2,
+      y: r.y + r.h / 2,
+    }, {
       selector,
       objectId,
       framed: Boolean(parseFrameRef(selector)),
-    });
-    const followed = await confirmClickFollowedHref(cdp, sid, r, newTabWatch);
-    return `Clicked <${r.tag}> "${r.text}" (${selector})${formatClickOpenedTab(followed?.openedTab)}`;
+    }, r, opts);
+    return `Clicked <${r.tag}> "${r.text}" (${selector})${suffix}`;
   }
   const waitMs = normalizeActionabilityWaitMs(opts.waitMs);
   const expr = `
@@ -18628,6 +19022,7 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
         linkTarget: rect.linkTarget,
         frameName: rect.frameName,
         pageHref: rect.pageHref || location.href,
+        downloadAttr: rect.downloadAttr === true,
         hit: rect.hit,
         ...waitInfo,
       };
@@ -18639,10 +19034,8 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (!r.ok) throw new Error(cssClickMissMessage(selector, actionabilityMissMessage(r.error, r)));
   rememberClickTrust(opts.clickTrust, r);
   assertClickPointNotCovered(r.hit, { x: r.x, y: r.y, tag: r.tag, text: r.text });
-  const newTabWatch = await prepareClickFollowedHref(cdp, sid, r);
-  await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
-  const followed = await confirmClickFollowedHref(cdp, sid, r, newTabWatch);
-  return `Clicked <${r.tag}> "${r.text}"${formatActionabilityWaitNote(r)}${formatClickOpenedTab(followed?.openedTab)}`;
+  const suffix = await observeClickOutsideDocument(cdp, sid, { x: r.x, y: r.y }, { selector, x: r.x, y: r.y }, r, opts);
+  return `Clicked <${r.tag}> "${r.text}"${formatActionabilityWaitNote(r)}${suffix}`;
 }
 
 // Click at CSS pixel coordinates using Input.dispatchMouseEvent
@@ -18650,8 +19043,8 @@ async function clickXyStr(cdp, sid, x, y) {
   const cx = parseFloat(x);
   const cy = parseFloat(y);
   if (isNaN(cx) || isNaN(cy)) throw new Error('x and y must be numbers (CSS pixels)');
-  await dispatchClick(cdp, sid, cx, cy, { x: cx, y: cy });
-  return `Clicked at CSS (${cx}, ${cy})`;
+  const dispatched = await dispatchClick(cdp, sid, cx, cy, { x: cx, y: cy });
+  return `Clicked at CSS (${cx}, ${cy})${formatChildFrameClickSuffix(dispatched?.childFrame)}`;
 }
 
 // Type text using Input.insertText (works in cross-origin iframes, unlike eval)
@@ -29404,6 +29797,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         });
         if (failedRequests.length) actionResult.effects.failedRequests = failedRequests;
         if (dispatchEffects) Object.assign(actionResult.effects, dispatchEffects);
+        await applyLateClickDownload(cdp, actionResult);
         if (postActionPageHealth) actionResult.effects.pageHealth = postActionPageHealth;
         else if (actionTarget.page && (actionTarget.page.title || actionTarget.page.url)) {
           actionResult.effects.pageHealth = actionResult.effects.pageHealth || {
@@ -31722,7 +32116,9 @@ ACTION FEEDBACK
   header, sidebar, toast, bottom strip, or pointer-events:none shell. After the click is
   sent, the intended element must receive it (Kind: misdirected when it lands
   elsewhere). A click or jsclick on a control that should react exits 1 with
-  Kind: click-no-change when nothing visible changes. click, fill and select
+  Kind: click-no-change when nothing visible changes. A download, a new tab
+  (including window.open), or a cross-origin frame click exits 0 and Next does
+  not repeat it. click, fill and select
   on a CSS selector wait up to 2s (--wait-ms N; 0 = no wait) for the element to be
   attached, visible and enabled; a disabled target (or @ref) fails with
   Kind: disabled and sends nothing. scroll to top/to bottom is also
@@ -32211,7 +32607,11 @@ function createClickCommandHandler({ actionFeedback, click, jsClick, pointerClic
     target.clickTrust = clickTrust;
     const clickOnce = parsed.pointer
       ? () => pointerClick(selector, clickTrust)
-      : () => (useJs ? jsClick(selector, clickTrust) : click(selector, { waitMs: parsed.waitMs, clickTrust }));
+      : () => (useJs ? jsClick(selector, clickTrust) : click(selector, {
+        waitMs: parsed.waitMs,
+        clickTrust,
+        ...(parsed.download ? { captureDownload: true } : {}),
+      }));
     let dispatch = clickOnce;
     if (parsed.download) {
       if (typeof expectDownload !== 'function') throw new Error('click: --expect-download is not available on this path');
@@ -33164,6 +33564,14 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: hidden
         ? 'The tab is hidden, so the target did not match :hover. CDP_BACKGROUND=0 activates that tab before hover and does not raise a covered window.'
         : 'The target did not match :hover after the mouse move. Refresh perception and choose the control again.',
+    };
+  }
+  if (lower.includes('cross-origin frame received no')) {
+    return {
+      kind: 'no-input-events',
+      strategy: 'inspect-child-frame',
+      run: targetPrefix ? `cdp shot ${targetPrefix}` : 'cdp help shot',
+      reason: 'The cross-origin frame was probed and received no mouse or click events. Inspect it with shot; do not repeat the click.',
     };
   }
   if (

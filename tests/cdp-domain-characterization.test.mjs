@@ -79,6 +79,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Runtime.releaseObjectGroup': 'session-control',
   'Target.activateTarget': 'browser-mutation',
   'Target.attachToTarget': 'session-control',
+  'Target.detachFromTarget': 'session-control',
   'Target.closeTarget': 'browser-mutation',
   'Target.createTarget': 'browser-mutation',
   'Target.getTargets': 'observation',
@@ -437,8 +438,10 @@ describe('Phase 6 direct CDP characterization', () => {
     // #608 added readHoverRevealOnObject → Runtime.callFunctionOn, reading :hover on the ref node.
     // #648 moved Network.getResponseBody from netlogRequestStr into readNetlogResponseBody and added its
     // Network.streamResourceContent fallback for a no-store body the page never read.
-    expect(inventory).toHaveLength(178);
-    expect(digest).toBe('sha256:65a60987ba267291edaac06ca6cbfd4d2aee111baab812f477d7786d440acc66');
+    // #639 added readOpaqueFrameTargets → Target.getTargets, and dispatchClickIntoOpaqueFrame →
+    // Target.attachToTarget plus Target.detachFromTarget, to probe a cross-origin frame.
+    expect(inventory).toHaveLength(181);
+    expect(digest).toBe('sha256:89fd931a36d68bff572a12a5175d9e7b2cc5fedc98208bedfb855d6617bbc85b');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

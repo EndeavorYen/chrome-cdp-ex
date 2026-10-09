@@ -67,6 +67,7 @@ export const CDP_METHODS = Object.freeze([
   'Runtime.releaseObjectGroup',
   'Target.activateTarget',
   'Target.attachToTarget',
+  'Target.detachFromTarget',
   'Target.closeTarget',
   'Target.createTarget',
   'Target.getTargets',
