@@ -1362,7 +1362,9 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
     priority: 'high',
     verify: 'since-action',
     intents: [
-      { key: 'netlog', reason: 'Inspect failed or pending requests caused by the action.' },
+      // #648: the diagnosis Next comes first: the request detail, or the page once the receipt
+      // already names the failed request and its body.
+      { key: 'next-or-netlog', reason: 'Inspect failed or pending requests caused by the action.' },
       { key: 'since-action', reason: 'Verify what the action changed before retrying.' },
       { key: 'report', reason: 'Preserve the action timeline and diagnostics for handoff.' },
     ],
@@ -1635,6 +1637,7 @@ export function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>',
     if (key === 'next-or-dismiss') return nextCommand || commandMap.dismiss;
     if (key === 'next-or-perceive') return nextCommand || commandMap.perceive;
     if (key === 'next-or-status') return nextCommand || commandMap.status;
+    if (key === 'next-or-netlog') return nextCommand || commandMap.netlog;
     return commandMap[key] || null;
   };
   const template = getRecoveryPolicyTemplate(diagnosis.kind);

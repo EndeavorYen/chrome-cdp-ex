@@ -7386,6 +7386,104 @@ function compactNetworkDeltaEntry(entry = {}) {
   };
 }
 
+const MAX_FAILED_REQUEST_DETAILS = 2;
+const FAILED_REQUEST_BODY_CHARS = 200;
+const FAILED_REQUEST_BODY_TIMEOUT_MS = 1000;
+
+function responseHeaderValue(headers, name) {
+  if (!headers || typeof headers !== 'object') return null;
+  const wanted = String(name).toLowerCase();
+  const key = Object.keys(headers).find(header => header.toLowerCase() === wanted);
+  return key == null ? null : String(headers[key]);
+}
+
+// #648: a request the action sent that failed (status >= 400, or a network error) is named on the
+// receipt with its status text, Retry-After and a short redacted body: what `netlog --id N --body`
+// prints. At most two, newest last. `readBody(detail)` resolves like readNetlogResponseBody.
+async function describeFailedActionRequests(entries = [], { store = null, readBody = null } = {}) {
+  const latest = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry?.requestId || !isNetworkFailure(entry)) continue;
+    latest.delete(entry.requestId);
+    latest.set(entry.requestId, entry);
+  }
+  const described = [];
+  for (const entry of [...latest.values()].slice(-MAX_FAILED_REQUEST_DETAILS)) {
+    const id = store?.idFor?.(entry.requestId) ?? null;
+    const detail = id != null ? store.get(id) : null;
+    const errorText = entry.errorText ? compactActionText(String(entry.errorText), 120) : null;
+    const rawStatus = entry.status ?? detail?.status ?? null;
+    const item = {
+      id,
+      method: compactActionText(String(entry.method || detail?.method || 'GET'), 20).toUpperCase(),
+      url: compactActionText(redactUrl(String(detail?.url || entry.url || '')), 160),
+      status: errorText || rawStatus == null || !Number.isFinite(Number(rawStatus)) ? null : Number(rawStatus),
+      statusText: detail?.statusText ? compactActionText(String(detail.statusText), 60) : null,
+      retryAfter: compactActionText(responseHeaderValue(detail?.responseHeaders, 'retry-after') || '', 40) || null,
+      errorText,
+      body: null,
+    };
+    if (!errorText && detail && typeof readBody === 'function') {
+      try {
+        const { result } = await readBody(detail);
+        const { model } = summarizeResponseBody(result, { mimeType: detail.mimeType, previewBytes: FAILED_REQUEST_BODY_CHARS * 4 });
+        if (model.kind === 'text') {
+          const flat = redactSensitiveString(String(model.text || '')).replace(/\s+/g, ' ').trim();
+          item.body = { text: flat.slice(0, FAILED_REQUEST_BODY_CHARS), truncated: model.truncated === true || flat.length > FAILED_REQUEST_BODY_CHARS };
+        } else {
+          item.body = { text: null, truncated: false, summary: model.summary };
+        }
+      } catch {
+        // No body: the line still names the request and its status.
+      }
+    }
+    described.push(item);
+  }
+  return described;
+}
+
+function formatFailedRequestLine(item = {}) {
+  const outcome = item.errorText
+    ? `failed (${item.errorText})`
+    : `${item.status ?? '?'}${item.statusText ? ` ${item.statusText}` : ''}`;
+  const parts = [`Request failed: ${item.id != null ? `#${item.id} ` : ''}${item.method || 'GET'} ${item.url || ''} → ${outcome}`];
+  if (item.retryAfter) parts.push(`Retry-After: ${item.retryAfter}`);
+  if (item.body?.text != null) parts.push(`body: ${item.body.text || '(empty)'}${item.body.truncated ? ' …' : ''}`);
+  else if (item.body?.summary) parts.push(`body: ${item.body.summary}`);
+  return parts.join('; ');
+}
+
+function failedRequestLines(result = {}) {
+  const list = result.effects?.failedRequests;
+  return Array.isArray(list) ? list.map(formatFailedRequestLine) : [];
+}
+
+// With the failed request's status and body on the receipt, the next look is how the page
+// reacted; without the body, the request detail.
+function failedRequestNextCommand(failedRequests, targetId) {
+  const list = Array.isArray(failedRequests) ? failedRequests : [];
+  if (!list.length) return `cdp netlog ${targetId}`;
+  const missing = list.find(item => !item.errorText && !item.body);
+  if (!missing) return `cdp perceive ${targetId} --since-action`;
+  return missing.id != null ? `cdp netlog ${targetId} --id ${missing.id} --body` : `cdp netlog ${targetId}`;
+}
+
+// Puts lines just before the receipt's Next, so Next stays the last line (#533).
+function insertBeforeNextLine(text, extra = []) {
+  if (!extra.length) return text;
+  const lines = String(text).split('\n');
+  const at = lines.findIndex(line => /(?:^|\.\s)Next: /.test(line));
+  if (at === -1) return [...lines, ...extra].join('\n');
+  const split = lines[at].match(/^(.*?\S)\.\s+(Next: .*)$/);
+  return [
+    ...lines.slice(0, at),
+    ...(split ? [`${split[1]}.`] : []),
+    ...extra,
+    split ? split[2] : lines[at],
+    ...lines.slice(at + 1),
+  ].join('\n');
+}
+
 // Keeps the origin (which site raised the dialog); secrets go through the shared URL redactor (#455).
 function compactDialogUrl(value) {
   return compactActionText(redactUrl(String(value ?? '').trim()), 240);
@@ -8524,7 +8622,7 @@ function createActionDiagnosis(actionResult = {}) {
       confidence: 'high',
       source: 'network',
       reason: 'The action triggered one or more failed network requests.',
-      nextCommand: `cdp netlog ${targetId}`,
+      nextCommand: failedRequestNextCommand(effects.failedRequests, targetId),
     });
   }
 
@@ -9106,8 +9204,10 @@ function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}
     || (result.outcome?.status ? String(result.outcome.status) : `${result.action}: dispatched`);
   const next = defaultMutatingNextCommand(result, { dispatchText });
   const one = outcome.replace(/\.+$/, '');
-  if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return one;
-  return `${one}. Next: ${next}`;
+  // #648: a request the action sent that failed is evidence for the next step.
+  const failed = failedRequestLines(result);
+  if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return insertBeforeNextLine(one, failed);
+  return insertBeforeNextLine(`${one}. Next: ${next}`, failed);
 }
 
 function formatActionText(result, { compact = false, full = false, dispatchText = '' } = {}) {
@@ -9184,6 +9284,7 @@ function formatActionText(result, { compact = false, full = false, dispatchText 
   if (diagnostics.exceptionSample) lines.push(`Exception sample: ${diagnostics.exceptionSample}`);
   if (diagnostics.networkSummary) lines.push(diagnostics.networkSummary);
   if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
+  lines.push(...failedRequestLines(result));
   // #578: no AX change is not evidence for viewport. Attach the diff only
   // when the tree actually changed.
   const viewportDomDiff = viewportApplicationOf(result) && !actionDomDiffShowsChange(result.effects?.domDiff)
@@ -21506,6 +21607,22 @@ function netlogStr(netReqBuf, flag, options = {}) {
   return options.format === 'json' ? formatJson(model) : formatNetlogListText(model);
 }
 
+// #648: Chrome sends no Network.loadingFinished for a `Cache-Control: no-store` response that the
+// page never reads, and Network.getResponseBody then answers "No data found". The bytes Chrome
+// already received are still there: Network.streamResourceContent returns them as bufferedData.
+// `unread: true` marks a body read that way.
+async function readNetlogResponseBody(cdp, sid, detail, { timeoutMs } = {}) {
+  try {
+    return { result: await cdpDomains(cdp).Network.getResponseBody({ requestId: detail.requestId }, sid, timeoutMs), unread: false };
+  } catch (error) {
+    if (detail.state !== 'pending' || detail.status == null) throw error;
+    const streamed = await cdpDomains(cdp).Network.streamResourceContent({ requestId: detail.requestId }, sid, timeoutMs)
+      .catch(() => null);
+    if (!streamed?.bufferedData) throw error;
+    return { result: { body: streamed.bufferedData, base64Encoded: true }, unread: true };
+  }
+}
+
 // `netlog <target> --id N` (#467, #555): stored request detail. The response body
 // is fetched only for `--body` or `--out`. `--out` writes the file and does not
 // echo the body unless `--body` is also set.
@@ -21523,11 +21640,16 @@ async function netlogRequestStr(cdp, sid, requestStore, opts, { targetId = '', w
       body = unavailableBody(`the request failed (${detail.errorText}), so there is no response body`);
     } else {
       try {
-        const result = await cdpDomains(cdp).Network.getResponseBody({ requestId: detail.requestId }, sid);
+        const { result, unread } = await readNetlogResponseBody(cdp, sid, detail);
         ({ model: body, file } = summarizeResponseBody(result, { mimeType: detail.mimeType, unsafeFull: opts.unsafeFull }));
+        if (unread) body = { ...body, unread: true };
       } catch (error) {
         const reason = String(error?.message || error || 'unknown error');
-        body = unavailableBody(detail.state === 'pending' ? `still loading: ${reason}` : `Chrome no longer holds it: ${reason}`);
+        body = unavailableBody(detail.state !== 'pending'
+          ? `Chrome no longer holds it: ${reason}`
+          : detail.status == null
+            ? `still loading: ${reason}`
+            : `the response arrived but its body never finished loading, and Chrome holds no copy: ${reason}`);
       }
     }
   }
@@ -28426,6 +28548,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           observationBaseline,
           locateSourceFrames,
         ));
+        const failedRequests = await describeFailedActionRequests(netReqBuf.since(observationBaseline.network || 0), {
+          store: netRequestStore,
+          readBody: detail => readNetlogResponseBody(cdp, sessionId, detail, { timeoutMs: FAILED_REQUEST_BODY_TIMEOUT_MS }),
+        });
+        if (failedRequests.length) actionResult.effects.failedRequests = failedRequests;
         if (dispatchEffects) Object.assign(actionResult.effects, dispatchEffects);
         if (postActionPageHealth) actionResult.effects.pageHealth = postActionPageHealth;
         else if (actionTarget.page && (actionTarget.page.title || actionTarget.page.url)) {
@@ -33885,6 +34012,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   restoreStorageScript, restoreCheckpointStr,
   // Command implementations
   getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, netlogRequestStr, absolutizeNetlogOutArg, parseNetlogArgs, filterNetlogEntries, netStr, checkpointSessionEvent, redactSensitiveArtifactValue,
+  readNetlogResponseBody, describeFailedActionRequests, formatFailedRequestLine, failedRequestNextCommand, insertBeforeNextLine,
   javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
   shouldSkipActionPageEvaluate, formatDialogBlockedObserveText, observeAfterActionGuardingDialogs,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
