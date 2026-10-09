@@ -160,7 +160,7 @@ Some Electron builds time out on `Page.captureScreenshot`, and on Windows some r
 
 ## Stale-ref and stale-daemon recovery
 
-`@ref` handles are short-lived. Refresh them after navigation, DOM rewrite, modal open/close, restore, or any action classified as `stale-ref`:
+A plain `perceive` numbers `@ref` handles `@1..@N`. `perceive --since-action` and `perceive --diff` keep an element that is still on the page on the same number, so the follow-up an action receipt recommends does not point `@N` at a different control. Refresh refs after navigation, a rewrite that removes the node, modal open/close, restore, or any action classified as `stale-ref`:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
