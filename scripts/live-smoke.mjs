@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { createServer } from 'http';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve, dirname } from 'path';
@@ -53,20 +52,28 @@ let server;
 
 function cleanup() {
   if (browser && !browser.killed) browser.kill('SIGTERM');
-  if (server) server.close();
+  if (server && !server.killed) server.kill('SIGTERM');
   try { rmSync(profileDir, { recursive: true, force: true }); } catch {}
 }
 process.on('exit', cleanup);
 process.on('SIGINT', () => { cleanup(); process.exit(130); });
 process.on('SIGTERM', () => { cleanup(); process.exit(143); });
 
-server = createServer((req, res) => {
-  if (req.url === '/' || req.url === '/smoke-page.html') {
+// The fixture server has to accept Chrome's reload request while `cdp reload`
+// is blocked in spawnSync. An in-process server never sees that request, so
+// the navigation does not commit.
+const smokeHttpServer = `
+import { createServer } from 'http';
+import { readFileSync } from 'fs';
+const [pagePath, portRaw] = process.argv.slice(1);
+const httpServer = createServer((req, res) => {
+  const path = String(req.url || '/').split('?')[0];
+  if (path === '/' || path === '/smoke-page.html') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(readFileSync(page));
+    res.end(readFileSync(pagePath));
     return;
   }
-  if (req.url?.startsWith('/api/fail')) {
+  if (path.startsWith('/api/fail')) {
     res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
     res.end('{"ok":false,"error":"smoke diagnostic"}');
     return;
@@ -74,9 +81,29 @@ server = createServer((req, res) => {
   res.writeHead(404);
   res.end('not found');
 });
-await new Promise((resolveServer, reject) => {
-  server.once('error', reject);
-  server.listen(serverPort, '127.0.0.1', resolveServer);
+httpServer.listen(Number(portRaw), '127.0.0.1', () => {
+  process.stdout.write('ready\\n');
+});
+`;
+server = spawn(process.execPath, ['--input-type=module', '-e', smokeHttpServer, page, String(serverPort)], {
+  stdio: ['ignore', 'pipe', 'inherit'],
+});
+await new Promise((resolveServer, rejectServer) => {
+  let buf = '';
+  const timer = setTimeout(() => rejectServer(new Error('smoke HTTP server did not start')), 5000);
+  const fail = (error) => {
+    clearTimeout(timer);
+    rejectServer(error);
+  };
+  server.stdout.on('data', (chunk) => {
+    buf += chunk;
+    if (buf.includes('ready')) {
+      clearTimeout(timer);
+      resolveServer();
+    }
+  });
+  server.once('error', fail);
+  server.once('exit', (code) => fail(new Error(`smoke HTTP server exited before ready (${code})`)));
 });
 
 const url = `http://127.0.0.1:${serverPort}/smoke-page.html`;
@@ -867,6 +894,13 @@ const noDownloadOut = step('click --expect-download times out without a download
   { timeout: 60000 },
 ));
 assertIncludes(noDownloadOut, 'Kind: timeout', 'expect-download timeout kind');
+
+// Reload is last so it cannot reset earlier fixture state. The same daemon
+// must still evaluate afterwards.
+const reloadOut = step('reload keeps the daemon usable', () => run(['reload', target], { timeout: 30000 }));
+assertIncludes(reloadOut, 'Page reloaded', 'reload receipt');
+const titleAfterReload = step('evaluate after reload', () => run(['eval', target, 'document.title']));
+assertIncludes(titleAfterReload, 'chrome-cdp-ex long-session smoke', 'post-reload title');
 
 console.log(`Live smoke passed using ${browserName} on CDP_PORT=${port}`);
 console.log(results.join('\n'));
