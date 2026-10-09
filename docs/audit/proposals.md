@@ -45,7 +45,7 @@ Six findings got open pull requests after the Phase B issues were filed. They ar
 | 3 | `dismiss-modal` never presses an accept button, and fails while the dialog stays | B-17 (#653), T-10 | 3 | 1 | 3 | 9 | live repro, scenario 3 | merged (#656) |
 | 4 | One observation scope per action: frames, downloads, new tabs | B-07, B-08 | 3 | 3 | 1 | 9 | scenario 6 | proposal; #652 open (receipts phase) |
 | 5 | `text` keeps field boundaries | B-16 | 2 | 1 | 3 | 6 | scenarios 7, 2 | merged (#659) |
-| 6 | MCP returns the CLI receipt and lists the golden-path verbs | B-12 | 2 | 3 | 1 | 6 | none (Phase B) | proposal |
+| 6 | MCP returns the CLI receipt and lists the golden-path verbs | B-12 | 2 | 3 | 1 | 6 | none (Phase B) | PR for #643 (Haiku A/B below) |
 | 7 | Visual comparison names what changed | scenario 9 | 1 | 3 | 2 | 6 | scenario 9 | merged (#662) |
 
 Scoring notes:
@@ -598,6 +598,39 @@ Noise: n = 1 per arm. The only Phase D pair run under identical conditions (scen
 
 - before, 2 deletions;
 - after, 0 deletions, 0 sign-outs, and `Kind: dialog-open` with both button names.
+
+## Results of 6
+
+Implemented on `34bf8bf` for #643. The tool result is the CLI text receipt plus a `chrome-cdp-ex.mcp-result.v1` block whose `next` is a `run_command` call; `format: "json"` keeps the old receipt. `run_command` accepts the commands Next lines name, except the 7 whose MCP exposure is `none`. `tools/call` refuses tools `tools/list` does not serve. Not done: new `tools/list` entries for `text`, `select` and `scroll`.
+
+### Probe
+
+`docs/audit/mcp-probe.mjs` on the overlay fixture, headless Chrome 154:
+
+| Call | main `34bf8bf` | branch |
+|---|---|---|
+| `tools/list` | 11,257 B | 12,444 B |
+| `perceive` | 3,715 B | 602 B |
+| refused `click` | 15,761 B | 622 B, `kind: covered`, `next` = `run_command click … --js` |
+| `run_command status` | refused | 256 B |
+| `run_command jsclick` | refused | 355 B |
+| `run_command eval` | refused | refused |
+| unlisted `report` | 8,904 B | `Unknown MCP tool` |
+
+Live, the refused click's `next` was called as given: it JS-clicked Save, and its own `next` was `perceive … --since-action`.
+
+### Haiku 5.5
+
+One run per arm, through a wrapper that sends one MCP request and prints the result as a client receives it. Task: 「在 Overlay 那個分頁按「Save profile」把個人資料存起來，告訴我有沒有存成功。」 on the overlay fixture.
+
+| Arm | Result | Calls | Chars (all) | Chars without `tools/list` | Errors |
+|---|---|---|---|---|---|
+| main | pass | 5 | 28,597 | 17,374 | 0 |
+| branch | pass | 5 | 17,975 | 5,565 | 0 |
+
+- Both arms clicked `text=Save profile`, which JS-clicks past the banner (B-10, #641). Neither hit the refused-click path, so the `next` call was not exercised by Haiku; the live check above covers it.
+- On the branch, Haiku asked `list_tabs` for `format: "json"` once.
+- Noise: n = 1 per arm. The call paths were the same; the char drop is the payload size, not a different path.
 
 ## Results of 7
 
