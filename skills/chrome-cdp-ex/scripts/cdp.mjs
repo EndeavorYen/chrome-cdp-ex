@@ -14773,8 +14773,8 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   const prevTree = prev.slice(prevTreeStart).map(stripPerceiveIdentityChrome);
   const currTree = curr.slice(currTreeStart).map(stripPerceiveIdentityChrome);
   // Line-level diff with StaticText noise filtering. A ref number is not page identity: an action
-  // settle keeps numbers (#548) and a later perceive renumbers, so lines compare without `@N`.
-  // Reported lines keep their refs.
+  // settle, --since-action, and --diff keep numbers (#548, #642) and a later plain perceive
+  // renumbers, so lines compare without `@N`. Reported lines keep their refs.
   const refFreeKey = line => line.replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
   // Count each key, so one of two identical lines going away is still reported.
   const unmatched = (lines, other) => {
@@ -15012,6 +15012,14 @@ function formatRefRect(rect) {
 // Highest numeric ref a ref map has handed out; it survives refMap.clear() (#548).
 const REF_HIGH_WATER = Symbol('refHighWater');
 
+// A diff-only perceive reprints added and removed lines and compares them
+// without the ref number. Rebuilding @1..@N would bind a remembered @N to a
+// different node while the diff stays silent (#642). Keep each surviving
+// backend node on its number. A plain perceive still numbers @1..@N.
+function shouldPreservePerceiveRefs(opts = {}) {
+  return opts.preserveRefs === true || opts.sinceAction === true || opts.diff === true;
+}
+
 function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null, preserveRefs = false } = opts;
   // opts.adaptive + opts.consoleErrors are used by the --last auto / --adaptive budget path
@@ -15044,9 +15052,10 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const rowCellIdx = new Map();
   const dataRowIdx = new Map();
 
-  // Clear and rebuild ref map. An action settle (preserveRefs) keeps the number each node already
-  // has, so a ref the agent read still names the same element; a new node gets a number above every
-  // number handed out before, never a freed one (#548).
+  // Clear and rebuild ref map. preserveRefs (an action settle, --since-action, or --diff)
+  // keeps the number each node already has, so a ref the agent read still names the same
+  // element; a new node gets a number above every number handed out before, never a freed
+  // one (#548, #642). A plain perceive leaves the flag false and numbers @1..@N.
   const preservedRefByNode = new Map();
   let refCounter = 0;
   if (preserveRefs) {
@@ -15803,7 +15812,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     last,
     adaptive,
     cursorInteractive,
-    preserveRefs: opts.preserveRefs === true,
+    // --since-action / --diff print added and removed lines only. Rebuilding
+    // @1..@N would point a remembered @N at a different node (#642).
+    preserveRefs: shouldPreservePerceiveRefs(opts),
     consoleErrors: errors + exceptions,
     targetPrefix: opts.targetPrefix || '<target>',
   });
@@ -16035,7 +16046,15 @@ async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, las
     exceptionBuf,
     refMap,
     lastPerceiveStore,
-    { ...opts, sinceAction: false, diff: false, diffBaseline: null },
+    {
+      ...opts,
+      sinceAction: false,
+      diff: false,
+      diffBaseline: null,
+      // The flags above are cleared so this call stores the full tree. They are
+      // also what keeps a surviving @ref (#642); pass that decision through.
+      preserveRefs: shouldPreservePerceiveRefs(opts),
+    },
     refState
   );
   const currentOutput = perceiveStoreDiffSource(lastPerceiveStore) ?? printedOutput;
@@ -30439,6 +30458,7 @@ Usage: cdp <command> [args]
 {{command:perceive}}
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
+                                    --since-action and --diff keep each surviving element's @ref
                                     --qa / --summary: compact QA summary (url/title/blank/console/next)
                                     --max-diff-lines N: truncate long text output
                                     --adaptive / --last auto: density+error aware text-row budget
@@ -33741,7 +33761,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, axNodeTokenState, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, pickPrimaryScrollMetrics, omitTypeaheadListboxNodes, TYPEAHEAD_OMITTED_NOTICE,
-  buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, renderedInteractiveSource, perceiveStr,
+  buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, shouldPreservePerceiveRefs, perceivePageScript, renderedInteractiveSource, perceiveStr,
   perceiveTextboxValueFromOutput,
   filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   buildCardsModel, formatCardsJson, formatCardsText,
