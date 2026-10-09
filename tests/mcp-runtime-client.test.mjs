@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { MCP_RUN_COMMAND_ALLOWLIST } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
+import { isServedMcpTool } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -100,8 +101,10 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     }));
     const state = handlerWith(executeCli);
 
+    // #643: tools/call runs only the served tools; the fixture keeps mappings for hidden ones.
     const mappingCases = contract.mcp.mappingCases.filter(fixture => (
-      fixture.tool !== 'run_command' || MCP_RUN_COMMAND_ALLOWLIST.includes(fixture.args?.command)
+      isServedMcpTool(fixture.tool)
+      && (fixture.tool !== 'run_command' || MCP_RUN_COMMAND_ALLOWLIST.includes(fixture.args?.command))
     ));
     for (const [index, fixture] of mappingCases.entries()) {
       await state.handle({
@@ -111,16 +114,36 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
         params: { name: fixture.tool, arguments: fixture.args },
       });
       expect(executeCli).toHaveBeenLastCalledWith(fixture.command);
+      // The stdout here is a JSON array, never a versioned receipt, so a --format json call has no
+      // structuredContent and a text call has the mcp-result block.
+      const json = fixture.command.some((arg, i) => arg === '--format' && fixture.command[i + 1] === 'json');
       expect(state.sent.at(-1)).toEqual({
         jsonrpc: '2.0',
         id: index + 1,
         result: {
           content: [{ type: 'text', text: JSON.stringify(fixture.command) }],
+          ...(json ? {} : { structuredContent: { schema: 'chrome-cdp-ex.mcp-result.v1', ok: true, exitCode: 0 } }),
           isError: false,
         },
       });
     }
     expect(executeCli).toHaveBeenCalledTimes(mappingCases.length);
+  });
+
+  it('refuses every hidden tool the fixture still maps, before RuntimeClient execution', async () => {
+    const executeCli = vi.fn();
+    const state = handlerWith(executeCli);
+    const hidden = [...new Set(contract.mcp.mappingCases.map(fixture => fixture.tool))]
+      .filter(tool => !isServedMcpTool(tool));
+    expect(hidden).toContain('report');
+    for (const [index, tool] of hidden.entries()) {
+      const fixture = contract.mcp.mappingCases.find(entry => entry.tool === tool);
+      await state.handle({
+        jsonrpc: '2.0', id: index + 1, method: 'tools/call', params: { name: tool, arguments: fixture.args },
+      });
+      expect(state.sent.at(-1).error, tool).toEqual({ code: -32000, message: `Unknown MCP tool: ${tool}` });
+    }
+    expect(executeCli).not.toHaveBeenCalled();
   });
 
   it('rejects every frozen invalid mapping before RuntimeClient execution', async () => {
@@ -136,9 +159,12 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
           : { name: fixture.tool, arguments: fixture.args },
       });
       const spelling = fixture.args?.command;
-      const message = fixture.tool === 'run_command' && spelling && !MCP_RUN_COMMAND_ALLOWLIST.includes(spelling)
-        ? `run_command command not allowlisted: ${spelling}`
-        : fixture.error;
+      let message = fixture.error;
+      if (fixture.kind === 'tool' && fixture.tool !== 'not_a_tool' && !isServedMcpTool(fixture.tool)) {
+        message = `Unknown MCP tool: ${fixture.tool}`;
+      } else if (fixture.tool === 'run_command' && spelling && !MCP_RUN_COMMAND_ALLOWLIST.includes(spelling)) {
+        message = `run_command command not allowlisted: ${spelling}`;
+      }
       expect(state.sent.at(-1).error).toEqual({ code: -32000, message });
     }
     expect(executeCli).not.toHaveBeenCalled();
@@ -161,11 +187,12 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     },
   );
 
+  // #643: back, clickxy, jsclick, reload, type, mock, clock, throttle and resize (viewport) are named
+  // by Next lines, so run_command accepts them; these are not.
   it.each([
-    'back', 'clickxy', 'forward', 'jsclick', 'reload', 'type', 'verify-click',
-    'mock', 'clock', 'throttle', 'emulate', 'resize', 'table',
+    'forward', 'verify-click', 'emulate', 'table',
   ])(
-    'rejects run_command %s because it is off the survivor allowlist',
+    'rejects run_command %s because it is off the allowlist',
     async command => {
       const executeCli = vi.fn();
       const state = handlerWith(executeCli);
@@ -326,6 +353,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     });
     expect(failures.sent[0].result).toEqual({
       content: [{ type: 'text', text: 'exact stderr\npartial stdout' }],
+      structuredContent: { schema: 'chrome-cdp-ex.mcp-result.v1', ok: false, exitCode: 7 },
       isError: true,
     });
 

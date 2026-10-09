@@ -160,9 +160,9 @@ describe('#540 --follow-url re-binds a unique successor for read commands', () =
 
   it('MCP read tools map followUrl to the flag and click does not grow a followUrl field', () => {
     expect(buildMcpToolCommand('perceive', { target: '1667E1A4', followUrl: true }))
-      .toEqual(['perceive', '1667E1A4', '--follow-url', '--adaptive', '--format', 'json']);
+      .toEqual(['perceive', '1667E1A4', '--follow-url', '--adaptive']);
     expect(buildMcpToolCommand('controls', { target: '1667E1A4', followUrl: true, compact: false }))
-      .toEqual(['controls', '1667E1A4', '--follow-url', '--format', 'json']);
+      .toEqual(['controls', '1667E1A4', '--follow-url']);
     expect(buildMcpToolCommand('click', { target: '1667E1A4', selector: '@1', confirm: true }).includes('--follow-url')).toBe(false);
   });
 });

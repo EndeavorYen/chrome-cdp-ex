@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { executeCdpCli } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
-import { buildMcpToolCommand } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
+import { buildMcpToolCommand, createMcpToolResult } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { attachTargetResolutionDiagnostics } from '../skills/chrome-cdp-ex/scripts/lib/target-binding.mjs';
 
 const { __test__: cdpTest } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -228,29 +228,34 @@ describe('bounded table observation public emission', () => {
         });
       },
     });
-    const sent = [];
-    const handle = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
-      sendMessage: message => sent.push(message),
-    });
-
-    await handle({
-      jsonrpc: '2.0',
-      id: 151,
-      method: 'tools/call',
-      params: {
-        name: 'table',
-        arguments: { target: 'ABC12345', selector: '#grid' },
-      },
-    });
+    // #643: tools/list does not serve table, so tools/call refuses it; its mapper and the result
+    // mapping still keep the JSON exact.
+    const command = buildMcpToolCommand('table', { target: 'ABC12345', selector: '#grid', format: 'json' });
+    expect(command).toEqual(['table', 'ABC12345', '#grid', '--format', 'json']);
+    const result = createMcpToolResult(command, direct);
 
     expect(direct.code).toBe(0);
     expect(Buffer.byteLength(direct.stdout, 'utf8')).toBeLessThanOrEqual(16_384);
-    expect(sent[0].result).toEqual({
+    expect(result).toEqual({
       content: [{ type: 'text', text: direct.stdout }],
       structuredContent: JSON.parse(direct.stdout),
       isError: false,
     });
+  });
+
+  it('refuses the unlisted table tool at tools/call', async () => {
+    const executeCli = vi.fn();
+    const sent = [];
+    const handle = createMcpRequestHandler({
+      runtimeClient: createRuntimeClient({ executeCli }),
+      sendMessage: message => sent.push(message),
+    });
+    await handle({
+      jsonrpc: '2.0', id: 151, method: 'tools/call',
+      params: { name: 'table', arguments: { target: 'ABC12345', selector: '#grid' } },
+    });
+    expect(sent[0].error).toEqual({ code: -32000, message: 'Unknown MCP tool: table' });
+    expect(executeCli).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -270,24 +275,14 @@ describe('bounded table observation public emission', () => {
         });
       },
     });
-    const sent = [];
-    const handle = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
-      sendMessage: message => sent.push(message),
-    });
-
-    await handle({
-      jsonrpc: '2.0',
-      id: 152,
-      method: 'tools/call',
-      params: { name: 'table', arguments: { target: 'ABC12345' } },
-    });
+    const result = createMcpToolResult(buildMcpToolCommand('table', { target: 'ABC12345' }), direct);
 
     expect(direct.code).toBe(0);
     expect(direct.stdout).toContain(`\n${fixture.canonical}\nSnapshot provenance: bounded root-frame observation.`);
     expect(direct.stdout).toMatch(/Snapshot provenance: bounded root-frame observation\.$/);
-    expect(sent[0].result).toEqual({
+    expect(result).toEqual({
       content: [{ type: 'text', text: direct.stdout }],
+      structuredContent: { schema: 'chrome-cdp-ex.mcp-result.v1', ok: true, exitCode: 0 },
       isError: false,
     });
   });

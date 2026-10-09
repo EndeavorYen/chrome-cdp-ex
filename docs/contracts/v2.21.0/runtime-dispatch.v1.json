@@ -98,7 +98,7 @@
       "daemonRequestMayHaveSideEffects",
       "isBatchParallelUnsafeCommand"
     ],
-    "sourceDigest": "sha256:44248311a70cd023031bccfb49ff8ac11c74f80868df4851b1f891d69b7f31e7",
+    "sourceDigest": "sha256:656b518dc736b2b898070b75f363c00f2f4919cb06b6527f6b67fc7732383d90",
     "bindingDigest": "sha256:1f301cb835f880abaf7db52594689275d859f6ebc957a5d29cf72ae7bb4870aa",
     "artifactSourceDigest": "sha256:5a0297f10ad8a6a4ded915d74e3689b5c713b7e7744ece6ced175330f41a644b",
     "observation": {

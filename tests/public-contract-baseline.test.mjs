@@ -63,7 +63,7 @@ describe('public contract baseline', () => {
     expect(contract.schemas).toHaveLength(5);
     expect(contract.schemas.every(schema => schema.id.startsWith('https://'))).toBe(true);
     expect(contract.mcp.tools).toHaveLength(14);
-    expect(contract.mcp.runCommandAllowlist).toHaveLength(27);
+    expect(contract.mcp.runCommandAllowlist).toHaveLength(54);
     expect(contract.mcp.resourceTemplates).toHaveLength(3);
   });
 

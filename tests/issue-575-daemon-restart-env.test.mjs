@@ -349,7 +349,7 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
 
     const { createMcpToolResult } = await import('../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs');
     const body = { schema: 'chrome-cdp-ex.throttle.v1', profile: 'offline' };
-    const json = createMcpToolResult(['throttle'], {
+    const json = createMcpToolResult(['throttle', 'T1', '--format', 'json'], {
       code: 0,
       stdout: `${notice}\n${JSON.stringify(body)}\n`,
       stderr: '',
