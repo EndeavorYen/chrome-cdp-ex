@@ -87,6 +87,28 @@ describe('#643 a tool result is the CLI text receipt', () => {
     expect(() => buildMcpToolCommand('doctor', { format: 'yaml' })).toThrow('format must be text or json');
   });
 
+  it('reads the kind from an indented Recovery block', () => {
+    const stale = createMcpToolResult(['click', 'T1', '#save'], {
+      code: 1,
+      stdout: '',
+      stderr: [
+        'Error: Stale daemon for T1: daemon commit 34bf8bfcb8ab, current commit ee298ee9f5c4, pid 42176.',
+        'Recovery:',
+        '  Kind: stale-daemon',
+        '  Strategy: restart-target-daemon',
+        '  Run: cdp stop T1',
+        'Next: cdp stop T1 (Kind: stale-daemon)',
+      ].join('\n'),
+    });
+    expect(stale.structuredContent).toEqual({
+      schema: 'chrome-cdp-ex.mcp-result.v1',
+      ok: false,
+      exitCode: 1,
+      kind: 'stale-daemon',
+      next: { name: 'run_command', arguments: { command: 'stop', args: ['T1'], confirm: true } },
+    });
+  });
+
   it('turns a success receipt Next into a call and leaves a receipt without one at ok/exitCode', () => {
     const pressed = createMcpToolResult(['press', 'T1', 'Enter'], {
       code: 0, stdout: 'Pressed Enter. Next: cdp perceive T1 --since-action\n', stderr: '',

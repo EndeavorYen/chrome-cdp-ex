@@ -763,8 +763,13 @@ export function mcpNextCall(text) {
   return { name: 'run_command', arguments: call };
 }
 
+// The error Kind: a `Kind:` line (indented under `Recovery:` in some receipts), else the
+// " (Kind: …)" suffix of the Next line.
 function cliErrorKind(text) {
-  return String(text || '').match(/^Kind: ([a-z][a-z0-9-]*)\s*$/m)?.[1] || null;
+  const value = String(text || '');
+  return value.match(/^\s*Kind: ([a-z][a-z0-9-]*)\s*$/m)?.[1]
+    || value.match(/\(Kind: ([a-z][a-z0-9-]*)\)\s*$/m)?.[1]
+    || null;
 }
 
 function asksForJson(command) {
