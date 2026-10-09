@@ -838,6 +838,10 @@ scripts/cdp.mjs text <target> --auto -x ".sidebar"             # extra CSS strip
 Returns page content as plain text. **`text --auto` is the "what does this page say" command** — it picks `main` / `[role=main]` / `article` and strips nav/aside/footer. On a Chrome PDF plugin tab (`application/pdf`) it returns page-1 text from the PDF bytes (pdf.js-style `getTextContent` / print-to-text), not the empty `pdf-viewer.v1` AX stub. Golden-path `perceive -C -d 8` still comes first for HTML structure and `@ref`s; if perceive prints `Body truncated`, run `text --auto` next.
 **Use `--auto` or a selector** to extract the article or a specific section (e.g. AI replies) instead of drowning in sidebar/nav noise.
 Use `--root auto` when a React/Vite app has repeated shell text outside the app mount; it scopes extraction to `#root`, `[data-reactroot]`, `main`, then `body`.
+Field boundaries follow the layout, as with `innerText`:
+- Table cells end with a tab, and so do ARIA `cell`, `gridcell`, `columnheader` and `rowheader` elements. Table rows and ARIA `row` elements end with a newline, so a data grid built from divs reads as one tab-separated row per line.
+- `<dt>`, `<dd>`, grid and flex items, and any other element laid out as a block end their line.
+- Inline elements stay joined, as they appear on screen.
 
 ### Table observation, collection, and continuation
 
