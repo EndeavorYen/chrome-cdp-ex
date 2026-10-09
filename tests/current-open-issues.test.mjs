@@ -154,7 +154,7 @@ describe('current open issue contracts', () => {
     expect(T.wrapAwaitExpression('const value = await Promise.resolve(42); value', true))
       .toBe('(async()=>{const value = await Promise.resolve(42); return (value);})()');
     expect(T.scrollSettledRectFunctionDeclaration()).toContain('maxSamples = fullyVisible ? 2 : 60');
-    expect(T.parseConsoleArgs(['--clear', '--format', 'json'])).toEqual({ mode: 'clear', format: 'json' });
+    expect(T.parseConsoleArgs(['--clear', '--format', 'json'])).toEqual({ mode: 'clear', format: 'json', unsafeFull: false });
     expect(T.parseRepeatArgs(['20', 'click', '.attack', '--until-text', 'Battle complete'])).toMatchObject({
       count: 20,
       cmd: 'click',

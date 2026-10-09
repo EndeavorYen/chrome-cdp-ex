@@ -1576,6 +1576,47 @@ function boundedConsoleLineText(text, entry = {}, max = 300) {
   return `${sliceAtCodePoint(value, max)}… [truncated, ${total} chars]`;
 }
 
+// #634: page URLs, console text, and cookie values use the same redactor as
+// receipts, netlog, and report. `--unsafe-full` is the explicit opt-in.
+function displayUrl(value, { unsafeFull = false } = {}) {
+  const text = String(value ?? '');
+  return unsafeFull ? text : redactUrl(text);
+}
+
+function displayObservedText(value, entry = {}, { unsafeFull = false } = {}) {
+  const text = String(value ?? '');
+  if (unsafeFull) return text;
+  return redactSensitiveString(text, { truncated: entry?.truncated === true });
+}
+
+function displayConsoleLine(text, entry = {}, max = 300, { unsafeFull = false } = {}) {
+  return boundedConsoleLineText(displayObservedText(text, entry, { unsafeFull }), entry, max);
+}
+
+// A console location is `file:line`, `file:line:col`, or
+// `source:line:col (generated:line:col)`. Those coordinates are not part of a
+// URL token. Split them off before redaction so `?token=…:7:9` stays `:7:9`
+// and `secrets.html:15:24` is not read as a secret assignment (#634).
+const LOCATION_COORD_SOURCE = String.raw`(:\d+){1,2}(?=\s+\(|\)|$)`;
+
+function redactLocationText(text) {
+  const pattern = new RegExp(LOCATION_COORD_SOURCE, 'g');
+  let out = '';
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    out += redactSensitiveString(text.slice(last, match.index));
+    out += match[0];
+    last = match.index + match[0].length;
+  }
+  return `${out}${redactSensitiveString(text.slice(last))}`;
+}
+
+function displayLocation(value, { unsafeFull = false } = {}) {
+  const text = String(value ?? '');
+  if (!text || unsafeFull) return text;
+  return redactLocationText(text);
+}
+
 function sockPath(targetId) {
   return daemonEndpointForPlatform(targetId, { runtimeDir: RUNTIME_DIR });
 }
@@ -4514,6 +4555,22 @@ function parseFormatArgs(args, allowed = ['text', 'json']) {
   return { format, args: next };
 }
 
+function takeUnsafeFullArg(args = []) {
+  let unsafeFull = false;
+  const rest = [];
+  for (const arg of args) {
+    if (arg === '--unsafe-full') unsafeFull = true;
+    else rest.push(arg);
+  }
+  return { unsafeFull, args: rest };
+}
+
+function parseListArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const lifted = takeUnsafeFullArg(fopts.args);
+  return { format: fopts.format, unsafeFull: lifted.unsafeFull, unknown: lifted.args[0] || null };
+}
+
 function parseCompactFormatArgs(args, allowed = ['text', 'json']) {
   const fopts = parseFormatArgs(args, allowed);
   let compact = false;
@@ -4973,7 +5030,7 @@ function formatPageList(pages, browserInfo = null, opts = {}) {
     const aliasNames = aliasesForTarget(p.targetId, aliases);
     const aliasSuffix = aliasNames.length ? `  ${aliasNames.map(name => `@${name}`).join(' ')}` : '';
     const rec = p.targetId === recommendedId ? ' *' : '';
-    return `${id}  ${title}  ${p.url || ''}${aliasSuffix}${rec}`;
+    return `${id}  ${title}  ${displayUrl(p.url || '', opts)}${aliasSuffix}${rec}`;
   }));
   return lines.join('\n');
 }
@@ -5001,7 +5058,7 @@ function buildPageListModel(pages = [], browserInfo = null, opts = {}) {
       targetPrefix: String(p.targetId || '').slice(0, prefixLength),
       type: p.type || 'page',
       title: isBlank ? '(blank tab)' : (p.title || ''),
-      url: p.url || '',
+      url: displayUrl(p.url || '', opts),
       isBlank,
       score: pageTargetScore(p),
       recommended: false,
@@ -5035,9 +5092,9 @@ function buildPageListModel(pages = [], browserInfo = null, opts = {}) {
   };
 }
 
-function formatPageListOutput(pages, browserInfo = null, { format = 'text', aliases = {} } = {}) {
-  if (format === 'json') return formatJson(buildPageListModel(pages, browserInfo, { aliases }));
-  return formatPageList(pages, browserInfo, { aliases });
+function formatPageListOutput(pages, browserInfo = null, { format = 'text', aliases = {}, unsafeFull = false } = {}) {
+  if (format === 'json') return formatJson(buildPageListModel(pages, browserInfo, { aliases, unsafeFull }));
+  return formatPageList(pages, browserInfo, { aliases, unsafeFull });
 }
 
 function shouldShowAxNode(node, compact = false, parentNode = null) {
@@ -6988,11 +7045,11 @@ function pdfViewerNextCommand(targetPrefix = '<target>') {
   return `cdp eval ${targetPrefix} "document.contentType"`;
 }
 
-function pdfViewerHandoffModel(meta = {}, { targetPrefix = '<target>' } = {}) {
+function pdfViewerHandoffModel(meta = {}, { targetPrefix = '<target>', unsafeFull = false } = {}) {
   return {
     schema: 'chrome-cdp-ex.pdf-viewer.v1',
     title: meta.title || '',
-    url: meta.url || '',
+    url: displayUrl(meta.url || '', { unsafeFull }),
     contentType: meta.contentType || 'application/pdf',
     nextCommand: pdfViewerNextCommand(targetPrefix),
     message: 'Chrome is rendering a PDF plugin, not an HTML document.',
@@ -7013,8 +7070,8 @@ function pdfViewerReportRecommendation(targetPrefix = '<target>') {
   };
 }
 
-function formatPdfViewerOutput(meta = {}, { targetPrefix = '<target>' } = {}) {
-  const model = pdfViewerHandoffModel(meta, { targetPrefix });
+function formatPdfViewerOutput(meta = {}, { targetPrefix = '<target>', unsafeFull = false } = {}) {
+  const model = pdfViewerHandoffModel(meta, { targetPrefix, unsafeFull });
   return [
     model.schema,
     `PDF viewer: ${model.message}`,
@@ -7133,10 +7190,11 @@ async function collectPageHealth(cdp, sid, { changed = false, retryIndeterminate
 
 function parseConsoleArgs(args = []) {
   const fopts = parseFormatArgs(args, ['text', 'json']);
-  if (fopts.args.length > 1) {
+  const lifted = takeUnsafeFullArg(fopts.args);
+  if (lifted.args.length > 1) {
     throw new Error('console: choose exactly one mode: --all, --errors, or --clear.');
   }
-  const flag = fopts.args[0];
+  const flag = lifted.args[0];
   const modes = new Map([
     [undefined, 'new'],
     ['--all', 'all'],
@@ -7144,9 +7202,9 @@ function parseConsoleArgs(args = []) {
     ['--clear', 'clear'],
   ]);
   if (!modes.has(flag)) {
-    throw new Error(`console: unknown option ${flag}. Supported options: --all, --errors, --clear, --format text|json.`);
+    throw new Error(`console: unknown option ${flag}. Supported options: --all, --errors, --clear, --unsafe-full, --format text|json.`);
   }
-  return { mode: modes.get(flag), format: fopts.format };
+  return { mode: modes.get(flag), format: fopts.format, unsafeFull: lifted.unsafeFull };
 }
 
 function clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq) {
@@ -7204,6 +7262,32 @@ function observedJsonEntry(entry, located) {
   return { ...rest, ...(hit ? { loc: hit.loc } : {}), ...(stack.length ? { stack } : {}) };
 }
 
+function redactObservedEntry(entry, located, { unsafeFull = false } = {}) {
+  const json = observedJsonEntry(entry, located);
+  if (unsafeFull || !json || typeof json !== 'object') return json;
+  const next = { ...json };
+  if (typeof next.text === 'string') next.text = displayObservedText(next.text, entry);
+  if (typeof next.msg === 'string') next.msg = displayObservedText(next.msg, entry);
+  if (typeof next.message === 'string') next.message = displayObservedText(next.message, entry);
+  if (typeof next.loc === 'string') next.loc = displayLocation(next.loc);
+  if (Array.isArray(next.stack)) next.stack = next.stack.map(frame => displayLocation(frame));
+  return next;
+}
+
+function redactDisplayedPage(page, { unsafeFull = false } = {}) {
+  if (!page || typeof page.url !== 'string' || unsafeFull) return page;
+  const url = displayUrl(page.url);
+  return url === page.url ? page : { ...page, url };
+}
+
+function redactNavigationEntries(entries, { unsafeFull = false } = {}) {
+  return (entries || []).map(entry => {
+    if (unsafeFull || !entry || typeof entry.url !== 'string') return entry;
+    const url = displayUrl(entry.url);
+    return url === entry.url ? entry : { ...entry, url };
+  });
+}
+
 function selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
   if (mode === 'all') return { mode, entries: consoleDocumentEntries(consoleBuf), exceptions: consoleDocumentEntries(exceptionBuf) };
@@ -7221,17 +7305,17 @@ function selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   };
 }
 
-function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag, located = null) {
+function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag, located = null, { unsafeFull = false } = {}) {
   const { mode, entries, exceptions } = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag);
   return {
     schema: 'chrome-cdp-ex.console.v1',
     mode,
-    entries: entries.map(entry => observedJsonEntry(entry, located)),
-    exceptions: exceptions.map(entry => observedJsonEntry(entry, located)),
+    entries: entries.map(entry => redactObservedEntry(entry, located, { unsafeFull })),
+    exceptions: exceptions.map(entry => redactObservedEntry(entry, located, { unsafeFull })),
   };
 }
 
-function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, vitals = null, diagnostic = null, located = null }) {
+function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, vitals = null, diagnostic = null, located = null, unsafeFull = false }) {
   return {
     schema: 'chrome-cdp-ex.status.v1',
     targetId,
@@ -7239,10 +7323,10 @@ function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, la
       state: diagnostic?.state || 'connected',
       diagnostic,
     },
-    page,
-    console: consoleDocumentSince(consoleBuf, lastReadSeq.console).map(entry => observedJsonEntry(entry, located)),
-    exceptions: consoleDocumentSince(exceptionBuf, lastReadSeq.exception).map(entry => observedJsonEntry(entry, located)),
-    navigation: navBuf.since(lastReadSeq.nav || 0),
+    page: redactDisplayedPage(page, { unsafeFull }),
+    console: consoleDocumentSince(consoleBuf, lastReadSeq.console).map(entry => redactObservedEntry(entry, located, { unsafeFull })),
+    exceptions: consoleDocumentSince(exceptionBuf, lastReadSeq.exception).map(entry => redactObservedEntry(entry, located, { unsafeFull })),
+    navigation: redactNavigationEntries(navBuf.since(lastReadSeq.nav || 0), { unsafeFull }),
     runtime,
     vitals,
   };
@@ -7252,7 +7336,8 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
   const { title, url, diagnostic } = await pageInfoModel(cdp, sid, { targetPrefix: opts.targetPrefix });
 
   const lines = [];
-  lines.push(`URL: ${url}`);
+  const unsafeFull = opts.unsafeFull === true;
+  lines.push(`URL: ${displayUrl(url, { unsafeFull })}`);
   lines.push(`Title: ${title}`);
   if (diagnostic) {
     lines.push(`Target state: ${diagnostic.state}`);
@@ -7290,8 +7375,9 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
   if (newConsole.length > 0) {
     lines.push(`Console (${newConsole.length} new):`);
     for (const e of newConsole.slice(-20)) {
-      const loc = locatedLoc(located, e) ? ` (${locatedLoc(located, e)})` : '';
-      lines.push(`  [${e.level}] ${boundedConsoleLineText(e.text, e, 200)}${loc}`);
+      const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+      const loc = locText ? ` (${locText})` : '';
+      lines.push(`  [${e.level}] ${displayConsoleLine(e.text, e, 200, { unsafeFull })}${loc}`);
     }
     if (newConsole.length > 20) lines.push(`  ... and ${newConsole.length - 20} more (use 'console --all')`);
   } else {
@@ -7301,8 +7387,9 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
   if (newExceptions.length > 0) {
     lines.push(`Exceptions (${newExceptions.length} new):`);
     for (const e of newExceptions.slice(-10)) {
-      const loc = locatedLoc(located, e) ? ` at ${locatedLoc(located, e)}` : '';
-      lines.push(`  ${boundedConsoleLineText(e.msg, e, 200)}${loc}`);
+      const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+      const loc = locText ? ` at ${locText}` : '';
+      lines.push(`  ${displayConsoleLine(e.msg, e, 200, { unsafeFull })}${loc}`);
     }
   }
 
@@ -7316,11 +7403,11 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
 }
 
 // Caller frames below a source-mapped top frame (at most two more, see SOURCE_MAP_LIMITS).
-function locatedCallerLines(located, entry) {
-  return (locatedEntry(located, entry)?.stack || []).slice(1).map(frame => `    at ${frame}`);
+function locatedCallerLines(located, entry, { unsafeFull = false } = {}) {
+  return (locatedEntry(located, entry)?.stack || []).slice(1).map(frame => `    at ${displayLocation(frame, { unsafeFull })}`);
 }
 
-async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag, { locate = null } = {}) {
+async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag, { locate = null, unsafeFull = false } = {}) {
   const { mode, entries, exceptions } = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag);
   if (mode === 'new') {
     lastReadSeq.console = consoleBuf.latest();
@@ -7334,16 +7421,18 @@ async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag, { locate 
 
   const located = await locateObservedEntries(locate, entries, exceptions);
   for (const e of entries) {
-    const loc = locatedLoc(located, e) ? ` (${locatedLoc(located, e)})` : '';
-    lines.push(`[${e.level}] ${boundedConsoleLineText(e.text, e)}${loc}`);
-    lines.push(...locatedCallerLines(located, e));
+    const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+    const loc = locText ? ` (${locText})` : '';
+    lines.push(`[${e.level}] ${displayConsoleLine(e.text, e, 300, { unsafeFull })}${loc}`);
+    lines.push(...locatedCallerLines(located, e, { unsafeFull }));
   }
   if (exceptions.length > 0) {
     lines.push('--- Uncaught Exceptions ---');
     for (const e of exceptions) {
-      const loc = locatedLoc(located, e) ? ` at ${locatedLoc(located, e)}` : '';
-      lines.push(`[exception] ${boundedConsoleLineText(e.msg, e)}${loc}`);
-      lines.push(...locatedCallerLines(located, e));
+      const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+      const loc = locText ? ` at ${locText}` : '';
+      lines.push(`[exception] ${displayConsoleLine(e.msg, e, 300, { unsafeFull })}${loc}`);
+      lines.push(...locatedCallerLines(located, e, { unsafeFull }));
     }
   }
   return lines.join('\n');
@@ -7403,7 +7492,7 @@ async function summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
 
   return {
     schema: 'chrome-cdp-ex.summary.v1',
-    page: { title: r.title, url: r.url },
+    page: { title: r.title, url: displayUrl(r.url, { unsafeFull: extra.unsafeFull === true }) },
     viewport: {
       size: r.viewport,
       scrollY: r.scrollY,
@@ -13579,10 +13668,28 @@ async function framesModel(cdp, sid) {
   };
 }
 
-async function framesStr(cdp, sid, { format = 'text' } = {}) {
+function displayedFrame(frame, { unsafeFull = false } = {}) {
+  if (!frame || unsafeFull) return frame;
+  const url = typeof frame.url === 'string' ? displayUrl(frame.url) : frame.url;
+  const unreachableUrl = typeof frame.unreachableUrl === 'string' ? displayUrl(frame.unreachableUrl) : frame.unreachableUrl;
+  if (url === frame.url && unreachableUrl === frame.unreachableUrl) return frame;
+  return { ...frame, url, unreachableUrl };
+}
+
+function parseFrameArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const lifted = takeUnsafeFullArg(fopts.args);
+  if (lifted.args.length) {
+    throw new Error(`frame: unknown argument ${lifted.args[0]}. Next: cdp frame <target> [--unsafe-full] [--format json]`);
+  }
+  return { format: fopts.format, unsafeFull: lifted.unsafeFull };
+}
+
+async function framesStr(cdp, sid, { format = 'text', unsafeFull = false } = {}) {
   const model = await framesModel(cdp, sid);
-  if (format === 'json') return formatJson(model);
-  return formatFrameTreeText(model.frames);
+  const frames = (model.frames || []).map(frame => displayedFrame(frame, { unsafeFull }));
+  if (format === 'json') return formatJson({ ...model, frames });
+  return formatFrameTreeText(frames);
 }
 
 async function resolveFrameRef(cdp, sid, frameRef) {
@@ -13916,7 +14023,7 @@ function omitTypeaheadListboxNodes(nodes, opts = {}) {
 }
 
 const PERCEIVE_COMPACT_FLAGS =
-  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel | --keep-typeahead | --cards | --role feed';
+  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel | --keep-typeahead | --cards | --role feed | --unsafe-full';
 
 function unknownPerceiveOption(token) {
   throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
@@ -13965,7 +14072,7 @@ function parsePerceiveArgs(args) {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
     keepRefs: false, keepTypeahead: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
-    cards: false,
+    cards: false, unsafeFull: false,
   };
   const requireValue = (flag, index, label) => {
     const value = args[index + 1];
@@ -13980,6 +14087,7 @@ function parsePerceiveArgs(args) {
     if (a === '--diff') opts.diff = true;
     else if (a === '--since-action') opts.sinceAction = true;
     else if (a === '--cards') opts.cards = true;
+    else if (a === '--unsafe-full') opts.unsafeFull = true;
     else if (a === '--role') {
       const role = String(requireValue(a, i, 'a role')).trim().toLowerCase();
       i++;
@@ -16051,7 +16159,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
         pdfProbeContext,
       ));
       if (isPdfViewerContentType(probe.contentType)) {
-        const output = formatPdfViewerOutput(probe, { targetPrefix: opts.targetPrefix });
+        const output = formatPdfViewerOutput(probe, { targetPrefix: opts.targetPrefix, unsafeFull: opts.unsafeFull === true });
         return pdfViewerPerceiveResult(lastPerceiveStore, opts, output);
       }
     } catch (error) {
@@ -16084,7 +16192,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   const meta = JSON.parse(metaJson);
 
   if (isPdfViewerContentType(meta.contentType)) {
-    const output = formatPdfViewerOutput(meta, { targetPrefix: opts.targetPrefix });
+    const output = formatPdfViewerOutput(meta, { targetPrefix: opts.targetPrefix, unsafeFull: opts.unsafeFull === true });
     return pdfViewerPerceiveResult(lastPerceiveStore, opts, output);
   }
 
@@ -16288,10 +16396,11 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   // === Assemble output ===
   const lines = [];
-  lines.push(`Page: ${meta.title} — ${meta.url}`);
+  const unsafeFull = opts.unsafeFull === true;
+  lines.push(`Page: ${meta.title} — ${displayUrl(meta.url, { unsafeFull })}`);
   if (frame) {
     const label = frame.name || '(anonymous)';
-    const url = frame.url || frame.unreachableUrl || '(no url)';
+    const url = displayUrl(frame.url || frame.unreachableUrl || '(no url)', { unsafeFull });
     lines.push(`Frame: ${frame.ref} ${label} ${frame.id} ${url}`);
   }
 
@@ -21308,14 +21417,22 @@ async function componentsStr(cdp, sid, args = [], refMap = new Map(), refState =
   return [header, '', ...(tree.lines || []), tree.truncated ? `... truncated` : null].filter(Boolean).join('\n');
 }
 
-async function cookiesStr(cdp, sid) {
+function parseCookieArgs(args = []) {
+  const lifted = takeUnsafeFullArg(args);
+  if (lifted.args.length) {
+    throw new Error(`cookies: unknown argument ${lifted.args[0]}. Next: cdp cookies <target> [--unsafe-full]`);
+  }
+  return { unsafeFull: lifted.unsafeFull };
+}
+
+async function cookiesStr(cdp, sid, { unsafeFull = false } = {}) {
   const { cookies } = await cdpDomains(cdp).Network.getCookies( {}, sid);
   if (!cookies || cookies.length === 0) return 'No cookies';
   // Dynamic column width based on actual cookie names
   const nameW = Math.min(Math.max(...cookies.map(c => c.name.length)) + 2, 32);
   const lines = [];
   for (const c of cookies) {
-    const val = c.value.length > 30 ? c.value.substring(0, 30) + '...' : c.value;
+    const val = unsafeFull ? String(c.value ?? '') : REDACTED_VALUE;
     const flags = [c.httpOnly && 'HttpOnly', c.secure && 'Secure', c.sameSite].filter(Boolean).join(' ');
     const exp = c.expires > 0 ? new Date(c.expires * 1000).toISOString().slice(0, 19) : 'session';
     lines.push(`${c.name.padEnd(nameW)} ${val.padEnd(34)} ${c.domain.padEnd(20)} ${exp.padEnd(20)} ${flags}`);
@@ -21400,11 +21517,11 @@ async function checkpointModel(cdp, sid, { now = Date.now(), unsafeFullCapture =
       cookies: !unsafeFullCapture,
       storage: !unsafeFullCapture,
       warning: unsafeFullCapture
-        ? 'This checkpoint intentionally includes raw cookie and storage values. Treat it as a secret artifact.'
-        : 'Cookie values and sensitive storage values are redacted by default. Use --unsafe-full only when restore fidelity is required and the artifact can be protected.',
+        ? 'This checkpoint intentionally includes raw cookie, URL, and storage values. Treat it as a secret artifact.'
+        : 'Cookie values, URL secrets, and sensitive storage values are redacted by default. Use --unsafe-full only when restore fidelity is required and the artifact can be protected.',
     },
     page: {
-      url: pageState.url || '',
+      url: displayUrl(pageState.url || '', { unsafeFull: unsafeFullCapture }),
       title: pageState.title || '',
       origin: pageState.origin || '',
     },
@@ -21436,7 +21553,7 @@ async function checkpointStr(cdp, sid, { format = 'text', now = Date.now(), unsa
     `Cookies: ${model.cookies.length}`,
     unsafeFullCapture
       ? 'Warning: raw cookie and storage values are included. Protect this artifact like a secret.'
-      : 'Values: cookie values and sensitive storage values are redacted by default.',
+      : 'Values: cookie values, URL secrets, and sensitive storage values are redacted by default.',
     unsafeFullCapture
       ? 'Next: save `checkpoint --unsafe-full --format json` output and restore with `restore --file <path>`.'
       : 'Next: use `checkpoint --unsafe-full --format json` only when restore fidelity is required.',
@@ -29015,31 +29132,28 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       if (opts.format === 'json') {
         const selected = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
         const located = await locateObservedEntries(locateSourceFrames, selected.entries, selected.exceptions);
-        const output = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode, located));
+        const output = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode, located, { unsafeFull: opts.unsafeFull }));
         if (opts.mode === 'new') {
           lastReadSeq.console = consoleBuf.latest();
           lastReadSeq.exception = exceptionBuf.latest();
         }
         return output;
       }
-      return consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode, { locate: locateSourceFrames });
+      return consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode, { locate: locateSourceFrames, unsafeFull: opts.unsafeFull });
     },
     controls: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
       const copts = parseControlsArgs(fopts.args);
       return controlsStr(cdp, sessionId, { ...copts, format: fopts.format });
     },
-    cookies: () => cookiesStr(cdp, sessionId),
+    cookies: args => cookiesStr(cdp, sessionId, parseCookieArgs(args)),
     'diff-shot': args => diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args)),
     elshot: args => {
       const { selector, filePath } = parseElshotArgs(args);
       return elshotStr(cdp, sessionId, selector, targetId, refMap, refState, filePath);
     },
     'export-playwright': args => formatExportPlaywright(session, parseExportPlaywrightArgs(args)),
-    frame: async args => {
-      const fopts = parseFormatArgs(args, ['text', 'json']);
-      return framesStr(cdp, sessionId, { format: fopts.format });
-    },
+    frame: async args => framesStr(cdp, sessionId, parseFrameArgs(args)),
     fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
     html: args => htmlStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     text: args => textStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
@@ -29080,11 +29194,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     snap: args => snapshotStr(cdp, sessionId, args[0] !== '--full', { targetPrefix: targetPrefixForDisplay(targetId) }),
     status: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
+      const lifted = takeUnsafeFullArg(fopts.args);
       if (fopts.format === 'json') {
-        const runtime = fopts.args.includes('--runtime')
+        const runtime = lifted.args.includes('--runtime')
           ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
           : null;
-        const vitals = fopts.args.includes('--vitals') ? await webVitalsModelOrUnavailable(cdp, sessionId) : null;
+        const vitals = lifted.args.includes('--vitals') ? await webVitalsModelOrUnavailable(cdp, sessionId) : null;
         const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
         const located = await locateObservedEntries(
           locateSourceFrames,
@@ -29102,22 +29217,25 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           vitals,
           diagnostic: page.diagnostic || null,
           located,
+          unsafeFull: lifted.unsafeFull,
         }));
         lastReadSeq.console = consoleBuf.latest();
         lastReadSeq.exception = exceptionBuf.latest();
         return output;
       }
       return statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, {
-        runtime: fopts.args.includes('--runtime'),
-        vitals: fopts.args.includes('--vitals'),
+        runtime: lifted.args.includes('--runtime'),
+        vitals: lifted.args.includes('--vitals'),
         targetPrefix: targetPrefixForDisplay(targetId),
         locate: locateSourceFrames,
+        unsafeFull: lifted.unsafeFull,
       });
     },
     styles: args => stylesStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     summary: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
-      const extra = { targetPrefix: targetPrefixForDisplay(targetId) };
+      const lifted = takeUnsafeFullArg(fopts.args);
+      const extra = { targetPrefix: targetPrefixForDisplay(targetId), unsafeFull: lifted.unsafeFull };
       return fopts.format === 'json'
         ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf, extra))
         : summaryStr(cdp, sessionId, consoleBuf, exceptionBuf, extra);
@@ -31557,8 +31675,8 @@ function createPerceiveCommandHandler({
     if (isPdfViewerContentType(page.contentType)) {
       return commandResult(
         fopts.format === 'json'
-          ? formatJson(pdfViewerHandoffModel(page, { targetPrefix }))
-          : formatPdfViewerOutput(page, { targetPrefix }),
+          ? formatJson(pdfViewerHandoffModel(page, { targetPrefix, unsafeFull: popts.unsafeFull === true }))
+          : formatPdfViewerOutput(page, { targetPrefix, unsafeFull: popts.unsafeFull === true }),
         null,
       );
     }
@@ -33467,9 +33585,9 @@ async function main(options = {}) {
 
   // List — use existing daemon if available, otherwise direct
   if (cmd === 'list' || cmd === 'ls' || cmd === 'tabs') {
-    const fopts = parseFormatArgs(args, ['text', 'json']);
-    if (fopts.args.length) {
-      console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
+    const listOpts = parseListArgs(args);
+    if (listOpts.unknown) {
+      console.error(formatCliError(`list: unknown argument ${listOpts.unknown}`, { cmd, format: listOpts.format }));
       return finish(1);
     }
     let pages = isolatedOnlyEnabled() ? null : await listPagesFromMatchingDaemon();
@@ -33483,7 +33601,11 @@ async function main(options = {}) {
     }
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
     const aliasStore = readTargetAliases();
-    console.log(formatPageListOutput(pages, _browserInfo, { format: fopts.format, aliases: aliasStore.aliases }));
+    console.log(formatPageListOutput(pages, _browserInfo, {
+      format: listOpts.format,
+      aliases: aliasStore.aliases,
+      unsafeFull: listOpts.unsafeFull,
+    }));
     await new Promise(resolveWrite => process.stdout.write('', resolveWrite));
     return finish(0);
   }
@@ -34412,11 +34534,11 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, sendCommand, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
-  parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText, summaryStr,
+  parseFormatArgs, parseListArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText, summaryStr,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   assessViewportReadback, rememberViewportReadback,
-  cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
+  cookieDelStr, cookieDeleteParams, cookiesStr, parseCookieArgs, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
   navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, splitScrollEdgeArgs, normalizeScrollArgs, scrollByExpression, formatScrollByContainerText, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, webVitalsModel, clearObservationBuffers,
@@ -34438,7 +34560,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr, pressUsageError,
   formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, assertClickPointNotCovered, formatRefRect, isPriorityPerceiveTextLine,
-  parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
+  parseFrameOnlyRef, parseFrameRef, parseFrameArgs, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, perceiveStoreDiffSource, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,

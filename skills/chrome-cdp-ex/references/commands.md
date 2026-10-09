@@ -183,7 +183,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | Command | Synopsis | Catalog policy |
 |---|---|---|
 | `help` | `help [command]` | `read / standard` |
-| `list` | `list\|tabs\|ls [--format json]` | `read / standard` |
+| `list` | `list\|tabs\|ls [--unsafe-full] [--format json]` | `read / standard` |
 | `target` | `target --url URL\|--title TEXT [--exact] [--format json]` | `read / standard` |
 | `tab-group` | `tab-group list\|create\|add\|remove\|delete\|show [--format json]` | `conditional-mutation / conditional` |
 | `broadcast` | `broadcast <group> <cmd> [args...] [--format json] [--full-results]` | `mutation / mutation` |
@@ -191,7 +191,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `attach` | `attach --port N --target <id> --name <alias>` | `protected-mutation / mutation` |
 | `current` | `current [--format json]` | `read / standard` |
 | `forget` | `forget <alias>` | `protected-mutation / mutation` |
-| `perceive` | `perceive <target> [flags] [--format json]` | `read / standard` |
+| `perceive` | `perceive <target> [flags] [--unsafe-full] [--format json]` | `read / standard` |
 | `snap` | `snap <target> [--full]` | `read / standard` |
 | `controls` | `controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]` | `read / standard` |
 | `eval` | `eval <target> <expr>` | `script / raw-script` |
@@ -205,16 +205,16 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
 | `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
 | `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
-| `status` | `status <target> [--runtime] [--vitals]` | `read / standard` |
-| `console` | `console <target> [--all\|--errors\|--clear]` | `conditional-mutation / conditional` |
-| `summary` | `summary <target>` | `read / standard` |
+| `status` | `status <target> [--runtime] [--vitals] [--unsafe-full]` | `read / standard` |
+| `console` | `console <target> [--all\|--errors\|--clear] [--unsafe-full]` | `conditional-mutation / conditional` |
+| `summary` | `summary <target> [--unsafe-full]` | `read / standard` |
 | `report` | `report <target> [--last N\|--all] [--format json] [--qa\|--summary] [--compact]` | `evidence / standard` |
 | `checkpoint` | `checkpoint <target> [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
 | `restore` | `restore <target> --file <path> [--format json]` | `mutation / mutation` |
 | `record-actions` | `record-actions <target>` | `read / standard` |
 | `export-playwright` | `export-playwright <target> [--format json]` | `read / standard` |
 | `replay` | `replay <target> --file <path> [--format json]` | `mutation / mutation` |
-| `frame` | `frame <target> [--format json]` | `read / standard` |
+| `frame` | `frame <target> [--unsafe-full] [--format json]` | `read / standard` |
 | `overlay` | `overlay <target> [sel\|@ref] [--format json]` | `read / standard` |
 | `qa` | `qa <target> [--desktop WxH] [--mobile WxH] [--format json]` | `mutation / mutation` |
 | `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
@@ -237,7 +237,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `scanshot` | `scanshot <target>` | `read / standard` |
 | `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
 | `components` | `components <target> [--depth N] [@ref\|selector] [--max-chars N] [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
-| `cookies` | `cookies <target>` | `sensitive-read / sensitive-read` |
+| `cookies` | `cookies <target> [--unsafe-full]` | `sensitive-read / sensitive-read` |
 | `cookieset` | `cookieset <target> <cookie>` | `mutation / mutation` |
 | `cookiedel` | `cookiedel <target> <name>` | `mutation / mutation` |
 | `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
@@ -442,14 +442,14 @@ The daemon buffers console output, exceptions, and action evidence in the backgr
 
 A main-frame navigation (a reload, assigning `location`, or `nav`) cuts the console and exception lists at that commit. `perceive`'s `Console:` line, `summary`, `status`, `console` (including `--all` and `--errors`), `qa`, and `responsive-audit` then count the current document only. Entries from the previous document are omitted, not labelled as failures of the page on screen. A child-frame navigation does not cut the page, and neither does a same-document navigation (`pushState` or a hash change). `netlog` is cut at the same navigation but keeps a short lookback so the document request stays on the list; console has no lookback. An action receipt still reports a console error or exception observed after that action's baseline, including one thrown on the document that then navigated away. `reload` leaves those console and exception entries in place, so an error thrown while the new document loads is still reported. It still clears the navigation and network buffers.
 
-Console errors, warnings, and exceptions are source-mapped in `console`, `status`, and action receipts: `src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)`. `console` adds up to two caller frames as `at …` lines (`stack` in JSON). The map is read from the script's `//# sourceMappingURL=` (inline `data:` or loaded with the page's cookies; 5 MB cap, 1.5 s wait, failing hosts back off 5–60 s). No map, or a slow one, leaves the generated frame unchanged.
+Console errors, warnings, and exceptions are source-mapped in `console`, `status`, and action receipts: `src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)`. `console` adds up to two caller frames as `at …` lines (`stack` in JSON). The map is read from the script's `//# sourceMappingURL=` (inline `data:` or loaded with the page's cookies; 5 MB cap, 1.5 s wait, failing hosts back off 5–60 s). No map, or a slow one, leaves the generated frame unchanged. A location keeps its `:line:col` when the script URL has a token query parameter or the file name looks like a secret key (`secrets.html:15:24`). `--unsafe-full` prints the raw location.
 
 ```bash
 scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
 scripts/cdp.mjs status  <target> --vitals [--format json]         # + LCP/CLS/INP, long tasks, LoAF, nav timing (chrome-cdp-ex.vitals.v1)
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
 scripts/cdp.mjs console <target> [--all|--errors|--clear] [--format json] # current document (default: unread)
-scripts/cdp.mjs frame   <target> [--format json]                  # frame tree with @fN refs (alias: frames)
+scripts/cdp.mjs frame   <target> [--unsafe-full] [--format json]  # frame tree with @fN refs; token query params redacted (alias: frames)
 scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
 scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
 scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--expect-status code] [--format json]
@@ -660,7 +660,7 @@ scripts/cdp.mjs components <target> @3 --max-chars 8000 --format json # React fi
 scripts/cdp.mjs components <target> @3 --unsafe-full # React fiber; explicit sensitive/large opt-in
 scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
 scripts/cdp.mjs table   <target> [selector] [--format json]  # bounded mounted snapshot; not a full export
-scripts/cdp.mjs cookies <target>                       # list cookies for current page
+scripts/cdp.mjs cookies <target> [--unsafe-full]      # list cookies; values are <redacted> unless --unsafe-full
 scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value; domain=.example.com; secure"
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
 scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
@@ -808,11 +808,14 @@ A resize reads the applied size back from the page (layout viewport, or the emul
 ### Cookie management
 
 ```bash
-scripts/cdp.mjs cookies   <target>                                    # list all cookies
+scripts/cdp.mjs cookies   <target>                                    # names, domains, flags; values are <redacted>
+scripts/cdp.mjs cookies   <target> --unsafe-full                      # print raw cookie values
 scripts/cdp.mjs cookieset <target> "name=value"                       # set simple cookie
 scripts/cdp.mjs cookieset <target> "name=value; domain=.example.com; secure; httponly"  # with attributes
 scripts/cdp.mjs cookiedel <target> session_id                          # delete by name
 ```
+
+Cookie values are `<redacted>` by default, including short `HttpOnly` session cookies. `console` text masks JWTs, `Authorization` values, and token query parameters. `status`, `list`, `summary`, `perceive`, and the `checkpoint` header mask token query parameters in the page URL. `frame` masks those parameters in page and iframe URLs (`url` and `unreachableUrl`) in text and `--format json`. `--unsafe-full` prints the raw values. `checkpoint --unsafe-full` is still the restorable artifact.
 
 ### File upload
 
