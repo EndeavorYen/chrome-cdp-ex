@@ -357,6 +357,7 @@ function createOverflowElement({
     get clientHeight() { return state.clientHeight; },
     get clientWidth() { return state.clientWidth; },
     _nativeScrollTo(options) { el.scrollTop = options.top; },
+    _nativeScrollBy(options) { el.scrollTop = state.scrollTop + (Number(options.top) || 0); },
     dispatchEvent() { return true; },
     _state: state,
   };
@@ -539,7 +540,7 @@ describe('issue #326 scroll nested overflow to top/bottom', () => {
     expect(formatted).not.toMatch(/RootWebArea/);
   });
 
-  it('does not change relative scroll down N leftover settle-diff', async () => {
+  it('keeps relative scroll down N settle-diff, and moves the nested container the document lacks (#640)', async () => {
     expect(T.parseScrollContainerArg([])).toBe(null);
     expect(T.parseScrollContainerArg(['--scroll-container', '#content-container'])).toBe('#content-container');
     expect(() => T.parseScrollContainerArg(['--scroll-container'])).toThrow(/--scroll-container requires a selector/);
@@ -556,12 +557,14 @@ describe('issue #326 scroll nested overflow to top/bottom', () => {
     await expect(T.scrollStr(cdp, 'sid', 'to', 'bottom', ['--scroll-container', '@3']))
       .rejects.toThrow(/requires a CSS selector/);
     const text = await T.scrollStr(cdp, 'sid', 'down', '80');
-    expect(page.content.scrollTop).toBe(0);
-    expect(text).toBe('Scrolled by (0, 80). Position: (0, 0)');
+    // Before #640 this left #content-container at 0 and printed "Scrolled by (0, 80). Position: (0, 0)".
+    expect(page.content.scrollTop).toBe(80);
+    expect(text).toBe(`Scrolled #content-container by (0, 80): scrollTop 0 → 80 / ${COMFY_CONTAINER_SCROLL_MAX} max`);
     expect(cdp.calls[0].params.expression).toContain('scrollBy');
-    expect(cdp.calls[0].params.expression).not.toContain('scroll-edge');
-    await expect(T.scrollStr(cdp, 'sid', 'down', '80', ['--scroll-container', '#content-container']))
-      .rejects.toThrow(/only valid with to top\/to bottom/);
+    expect(cdp.calls[0].params.expression).not.toContain('chrome-cdp-ex.scroll-edge');
+    expect(await T.scrollStr(cdp, 'sid', 'down', '80', ['--scroll-container', '#sidebar']))
+      .toBe('Scrolled #sidebar by (0, 80): scrollTop 0 → 80 / 1800 max');
+    expect(page.content.scrollTop).toBe(80);
   });
 
   it('keeps a short page with no overflow as document at-bottom', async () => {

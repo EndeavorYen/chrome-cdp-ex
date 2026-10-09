@@ -630,7 +630,7 @@ scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # sam
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
 scripts/cdp.mjs press   <target> <key> [--format json] # press key (alias: key; Enter/Escape/Tab auto-return perceive diff; non-listing Enter keyDown includes a carriage return so keypress and implicit submit run)
-scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--format json] # relative scroll (auto-returns perceive diff)
+scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--scroll-container SELECTOR] [--format json] # relative scroll: the document when it scrolls on that axis, else the page's main scroll container (receipt names it: "Scrolled #list by (0, 500): scrollTop 0 → 500 / 9000 max"); nothing scrollable exits 1 with Kind: not-scrollable
 scripts/cdp.mjs scroll  <target> to bottom [--format json] [--compact] # document end, or nested overflow when the document cannot scroll; skinny scrollY or scrollTop / scrollMax / at-bottom
 scripts/cdp.mjs scroll  <target> to top [--format json] [--compact]    # document start, or nested overflow when the document cannot scroll; skinny scrollY or scrollTop / scrollMax / at-top
 scripts/cdp.mjs scroll  <target> to bottom --scroll-container SELECTOR [--format json] # explicit overflow container (same idea as table --scroll-container)
