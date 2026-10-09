@@ -432,8 +432,9 @@ describe('Phase 6 direct CDP characterization', () => {
     // #547 added elshotRefLabel → Runtime.callFunctionOn, a read-only label read for the elshot receipt.
     // #575 added applySavedNetworkControls → Network.enable, Network.emulateNetworkConditions, Fetch.disable.
     // #552 added readPinnedClickPoint → Runtime.callFunctionOn, freezing the click point before dispatch.
-    expect(inventory).toHaveLength(176);
-    expect(digest).toBe('sha256:c32a2c22bd79e991e378bcf953edba492311d530c1599fe8d0f48e324b9263a6');
+    // #608 added readHoverRevealOnObject → Runtime.callFunctionOn, reading :hover on the ref node.
+    expect(inventory).toHaveLength(177);
+    expect(digest).toBe('sha256:9022fc0701532ff69c3e81f8342f747163ebd9a82f9ae1eb5a3f85f24bd0750f');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
