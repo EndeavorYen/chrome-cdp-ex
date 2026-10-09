@@ -27668,21 +27668,46 @@ function dismissModalScript() {
       if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return false;
       return true;
     }
+    // #653: only a control whose job is to close counts. Accept words (OK, 確認, Continue) and labels
+    // that merely contain a close word ("Cancel subscription", "Book") are a decision for the agent.
+    const CLOSE_TEXT = ['close', 'dismiss', 'cancel', '關閉', '取消', '×', '✕', '✖', 'x'];
+    const CLOSE_LABEL_RE = /^(close|dismiss|cancel)(\\s+(this\\s+)?(dialog|modal|popup|window|banner|message|notification|panel))?$|^(關閉|取消)/i;
+    function textOf(el) {
+      return String(el.textContent || '').replace(/\\s+/g, ' ').trim();
+    }
+    function labelOf(el) {
+      return String(el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim();
+    }
+    function dismissLabel(el) {
+      if (el.hasAttribute && (el.hasAttribute('data-dismiss') || el.hasAttribute('data-bs-dismiss') || el.hasAttribute('data-close'))) return 'data-dismiss';
+      if (String(el.getAttribute('value') || '').toLowerCase() === 'cancel' && el.closest && el.closest('form[method="dialog"]')) return 'cancel';
+      const text = textOf(el).toLowerCase();
+      if (CLOSE_TEXT.includes(text)) return text;
+      const label = labelOf(el);
+      return label && CLOSE_LABEL_RE.test(label) ? label.toLowerCase() : null;
+    }
     function findCloseButton(root) {
-      const candidates = root.querySelectorAll('button, [role="button"], a, [aria-label], [data-dismiss], [data-close]');
-      const labels = ['close', 'dismiss', 'cancel', 'ok', '關閉', '取消', '確認', '繼續', '×', '✕'];
+      const candidates = root.querySelectorAll('button, [role="button"], a, [aria-label], [data-dismiss], [data-bs-dismiss], [data-close]');
       for (const el of candidates) {
         if (!visible(el)) continue;
-        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-        const txt  = (el.textContent || '').trim().toLowerCase();
-        const data = (el.getAttribute('data-dismiss') || el.getAttribute('data-close') || '').toLowerCase();
-        for (const lab of labels) {
-          if (aria.includes(lab) || txt === lab || txt.includes(lab) || data.includes(lab)) {
-            return { el, label: lab };
-          }
-        }
+        const label = dismissLabel(el);
+        if (label) return { el, label };
       }
       return null;
+    }
+    function dialogName(d) {
+      const ids = String(d.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean);
+      const labelled = ids.map(id => (document.getElementById ? document.getElementById(id) : null)).filter(Boolean).map(textOf).join(' ');
+      const heading = d.querySelector ? d.querySelector('h1, h2, h3, [role="heading"]') : null;
+      return String(d.getAttribute('aria-label') || labelled || (heading ? textOf(heading) : '')).slice(0, 80);
+    }
+    function dialogButtons(d) {
+      return Array.from(d.querySelectorAll('button, [role="button"], a[href], input[type="button"], input[type="submit"]'))
+        .filter(visible)
+        .map(el => textOf(el) || labelOf(el) || String(el.value || ''))
+        .filter(Boolean)
+        .slice(0, 6)
+        .map(name => name.slice(0, 40));
     }
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')).filter(visible);
     if (dialogs.length === 0) {
@@ -27707,20 +27732,37 @@ function dismissModalScript() {
       if (overlays.length) return JSON.stringify({ ok: false, reason: 'overlay-not-dialog', overlays });
       return JSON.stringify({ ok: false, reason: 'no-dialog' });
     }
-    // Prefer an explicit close button inside a visible dialog.
-    for (const d of dialogs) {
+    // Prefer an explicit close button inside a visible dialog, topmost (last) dialog first.
+    for (const d of [...dialogs].reverse()) {
       const hit = findCloseButton(d);
       if (hit) {
         hit.el.click();
         return JSON.stringify({ ok: true, action: 'click', label: hit.label, sel: d.tagName.toLowerCase() });
       }
     }
-    // Fall through: signal that the caller should send Escape next.
-    return JSON.stringify({ ok: false, reason: 'no-close-button', dialogs: dialogs.length });
+    // Fall through: the caller sends Escape next. Name the topmost dialog and its buttons for the case
+    // where Escape does not close it either.
+    const top = dialogs[dialogs.length - 1];
+    return JSON.stringify({ ok: false, reason: 'no-close-button', dialogs: dialogs.length, name: dialogName(top), buttons: dialogButtons(top) });
   })()`;
 }
 
-async function dismissModalStr(cdp, sid) {
+function openDialogCountScript() {
+  return `(function() {
+    const visible = el => {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return false;
+      const cs = getComputedStyle(el);
+      return cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) !== 0;
+    };
+    return Array.from(document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')).filter(visible).length;
+  })()`;
+}
+
+const DISMISS_MODAL_ESCAPE_CHECKS = 4;
+const DISMISS_MODAL_ESCAPE_CHECK_MS = 150;
+
+async function dismissModalStr(cdp, sid, { checkDelayMs = DISMISS_MODAL_ESCAPE_CHECK_MS } = {}) {
   const raw = await evalStr(cdp, sid, dismissModalScript());
   let parsed;
   try { parsed = JSON.parse(raw); }
@@ -27737,7 +27779,19 @@ async function dismissModalStr(cdp, sid) {
   }
   // Fallback: send Escape (does not fire window-level shortcuts the way Space does).
   await pressStr(cdp, sid, 'escape');
-  return `No close button found in ${parsed.dialogs || 0} dialog(s); sent Escape as fallback.`;
+  const before = Number(parsed.dialogs) || 0;
+  // #653: Escape closes many dialogs but not all; exit 0 only when one is gone.
+  for (let check = 0; check < DISMISS_MODAL_ESCAPE_CHECKS; check++) {
+    if (check > 0) await sleep(checkDelayMs);
+    const open = Number(await evalStr(cdp, sid, openDialogCountScript()));
+    if (!Number.isFinite(open)) return `No close button found in ${before} dialog(s); sent Escape as fallback.`;
+    if (open < before) return `No close button found in ${before} dialog(s); sent Escape as fallback, and the dialog closed.`;
+  }
+  const name = parsed.name ? ` "${parsed.name}"` : '';
+  const buttons = Array.isArray(parsed.buttons) && parsed.buttons.length
+    ? ` Its buttons: ${parsed.buttons.map(button => `"${button}"`).join(', ')}.`
+    : '';
+  throw new Error(`dismiss-modal: the dialog${name} has no close or cancel control, and Escape did not close it.${buttons} Choosing one is the user's decision: click the button that matches what they asked for.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -33907,7 +33961,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   findListeningBrowserProcess, listeningSocketInodes,
   persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
-  dismissModalStr, dismissModalScript,
+  dismissModalStr, dismissModalScript, openDialogCountScript,
   // Screenshot
   captureScreenshot, screencastFallback,
   resetScreenshotTier, getScreenshotTier, createScreenshotTierState, screenshotFallbackReason, SCREENSHOT_TIMEOUT,
