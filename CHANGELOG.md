@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Performance
+
+* `bin/chrome-cdp` on Node 22 runs `cdp.mjs` in this process and turns on Node's module compile cache before that import. A warm call skips the extra Node process and recompiles less of the CLI. Stdout, stderr, exit codes, and the Node before 22 re-exec path stay the same. Daemon `scriptPath` stays `cdp.mjs`. An unwritable cache, or a Node build without `module.enableCompileCache`, continues without a message ([#600](https://github.com/EndeavorYen/chrome-cdp-ex/issues/600)).
+
 ### Bug Fixes
 
 * `hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take several seconds for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and one Next command (`CDP_BACKGROUND=0 cdp hover …` when the tab is hidden, otherwise `cdp perceive … -C -d 8`) ([#608](https://github.com/EndeavorYen/chrome-cdp-ex/issues/608)).
