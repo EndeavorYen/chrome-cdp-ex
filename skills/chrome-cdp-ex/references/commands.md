@@ -1654,10 +1654,12 @@ extracted text, in five short calls without any `sleep`-based polling.
 ### Modal dismissal that does NOT fire underlying shortcuts
 
 ```bash
-cdp dismiss-modal <t>   # clicks visible close button, falls back to Escape
+cdp dismiss-modal <t>   # clicks the dialog's close or cancel control, falls back to Escape
 ```
 
-The reviewer used `press Space` to dismiss an MOTD and accidentally triggered the underlying game's `space` hotkey. `dismiss-modal` only sends Escape if no close button is found — `Space` is never used.
+The reviewer used `press Space` to dismiss an MOTD and accidentally triggered the underlying game's `space` hotkey. `dismiss-modal` only sends Escape if no close control is found — `Space` is never used.
+
+A close control is one whose job is to close: text that is exactly ×, ✕, Close, Cancel, Dismiss, 關閉 or 取消, an `aria-label`/`title` such as "Close dialog", `data-dismiss` / `data-bs-dismiss` / `data-close`, or the `cancel` button of a `<form method="dialog">`. Accept or confirm buttons ("OK", "OK, delete it", 確認, Continue) and labels that only contain a close word ("Cancel subscription") are never pressed: choosing them is the user's decision. When the dialog has no close control and is still open after Escape, the command exits 1 with `Kind: dialog-open`, names the dialog and its buttons, and its Next is `perceive`; click the button that matches what the user asked for.
 
 ### Long event-log perception
 
