@@ -234,6 +234,10 @@ const REF_RESOLVE_TIMEOUT = 2000;
 // Page-side scroll settle budget inside REF_RESOLVE_TIMEOUT, leaving room for the round trip.
 const REF_SETTLE_BUDGET_MS = 1400;
 const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
+// Background-tab mouseMoved is applied with Chrome's ~5s compositor ack.
+// Poll page evidence after the short ack swallow; do not lengthen that swallow.
+const HOVER_DELIVERY_WAIT_MS = 6500;
+const HOVER_DELIVERY_POLL_MS = 100;
 const HOVER_MUTATION_TIMEOUT_MS = 3000;
 const HOVER_MUTATION_MARKER = 'chrome-cdp-ex.hover-mutation.v1';
 const HOVER_REVEAL_MARKER = 'chrome-cdp-ex.hover-reveal.v1';
@@ -18607,21 +18611,27 @@ async function dispatchHoverMove(cdp, sid, x, y) {
     // Chrome waits for a renderer/compositor ack on mouseMoved. On live Chrome 151
     // that ack is often withheld until a ~5s input timeout, then the RPC still
     // succeeds. The event was already forwarded; do not block hover on the ack.
+    // A background tab can apply :hover only when that ack completes. hoverStr
+    // polls the page for :hover instead of lengthening this timeout.
     if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
   }
 }
 
 function hoverRevealStateJs(elExpr) {
   return `
-    const el = ${elExpr};
-    if (!el) return { ok: false, marker: ${JSON.stringify(HOVER_REVEAL_MARKER)} };
-    const style = getComputedStyle(el);
+    const hoverEl = ${elExpr};
+    if (!hoverEl) return { ok: false, marker: ${JSON.stringify(HOVER_REVEAL_MARKER)} };
+    const style = getComputedStyle(hoverEl);
     const opacity = Number(style.opacity);
     const visibility = String(style.visibility || '');
     const display = String(style.display || '');
     const visible = Number.isFinite(opacity) && opacity > 0 && visibility !== 'hidden' && display !== 'none';
+    let matchesHover = null;
     let groupHover = false;
-    try { groupHover = el.matches(':hover') || !!el.closest(':hover'); } catch {}
+    try {
+      matchesHover = hoverEl.matches(':hover') === true;
+      groupHover = matchesHover || !!hoverEl.closest(':hover');
+    } catch {}
     return {
       ok: true,
       marker: ${JSON.stringify(HOVER_REVEAL_MARKER)},
@@ -18630,8 +18640,9 @@ function hoverRevealStateJs(elExpr) {
       display,
       visible,
       groupHover,
+      matchesHover,
       href: String(location.href || ''),
-      tag: el.tagName,
+      tag: hoverEl.tagName,
     };
   `;
 }
@@ -18680,11 +18691,62 @@ function parseHoverRevealState(raw) {
       && value.display !== 'none'
     ),
     groupHover: value.groupHover === true,
+    matchesHover: value.matchesHover === true ? true : value.matchesHover === false ? false : null,
     href: value.href != null ? String(value.href) : undefined,
     tag: value.tag,
     x: value.x,
     y: value.y,
   };
+}
+
+function hoverDeliveryLanded(after) {
+  if (!after || after.ok === false) return false;
+  if (after.matchesHover === true) return true;
+  // Older reveal reads omit matchesHover and report a landed hover as groupHover.
+  if (after.matchesHover == null && after.groupHover === true) return true;
+  return false;
+}
+
+function hoverNotDeliveredError(selector, point, visibility) {
+  const target = selector ? String(selector) : 'the target';
+  const where = point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))
+    ? ` at CSS (${Math.round(Number(point.x))}, ${Math.round(Number(point.y))})`
+    : '';
+  const hidden = visibility === 'hidden'
+    ? " The tab's document.visibilityState is hidden."
+    : '';
+  return new Error(`hover: ${target}${where} did not match :hover.${hidden} The hover was not delivered.`);
+}
+
+async function confirmHoverDelivered(cdp, sid, readState, { selector = '', point = null, waitMs } = {}) {
+  const budget = Number.isFinite(Number(waitMs)) ? Number(waitMs) : HOVER_DELIVERY_WAIT_MS;
+  const started = Date.now();
+  for (;;) {
+    const after = await readState();
+    if (hoverDeliveryLanded(after)) return after;
+    const elapsed = Date.now() - started;
+    if (elapsed >= budget) break;
+    const pause = Math.min(HOVER_DELIVERY_POLL_MS, budget - elapsed);
+    if (pause > 0) await sleep(pause);
+  }
+  throw hoverNotDeliveredError(selector, point, await probePageVisibility(cdp, sid));
+}
+
+async function readHoverRevealOnObject(cdp, sid, objectId) {
+  if (!objectId) return null;
+  try {
+    const result = await cdpDomains(cdp).Runtime.callFunctionOn({
+      objectId,
+      functionDeclaration: `function() {
+        void ${JSON.stringify(HOVER_REVEAL_MARKER)};
+        ${hoverRevealStateJs('this')}
+      }`,
+      returnByValue: true,
+    }, sid, REF_RESOLVE_TIMEOUT);
+    return parseHoverRevealState(result?.result?.value);
+  } catch {
+    return null;
+  }
 }
 
 function formatHoverRevealClause(before, after) {
@@ -18712,14 +18774,20 @@ async function readHoverRevealState(cdp, sid, selector, point = null) {
   }
 }
 
-async function hoverStr(cdp, sid, selector, refMap, refState) {
+async function hoverStr(cdp, sid, selector, refMap, refState, options = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
+  const waitMs = options.deliveryWaitMs;
   if (isRef(selector)) {
-    const { rect: r } = await resolveRefRectNoScroll(cdp, sid, refMap, selector, refState);
-    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
-    const before = await readHoverRevealState(cdp, sid, null, { x: cx, y: cy });
+    const { rect: r, objectId } = await resolveRefRectNoScroll(cdp, sid, refMap, selector, refState);
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    const point = { x: cx, y: cy };
+    const readAt = () => (objectId
+      ? readHoverRevealOnObject(cdp, sid, objectId)
+      : readHoverRevealState(cdp, sid, null, point));
+    const before = await readAt();
     await dispatchHoverMove(cdp, sid, cx, cy);
-    const after = await readHoverRevealState(cdp, sid, null, { x: cx, y: cy });
+    const after = await confirmHoverDelivered(cdp, sid, readAt, { selector, point, waitMs });
     return `Hovering over <${r.tag || '?'}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})${formatHoverRevealClause(before, after)}`;
   }
   const expr = `
@@ -18728,34 +18796,28 @@ async function hoverStr(cdp, sid, selector, refMap, refState) {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
       const rect = el.getBoundingClientRect();
-      const style = getComputedStyle(el);
-      const opacity = Number(style.opacity);
-      const visibility = String(style.visibility || '');
-      const display = String(style.display || '');
-      const visible = Number.isFinite(opacity) && opacity > 0 && visibility !== 'hidden' && display !== 'none';
-      let groupHover = false;
-      try { groupHover = el.matches(':hover') || !!el.closest(':hover'); } catch {}
-      return {
-        ok: true,
-        marker: ${JSON.stringify(HOVER_REVEAL_MARKER)},
+      const state = (function() {
+        ${hoverRevealStateJs('el')}
+      })();
+      if (!state || state.ok === false) return state;
+      return Object.assign({}, state, {
         x: rect.x + rect.width / 2,
         y: rect.y + rect.height / 2,
-        tag: el.tagName,
-        opacity,
-        visibility,
-        display,
-        visible,
-        groupHover,
-        href: String(location.href || ''),
-      };
+      });
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
   const before = parseHoverRevealState(result);
+  const point = { x: r.x, y: r.y };
   await dispatchHoverMove(cdp, sid, r.x, r.y);
-  const after = await readHoverRevealState(cdp, sid, selector);
+  const after = await confirmHoverDelivered(
+    cdp,
+    sid,
+    () => readHoverRevealState(cdp, sid, selector),
+    { selector, point, waitMs },
+  );
   return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})${formatHoverRevealClause(before, after)}`;
 }
 
@@ -19329,7 +19391,8 @@ async function rememberHoverSettleBaseline(
   // HOVER_MUTATION_TIMEOUT_MS: Chrome 151 mouseenter can land after that
   // window, and discard already keeps the next no-op scroll honest. Do not
   // emit ActionResult. Do not lengthen waitForSettle. Do not wait for the
-  // compositor mouseMoved ack.
+  // compositor mouseMoved ack. hoverStr confirms :hover before it returns;
+  // this recapture stays immediate and does not add another wait.
   const settleOpts = actionObservationPerceiveOpts(targetId);
   await perceiveStr(
     cdp,
@@ -30594,6 +30657,9 @@ ACTION FEEDBACK
   leftover typeahead AX / quicksearch is not the success signal.
   Sequential batch hover then eval is report-only on the hover:
   leftover AX recapture races CSS :hover and is not the success signal.
+  hover prints its receipt only after the target matches :hover. If it never
+  matches, the command fails with Kind: hover-not-delivered and one Next
+  command (CDP_BACKGROUND=0 cdp hover when the tab is hidden).
   Search-submit press probes once or opens /models?search=<filled>,
   then returns on the listing URL. No 1500 ms typeahead poll.
   qa returns a semantic QA report and includes action evidence when --click is used.
@@ -32007,6 +32073,22 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         ? 'cdp help loadall'
         : (targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : 'cdp help loadall'),
       reason: 'No current element matched the selector. A missing load-more control is not a successful disappear.',
+    };
+  }
+  if (cmd === 'hover' && lower.includes('the hover was not delivered')) {
+    const selector = String(args?.[0] || '').trim();
+    const hidden = lower.includes('visibilitystate is hidden');
+    const arg = selector ? recoveryCommandArg(selector) : '<sel|@ref>';
+    const run = hidden
+      ? `CDP_BACKGROUND=0 cdp hover ${target} ${arg}`
+      : `cdp perceive ${target} -C -d 8`;
+    return {
+      kind: 'hover-not-delivered',
+      strategy: hidden ? 'activate-tab' : 'refresh-perception',
+      run,
+      reason: hidden
+        ? 'The tab is hidden, so the target did not match :hover. CDP_BACKGROUND=0 activates that tab before hover and does not raise a covered window.'
+        : 'The target did not match :hover after the mouse move. Refresh perception and choose the control again.',
     };
   }
   if (
@@ -33693,7 +33775,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   diffShotScreenshotCaptureOptions,
   FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr, scanshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
-  HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, HOVER_REVEAL_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
+  HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, HOVER_REVEAL_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,

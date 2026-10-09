@@ -3930,8 +3930,26 @@ describe('issues #210-#217 open contracts', () => {
           return Promise.resolve({ object: { objectId: 'hover-node' } });
         }
         if (method === 'Runtime.callFunctionOn') {
-          if (String(params.functionDeclaration || '').includes('ownerDocumentGetter')) {
+          const fn = String(params.functionDeclaration || '');
+          if (fn.includes('ownerDocumentGetter')) {
             return Promise.resolve({ result: { value: { connected: true } } });
+          }
+          if (fn.includes('chrome-cdp-ex.hover-reveal.v1')) {
+            return Promise.resolve({
+              result: {
+                value: {
+                  ok: true,
+                  marker: 'chrome-cdp-ex.hover-reveal.v1',
+                  opacity: 1,
+                  visibility: 'visible',
+                  display: 'inline',
+                  visible: true,
+                  groupHover: true,
+                  matchesHover: true,
+                  tag: 'A',
+                },
+              },
+            });
           }
           return Promise.resolve({
             result: { value: { x: 240, y: 180, w: 28, h: 44, tag: 'A', text: 'Learn more' } },
@@ -3942,6 +3960,26 @@ describe('issues #210-#217 open contracts', () => {
           return Promise.reject(new Error('Timeout: Input.dispatchMouseEvent'));
         }
         if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('chrome-cdp-ex.hover-reveal.v1')) {
+            return Promise.resolve({
+              result: {
+                value: {
+                  ok: true,
+                  marker: 'chrome-cdp-ex.hover-reveal.v1',
+                  x: 254,
+                  y: 202,
+                  tag: 'A',
+                  opacity: 1,
+                  visibility: 'visible',
+                  display: 'inline',
+                  visible: true,
+                  groupHover: true,
+                  matchesHover: true,
+                },
+              },
+            });
+          }
           return Promise.resolve({
             result: { value: { ok: true, x: 254, y: 202, tag: 'A' } },
           });
@@ -9961,6 +9999,23 @@ describe('issue #286 hover settle baseline', () => {
           }
           if (expr.includes('#p23hover') && expr.includes('rect.width / 2')) {
             return Promise.resolve({ result: { value: { ok: true, x: 48, y: 92, tag: 'SPAN' } } });
+          }
+          if (expr.includes('chrome-cdp-ex.hover-reveal.v1')) {
+            return Promise.resolve({
+              result: {
+                value: {
+                  ok: true,
+                  marker: 'chrome-cdp-ex.hover-reveal.v1',
+                  opacity: 1,
+                  visibility: 'visible',
+                  display: 'inline',
+                  visible: true,
+                  groupHover: true,
+                  matchesHover: true,
+                  tag: 'SPAN',
+                },
+              },
+            });
           }
           return Promise.resolve({ result: { value: pageMeta() } });
         }
