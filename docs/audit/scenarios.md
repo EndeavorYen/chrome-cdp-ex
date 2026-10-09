@@ -80,6 +80,13 @@ Specs and reference paths changed in two of them:
 
 Scenario 4 was not edited. Its 422 receipt now carries the server's error, which adds 191 chars: 10 calls, 2,090 chars.
 
+Proposal 5 (#659) changed `text` itself:
+
+- Table and ARIA grid cells are now tab-separated.
+- `<dt>`, `<dd>` and grid items end their lines.
+
+No spec changed. Every self-test passes with it. Scenario 7's reference path now reads one tab-separated line per rendered row.
+
 The Summary table above keeps the Phase C costs, which were the oracle for the Phase D probe.
 
 ## Product findings from building the scenarios

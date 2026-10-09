@@ -44,7 +44,7 @@ Six findings got open pull requests after the Phase B issues were filed. They ar
 | 2 | Directional `scroll` moves the scroller that `perceive` measures | B-09 | 2 | 2 | 3 | 12 | scenario 7 | merged (#655) |
 | 3 | `dismiss-modal` never presses an accept button, and fails while the dialog stays | B-17 (#653), T-10 | 3 | 1 | 3 | 9 | live repro, scenario 3 | merged (#656) |
 | 4 | One observation scope per action: frames, downloads, new tabs | B-07, B-08 | 3 | 3 | 1 | 9 | scenario 6 | proposal; #652 open (receipts phase) |
-| 5 | `text` keeps field boundaries | B-16 | 2 | 1 | 3 | 6 | scenarios 7, 2 | PR #659 |
+| 5 | `text` keeps field boundaries | B-16 | 2 | 1 | 3 | 6 | scenarios 7, 2 | merged (#659) |
 | 6 | MCP returns the CLI receipt and lists the golden-path verbs | B-12 | 2 | 3 | 1 | 6 | none (Phase B) | proposal |
 | 7 | Visual comparison names what changed | scenario 9 | 1 | 3 | 2 | 6 | scenario 9 | proposal |
 
@@ -535,7 +535,7 @@ Implemented on `acd4312`, then split into three pull requests on `63f452f` (main
 | 2 | #655 | #640 | `bb89670` |
 | 3 | #656 | #653, filed for B-17, and T-10 | `0e636ff` |
 
-Proposal 5 followed as #659 (Fixes #649).
+Proposal 5 followed as #659 (Fixes #649), merged as `895f245`.
 
 Each PR reports its own gates and its before/after `agentChars` and `wallMs` on the affected path. The numbers below are from the combined build on `acd4312`.
 
