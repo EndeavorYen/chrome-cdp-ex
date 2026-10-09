@@ -836,6 +836,22 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyFillValueFailure(err, { base, target, input, perceiveCommand });
   }
 
+  // #653: dismiss-modal found no close or cancel control and Escape left the dialog open.
+  // Which of its buttons to press is the user's call, so Next looks instead of clicking.
+  if (action === 'dismiss-modal' && lower.includes('escape did not close it')) {
+    return {
+      ...base,
+      kind: 'dialog-open',
+      dispatched: true,
+      reason: 'The dialog has no close or cancel control and stayed open after Escape. Nothing was chosen on the user\'s behalf.',
+      nextCommand: perceiveCommand,
+      hints: [
+        'Click the dialog button that matches what the user asked for, by @ref or its exact text.',
+        'Do not retry dismiss-modal: it will not press an accept or confirm button.',
+      ],
+    };
+  }
+
   if (
     lower.includes('unknown key')
     || lower.includes('key name required')

@@ -8,6 +8,8 @@
 
 ### Bug Fixes
 
+* `dismiss-modal` presses only a control whose job is to close a dialog: text that is exactly ×, ✕, Close, Cancel, Dismiss, 關閉 or 取消, a close `aria-label` or `title`, `data-dismiss` / `data-bs-dismiss` / `data-close`, or the cancel button of a `<form method="dialog">`. It no longer presses "OK", "OK, delete it", 確認, 繼續, or a label that only contains a close word: in a "Delete project?" dialog it had pressed the delete button. When a dialog has no close control and is still open after Escape, the command exits 1 with `Kind: dialog-open`, names the dialog and its buttons, and its Next is `perceive`; it used to exit 0 with `Outcome: no-change` ([#653](https://github.com/EndeavorYen/chrome-cdp-ex/issues/653)).
+
 * `perceive --since-action` and `perceive --diff` keep the `@ref` of every element that is still on the page. A new element gets the next number above any number already handed out, and that number is printed on the added line. A number whose element is gone is not given to a different element, so a later `click @N` cannot hit another control and succeed. A plain `perceive` still numbers `@1..@N` in document order and prints every line
   ([#642](https://github.com/EndeavorYen/chrome-cdp-ex/issues/642)).
 
