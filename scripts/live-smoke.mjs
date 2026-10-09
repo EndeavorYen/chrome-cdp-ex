@@ -541,6 +541,19 @@ const changedMatch = diffShotOut.match(/changed\s+(\d+)\/(\d+)\s+px/);
 if (!changedMatch || Number(changedMatch[1]) <= 0 || Number(changedMatch[2]) <= 0) {
   throw new Error(`diff-shot should report changed pixels after fill\nOutput:\n${diffShotOut}`);
 }
+// #661: the compare names the element whose pixels changed, and "around" one an outline spills past.
+// The page has scrolled by now: bring #cmd into view and take a fresh baseline, and restore after.
+run(['eval', target, "window.__smokeScrollY = scrollY; document.getElementById('cmd').scrollIntoView({ block: 'center', behavior: 'instant' })"]);
+run(['diff-shot', target]);
+run(['eval', target, "document.getElementById('cmd').style.background = 'rgb(255, 236, 179)'"]);
+const diffShotRegionOut = step('diff-shot names the changed element', () => run(['diff-shot', target]));
+if (!/^ {2}<INPUT#cmd> "command input" at \d+,\d+ \d+×\d+ \(\d+ px\)$/m.test(diffShotRegionOut)) {
+  throw new Error(`diff-shot should name <INPUT#cmd> as a changed region\nOutput:\n${diffShotRegionOut}`);
+}
+run(['eval', target, "document.getElementById('cmd').style.outline = '3px solid rgb(207, 34, 46)'"]);
+const diffShotAroundOut = step('diff-shot names the element an outline spills past', () => run(['diff-shot', target]));
+assertIncludes(diffShotAroundOut, '  around <INPUT#cmd> "command input" at ', 'diff-shot around region');
+run(['eval', target, "document.getElementById('cmd').style.background = ''; document.getElementById('cmd').style.outline = ''; scrollTo({ top: window.__smokeScrollY, behavior: 'instant' })"]);
 const pressOut = step('press c', () => run(['press', target, 'c']));
 assertIncludes(pressOut, 'Pressed c', 'press c');
 assertIncludes(pressOut, 'Next:', 'press next command');

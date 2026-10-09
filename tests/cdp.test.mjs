@@ -666,6 +666,7 @@ describe('diff-shot', () => {
 
     expect(out).toContain('Diff-shot baseline captured');
     expect(out).toContain('/tmp/base.png');
+    expect(out).toContain('Make the change to compare, then run diff-shot again');
     expect(out).toContain('Next: cdp diff-shot ABC123');
   });
 
@@ -693,7 +694,7 @@ describe('diff-shot', () => {
     expect(out).toContain('Baseline: /tmp/base.png');
     expect(out).toContain('Current: /tmp/current.png');
     expect(out).toContain('Diff image: /tmp/diff.png');
-    expect(out).toContain('Pixel diff only');
+    expect(out).toContain('Pixel diff: the regions say where pixels changed, not why');
     expect(out).toContain('screenshot fallback');
   });
 });

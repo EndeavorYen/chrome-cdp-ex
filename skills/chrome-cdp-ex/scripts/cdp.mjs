@@ -6142,9 +6142,62 @@ function formatPercentRatio(value) {
   return `${((Number.isFinite(n) ? n : 0) * 100).toFixed(2)}%`;
 }
 
+const DIFF_SHOT_REGION_CELL_PX = 16;
+const DIFF_SHOT_REGION_LIMIT = 5;
+// A cell needs this many changed pixels to join a region, so a stray pixel is never named.
+const DIFF_SHOT_REGION_MIN_PIXELS = 2;
+// A region no element holds is "around" one it spills this far past: an outline, a focus ring, a shadow.
+const DIFF_SHOT_SPILL_PX = 8;
+// Changed pixels this close outside one child, on a cell that hit-tests to its parent, are that child's.
+const DIFF_SHOT_STRIP_PX = 4;
+// A region's label is page text: the page sends up to 200 chars, and the receipt shows 40 after redaction.
+const DIFF_SHOT_LABEL_SOURCE_CHARS = 200;
+const DIFF_SHOT_LABEL_CHARS = 40;
+
+// #661: changed pixels are binned into 16 px cells, and cells that touch (diagonals too) form one
+// region whose box is the exact extent of its changed pixels. Pure, so it runs in the page and in tests.
+function diffShotRegionsSource() {
+  return `function diffShotRegions(cells, gridW, gridH, minCount) {
+    const seen = new Uint8Array(gridW * gridH);
+    const regions = [];
+    for (let start = 0; start < gridW * gridH; start++) {
+      if (seen[start] || cells.count[start] < minCount) continue;
+      seen[start] = 1;
+      const stack = [start];
+      const region = { x0: Infinity, y0: Infinity, x1: -1, y1: -1, changedPixels: 0, cells: [] };
+      while (stack.length) {
+        const index = stack.pop();
+        region.cells.push(index);
+        region.changedPixels += cells.count[index];
+        region.x0 = Math.min(region.x0, cells.minX[index]);
+        region.y0 = Math.min(region.y0, cells.minY[index]);
+        region.x1 = Math.max(region.x1, cells.maxX[index]);
+        region.y1 = Math.max(region.y1, cells.maxY[index]);
+        const cx = index % gridW;
+        const cy = (index - cx) / gridW;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= gridW || ny >= gridH) continue;
+            const next = ny * gridW + nx;
+            if (!seen[next] && cells.count[next] >= minCount) {
+              seen[next] = 1;
+              stack.push(next);
+            }
+          }
+        }
+      }
+      regions.push({ x: region.x0, y: region.y0, width: region.x1 - region.x0 + 1, height: region.y1 - region.y0 + 1, changedPixels: region.changedPixels, cells: region.cells });
+    }
+    return regions.sort((a, b) => b.changedPixels - a.changedPixels);
+  }`;
+}
+
 function diffShotCompareScript(baselinePngBase64, currentPngBase64) {
   return `
 (async () => {
+  ${diffShotRegionsSource()}
   const decode = (b64) => {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
@@ -6179,6 +6232,16 @@ function diffShotCompareScript(baselinePngBase64, currentPngBase64) {
   ctx.drawImage(current, 0, 0, width, height);
   const currentData = ctx.getImageData(0, 0, width, height);
   const diffData = ctx.createImageData(width, height);
+  const cellPx = ${DIFF_SHOT_REGION_CELL_PX};
+  const gridW = Math.ceil(width / cellPx);
+  const gridH = Math.ceil(height / cellPx);
+  const cells = {
+    count: new Uint32Array(gridW * gridH),
+    minX: new Int32Array(gridW * gridH).fill(width),
+    minY: new Int32Array(gridW * gridH).fill(height),
+    maxX: new Int32Array(gridW * gridH).fill(-1),
+    maxY: new Int32Array(gridW * gridH).fill(-1),
+  };
   let changedPixels = 0;
   for (let i = 0; i < baselineData.data.length; i += 4) {
     const dr = Math.abs(baselineData.data[i] - currentData.data[i]);
@@ -6188,6 +6251,15 @@ function diffShotCompareScript(baselinePngBase64, currentPngBase64) {
     const changed = dr + dg + db + da > 0;
     if (changed) changedPixels++;
     if (changed) {
+      const p = i >> 2;
+      const x = p % width;
+      const y = (p - x) / width;
+      const cell = Math.floor(y / cellPx) * gridW + Math.floor(x / cellPx);
+      cells.count[cell]++;
+      if (x < cells.minX[cell]) cells.minX[cell] = x;
+      if (y < cells.minY[cell]) cells.minY[cell] = y;
+      if (x > cells.maxX[cell]) cells.maxX[cell] = x;
+      if (y > cells.maxY[cell]) cells.maxY[cell] = y;
       diffData.data[i] = 255;
       diffData.data[i + 1] = 0;
       diffData.data[i + 2] = 180;
@@ -6203,6 +6275,151 @@ function diffShotCompareScript(baselinePngBase64, currentPngBase64) {
   ctx.putImageData(diffData, 0, 0);
   const diffPngBase64 = canvas.toDataURL('image/png').split(',')[1] || '';
   const totalPixels = width * height;
+  // #661: name each region by the smallest element on the page now that holds all of it. When that
+  // element did not change itself (no changed cell lands on it, only on its children), the region is
+  // split by child, so a toggled button above a restyled card is two regions, not one <main>. A region
+  // no element holds is "around" the smallest one that holds it give or take ${DIFF_SHOT_SPILL_PX} px (an
+  // outline, a focus ring, a shadow), or else around the page.
+  // Screenshot pixels are device pixels; boxes are reported in CSS pixels.
+  const sx = (window.innerWidth || width) / width;
+  const sy = (window.innerHeight || height) / height;
+  const rounding = 2;
+  const isPage = (node) => !node || node === document.body || node === document.documentElement;
+  const cellBox = (index) => ({ x0: cells.minX[index], y0: cells.minY[index], x1: cells.maxX[index], y1: cells.maxY[index] });
+  const unionBox = (list) => list.reduce((box, index) => ({
+    x0: Math.min(box.x0, cells.minX[index]),
+    y0: Math.min(box.y0, cells.minY[index]),
+    x1: Math.max(box.x1, cells.maxX[index]),
+    y1: Math.max(box.y1, cells.maxY[index]),
+  }), { x0: Infinity, y0: Infinity, x1: -1, y1: -1 });
+  const toCss = (box) => ({
+    x: Math.round(box.x0 * sx),
+    y: Math.round(box.y0 * sy),
+    width: Math.max(1, Math.round((box.x1 - box.x0 + 1) * sx)),
+    height: Math.max(1, Math.round((box.y1 - box.y0 + 1) * sy)),
+  });
+  const atCenter = (box) => {
+    const css = toCss(box);
+    const x = Math.min(Math.max(0, css.x + css.width / 2), (window.innerWidth || 1) - 1);
+    const y = Math.min(Math.max(0, css.y + css.height / 2), (window.innerHeight || 1) - 1);
+    return document.elementFromPoint(x, y);
+  };
+  const holds = (node, box, slack) => {
+    const css = toCss(box);
+    const r = node.getBoundingClientRect();
+    return r.left <= css.x + slack && r.top <= css.y + slack
+      && r.right >= css.x + css.width - slack && r.bottom >= css.y + css.height - slack;
+  };
+  const ownerOf = (box, slack) => {
+    for (let node = atCenter(box); node && node.nodeType === 1 && !isPage(node); node = node.parentElement) {
+      if (holds(node, box, slack)) return node;
+    }
+    return null;
+  };
+  const childOf = (owner, node) => {
+    for (let n = node; n && n.nodeType === 1 && !isPage(n); n = n.parentElement) {
+      if (n.parentElement === owner) return n;
+      if (n === owner) return owner;
+    }
+    return owner;
+  };
+  // A cell that hit-tests to the parent but whose changed pixels all lie within ${DIFF_SHOT_STRIP_PX} px of one
+  // child is that child's outline or shadow. A gap or padding repainted edge to edge is not. Child
+  // boxes are read once per parent, and not for a long list.
+  const strip = ${DIFF_SHOT_STRIP_PX};
+  const childBoxes = new Map();
+  const outlinedChild = (parent, box) => {
+    if (!childBoxes.has(parent)) {
+      const children = parent.children.length <= 200 ? [...parent.children] : [];
+      childBoxes.set(parent, children.map(child => ({ child, r: child.getBoundingClientRect() })).filter(({ r }) => r.width && r.height));
+    }
+    const css = toCss(box);
+    const found = childBoxes.get(parent).find(({ r }) => r.left - strip <= css.x && r.top - strip <= css.y
+      && r.right + strip >= css.x + css.width && r.bottom + strip >= css.y + css.height);
+    return found ? found.child : null;
+  };
+  const attribute = (list, depth) => {
+    const box = unionBox(list);
+    const owner = ownerOf(box, rounding);
+    const around = owner ? null : ownerOf(box, ${DIFF_SHOT_SPILL_PX});
+    const parent = owner || around || document.body;
+    if (!parent || depth >= 2) return [{ owner, around, list }];
+    const groups = new Map();
+    for (const index of list) {
+      let child = childOf(parent, atCenter(cellBox(index)));
+      if (child === parent) child = outlinedChild(parent, cellBox(index)) || parent;
+      if (!groups.has(child)) groups.set(child, []);
+      groups.get(child).push(index);
+    }
+    if (groups.has(parent)) return [{ owner, around, list }];
+    // Every cell is one child's: the region is that child's, past its box if the child does not hold it.
+    if (groups.size === 1) {
+      const [child] = groups.keys();
+      return [{ owner: holds(child, box, rounding) ? child : null, around: child, list }];
+    }
+    return [...groups.values()].flatMap(group => attribute(group, depth + 1));
+  };
+  // An element is named by its id, its aria-label, or its only heading. One that is not, such as the
+  // figure inside a card, is shown "in" its nearest named ancestor. <html> and <body> get no label.
+  const HEADINGS = 'h1,h2,h3,h4,h5,h6,[role="heading"]';
+  const onlyHeading = (el) => {
+    const found = typeof el.querySelectorAll === 'function' ? el.querySelectorAll(HEADINGS) : [];
+    return found.length === 1 ? found[0] : null;
+  };
+  const ariaLabel = (el) => (typeof el.getAttribute === 'function' && el.getAttribute('aria-label')) || '';
+  const named = (el) => Boolean(el.id || ariaLabel(el) || onlyHeading(el));
+  const describe = (el, withContext) => {
+    const tag = String(el.tagName || 'node').toUpperCase();
+    const id = el.id ? '#' + el.id : '';
+    const classes = !id && typeof el.className === 'string' && el.className.trim()
+      ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.')
+      : '';
+    const heading = isPage(el) ? null : onlyHeading(el);
+    const text = isPage(el) ? '' : String(ariaLabel(el) || (heading && (heading.innerText || heading.textContent)) || el.innerText || el.textContent || '')
+      .replace(/\\s+/g, ' ').trim();
+    const described = { selector: '<' + tag + id + classes + '>', label: text.slice(0, ${DIFF_SHOT_LABEL_SOURCE_CHARS}), labelCut: text.length > ${DIFF_SHOT_LABEL_SOURCE_CHARS} };
+    if (withContext && !isPage(el) && !named(el)) {
+      let up = el.parentElement;
+      while (up && !isPage(up) && !named(up)) up = up.parentElement;
+      if (up && !isPage(up)) described.within = describe(up, false);
+    }
+    return described;
+  };
+  // Regions in one element are one change to that element, so they share a line.
+  const byElement = new Map();
+  for (const part of diffShotRegions(cells, gridW, gridH, ${DIFF_SHOT_REGION_MIN_PIXELS}).flatMap(region => attribute(region.cells, 0))) {
+    const subject = part.owner || part.around || document.documentElement;
+    const group = byElement.get(subject);
+    if (group) {
+      group.list.push(...part.list);
+      group.contained = group.contained && Boolean(part.owner);
+    } else {
+      byElement.set(subject, { subject, list: [...part.list], contained: Boolean(part.owner) });
+    }
+  }
+  const pixelsOf = (list) => list.reduce((sum, index) => sum + cells.count[index], 0);
+  const byPixels = (a, b) => b.changedPixels - a.changedPixels;
+  const changes = [...byElement.values()]
+    .map(group => ({ ...group, box: unionBox(group.list), changedPixels: pixelsOf(group.list) }))
+    .sort(byPixels);
+  // A change inside both the element and the box of a larger change is part of it: the grid's new
+  // background showing at a card's rounded corner is the grid's change, not the card's.
+  for (let i = changes.length - 1; i > 0; i--) {
+    const part = changes[i];
+    const into = changes.slice(0, i).find(other => other.subject !== part.subject && other.subject.contains(part.subject)
+      && other.box.x0 <= part.box.x0 && other.box.y0 <= part.box.y0 && other.box.x1 >= part.box.x1 && other.box.y1 >= part.box.y1);
+    if (!into) continue;
+    into.list.push(...part.list);
+    into.changedPixels += part.changedPixels;
+    changes.splice(i, 1);
+  }
+  changes.sort(byPixels);
+  const regions = changes.slice(0, ${DIFF_SHOT_REGION_LIMIT}).map(group => ({
+    ...toCss(group.box),
+    changedPixels: group.changedPixels,
+    element: describe(group.subject, true),
+    contained: group.contained,
+  }));
   return JSON.stringify({
     width,
     height,
@@ -6213,10 +6430,39 @@ function diffShotCompareScript(baselinePngBase64, currentPngBase64) {
     changedPixels,
     totalPixels,
     changedRatio: totalPixels ? changedPixels / totalPixels : 0,
+    regions,
+    regionCount: changes.length,
     diffPngBase64,
   });
 })()
 `;
+}
+
+function formatDiffShotElement(element = {}) {
+  return `${element.selector || '<?>'}${element.label ? ` "${element.label}"` : ''}`;
+}
+
+// #661: one line per changed region, largest first: the element that holds it and its CSS box.
+// "around" marks a region its element does not hold: pixels past the element's box, or a change
+// across the page (<HTML>). Changed pixels with no region are each alone in their cell
+// (DIFF_SHOT_REGION_MIN_PIXELS is 2).
+function formatDiffShotRegionLines(model = {}) {
+  const regions = Array.isArray(model.regions) ? model.regions : [];
+  if (!regions.length) {
+    return [Number(model.changedPixels || 0) > 0
+      ? `Changed regions: none; each changed pixel is alone in its ${DIFF_SHOT_REGION_CELL_PX} px cell`
+      : 'Changed regions: none'];
+  }
+  const total = Number(model.regionCount) || regions.length;
+  return [
+    `Changed regions (${total > regions.length ? `${regions.length} of ${total}` : regions.length}):`,
+    ...regions.map(region => {
+      const element = region.element || {};
+      const within = element.within ? ` in ${formatDiffShotElement(element.within)}` : '';
+      const name = `${region.contained === false ? 'around ' : ''}${formatDiffShotElement(element)}${within}`;
+      return `  ${name} at ${region.x},${region.y} ${region.width}×${region.height} (${region.changedPixels} px)`;
+    }),
+  ];
 }
 
 function formatDiffShotResult(model = {}) {
@@ -6224,12 +6470,13 @@ function formatDiffShotResult(model = {}) {
   if (model.baselineCaptured) {
     lines.push(`Diff-shot baseline captured: ${model.baselinePath}`);
     if (model.fallback) lines.push('(screenshot fallback - Page.captureScreenshot timed out)');
-    lines.push(`Next: cdp diff-shot ${model.targetId}`);
-    lines.push('Pixel diff only: use perceive/cascade/report to explain semantic cause.');
+    lines.push('Make the change to compare, then run diff-shot again: it names the regions that changed.');
+    lines.push(`Next: cdp diff-shot ${targetPrefixForDisplay(model.targetId)}`);
     return lines.join('\n');
   }
 
   lines.push(`Diff-shot: changed ${model.changedPixels || 0}/${model.totalPixels || 0} px (${formatPercentRatio(model.changedRatio)})`);
+  lines.push(...formatDiffShotRegionLines(model));
   if (Number(model.thresholdRatio || 0) > 0) {
     lines.push(`Threshold: ${formatPercentRatio(model.thresholdRatio)} (${model.exceedsThreshold ? 'exceeded' : 'within threshold'})`);
   }
@@ -6239,8 +6486,22 @@ function formatDiffShotResult(model = {}) {
   if (model.width && model.height) lines.push(`Compared: ${model.width}x${model.height} screenshot pixels`);
   if (model.fallback) lines.push('(screenshot fallback - Page.captureScreenshot timed out)');
   lines.push(model.advancedBaseline ? 'Baseline advanced to current capture.' : 'Baseline kept; pass without --keep-baseline to advance.');
-  lines.push('Pixel diff only: use perceive/cascade/report to explain semantic cause.');
+  lines.push('Pixel diff: the regions say where pixels changed, not why; use cascade or perceive for the cause.');
   return lines.join('\n');
+}
+
+// #661: redact a region's labels before cutting them to receipt size, as action receipts do (#459),
+// so the cut never shows part of a token.
+function diffShotReceiptElement(element) {
+  if (!element) return null;
+  const { label = '', labelCut = false, within = null, ...rest } = element;
+  const receipt = { ...rest, label: compactRedactedText(label, { max: DIFF_SHOT_LABEL_CHARS, truncated: labelCut }) };
+  if (within) receipt.within = diffShotReceiptElement(within);
+  return receipt;
+}
+
+function diffShotReceiptRegion(region) {
+  return { ...region, element: diffShotReceiptElement(region?.element) };
 }
 
 function nextDiffShotArtifactPaths(session) {
@@ -6326,6 +6587,8 @@ async function diffShotStr(cdp, sid, session, opts = {}) {
     changedPixels: compare.changedPixels,
     totalPixels: compare.totalPixels,
     changedRatio: compare.changedRatio,
+    regions: (Array.isArray(compare.regions) ? compare.regions : []).map(diffShotReceiptRegion),
+    regionCount: Number(compare.regionCount) || 0,
     thresholdRatio: opts.thresholdRatio || 0,
     exceedsThreshold: compare.changedRatio > Number(opts.thresholdRatio || 0),
     advancedBaseline,
@@ -34134,7 +34397,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
-  parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
+  parseDiffShotArgs, diffShotCompareScript, diffShotRegionsSource, diffShotReceiptRegion, formatDiffShotRegionLines, formatDiffShotResult, diffShotStr,
   checkpointPageScript, sanitizeCheckpointCookies, sanitizeCheckpointStorage, parseCheckpointArgs, checkpointModel, checkpointStr,
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs, redactExternalInputActionError, redactRestoreActionError,
   checkpointCookieToSetCookieParams, isRestorableCheckpointCookie, cookiesForRestore,
