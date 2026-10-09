@@ -1,0 +1,543 @@
+{
+  "date": "2026-10-09T01:26:22.656Z",
+  "node": "v24.21.0",
+  "pages": [
+    {
+      "label": "local:todo",
+      "url": "http://127.0.0.1:41801/todo.html",
+      "prefix": "11B7F392",
+      "open": {
+        "ms": 2155,
+        "chars": 90,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 129,
+        "chars": 493,
+        "exit": 0,
+        "warmMedianMs": 115
+      },
+      "perceiveDeep": {
+        "ms": 115,
+        "chars": 712,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 104,
+        "chars": 35,
+        "exit": 0
+      },
+      "text": {
+        "ms": 108,
+        "chars": 72,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 196,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 14323
+      },
+      "scanshot": {
+        "ms": 352,
+        "chars": 302,
+        "exit": 0,
+        "pngBytes": 14323
+      },
+      "elshot": {
+        "ms": 282,
+        "chars": 271,
+        "exit": 0,
+        "pngBytes": 3077
+      },
+      "scrollReceipt": {
+        "ms": 650,
+        "chars": 76,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 118,
+        "chars": 281,
+        "exit": 0
+      }
+    },
+    {
+      "label": "local:overlay",
+      "url": "http://127.0.0.1:41801/overlay.html",
+      "prefix": "B0447A61",
+      "open": {
+        "ms": 2271,
+        "chars": 93,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 132,
+        "chars": 416,
+        "exit": 0,
+        "warmMedianMs": 110
+      },
+      "perceiveDeep": {
+        "ms": 117,
+        "chars": 608,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 105,
+        "chars": 50,
+        "exit": 0
+      },
+      "text": {
+        "ms": 108,
+        "chars": 50,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 196,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 9951
+      },
+      "scanshot": {
+        "ms": 363,
+        "chars": 302,
+        "exit": 0,
+        "pngBytes": 9951
+      },
+      "elshot": {
+        "ms": 302,
+        "chars": 269,
+        "exit": 0,
+        "pngBytes": 2100
+      },
+      "scrollReceipt": {
+        "ms": 653,
+        "chars": 76,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 115,
+        "chars": 277,
+        "exit": 0
+      }
+    },
+    {
+      "label": "local:iframe-host",
+      "url": "http://127.0.0.1:41801/iframe-host.html",
+      "prefix": "6AEA1172",
+      "open": {
+        "ms": 2242,
+        "chars": 97,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 137,
+        "chars": 435,
+        "exit": 0,
+        "warmMedianMs": 117
+      },
+      "perceiveDeep": {
+        "ms": 113,
+        "chars": 541,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 108,
+        "chars": 58,
+        "exit": 0
+      },
+      "text": {
+        "ms": 109,
+        "chars": 58,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 170,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 17710
+      },
+      "scanshot": {
+        "ms": 373,
+        "chars": 302,
+        "exit": 0,
+        "pngBytes": 17710
+      },
+      "elshot": {
+        "ms": 296,
+        "chars": 269,
+        "exit": 0,
+        "pngBytes": 1905
+      },
+      "scrollReceipt": {
+        "ms": 675,
+        "chars": 76,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 119,
+        "chars": 285,
+        "exit": 0
+      }
+    },
+    {
+      "label": "local:spa",
+      "url": "http://127.0.0.1:41801/spa.html",
+      "prefix": "79C797EF",
+      "open": {
+        "ms": 2283,
+        "chars": 89,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 157,
+        "chars": 418,
+        "exit": 0,
+        "warmMedianMs": 115
+      },
+      "perceiveDeep": {
+        "ms": 116,
+        "chars": 651,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 105,
+        "chars": 38,
+        "exit": 0
+      },
+      "text": {
+        "ms": 105,
+        "chars": 38,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 200,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 9712
+      },
+      "scanshot": {
+        "ms": 352,
+        "chars": 302,
+        "exit": 0,
+        "pngBytes": 9712
+      },
+      "elshot": {
+        "ms": 286,
+        "chars": 269,
+        "exit": 0,
+        "pngBytes": 2830
+      },
+      "scrollReceipt": {
+        "ms": 686,
+        "chars": 76,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 116,
+        "chars": 273,
+        "exit": 0
+      }
+    },
+    {
+      "label": "public:wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Web_browser",
+      "prefix": "52C0DFAA",
+      "open": {
+        "ms": 2739,
+        "chars": 99,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 317,
+        "chars": 71566,
+        "exit": 0,
+        "warmMedianMs": 245
+      },
+      "perceiveDeep": {
+        "ms": 245,
+        "chars": 72415,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 110,
+        "chars": 19316,
+        "exit": 0
+      },
+      "text": {
+        "ms": 110,
+        "chars": 19728,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 218,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 195659
+      },
+      "scanshot": {
+        "ms": 3196,
+        "chars": 2239,
+        "exit": 0,
+        "pngBytes": 1537825
+      },
+      "elshot": {
+        "ms": 281,
+        "chars": 284,
+        "exit": 0,
+        "pngBytes": 3461
+      },
+      "scrollReceipt": {
+        "ms": 1017,
+        "chars": 78,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 245,
+        "chars": 718,
+        "exit": 0
+      }
+    },
+    {
+      "label": "public:github-repo",
+      "url": "https://github.com/EndeavorYen/chrome-cdp-ex",
+      "prefix": "69AC268D",
+      "open": {
+        "ms": 3481,
+        "chars": 102,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 228,
+        "chars": 23620,
+        "exit": 0,
+        "warmMedianMs": 167
+      },
+      "perceiveDeep": {
+        "ms": 188,
+        "chars": 24706,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 115,
+        "chars": 9368,
+        "exit": 0
+      },
+      "text": {
+        "ms": 110,
+        "chars": 9663,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 233,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 115560
+      },
+      "scanshot": {
+        "ms": 2020,
+        "chars": 1455,
+        "exit": 0,
+        "pngBytes": 645224
+      },
+      "elshot": {
+        "ms": 348,
+        "chars": 273,
+        "exit": 0,
+        "pngBytes": 3935
+      },
+      "scrollReceipt": {
+        "ms": 734,
+        "chars": 79,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 170,
+        "chars": 853,
+        "exit": 0
+      }
+    },
+    {
+      "label": "public:hackernews",
+      "url": "https://news.ycombinator.com/",
+      "prefix": "C62C55DB",
+      "open": {
+        "ms": 2729,
+        "chars": 87,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 184,
+        "chars": 3188,
+        "exit": 0,
+        "warmMedianMs": 147
+      },
+      "perceiveDeep": {
+        "ms": 153,
+        "chars": 3650,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 111,
+        "chars": 4127,
+        "exit": 0
+      },
+      "text": {
+        "ms": 109,
+        "chars": 4285,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 219,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 110476
+      },
+      "scanshot": {
+        "ms": 691,
+        "chars": 495,
+        "exit": 0,
+        "pngBytes": 210386
+      },
+      "elshot": {
+        "ms": 111,
+        "chars": 276,
+        "exit": 1,
+        "pngBytes": 0
+      },
+      "scrollReceipt": {
+        "ms": 706,
+        "chars": 78,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 153,
+        "chars": 427,
+        "exit": 0
+      }
+    },
+    {
+      "label": "public:mdn",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API",
+      "prefix": "71557FC2",
+      "open": {
+        "ms": 2364,
+        "chars": 116,
+        "exit": 0
+      },
+      "perceive": {
+        "ms": 265,
+        "chars": 30632,
+        "exit": 0,
+        "warmMedianMs": 193
+      },
+      "perceiveDeep": {
+        "ms": 195,
+        "chars": 31264,
+        "exit": 0
+      },
+      "textAuto": {
+        "ms": 109,
+        "chars": 2784,
+        "exit": 0
+      },
+      "text": {
+        "ms": 106,
+        "chars": 3054,
+        "exit": 0
+      },
+      "shot": {
+        "ms": 219,
+        "chars": 246,
+        "exit": 0,
+        "pngBytes": 170662
+      },
+      "scanshot": {
+        "ms": 2425,
+        "chars": 1647,
+        "exit": 0,
+        "pngBytes": 1035389
+      },
+      "elshot": {
+        "ms": 309,
+        "chars": 269,
+        "exit": 0,
+        "pngBytes": 3077
+      },
+      "scrollReceipt": {
+        "ms": 738,
+        "chars": 78,
+        "exit": 0
+      },
+      "sinceActionAfterScroll": {
+        "ms": 193,
+        "chars": 331,
+        "exit": 0
+      }
+    }
+  ],
+  "latency": {
+    "runs": 7,
+    "nodeNoopMs": 28,
+    "helpMs": 81,
+    "listMs": 93,
+    "listViaBinMs": 129,
+    "evalWarmMs": 104,
+    "evalWarmViaBinMs": 139,
+    "evalAlternatingTabsMs": 104,
+    "evalColdDaemonMs": {
+      "runs": 3,
+      "median": 442,
+      "all": [
+        442,
+        448,
+        439
+      ]
+    }
+  },
+  "receipts": {
+    "clickOkText": {
+      "chars": 79,
+      "out": "Clicked <BUTTON> \"Accept all\" (@2). Next: cdp perceive B0447A61 --since-action\n"
+    },
+    "clickOkJson": {
+      "chars": 5960,
+      "fields": {
+        "schema": 25,
+        "action": 7,
+        "target": 306,
+        "dispatch": 28,
+        "settle": 28,
+        "effects": 1894,
+        "nextHint": 56,
+        "outcome": 164,
+        "recommendation": 401,
+        "nextSteps": 81,
+        "verdict": 340,
+        "receipt": 781,
+        "targetResolution": 266
+      }
+    },
+    "clickRefusedText": {
+      "chars": 313,
+      "out": "Error: click point (97, 322) of <BUTTON> \"Save profile\" is covered by position:fixed <DIV#consent> \"We use cookies. Accept all\" even after scrolling it to the viewport centre. The mouse click was not sent: it would land on the covering element.\nKind: covered\nNext: cdp click B0447A61 \"#save\" --js (Kind: covered)\n"
+    },
+    "clickRefusedJson": {
+      "chars": 8278,
+      "fields": {
+        "schema": 25,
+        "action": 7,
+        "target": 261,
+        "dispatch": 281,
+        "settle": 28,
+        "effects": 2908,
+        "nextHint": 35,
+        "outcome": 256,
+        "recommendation": 335,
+        "nextSteps": 123,
+        "verdict": 480,
+        "receipt": 1289,
+        "targetResolution": 266
+      }
+    }
+  }
+}

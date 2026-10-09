@@ -1,0 +1,125 @@
+{
+  "schema": "chrome-cdp-ex.validation-registry.v1",
+  "scenarios": [
+    {
+      "id": "agent-01-admin-session-setting",
+      "title": "Change the session timeout in a logged-in admin console and save it",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-01"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/01-admin-session-setting.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-01-admin-session-setting OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-02-spa-search-detail",
+      "title": "Search a parts catalog SPA and read one result's detail panel",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-02"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/02-spa-search-detail.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-02-spa-search-detail OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-03-modal-blocks-approve",
+      "title": "Approve an expense request behind a session-expiry modal",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-03"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/03-modal-blocks-approve.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-03-modal-blocks-approve OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-04-form-validation-resubmit",
+      "title": "Create a vendor: fix the field the server rejects and resubmit",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-04"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/04-form-validation-resubmit.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-04-form-validation-resubmit OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-05-multi-tab-wrong-tab",
+      "title": "Turn on a feature flag in the staging tab, not in the production tab with the same title",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-05"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/05-multi-tab-wrong-tab.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-05-multi-tab-wrong-tab OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-06-cross-origin-iframe-pay",
+      "title": "Pay an order through a card form inside a cross-site iframe",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-06"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/06-cross-origin-iframe-pay.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-06-cross-origin-iframe-pay OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-07-virtual-list-find",
+      "title": "Find one shipment in a virtualized list inside a nested scroll container",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-07"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/07-virtual-list-find.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-07-virtual-list-find OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-08-export-download-session",
+      "title": "Export October's invoices as CSV through the logged-in session and report the total",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-08"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/08-export-download-session.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-08-export-download-session OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-09-visual-diff-widgets",
+      "title": "Say which dashboard widgets look different after \"Apply new theme\"",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "static-page", "type-09"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/09-visual-diff-widgets.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-09-visual-diff-widgets OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-10-console-sourcemap",
+      "title": "Find the original file and line behind a silent \"Apply coupon\" failure",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "static-page", "type-10"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/10-console-sourcemap.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-10-console-sourcemap OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-11-network-failure-retry",
+      "title": "Save a profile when the first save fails with 503, and say why",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "dynamic-app", "type-11"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/11-network-failure-retry.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-11-network-failure-retry OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    },
+    {
+      "id": "agent-12-webgl-canvas-read",
+      "title": "Name the hottest node in a WebGL heatmap",
+      "owner": "maintainers",
+      "tags": ["live", "agent-scenario", "static-page", "type-12"],
+      "runner": {"kind": "node", "entrypoint": "validation/scenarios/12-webgl-canvas-read.mjs", "args": ["--self-test"]},
+      "expect": {"exitCodes": [0], "stdoutIncludes": ["Scenario agent-12-webgl-canvas-read OK:"]},
+      "risk": {"units": 2, "timeoutMs": 120000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1},
+      "classificationHints": ["product", "scenario"]
+    }
+  ]
+}

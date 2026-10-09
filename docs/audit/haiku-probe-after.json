@@ -1,0 +1,370 @@
+{
+  "schema": "chrome-cdp-ex.audit.haiku-probe.v1",
+  "date": "2026-10-09",
+  "model": "claude-haiku-5-5",
+  "phase": "after proposals 1-3",
+  "base": "acd4312 + proposals 1-3 (uncommitted)",
+  "note": "Same prompt (v2), same SKILL.md as the Phase D probe; the CLI is the only change. Chars are CLI stdout+stderr; tokensEst = chars/4. vsReference uses the Phase D reference paths.",
+  "runs": [
+    {
+      "nn": "04",
+      "id": "agent-04-form-validation-resubmit",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 12,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 2,
+      "redundantPerceive": 0,
+      "helpCalls": 0,
+      "nextAvailable": 2,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "perceive",
+        "fill",
+        "click",
+        "eval"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 4280,
+      "tokensEst": 1070,
+      "charsPerCall": 357,
+      "cliMs": 6477,
+      "wallMs": 31928,
+      "thinkMs": 25451,
+      "agentTokens": 55431,
+      "agentToolUses": 7,
+      "agentDurationMs": 50130,
+      "vsReference": {
+        "calls": 1.2,
+        "chars": 2.3
+      },
+      "answer": "新增完成，供應商 Lumen Tech 已建立（頁面顯示「Vendor “Lumen Tech” created (V-1007).」）。\n\n- 第一次送出被伺服器以 422 退回，原因是統編必須是 8 位數字，不能含連字號或空白。\n- 我把統編改成 `24681357`，只拿掉連字號，數字不變，然後重新送出一次，這次成功。\n- 公司名稱 Lumen Tech、聯絡信箱 ap@lumen.example 照你給的值送出。付款條件維持原本的 Net 30，沒有改。\n- 頁面仍停在新增供應商頁，我沒有再按一次，所以沒有重複建立。我也沒有到供應商列表另外核對 V-1007，以免離開目前頁面。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1360,
+          "chars": 81
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 123,
+          "chars": 102
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 510,
+          "chars": 1587
+        },
+        {
+          "cmd": "fill <t> #name Lumen Tech",
+          "exit": 0,
+          "ms": 646,
+          "chars": 77
+        },
+        {
+          "cmd": "fill <t> #taxId 2468-1357",
+          "exit": 0,
+          "ms": 669,
+          "chars": 76
+        },
+        {
+          "cmd": "fill <t> #email ap@lumen.example",
+          "exit": 0,
+          "ms": 660,
+          "chars": 83
+        },
+        {
+          "cmd": "click <t> #create",
+          "exit": 0,
+          "ms": 763,
+          "chars": 251
+        },
+        {
+          "cmd": "fill <t> #taxId <t>",
+          "exit": 0,
+          "ms": 641,
+          "chars": 93
+        },
+        {
+          "cmd": "eval <t> JSON.stringify([\"#name\",\"#taxId\",\"#email\",\"#terms\"].map(s => [s, document.querySelector(s).value]))",
+          "exit": 0,
+          "ms": 109,
+          "chars": 96
+        },
+        {
+          "cmd": "click <t> #create",
+          "exit": 0,
+          "ms": 781,
+          "chars": 77
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 87,
+          "chars": 102
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 128,
+          "chars": 1655
+        }
+      ],
+      "run": "04"
+    },
+    {
+      "nn": "07",
+      "id": "agent-07-virtual-list-find",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 12,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 1,
+      "redundantPerceive": 0,
+      "helpCalls": 3,
+      "nextAvailable": 1,
+      "nextFollowed": 1,
+      "commands": [
+        "doctor",
+        "list",
+        "help",
+        "text",
+        "perceive",
+        "eval",
+        "scroll"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 6332,
+      "tokensEst": 1583,
+      "charsPerCall": 528,
+      "cliMs": 3552,
+      "wallMs": 44709,
+      "thinkMs": 41157,
+      "agentTokens": 57913,
+      "agentToolUses": 8,
+      "agentDurationMs": 52044,
+      "vsReference": {
+        "calls": 3,
+        "chars": 2.3
+      },
+      "answer": "SHP-00183 在出貨清單中的資料如下:\n\n- **狀態:** In transit (運送中)\n- **預計到貨日 (ETA):** 2026-10-14\n- **客戶:** Adatum\n\n以今天 2026-10-09 來看,預計還有 5 天到貨。\n\n清單是虛擬捲動的,我把表格捲到第 183 筆查到這筆資料,並在頁面文字中確認過一次。查完後已把清單捲回頂端。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "doctor",
+          "exit": 0,
+          "ms": 1398,
+          "chars": 82
+        },
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 120,
+          "chars": 101
+        },
+        {
+          "cmd": "help text",
+          "exit": 0,
+          "ms": 84,
+          "chars": 165
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 496,
+          "chars": 1084
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 129,
+          "chars": 2106
+        },
+        {
+          "cmd": "help scroll",
+          "exit": 0,
+          "ms": 81,
+          "chars": 324
+        },
+        {
+          "cmd": "help eval",
+          "exit": 0,
+          "ms": 84,
+          "chars": 624
+        },
+        {
+          "cmd": "eval <t> (() => { const vp = document.querySelector(\"#viewport\"); const rows = [...document.querySelectorAll(\"[role=row]\")]; const data = rows.map(r => r.textContent.replace(/\\s+/g, \" \").trim()); const idx = data.findIndex(t => t.startsWith(\"SHP-00183\")); const rowH = rows[1] ? rows[1].getBoundingClientRect().height : null; return JSON.stringify({ vpScrollTop: vp && vp.scrollTop, vpScrollHeight: vp && vp.scrollHeight, vpClientHeight: vp && vp.clientHeight, rowCount: rows.length, rowH, firstRow: data[1], lastRow: data[data.length - 1], foundIdx: idx, found: idx >= 0 ? data[idx] : null }); })()",
+          "exit": 0,
+          "ms": 100,
+          "chars": 207
+        },
+        {
+          "cmd": "scroll <t> down 6400 --scroll-container #viewport",
+          "exit": 0,
+          "ms": 724,
+          "chars": 101
+        },
+        {
+          "cmd": "eval <t> (() => { const vp = document.querySelector(\"#viewport\"); const rows = [...document.querySelectorAll(\"[role=row]\")]; const data = rows.map(r => r.textContent.replace(/\\s+/g, \" \").trim()); const idx = data.findIndex(t => t.startsWith(\"SHP-00183\")); return JSON.stringify({ vpScrollTop: vp.scrollTop, rowCount: rows.length, firstRow: data[1], lastRow: data[data.length - 1], foundIdx: idx, found: idx >= 0 ? data[idx] : null }); })()",
+          "exit": 0,
+          "ms": 105,
+          "chars": 195
+        },
+        {
+          "cmd": "text <t> --auto",
+          "exit": 0,
+          "ms": 124,
+          "chars": 1277
+        },
+        {
+          "cmd": "scroll <t> to top --scroll-container #viewport",
+          "exit": 0,
+          "ms": 107,
+          "chars": 66
+        }
+      ],
+      "run": "07"
+    },
+    {
+      "nn": "11",
+      "id": "agent-11-network-failure-retry",
+      "pass": true,
+      "failures": [],
+      "correction": null,
+      "prompt": "v2",
+      "model": "claude-haiku-5-5",
+      "calls": 13,
+      "failedCalls": 0,
+      "inventedOrUnknown": 0,
+      "usageErrors": 0,
+      "perceive": 5,
+      "redundantPerceive": 1,
+      "helpCalls": 2,
+      "nextAvailable": 1,
+      "nextFollowed": 1,
+      "commands": [
+        "list",
+        "--help",
+        "perceive",
+        "fill",
+        "click",
+        "nav",
+        "help",
+        "stop"
+      ],
+      "callerCdpEnv": [],
+      "budgetExhausted": false,
+      "chars": 6136,
+      "tokensEst": 1534,
+      "charsPerCall": 472,
+      "cliMs": 4018,
+      "wallMs": 47536,
+      "thinkMs": 43518,
+      "agentTokens": 59549,
+      "agentToolUses": 13,
+      "agentDurationMs": 64481,
+      "vsReference": {
+        "calls": 1.9,
+        "chars": 3.5
+      },
+      "answer": "顯示名稱已改成 **Ann Lee** 並存好了。重新載入 http://127.0.0.1:5861/profile 後，欄位仍顯示 Ann Lee，表示資料已經存在伺服器上。\n\n第一次儲存失敗，原因如下：\n- 伺服器對 `POST /api/profile` 回 `503 Service Unavailable`，內容是 `upstream timeout`，並附 `Retry-After: 2`，表示這是暫時性的後端逾時。頁面同時顯示「Something went wrong. Please try again.」\n- 依照 `Retry-After` 的提示，我重試了一次，這次成功，頁面顯示「Profile saved」。\n\n我只能確認伺服器回報的是上游逾時，看不到後端逾時的實際原因，所以不確定第一次為什麼逾時。如果之後又存不進去，就需要檢查 127.0.0.1:5861 背後的上游服務。\n\nMODEL: claude-haiku-5-5",
+      "steps": [
+        {
+          "cmd": "list",
+          "exit": 0,
+          "ms": 121,
+          "chars": 98
+        },
+        {
+          "cmd": "--help",
+          "exit": 0,
+          "ms": 83,
+          "chars": 1913
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 527,
+          "chars": 872
+        },
+        {
+          "cmd": "fill <t> @1 Ann Lee",
+          "exit": 0,
+          "ms": 703,
+          "chars": 85
+        },
+        {
+          "cmd": "click <t> #save",
+          "exit": 0,
+          "ms": 778,
+          "chars": 234
+        },
+        {
+          "cmd": "perceive <t> --since-action",
+          "exit": 0,
+          "ms": 116,
+          "chars": 368
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 118,
+          "chars": 940
+        },
+        {
+          "cmd": "click <t> #save",
+          "exit": 0,
+          "ms": 747,
+          "chars": 76
+        },
+        {
+          "cmd": "perceive <t> --since-action",
+          "exit": 0,
+          "ms": 118,
+          "chars": 359
+        },
+        {
+          "cmd": "nav <t> http://127.0.0.1:5861/profile",
+          "exit": 0,
+          "ms": 422,
+          "chars": 78
+        },
+        {
+          "cmd": "perceive <t> -C -d 8",
+          "exit": 0,
+          "ms": 115,
+          "chars": 872
+        },
+        {
+          "cmd": "help stop",
+          "exit": 0,
+          "ms": 86,
+          "chars": 192
+        },
+        {
+          "cmd": "stop <t>",
+          "exit": 0,
+          "ms": 84,
+          "chars": 49
+        }
+      ],
+      "run": "11"
+    }
+  ]
+}
