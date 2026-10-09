@@ -669,13 +669,14 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
   },
   {
     name: 'press',
-    description: 'Send a key press to the page. Requires confirm: true.',
+    description: 'Send a key press to the focused element. Enter is a key, not a click on a results link. Set searchSubmit to opt into that link. Requires confirm: true.',
     inputSchema: {
       type: 'object',
       required: ['target', 'key', 'confirm'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
         key: stringSchema('Key name, for example Enter, Escape, Tab.'),
+        searchSubmit: booleanSchema('Opt in to clicking a visible search-results listing instead of dispatching Enter. The receipt names the link.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
       },
       additionalProperties: false,
@@ -1042,7 +1043,7 @@ function surfaceDigest(value) {
 }
 
 export const COMMAND_SURFACE_IDENTITY = 'ec10ae9ada88310df6428c43bda3af19b0a5210ffa42d62fae1f9748c5955325';
-export const MCP_SURFACE_IDENTITY = 'a29cd2a3b9ca95675685ae8029b93482781946d93c1d1d9d15fd7cc7d7fd10f5';
+export const MCP_SURFACE_IDENTITY = '4640b960e76bee4439690408c4fe6949e789973907eefbcf9461e432f74106ea';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }

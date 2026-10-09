@@ -77,9 +77,9 @@ describe('Phase 6 command-surface characterization', () => {
       }
     }
     const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
-    expect(Buffer.byteLength(catalogHelp)).toBe(28119);
+    expect(Buffer.byteLength(catalogHelp)).toBe(28396);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:55ee315b456b3ee2959894be3aa51db32ad4669c9f2742123c68eba3d234f5e3');
+      .toBe('sha256:1e42976fb867242482e5fd2690fdcd91d44ae37dd783707ee2762a3dbbd3dde1');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
@@ -137,7 +137,7 @@ describe('Phase 6 command-surface characterization', () => {
     }
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:ce342c1006beebae61b6ce3c5d9928da9817611a3460ad0d314b96f84c348636');
+      .toBe('sha256:ee6264644325d2b3be68e9f7cd13c30ac8130d5bc778aee599223f7fa591480a');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))

@@ -420,7 +420,9 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'press': {
       requireConfirm(args, 'press');
-      return optionalFormatJson(['press', requireString(args, 'target'), requireString(args, 'key')]);
+      const command = ['press', requireString(args, 'target'), requireString(args, 'key')];
+      if (args.searchSubmit === true) command.push('--search-submit');
+      return optionalFormatJson(command);
     }
     case 'wait-for': {
       const command = ['waitfor', requireString(args, 'target')];

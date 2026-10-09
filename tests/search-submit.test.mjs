@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildMcpToolCommand } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -66,6 +67,7 @@ function createSearchSubmitCdp({
   mouseNavigates = true,
   jsClickNavigates = true,
   jsClickThrows = false,
+  onEnter = null,
 } = {}) {
   const calls = [];
   const clickProbe = { seen: [] };
@@ -139,6 +141,10 @@ function createSearchSubmitCdp({
         }
         return Promise.resolve({ result: { value: href } });
       }
+      if (method === 'Input.dispatchKeyEvent') {
+        if (params.type === 'keyDown' && typeof onEnter === 'function') onEnter(params);
+        return Promise.resolve({});
+      }
       if (method === 'Page.getFrameTree') {
         return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
       }
@@ -166,6 +172,7 @@ describe('issue #328 search listing identity', () => {
     expect(T.isSearchListingHref('/google-bert/bert-base-uncased')).toBe(false);
     expect(T.isSearchListingHref('https://huggingface.co/google-bert/bert-base-uncased')).toBe(false);
     expect(T.isSearchListingText(RESULTS_TEXT)).toBe(true);
+    expect(T.isSearchListingText('See full election results')).toBe(false);
     expect(T.isSearchListingText('google-bert/bert-base-uncased')).toBe(false);
     expect(T.isSearchListingControl({ href: '/models?search=bert', label: 'models' })).toBe(true);
     expect(T.isSearchListingControl({ href: '/google-bert/bert-base-uncased', label: 'bert-base-uncased' })).toBe(false);
@@ -201,12 +208,28 @@ describe('issue #328 search listing identity', () => {
 });
 
 describe('issue #328 press Enter submits search listing, not typeahead first hit', () => {
-  it('clicks the results listing link instead of dispatching Enter when the search box is focused', async () => {
+  it('dispatches Enter when a results listing is visible unless --search-submit is set', async () => {
     const cdp = createSearchSubmitCdp();
-    const out = await T.pressStr(cdp, 'sid', 'enter');
-    expect(out).toMatch(/Pressed Enter/i);
-    expect(out).toMatch(/Submitted search/i);
-    expect(out).toContain(RESULTS_SELECTOR);
+    const out = await T.pressStr(cdp, 'sid', 'enter', { searchSubmit: {
+      ok: true,
+      selector: RESULTS_SELECTOR,
+      href: '/models?search=bert',
+      text: RESULTS_TEXT,
+    } });
+    expect(out).toBe('Pressed Enter');
+    const keyDown = cdp.calls.find(call => call.method === 'Input.dispatchKeyEvent' && call.params.type === 'keyDown');
+    expect(keyDown.params.text).toBe('\r');
+    expect(keyDown.params.key).toBe('Enter');
+    expect(cdp.calls.some(call => call.method === 'Runtime.callFunctionOn')).toBe(false);
+    expect(cdp.calls.some(call => String(call.params?.expression || '').includes('chrome-cdp-ex.search-submit'))).toBe(false);
+    expect(cdp.hrefOf()).toBe(HF_HOME);
+  });
+
+  it('opts into the results listing link and names that link without claiming a key press', async () => {
+    const cdp = createSearchSubmitCdp();
+    const out = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true });
+    expect(out).toBe(`Submitted search via ${RESULTS_SELECTOR}`);
+    expect(out).not.toMatch(/Pressed Enter/i);
     expect(out).not.toMatch(/google-bert/);
     const keyTypes = cdp.calls
       .filter(call => call.method === 'Input.dispatchKeyEvent')
@@ -250,7 +273,7 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
 
   it('treats a fail-closed listing click as success when the listing URL already loaded', async () => {
     const cdp = createSearchSubmitCdp({ mouseDeliversPageEvents: false, mouseNavigates: true });
-    const out = await T.pressStr(cdp, 'sid', 'enter');
+    const out = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true });
     expect(out).toMatch(/Submitted search/i);
     expect(out).toContain(RESULTS_SELECTOR);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
@@ -264,7 +287,7 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
       mouseNavigates: false,
       jsClickNavigates: true,
     });
-    const out = await T.pressStr(cdp, 'sid', 'enter');
+    const out = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true });
     expect(out).toMatch(/Submitted search/i);
     expect(out).toContain(RESULTS_SELECTOR);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
@@ -276,20 +299,20 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
     expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
   });
 
-  it('does not send Enter when search submit cannot reach a listing', async () => {
+  it('does not send Enter when opted-in search submit cannot reach a listing', async () => {
     const cdp = createSearchSubmitCdp({
       mouseDeliversPageEvents: false,
       mouseNavigates: false,
       jsClickNavigates: false,
     });
-    await expect(T.pressStr(cdp, 'sid', 'enter')).rejects.toThrow(/results listing/i);
+    await expect(T.pressStr(cdp, 'sid', 'enter', { viaListing: true })).rejects.toThrow(/results listing/i);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
     expect(cdp.hrefOf()).toBe(HF_HOME);
   });
 
   it('prints a skinny report-only receipt without leftover AX after search submit', async () => {
     const cdp = createSearchSubmitCdp();
-    const dispatchText = await T.pressStr(cdp, 'sid', 'enter');
+    const dispatchText = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true });
     let observed = false;
     const text = await T.runActionWithFeedback({
       action: 'press',
@@ -322,20 +345,27 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
 
 describe('issue #335 skip fill leftover settle before search-submit press', () => {
   it('treats fill leftover typeahead as skippable only when the next batch command is search-submit press', () => {
-    expect(T.isSearchSubmitPressCommand({ cmd: 'press', args: ['Enter'] })).toBe(true);
-    expect(T.isSearchSubmitPressCommand({ cmd: 'key', args: ['enter'] })).toBe(true);
-    expect(T.isSearchSubmitPressCommand({ cmd: 'press', args: ['escape'] })).toBe(false);
+    expect(T.isSearchSubmitPressCommand({ cmd: 'press', args: ['Enter'] })).toBe(false);
+    expect(T.isSearchSubmitPressCommand({ cmd: 'press', args: ['Enter', '--search-submit'] })).toBe(true);
+    expect(T.isSearchSubmitPressCommand({ cmd: 'key', args: ['--search-submit', 'enter'] })).toBe(true);
+    expect(T.isSearchSubmitPressCommand({ cmd: 'press', args: ['escape', '--search-submit'] })).toBe(false);
     expect(T.isSearchSubmitPressCommand({ cmd: 'fill', args: ['input', 'bert'] })).toBe(false);
-    expect(T.fillFeedbackPolicy({ cmd: 'press', args: ['Enter'] })).toBe('report-only');
+    expect(T.fillFeedbackPolicy({ cmd: 'press', args: ['Enter'] })).toBe('settle-diff');
+    expect(T.fillFeedbackPolicy({ cmd: 'press', args: ['Enter', '--search-submit'] })).toBe('report-only');
     expect(T.fillFeedbackPolicy({ cmd: 'press', args: ['escape'] })).toBe('settle-diff');
     expect(T.fillFeedbackPolicy({ cmd: 'click', args: ['#go'] })).toBe('settle-diff');
     expect(T.fillFeedbackPolicy(null)).toBe('settle-diff');
   });
 
   it('attaches sequential batch lookahead so mid-pipe fill can see the following press', () => {
-    const sequenced = T.batchCommandLookahead([
+    const plain = T.batchCommandLookahead([
       { cmd: 'fill', args: ['input[placeholder*="Search"]', 'bert'] },
       { cmd: 'press', args: ['Enter'] },
+    ]);
+    expect(T.fillFeedbackPolicy(plain[0].nextCommand)).toBe('settle-diff');
+    const sequenced = T.batchCommandLookahead([
+      { cmd: 'fill', args: ['input[placeholder*="Search"]', 'bert'] },
+      { cmd: 'press', args: ['Enter', '--search-submit'] },
     ]);
     expect(T.fillFeedbackPolicy(sequenced[0].nextCommand)).toBe('report-only');
     expect(sequenced[1].nextCommand).toBeNull();
@@ -354,7 +384,7 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
 
   it('the pre-fix try/finally around return handleCommand() loses lookahead at the first await', async () => {
     const session = { batchNextCommand: null };
-    const next = { cmd: 'press', args: ['Enter'] };
+    const next = { cmd: 'press', args: ['Enter', '--search-submit'] };
     let afterYield;
     const handleCommand = async () => {
       await Promise.resolve();
@@ -376,7 +406,7 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
     const session = { batchNextCommand: null };
     const sequenced = T.batchCommandLookahead([
       { cmd: 'fill', args: ['input[placeholder*="Search"]', 'bert'] },
-      { cmd: 'press', args: ['Enter'] },
+      { cmd: 'press', args: ['Enter', '--search-submit'] },
     ]);
     let policyAfterYield;
     let observed = false;
@@ -413,7 +443,7 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
 
   it('clears sequential-batch lookahead after the daemon route even when it rejects', async () => {
     const session = { batchNextCommand: 'stale' };
-    await expect(T.runWithBatchLookahead(session, { cmd: 'press', args: ['Enter'] }, async () => {
+    await expect(T.runWithBatchLookahead(session, { cmd: 'press', args: ['Enter', '--search-submit'] }, async () => {
       await Promise.resolve();
       expect(T.fillFeedbackPolicy(session.batchNextCommand)).toBe('report-only');
       throw new Error('daemon route failed');
@@ -433,7 +463,7 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
         commandArgs: ['input[placeholder*="Search"]', 'bert'],
       },
       dispatch: async () => 'Filled <INPUT> with "bert"',
-      feedbackPolicy: T.fillFeedbackPolicy({ cmd: 'press', args: ['Enter'] }),
+      feedbackPolicy: T.fillFeedbackPolicy({ cmd: 'press', args: ['Enter', '--search-submit'] }),
       observe: async () => {
         observed = true;
         return leftoverGoldenPathDump();
@@ -472,7 +502,7 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
 
   it('still fail-closes skip-settle fill when the listing never appears, without sending Enter', async () => {
     const cdp = createSearchSubmitCdp({ probe: { ok: false } });
-    await expect(T.pressStr(cdp, 'sid', 'enter', { requireSearchSubmit: true })).rejects.toThrow(/results listing/i);
+    await expect(T.pressStr(cdp, 'sid', 'enter', { viaListing: true })).rejects.toThrow(/results listing/i);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
   });
 });
@@ -529,7 +559,7 @@ describe('issue #339 skip typeahead listing probe wait after report-only fill', 
   it('typeahead first-model still fails: synthesized submit does not click the first repo or send Enter', async () => {
     const cdp = createSearchSubmitCdp({ probe: { ok: false } });
     const probe = T.searchListingProbeFromQuery('bert', HF_HOME);
-    const out = await T.pressStr(cdp, 'sid', 'enter', { searchSubmit: probe, requireSearchSubmit: true });
+    const out = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true, searchSubmit: probe });
     expect(out).toMatch(/Submitted search/i);
     expect(out).toContain(RESULTS_SELECTOR);
     expect(out).not.toMatch(/google-bert/);
@@ -548,7 +578,7 @@ describe('issue #339 skip typeahead listing probe wait after report-only fill', 
     expect(probe.ok).toBe(true);
     expect(probe.synthesized).not.toBe(true);
     expect(probe.selector).toBe(RESULTS_SELECTOR);
-    const out = await T.pressStr(cdp, 'sid', 'enter', { searchSubmit: probe });
+    const out = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true, searchSubmit: probe });
     expect(out).toMatch(/Submitted search/i);
     expect(cdp.calls.some(call => call.method === 'Page.navigate')).toBe(false);
     expect(cdp.calls.some(call =>
@@ -565,15 +595,19 @@ describe('issue #339 skip typeahead listing probe wait after report-only fill', 
     const src = readFileSync(fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url)), 'utf8');
     expect(src).toMatch(/session\.searchSubmitQuery = parsed\.text/);
     expect(src).toMatch(/waitForSearchSubmitProbe\(\s*cdp,\s*sessionId,\s*\{\s*filledQuery/);
+    expect(src).toMatch(/plan\.mode === 'probe-after-fill'/);
+    expect(src).toMatch(/plan\.mode === 'probe-once'/);
     expect(src).not.toMatch(/awaitListing\s*\n\s*\? await waitForSearchSubmitProbe\(cdp, sessionId\)/);
+    expect(src).not.toMatch(/isEnterKeyName\(fopts\.args\[0\]\)/);
   });
 });
 
 describe('issue #335 search-submit returns on listing URL commit', () => {
   it('submits the listing via jsclick and returns on the listing URL without mouse compositor wait', async () => {
     const cdp = createSearchSubmitCdp();
-    const out = await T.pressStr(cdp, 'sid', 'enter');
+    const out = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true });
     expect(out).toMatch(/Submitted search/i);
+    expect(out).not.toMatch(/Pressed Enter/i);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
     expect(cdp.calls.some(call =>
       call.method === 'Runtime.callFunctionOn'
@@ -591,8 +625,9 @@ describe('issue #335 search-submit returns on listing URL commit', () => {
       mouseDeliversPageEvents: false,
       mouseNavigates: false,
     });
-    const out = await T.pressStr(cdp, 'sid', 'enter');
+    const out = await T.pressStr(cdp, 'sid', 'enter', { viaListing: true });
     expect(out).toMatch(/Submitted search/i);
+    expect(out).not.toMatch(/Pressed Enter/i);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
     expect(cdp.hrefOf()).toBe(HF_RESULTS);
   });
@@ -600,11 +635,114 @@ describe('issue #335 search-submit returns on listing URL commit', () => {
   it('keeps compact batch receipts skinny for fill then search-submit press', () => {
     const formatted = T.formatBatchResults([
       { cmd: 'fill', ok: true, result: 'Filled <INPUT> with "bert"\n---\nfill: dispatched via fill' },
-      { cmd: 'press', ok: true, result: `Pressed Enter. Submitted search via ${RESULTS_SELECTOR}\n---\npress: dispatched via press` },
+      { cmd: 'press', ok: true, result: `Submitted search via ${RESULTS_SELECTOR}\n---\npress: dispatched via press` },
     ], 'compact');
     expect(formatted).toContain('Filled <INPUT> with "bert"');
     expect(formatted).toContain(`Submitted search via ${RESULTS_SELECTOR}`);
     expect(formatted.length).toBeLessThan(220);
     expect(formatted).not.toMatch(/RootWebArea/);
+  });
+});
+
+describe('issue #632 press Enter dispatches the key', () => {
+  function enterParams(cdp) {
+    return cdp.calls
+      .filter(call => call.method === 'Input.dispatchKeyEvent' && call.params.type === 'keyDown')
+      .map(call => call.params);
+  }
+
+  it('adds a todo on Enter and does not open See full election results', async () => {
+    const items = [];
+    const cdp = createSearchSubmitCdp({
+      pageHref: 'https://example.test/todos',
+      probe: {
+        ok: true,
+        selector: 'a[href="/news/election"]',
+        href: '/news/election',
+        text: 'See full election results',
+      },
+      onEnter(params) {
+        if (params.key === 'Enter' && params.text === '\r') items.push('buy milk');
+      },
+    });
+    const out = await T.pressStr(cdp, 'sid', 'Enter');
+    expect(out).toBe('Pressed Enter');
+    expect(items).toEqual(['buy milk']);
+    expect(cdp.hrefOf()).toBe('https://example.test/todos');
+    expect(cdp.calls.some(call => call.method === 'Runtime.callFunctionOn')).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'Page.navigate')).toBe(false);
+    expect(enterParams(cdp)).toEqual([expect.objectContaining({ key: 'Enter', text: '\r', unmodifiedText: '\r' })]);
+  });
+
+  it('does not follow a /search?q= link unless search submit is opted in', async () => {
+    const items = [];
+    const probe = {
+      ok: true,
+      selector: 'a[href="/search?q=groceries"]',
+      href: '/search?q=groceries',
+      text: 'Recent: groceries',
+    };
+    const plain = createSearchSubmitCdp({
+      pageHref: 'https://example.test/todos',
+      probe,
+      onEnter() { items.push('buy milk'); },
+    });
+    const out = await T.pressStr(plain, 'sid', 'Enter');
+    expect(out).toBe('Pressed Enter');
+    expect(items).toEqual(['buy milk']);
+    expect(plain.hrefOf()).toBe('https://example.test/todos');
+    expect(plain.calls.some(call => String(call.params?.expression || '').includes('chrome-cdp-ex.search-submit'))).toBe(false);
+
+    const opted = createSearchSubmitCdp({ pageHref: 'https://example.test/todos', probe });
+    const submitted = await T.pressStr(opted, 'sid', 'Enter', { viaListing: true });
+    expect(submitted).toBe('Submitted search via a[href="/search?q=groceries"]');
+    expect(submitted).not.toMatch(/Pressed Enter/);
+    expect(opted.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+    expect(opted.calls.some(call =>
+      call.method === 'Runtime.callFunctionOn'
+      && String(call.params.functionDeclaration || '').includes('scrollIntoView')
+    )).toBe(true);
+  });
+
+  it('batch fill then press Enter dispatches Enter without a results listing', async () => {
+    const parsed = T.parseBatchArgs(['fill #todo bread | press Enter']);
+    const sequenced = T.batchCommandLookahead(parsed.commands);
+    expect(sequenced.map(command => command.cmd)).toEqual(['fill', 'press']);
+    expect(T.fillFeedbackPolicy(sequenced[0].nextCommand)).toBe('settle-diff');
+    expect(T.isSearchSubmitPressCommand(sequenced[1])).toBe(false);
+    expect(T.pressSearchSubmitPlan({
+      key: 'Enter',
+      viaListing: false,
+      awaitListing: true,
+    })).toEqual({ mode: 'dispatch-key', requireListing: false });
+    let submitted = false;
+    const cdp = createSearchSubmitCdp({
+      probe: { ok: false },
+      pageHref: 'https://example.test/form',
+      onEnter(params) {
+        if (params.text === '\r') submitted = true;
+      },
+    });
+    const out = await T.pressStr(cdp, 'sid', 'Enter');
+    expect(out).toBe('Pressed Enter');
+    expect(submitted).toBe(true);
+    expect(cdp.hrefOf()).toBe('https://example.test/form');
+    await expect(T.pressStr(createSearchSubmitCdp({ probe: { ok: false } }), 'sid', 'Enter', { viaListing: true }))
+      .rejects.toThrow(/without --search-submit/);
+  });
+
+  it('parses --search-submit as opt-in and keeps a plain Enter on the key path', () => {
+    expect(T.parsePressArgs(['Enter', '--format', 'json'])).toMatchObject({ key: 'Enter', viaListing: false });
+    expect(T.parsePressArgs(['--search-submit', 'Enter'])).toMatchObject({ key: 'Enter', viaListing: true });
+    expect(() => T.parsePressArgs(['Escape', '--search-submit'])).toThrow(/only applies to Enter/);
+    expect(() => T.parsePressArgs(['Enter', '--listing'])).toThrow(/unknown argument/);
+    expect(T.pressSearchSubmitPlan({ key: 'Enter', viaListing: true, awaitListing: true }).mode).toBe('probe-after-fill');
+    expect(T.pressSearchSubmitPlan({ key: 'Enter', viaListing: true, awaitListing: false }).mode).toBe('probe-once');
+    expect(T.helpTopicStr('press')).toMatch(/--search-submit/);
+    expect(T.helpTopicStr('press')).toMatch(/focused element/);
+    expect(buildMcpToolCommand('press', { target: 'T', key: 'Enter', confirm: true }))
+      .toEqual(['press', 'T', 'Enter', '--format', 'json']);
+    expect(buildMcpToolCommand('press', { target: 'T', key: 'Enter', confirm: true, searchSubmit: true }))
+      .toEqual(['press', 'T', 'Enter', '--search-submit', '--format', 'json']);
   });
 });

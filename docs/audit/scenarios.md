@@ -94,6 +94,8 @@ Proposal 7 (#661) changed `diff-shot`: the compare receipt names the element beh
 
 #646 (B-03, #634) masks cookie values by default. **Scenario 1.** The trap path now runs `cookies <t> --unsafe-full`: plain `cookies` no longer prints the session value, and the trap is the only one that checks the judge's `secret-leak` code. The B-03 trap notes in scenarios 1 and 8 now describe the behaviour before #634.
 
+#647 (B-01, #632) makes `press Enter` key the focused element. **Scenario 2.** The trap path now runs `press <t> Enter --search-submit`: plain Enter submits the SPA's search form and stays on the page, and the trap is the only one that checks the judge's `left-app` code. The B-01 trap note now describes the behaviour before #632.
+
 The Summary table above keeps the Phase C costs, which were the oracle for the Phase D probe.
 
 ## Product findings from building the scenarios
@@ -209,7 +211,7 @@ Reproduced and added to [findings.md](findings.md):
 
 **Weak-model traps.**
 
-- `press <t> Enter` after typing the query JS-clicks the sidebar link /search?q=brake+pad and leaves the SPA. (B-01 #632)
+- Before #632, `press <t> Enter` after typing the query JS-clicked the sidebar link /search?q=brake+pad and left the SPA; now only `press <t> Enter --search-submit` does. (B-01 #632)
 - `click <t> "Ceramic Brake Pad Set"` is read as a CSS selector. (B-10 #641)
 - Results replace the list, and `perceive --since-action` renumbers refs without showing it. (B-11 #642)
 - `perceive --since-action` shows new text only as "Text nodes updated (N added)"; the stock count needs text or a full perceive. (T-08)
@@ -224,7 +226,7 @@ Reproduced and added to [findings.md](findings.md):
 5. `click <t> @ref`
 6. `text <t> "#detail"`
 
-**Trap path** (negative control): Types the query and submits with `press <t> Enter`, which follows the sidebar link out of the SPA.
+**Trap path** (negative control): Types the query and submits with `press <t> Enter --search-submit`, which follows the sidebar link out of the SPA.
 
 ### 3. Approve an expense request behind a session-expiry modal
 

@@ -26,6 +26,7 @@
   ([#642](https://github.com/EndeavorYen/chrome-cdp-ex/issues/642)).
 
 * Cookie values, JWTs, `Authorization` values, and token query parameters are `<redacted>` by default in `cookies`, `console`, `status`, `list`, `perceive`, `summary`, `frame`, and `checkpoint`. Console and exception locations keep `:line:col`. `frame` masks page and iframe URLs in text and JSON. `--unsafe-full` prints the raw values ([#634](https://github.com/EndeavorYen/chrome-cdp-ex/issues/634)).
+* `press Enter` dispatches Enter to the focused element, including inside `batch`. It does not JS-click a results or search-listing link. `press Enter --search-submit` is the opt-in for that link, and the receipt says `Submitted search via <selector>` instead of claiming a key press. A plain `fill` then `press Enter` no longer waits for a results listing ([#632](https://github.com/EndeavorYen/chrome-cdp-ex/issues/632)).
 
 * `hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take several seconds for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and one Next command (`CDP_BACKGROUND=0 cdp hover …` when the tab is hidden, otherwise `cdp perceive … -C -d 8`) ([#608](https://github.com/EndeavorYen/chrome-cdp-ex/issues/608)).
 

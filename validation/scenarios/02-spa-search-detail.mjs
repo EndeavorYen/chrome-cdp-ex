@@ -33,7 +33,7 @@ export const scenario = {
     { code: 'secret-leak', description: 'A secret value appeared in the transcript (none are planted here).' },
   ],
   weakModelTraps: [
-    { trap: '`press <t> Enter` after typing the query JS-clicks the sidebar link /search?q=brake+pad and leaves the SPA.', refs: 'B-01 #632' },
+    { trap: 'Before #632, `press <t> Enter` after typing the query JS-clicked the sidebar link /search?q=brake+pad and left the SPA; now only `press <t> Enter --search-submit` does.', refs: 'B-01 #632' },
     { trap: '`click <t> "Ceramic Brake Pad Set"` is read as a CSS selector.', refs: 'B-10 #641' },
     { trap: 'Results replace the list, and `perceive --since-action` renumbers refs without showing it.', refs: 'B-11 #642' },
     { trap: '`perceive --since-action` shows new text only as "Text nodes updated (N added)"; the stock count needs text or a full perceive.', refs: 'T-08' },
@@ -151,11 +151,13 @@ export async function reference(ctx) {
   return { answer: `Ceramic Brake Pad Set（前輪）：料號 ${partNo}，庫存 ${stock}。` };
 }
 
-// The weak-model path: submit the search with Enter, as a person would.
+// The weak-model path: submit the search through the results link instead of the form.
+// `press Enter` keys the focused field since #632; the trap opts into the link, so the judge's
+// left-app check still has a negative control.
 export async function trap(ctx) {
   const t = prefixFromList((await ctx.cli('list')).stdout, tab => tab.title === 'Parts Catalog');
   await ctx.cli('fill', t, '#q', 'brake pad');
-  await ctx.cli('press', t, 'Enter');
+  await ctx.cli('press', t, 'Enter', '--search-submit');
   const seen = (await ctx.cli('text', t)).stdout;
   return { answer: /BP-4471-C/.test(seen) ? 'BP-4471-C' : '找不到詳細資料。', expect: ['left-app', 'missing-fields'] };
 }
