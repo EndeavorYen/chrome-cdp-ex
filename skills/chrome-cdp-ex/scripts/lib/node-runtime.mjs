@@ -1,7 +1,9 @@
-import { spawnSync as defaultSpawnSync } from 'child_process';
+import { spawn as defaultSpawn, spawnSync as defaultSpawnSync } from 'child_process';
 import { existsSync as defaultExistsSync, readdirSync as defaultReaddirSync, readFileSync as defaultReadFileSync } from 'fs';
-import { homedir as defaultHomedir } from 'os';
-import { posix as posixPath, win32 as win32Path } from 'path';
+import * as nodeModule from 'node:module';
+import { homedir as defaultHomedir, tmpdir as defaultTmpdir } from 'os';
+import { join as defaultJoin, posix as posixPath, win32 as win32Path } from 'path';
+import { pathToFileURL } from 'url';
 
 function pathApiForRoot(root, platform = process.platform) {
   const text = String(root ?? '');
@@ -184,4 +186,113 @@ export function resolveChromeCdpNodeLaunch({
     };
   }
   return { action: 'fail', message: NODE22_MISSING_HINT };
+}
+
+const COMPILE_CACHE_STATUS = nodeModule.constants?.compileCacheStatus ?? {
+  FAILED: 0,
+  ENABLED: 1,
+  ALREADY_ENABLED: 2,
+  DISABLED: 3,
+};
+
+// Node's own default. Children must inherit this directory, not the versioned
+// subdirectory enableCompileCache() reports after the cache is already on.
+export function defaultChromeCdpCompileCacheDir(tmpdir = defaultTmpdir, join = defaultJoin) {
+  return join(tmpdir(), 'node-compile-cache');
+}
+
+function compileCacheIsEnabled(result) {
+  return result?.status === COMPILE_CACHE_STATUS.ENABLED
+    || result?.status === COMPILE_CACHE_STATUS.ALREADY_ENABLED;
+}
+
+// Best-effort. A missing API, a thrown call, or an unwritable directory must
+// not print and must not change how the command runs.
+export function enableChromeCdpCompileCache({
+  enableCompileCache = nodeModule.enableCompileCache,
+  env = process.env,
+  cacheDir,
+  tmpdir = defaultTmpdir,
+  join = defaultJoin,
+} = {}) {
+  try {
+    if (typeof enableCompileCache !== 'function') return { enabled: false, reason: 'unavailable' };
+    const userDir = env?.NODE_COMPILE_CACHE;
+    const requestedDir = userDir || cacheDir || defaultChromeCdpCompileCacheDir(tmpdir, join);
+    const result = userDir ? enableCompileCache() : enableCompileCache(requestedDir);
+    const enabled = compileCacheIsEnabled(result);
+    if (enabled && env && !env.NODE_COMPILE_CACHE) env.NODE_COMPILE_CACHE = requestedDir;
+    return { enabled, directory: enabled ? (userDir || requestedDir) : undefined, result };
+  } catch {
+    return { enabled: false, reason: 'threw' };
+  }
+}
+
+function spawnInherited(spawnProcess, binary, args, env, exit, stderr) {
+  const child = spawnProcess(binary, args, {
+    stdio: 'inherit',
+    env,
+  });
+  if (!child || typeof child.on !== 'function') return child;
+  child.on('exit', code => exit(code ?? 1));
+  child.on('error', error => {
+    stderr(error?.message || error);
+    exit(1);
+  });
+  return child;
+}
+
+// Node >= 22 runs cdp.mjs in this process. argv[1] has to be that script:
+// daemon metadata defaults scriptPath to argv[1], and cdp.mjs only enters
+// main when argv[1] is itself. Node < 22 still re-execs and does not import.
+export async function startChromeCdpCli({
+  scriptPath,
+  version = process.version,
+  execPath = process.execPath,
+  argv = process.argv,
+  env = process.env,
+  spawnProcess = defaultSpawn,
+  importModule,
+  enableCompileCache,
+  flushCompileCache = nodeModule.flushCompileCache,
+  cacheDir,
+  discover,
+  home,
+  fs,
+  spawnSync: spawnSyncFn,
+  exit = code => process.exit(code),
+  stderr = (...args) => console.error(...args),
+} = {}) {
+  if (!scriptPath) throw new Error('chrome-cdp launcher requires scriptPath');
+  const launch = resolveChromeCdpNodeLaunch({
+    version,
+    execPath,
+    argv,
+    env,
+    discover,
+    home,
+    fs,
+    spawnSync: spawnSyncFn,
+  });
+  if (launch.action === 'reexec') {
+    spawnInherited(spawnProcess, launch.binary, launch.args, launch.env, exit, stderr);
+    return { action: 'reexec' };
+  }
+  if (launch.action === 'fail') {
+    stderr(launch.message);
+    exit(1);
+    return { action: 'fail' };
+  }
+  enableChromeCdpCompileCache({
+    env,
+    cacheDir,
+    // Undefined keeps the real API. Null stands for a Node build without it.
+    ...(enableCompileCache !== undefined ? { enableCompileCache } : {}),
+  });
+  const nextArgv = [execPath, scriptPath, ...argv.slice(2)];
+  argv.splice(0, argv.length, ...nextArgv);
+  const load = importModule || (href => import(href));
+  await load(pathToFileURL(scriptPath).href);
+  try { flushCompileCache?.(); } catch { /* cache flush is optional */ }
+  return { action: 'use-current' };
 }
