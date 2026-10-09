@@ -66,10 +66,10 @@ function fixtureOutput(id) {
   if (id === 'checkpoint') return [
     'Checkpoint captured', `URL: ${URL}`, 'Privacy: default-redacted',
     'Storage: local 2, session 1', 'Cookies: 1',
-    'Values: cookie values and sensitive storage values are redacted by default.',
+    'Values: cookie values, URL secrets, and sensitive storage values are redacted by default.',
     'Next: use `checkpoint --unsafe-full --format json` only when restore fidelity is required.',
   ].join('\n');
-  if (id === 'cookies') return 'phase7_fixture  fixture-value  127.0.0.1  session  Lax';
+  if (id === 'cookies') return 'phase7_fixture  <redacted>  127.0.0.1  session  Lax';
   if (id === 'cookieset') return 'Cookie set: phase7_mutation=fixture (domain: 127.0.0.1)';
   if (id === 'cookiedel') return 'Cookie deleted: phase7_mutation';
   if (id === 'dialog') return 'Dialog auto-accept: OFF (dialogs will be dismissed/rejected)';

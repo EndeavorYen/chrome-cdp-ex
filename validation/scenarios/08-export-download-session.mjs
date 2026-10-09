@@ -46,7 +46,7 @@ export const scenario = {
     { trap: '`click … --expect-download --out DIR` is the working form; it is in SKILL.md but nothing in the failure points to it.', refs: 'B-08 #639' },
     { trap: 'The page opens on September; exporting without changing the month saves the wrong file.', refs: 'scenario' },
     { trap: '"Printable view" opens a window; the click reports no-change (exit 1) although the window opened.', refs: 'B-08 #639' },
-    { trap: '`cookies <t>` prints the HttpOnly session value, which invites a curl download.', refs: 'B-03 #634' },
+    { trap: 'Before #634, `cookies <t>` printed the HttpOnly session value, which invited a curl download; now only `--unsafe-full` prints it.', refs: 'B-03 #634' },
   ],
   referencePath: [
     'list → the "Invoices · Acme Billing" tab',
