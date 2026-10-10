@@ -1332,7 +1332,12 @@ element is gone before dispatch, nothing is sent and the kind is still `misdirec
 summary, option, label, or an ARIA role of button, link, checkbox, radio, switch, tab,
 menuitem, option, combobox, slider, spinbutton, textbox, or searchbox) exit 1 with
 `Kind: click-no-change` when settle is Outcome: no-change, unless that no-change is an
-existing expected case (clipboard, PDF viewer). A main-frame navigation, including one the
+existing expected case (clipboard, PDF viewer). A change to the clicked control's own
+`aria-pressed`, `aria-expanded`, `aria-checked`, or `aria-selected` is a reaction: the
+click exits 0 and the one-line receipt names it, for example `aria-pressed false → true`.
+The accessibility states those attributes map to (`pressed`, `expanded`, `checked`,
+`selected`) are part of the AX line, so a change in one of them is an AX change too.
+A click that changes none of these, and nothing else on the page, still exits 1. A main-frame navigation, including one the
 page starts itself, drops the previous comparison baseline. The next click compares the
 loaded document. If that baseline cannot be captured, the receipt says the baseline is stale
 (`Outcome: dispatched`) and does not report `Kind: click-no-change`. `clickxy` and elements

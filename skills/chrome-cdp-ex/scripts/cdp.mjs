@@ -5136,6 +5136,12 @@ function formatAxNode(node, depth) {
   if (!(value === '' || value == null)) line += ` = ${JSON.stringify(value)}`;
   const checked = axNodeTokenState(node, 'checked');
   if (checked !== '') line += ` checked=${checked}`;
+  // aria-pressed / aria-expanded land here as pressed / expanded. A toggle
+  // whose only change is that token used to diff as identical (#664).
+  const pressed = axNodeTokenState(node, 'pressed');
+  if (pressed !== '') line += ` pressed=${pressed}`;
+  const expanded = axNodeTokenState(node, 'expanded');
+  if (expanded !== '') line += ` expanded=${expanded}`;
   const selected = axNodeTokenState(node, 'selected');
   if (selected === 'true') line += ' selected';
   else if (selected && selected !== 'false' && selected !== '') line += ` selected=${selected}`;
@@ -9555,7 +9561,13 @@ function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}
   const outcome = String(dispatchText || '').trim()
     || (result.outcome?.status ? String(result.outcome.status) : `${result.action}: dispatched`);
   const next = defaultMutatingNextCommand(result, { dispatchText });
-  const one = outcome.replace(/\.+$/, '');
+  let one = outcome.replace(/\.+$/, '');
+  // #664: the skinny receipt is the line an agent trusts. Name the control's
+  // own aria change here; the AX diff stays on the full diagnostic.
+  const ariaChange = result.outcome?.status === 'changed'
+    ? ariaControlStateReceiptClause(result.target?.controlStateDiff)
+    : '';
+  if (ariaChange && !one.includes(ariaChange)) one = `${one}: ${ariaChange}`;
   // #648: a request the action sent that failed is evidence for the next step.
   const failed = failedRequestLines(result);
   if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return insertBeforeNextLine(one, failed);
@@ -14592,7 +14604,7 @@ function refAnnotationsFromTreeLines(treeLines = []) {
     const text = String(line || '');
     const match = text.match(/\[([^\]]+)\](?:\s+(.*?))?\s+@((?:f\d+:)?\d+)(?:\s+\((-?\d+),(-?\d+) (\d+)×(\d+)\))?/);
     if (!match) continue;
-    const name = String(match[2] || '').replace(/\s+=\s+\S.*$/, '').replace(/\s+checked=\S.*$/, '').trim();
+    const name = String(match[2] || '').replace(/\s+=\s+\S.*$/, '').replace(/\s+(?:checked|pressed|expanded)=\S.*$/, '').trim();
     const idHint = name.split(/\s+/).find(Boolean) || '';
     out.push({
       role: match[1],
@@ -20340,6 +20352,8 @@ function fillableControlProbeDeclaration() {
   }`;
 }
 
+const ARIA_CONTROL_STATE_ATTRS = ['aria-pressed', 'aria-expanded', 'aria-checked', 'aria-selected'];
+
 function formControlStateProbeDeclaration() {
   return `function() {
     const el = this;
@@ -20353,6 +20367,13 @@ function formControlStateProbeDeclaration() {
       state.selected = Array.from(el.selectedOptions || []).map(opt => String(opt.value || ''));
       state.value = String(el.value || '');
     }
+    const names = ${JSON.stringify(ARIA_CONTROL_STATE_ATTRS)};
+    const aria = {};
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      if (el.hasAttribute && el.hasAttribute(name)) aria[name] = String(el.getAttribute(name));
+    }
+    if (Object.keys(aria).length) state.aria = aria;
     return state;
   }`;
 }
@@ -20379,6 +20400,28 @@ function shouldSnapshotFormControlState(action, target = {}) {
   return isRef(input) || isCursorRef(input) || /^[#.[a-zA-Z*]/.test(input);
 }
 
+function ariaControlStateValue(snapshot, name) {
+  const aria = snapshot?.aria;
+  if (!aria || typeof aria !== 'object' || !Object.prototype.hasOwnProperty.call(aria, name)) return null;
+  return aria[name] == null ? '' : String(aria[name]);
+}
+
+function formatAriaControlStateDiff(before, after) {
+  const shown = (value) => {
+    if (value == null) return '(absent)';
+    if (value === '') return '(empty)';
+    return value;
+  };
+  const parts = [];
+  for (const name of ARIA_CONTROL_STATE_ATTRS) {
+    const left = ariaControlStateValue(before, name);
+    const right = ariaControlStateValue(after, name);
+    if (left === right) continue;
+    parts.push(`${name} ${shown(left)} → ${shown(right)}`);
+  }
+  return parts.join('; ');
+}
+
 function formControlStateChanged(before, after) {
   if (!before || !after) return false;
   if (Object.prototype.hasOwnProperty.call(before, 'checked')
@@ -20387,20 +20430,31 @@ function formControlStateChanged(before, after) {
   }
   const beforeSelected = Array.isArray(before.selected) ? before.selected.join('\0') : null;
   const afterSelected = Array.isArray(after.selected) ? after.selected.join('\0') : null;
-  if (beforeSelected != null || afterSelected != null) {
-    return beforeSelected !== afterSelected;
-  }
-  return false;
+  if ((beforeSelected != null || afterSelected != null) && beforeSelected !== afterSelected) return true;
+  return ARIA_CONTROL_STATE_ATTRS.some(name => ariaControlStateValue(before, name) !== ariaControlStateValue(after, name));
 }
 
 function formatFormControlStateDiff(before, after) {
   const id = after?.id || before?.id || after?.tag || before?.tag || 'control';
   const label = id ? `#${id}` : (after?.tag || 'control');
+  const aria = formatAriaControlStateDiff(before, after);
+  const withAria = (line) => (aria ? `${line}; ${aria}` : line);
   if (Object.prototype.hasOwnProperty.call(before || {}, 'checked')
     || Object.prototype.hasOwnProperty.call(after || {}, 'checked')) {
-    return `${after?.type || before?.type || 'checkbox'} ${label} checked ${Boolean(before?.checked)} → ${Boolean(after?.checked)}`;
+    return withAria(`${after?.type || before?.type || 'checkbox'} ${label} checked ${Boolean(before?.checked)} → ${Boolean(after?.checked)}`);
   }
-  return `select ${label} selected ${JSON.stringify(before?.selected || [])} → ${JSON.stringify(after?.selected || [])}`;
+  if (Array.isArray(before?.selected) || Array.isArray(after?.selected)) {
+    return withAria(`select ${label} selected ${JSON.stringify(before?.selected || [])} → ${JSON.stringify(after?.selected || [])}`);
+  }
+  return aria;
+}
+
+function ariaControlStateReceiptClause(diff) {
+  return String(diff || '')
+    .split(';')
+    .map(part => part.trim())
+    .filter(part => /^aria-(?:pressed|expanded|checked|selected)\b/.test(part))
+    .join('; ');
 }
 
 async function snapshotFormControlState(cdp, sid, selector, refMap, refState) {
