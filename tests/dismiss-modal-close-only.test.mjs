@@ -141,6 +141,24 @@ describe('#653 dismiss-modal presses only a control whose job is to close', () =
     }
   });
 
+  it('lists a single-symbol button by its aria-label', () => {
+    const letter = element({ text: '訂', attrs: { 'aria-label': '不要用這個' } });
+    const icons = element({ text: '🗑★', attrs: { 'aria-label': '不要用這個' } });
+    const titled = element({ text: '⚙', attrs: { title: '設定' } });
+    const trash = element({ text: '🗑', attrs: { 'aria-label': '取消訂閱' } });
+    const trashVs = element({ text: '🗑\uFE0F', attrs: { 'aria-label': '刪除' } });
+    const parsed = fakeDialogPage({
+      buttons: [letter, icons, titled, trash, trashVs],
+      heading: '訂閱方案',
+    }).run();
+    expect(trash.clicked).toBe(0);
+    expect(trashVs.clicked).toBe(0);
+    expect(parsed).toEqual({
+      ok: false, reason: 'no-close-button', dialogs: 1, name: '訂閱方案',
+      buttons: ['訂', '🗑★', '⚙', '取消訂閱', '刪除'],
+    });
+  });
+
   it('names the dialog and its buttons when it has no close control', () => {
     const parsed = fakeDialogPage({
       buttons: [element({ text: 'Stay signed in' }), element({ text: 'Sign out' })],

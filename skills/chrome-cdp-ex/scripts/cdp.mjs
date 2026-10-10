@@ -28424,10 +28424,24 @@ function dismissModalScript() {
       const heading = d.querySelector ? d.querySelector('h1, h2, h3, [role="heading"]') : null;
       return String(d.getAttribute('aria-label') || labelled || (heading ? textOf(heading) : '')).slice(0, 80);
     }
+    // One Unicode symbol (🗑, with or without a variation selector) is the icon.
+    // The button list uses that control's aria-label, such as 取消訂閱.
+    function singleSymbol(text) {
+      if (!text) return false;
+      const core = text.replace(/[\\uFE0E\\uFE0F]/g, '');
+      const chars = Array.from(core);
+      return chars.length === 1 && /^\\p{S}$/u.test(chars[0]);
+    }
+    function buttonListName(el) {
+      const text = textOf(el);
+      const aria = String(el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
+      if (aria && singleSymbol(text)) return aria;
+      return text || labelOf(el) || String(el.value || '');
+    }
     function dialogButtons(d) {
       return Array.from(d.querySelectorAll('button, [role="button"], a[href], input[type="button"], input[type="submit"]'))
         .filter(visible)
-        .map(el => textOf(el) || labelOf(el) || String(el.value || ''))
+        .map(buttonListName)
         .filter(Boolean)
         .slice(0, 6)
         .map(name => name.slice(0, 40));
