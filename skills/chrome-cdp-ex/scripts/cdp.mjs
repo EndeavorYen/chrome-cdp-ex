@@ -17658,28 +17658,18 @@ function openedTabUncommitted(opened) {
 }
 
 // The new target never left its initial empty document. about:blank is not a
-// stand-in for that. Next looks at the popup. A command against the opener is
-// not offered: when the opener is blocked it will not answer, and the receipt
-// must not say the original tab is usable.
-function openerBlockedError(opened, { blocked = false } = {}) {
-  const prefix = targetPrefixForDisplay(opened?.targetId || '');
-  const err = new Error(blocked
-    ? `click: the opener is blocked and the new tab ${prefix} has not loaded.`
-    : `click: the new tab ${prefix} has not loaded.`);
+// stand-in for that. Do not eval or terminate here: a client-side timeout
+// queues in the renderer, and on Chrome stable that queue does not drain.
+// perceive, eval, and closetab against either tab then hang, and closing the
+// popup does not bring the opener back. Say so, and reopen the page instead.
+function openerUnusableError(opened) {
+  const err = new Error('click: the original tab is no longer usable. Reopen the tab or restart the browser.');
   err.openerBlocked = {
     targetId: String(opened?.targetId || ''),
-    targetPrefix: prefix,
-    blocked: blocked === true,
+    targetPrefix: targetPrefixForDisplay(opened?.targetId || ''),
+    pageUrl: String(opened?.pageUrl || ''),
   };
   return err;
-}
-
-async function uncommittedPopupError(cdp, sid, opened) {
-  const answered = await openerStillResponds(cdp, sid);
-  if (answered) return openerBlockedError(opened, { blocked: false });
-  await releaseBlockedOpener(cdp, sid);
-  const recovered = await openerStillResponds(cdp, sid);
-  return openerBlockedError(opened, { blocked: !recovered });
 }
 
 function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown', { crossOriginFrame = false } = {}) {
@@ -18073,7 +18063,7 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     mouse.catch(() => {});
     const blockingTab = await openedTabBlockingDispatch(cdp, sid, probeTarget.pagesBeforePromise || null, mouse);
     if (blockingTab) {
-      if (openedTabUncommitted(blockingTab)) throw await uncommittedPopupError(cdp, sid, blockingTab);
+      if (openedTabUncommitted(blockingTab)) throw openerUnusableError(blockingTab);
       // A committed about:blank whose opener does not answer is the popup
       // script holding this tab. A real URL is not that case: terminating a
       // long click handler that already opened a page would cut it short.
@@ -18087,7 +18077,7 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     const openedInstead = async () => {
       const opened = await openedTabNow(cdp, sid, probeTarget.pagesBeforePromise || null);
       if (!opened) return null;
-      if (openedTabUncommitted(opened)) throw await uncommittedPopupError(cdp, sid, opened);
+      if (openedTabUncommitted(opened)) throw openerUnusableError(opened);
       if (isBlankPageUrl(opened.url) && !await openerStillResponds(cdp, sid)) {
         await releaseBlockedOpener(cdp, sid);
       }
@@ -18399,7 +18389,7 @@ async function observeClickOutsideDocument(cdp, sid, point, probeTarget, target,
     } catch (error) {
       if (clickDeliveryMissedPage(error)) {
         const opened = await openedTabNow(cdp, sid, outside.pagesBeforePromise);
-        if (openedTabUncommitted(opened)) throw await uncommittedPopupError(cdp, sid, opened);
+        if (openedTabUncommitted(opened)) throw openerUnusableError(opened);
         if (opened) return formatOutsideClickSuffix({ openedTab: opened }, null);
         if (outside.downloadWatch?.armed) {
           retainLateClickDownloadWatch(cdp, outside);
@@ -18409,14 +18399,14 @@ async function observeClickOutsideDocument(cdp, sid, point, probeTarget, target,
       throw error;
     }
     if (dispatched?.openedTab) {
-      if (openedTabUncommitted(dispatched.openedTab)) throw await uncommittedPopupError(cdp, sid, dispatched.openedTab);
+      if (openedTabUncommitted(dispatched.openedTab)) throw openerUnusableError(dispatched.openedTab);
       return formatOutsideClickSuffix({ openedTab: dispatched.openedTab }, dispatched.childFrame);
     }
     const followed = await confirmClickFollowedHref(cdp, sid, target, outside.newTabWatch, outside);
     const opened = !followed && outside.pagesBeforePromise
       ? await openedTabAfterClick(cdp, sid, outside.pagesBeforePromise)
       : null;
-    if (openedTabUncommitted(opened)) throw await uncommittedPopupError(cdp, sid, opened);
+    if (openedTabUncommitted(opened)) throw openerUnusableError(opened);
     const merged = followed || (opened ? { openedTab: opened } : null);
     const suffix = formatOutsideClickSuffix(merged, dispatched?.childFrame);
     if (outside.downloadWatch?.armed && suffix.includes('no download event was observed')) {
@@ -18432,16 +18422,17 @@ async function observeClickOutsideDocument(cdp, sid, point, probeTarget, target,
 // A new page target opened by this tab (or showing the link URL), or a tab that existed
 // before the click and now shows the link URL (a named target reusing that window).
 function findClickOpenedTab(targetInfos, watch, href) {
+  const pageUrl = watch?.pagesBefore?.get?.(watch.openerId) || '';
   for (const info of targetInfos || []) {
     const url = String(info.url || '');
     const before = watch.pagesBefore.get(info.targetId);
     if (before === undefined) {
       const opener = Boolean(watch.openerId) && info.openerId === watch.openerId;
       if (opener || navigationDestinationMatches(url, href)) {
-        return { targetId: info.targetId, url: clickOpenedTabUrl(url, href), existing: false };
+        return { targetId: info.targetId, url: clickOpenedTabUrl(url, href), existing: false, pageUrl };
       }
     } else if (info.targetId !== watch.openerId && before !== url && navigationDestinationMatches(url, href)) {
-      return { targetId: info.targetId, url, existing: true };
+      return { targetId: info.targetId, url, existing: true, pageUrl };
     }
   }
   return null;

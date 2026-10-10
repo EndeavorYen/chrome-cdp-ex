@@ -579,21 +579,22 @@ describe('#639 click that opens a tab with window.open', () => {
     };
     const err = await T.clickStr(cdp, 'sid', '#popup', new Map()).catch(error => error);
     expect(err).toBeInstanceOf(Error);
-    expect(err.openerBlocked?.blocked).toBe(false);
     expect(terminated).toBe(false);
     const cli = T.formatActionFailure(err, {
       action: 'click',
       target: { targetId: TAB_ID, input: '#popup', commandArgs: ['#popup'] },
     });
-    expect(cli).toMatch(/the new tab F78D41FA has not loaded/);
+    expect(cli).toMatch(/the original tab is no longer usable/);
+    expect(cli).toMatch(/Reopen the tab or restart the browser/);
     expect(cli).toMatch(/Kind: opener-blocked/);
-    expect(cli).toMatch(/Next: cdp perceive F78D41FA -C -d 8/);
+    expect(cli).toMatch(/Next: cdp open http:\/\/127\.0\.0\.1:8765\/host\.html/);
+    expect(cli).not.toMatch(/perceive/);
     expect(cli).not.toMatch(/about:blank/);
     expect(cli).not.toMatch(/opened new tab/);
     expect(cli).not.toMatch(/jsclick/);
   });
 
-  it('says the opener is blocked when an uncommitted popup leaves it unresponsive', async () => {
+  it('does not eval or terminate an uncommitted popup, even when the opener would not answer', async () => {
     T.rememberSessionTarget('sid', TAB_ID);
     const targets = [{ targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' }];
     let terminated = false;
@@ -627,16 +628,18 @@ describe('#639 click that opens a tab with window.open', () => {
     };
     const err = await T.clickStr(cdp, 'sid', '#popup', new Map()).catch(error => error);
     expect(err).toBeInstanceOf(Error);
-    expect(err.openerBlocked?.blocked).toBe(true);
-    expect(terminated).toBe(true);
+    expect(terminated).toBe(false);
     const cli = T.formatActionFailure(err, {
       action: 'click',
       target: { targetId: TAB_ID, input: '#popup', commandArgs: ['#popup'] },
     });
-    expect(cli).toMatch(/the opener is blocked and the new tab F78D41FA has not loaded/);
+    expect(cli).toMatch(/the original tab is no longer usable/);
+    expect(cli).toMatch(/Reopen the tab or restart the browser/);
     expect(cli).toMatch(/Kind: opener-blocked/);
-    expect(cli).toMatch(/Next: cdp perceive F78D41FA -C -d 8/);
-    expect(cli).not.toMatch(/perceive AB78B41A/);
+    expect(cli).toMatch(/Next: cdp open http:\/\/127\.0\.0\.1:8765\/host\.html/);
+    expect(cli).not.toMatch(/perceive/);
+    expect(cli).not.toMatch(/eval /);
+    expect(cli).not.toMatch(/closetab/);
     expect(cli).not.toMatch(/about:blank/);
     expect(cli).not.toMatch(/opened new tab/);
     expect(cli).not.toMatch(/jsclick/);

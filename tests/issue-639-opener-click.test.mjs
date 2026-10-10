@@ -60,6 +60,7 @@ const HOST_HTML = `<!doctype html>
 <style>button{display:block;width:240px;height:36px;margin:16px 40px}</style>
 <button id="popup" onclick="window.open('/inner2','_blank')">Open inner2</button>
 <button id="noop" onclick="window.open('/inner2','_blank','noopener')">Open noopener</button>
+<button id="plain" onclick="document.title='plain-clicked'">Plain</button>
 <button id="spin" onclick="openSpin()">Open spin</button>
 <script>
 function openSpin() {
@@ -137,17 +138,21 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       const target = opened.stdout.match(/Opened new tab:\s+([0-9A-Fa-f]+)/)?.[1];
       expect(target).toBeTruthy();
 
-      const click = run(['click', target, '#popup']);
-      expect(click.status, `${click.stdout}\n${click.stderr}`).toBe(0);
-      expect(click.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/);
-      expect(click.stdout).not.toMatch(/Kind:/);
-      const popup = click.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
-      const after = run(['eval', target, '1+1'], 8000);
-      expect(after.status, `${after.stdout}\n${after.stderr}`).toBe(0);
-      expect(after.stdout.trim()).toBe('2');
-      if (popup) run(['closetab', popup], 8000);
+      const plain = run(['click', target, '#plain']);
+      expect(plain.status, `${plain.stdout}\n${plain.stderr}`).toBe(0);
+      expect(plain.stdout).toMatch(/Clicked <BUTTON> "Plain"/);
+      expect(plain.stdout).not.toMatch(/Kind:/);
 
-      const box = run(['eval', target, '(() => { const r = document.querySelector("#popup").getBoundingClientRect(); return Math.round(r.x + r.width / 2) + " " + Math.round(r.y + r.height / 2); })()']);
+      const noop = run(['click', target, '#noop']);
+      expect(noop.status, `${noop.stdout}\n${noop.stderr}`).toBe(0);
+      expect(noop.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/);
+      const afterNoop = run(['eval', target, '1+1'], 8000);
+      expect(afterNoop.status, `${afterNoop.stdout}\n${afterNoop.stderr}`).toBe(0);
+      expect(afterNoop.stdout.trim()).toBe('2');
+      const noopTab = noop.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
+      if (noopTab) run(['closetab', noopTab], 8000);
+
+      const box = run(['eval', target, '(() => { const r = document.querySelector("#noop").getBoundingClientRect(); return Math.round(r.x + r.width / 2) + " " + Math.round(r.y + r.height / 2); })()']);
       expect(box.status, `${box.stdout}\n${box.stderr}`).toBe(0);
       const [x, y] = box.stdout.trim().split(/\s+/);
       const clickxy = run(['clickxy', target, x, y]);
@@ -159,6 +164,14 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       const second = clickxy.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
       if (second) run(['closetab', second], 8000);
 
+      const js = run(['click', target, '#popup', '--js']);
+      expect(js.status, `${js.stdout}\n${js.stderr}`).not.toBe(0);
+      expect(`${js.stdout}\n${js.stderr}`).toMatch(/click-no-change/);
+      expect(`${js.stdout}\n${js.stderr}`).not.toMatch(/opened new tab/);
+      const afterJs = run(['eval', target, '1+1'], 8000);
+      expect(afterJs.status, `${afterJs.stdout}\n${afterJs.stderr}`).toBe(0);
+      expect(afterJs.stdout.trim()).toBe('2');
+
       const spin = run(['click', target, '#spin'], 15000);
       expect(spin.status, `${spin.stdout}\n${spin.stderr}`).toBe(0);
       expect(spin.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ /);
@@ -167,20 +180,32 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       const unstuck = run(['eval', target, '1+1'], 8000);
       expect(unstuck.status, `${unstuck.stdout}\n${unstuck.stderr}`).toBe(0);
       expect(unstuck.stdout.trim()).toBe('2');
+      const spinTab = spin.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
+      if (spinTab) run(['closetab', spinTab], 8000);
 
-      const noop = run(['click', target, '#noop']);
-      expect(noop.status, `${noop.stdout}\n${noop.stderr}`).toBe(0);
-      expect(noop.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/);
-      const afterNoop = run(['eval', target, '1+1'], 8000);
-      expect(afterNoop.status, `${afterNoop.stdout}\n${afterNoop.stderr}`).toBe(0);
-      expect(afterNoop.stdout.trim()).toBe('2');
-      const noopTab = noop.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
-      if (noopTab) run(['closetab', noopTab], 8000);
-
-      const js = run(['click', target, '#popup', '--js']);
-      expect(js.status, `${js.stdout}\n${js.stderr}`).not.toBe(0);
-      expect(`${js.stdout}\n${js.stderr}`).toMatch(/click-no-change/);
-      expect(`${js.stdout}\n${js.stderr}`).not.toMatch(/opened new tab/);
+      // Chrome stable 154 can leave this opener unusable (#677). A committed URL
+      // is still reported. Either result is accepted; the stuck receipt must not
+      // send the agent back to the hung tab.
+      const click = run(['click', target, '#popup'], 20000);
+      const clickText = `${click.stdout}\n${click.stderr}`;
+      if (click.status === 0 && /opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/.test(click.stdout)) {
+        expect(click.stdout).not.toMatch(/about:blank/);
+        const after = run(['eval', target, '1+1'], 8000);
+        expect(after.status, `${after.stdout}\n${after.stderr}`).toBe(0);
+        expect(after.stdout.trim()).toBe('2');
+        const popup = click.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
+        if (popup) run(['closetab', popup], 8000);
+      } else {
+        expect(click.status, clickText).not.toBe(0);
+        expect(clickText).toMatch(/the original tab is no longer usable/);
+        expect(clickText).toMatch(/Reopen the tab or restart the browser/);
+        expect(clickText).toMatch(/Kind: opener-blocked/);
+        expect(clickText).toMatch(/Next: cdp open /);
+        expect(clickText).not.toMatch(/perceive/);
+        expect(clickText).not.toMatch(/opened new tab/);
+        expect(clickText).not.toMatch(/about:blank/);
+        expect(clickText).not.toMatch(/closetab/);
+      }
     } finally {
       try { chrome.kill('SIGTERM'); } catch { /* already gone */ }
       try { server.kill('SIGTERM'); } catch { /* already gone */ }

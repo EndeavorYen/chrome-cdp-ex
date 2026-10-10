@@ -530,25 +530,20 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyCoveredClickFailure(err, { base, targetId, input });
   }
 
-  // #639: window.open published a target whose URL never committed. Next is the
-  // popup. Do not send the agent back to the opener or tell it to click again.
+  // #639 / #677: window.open published a target whose URL never committed.
+  // The original tab is unusable. perceive, eval, and closetab on either tab hang.
   if (err?.openerBlocked && typeof err.openerBlocked === 'object') {
-    const prefix = String(err.openerBlocked.targetPrefix || '').trim()
-      || (err.openerBlocked.targetId ? String(err.openerBlocked.targetId).slice(0, 8) : '');
-    const next = prefix ? `cdp perceive ${prefix} -C -d 8` : 'cdp list';
-    const blocked = err.openerBlocked.blocked === true;
+    const pageUrl = String(err.openerBlocked.pageUrl || '').trim();
+    const reopen = /^https?:\/\//i.test(pageUrl) ? `cdp open ${recoveryCommandArg(pageUrl)}` : 'cdp open about:blank';
     return {
       ...base,
       kind: 'opener-blocked',
       dispatched: true,
-      reason: blocked
-        ? 'The click opened a tab that has not loaded, and the opener is blocked.'
-        : 'The click opened a tab that has not loaded.',
-      nextCommand: next,
+      reason: 'The original tab is no longer usable.',
+      nextCommand: reopen,
       hints: [
-        `Inspect the new tab with \`${next}\`.`,
-        'Do not repeat the click.',
-        ...(blocked ? ['The original tab is blocked. Do not send it another command until the popup is closed or the page is usable again.'] : []),
+        'Reopen the tab with the Next command, or restart the browser.',
+        'Do not perceive, eval, or close the popup. Those commands hang, and closing the popup does not recover the original tab.',
       ],
     };
   }
@@ -1650,18 +1645,19 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
     ],
     avoid: [],
   },
-  // #639: window.open published a target whose URL never committed.
+  // #639 / #677: window.open published a target whose URL never committed.
   'opener-blocked': {
-    strategy: 'inspect-uncommitted-popup',
+    strategy: 'reopen-or-restart',
     priority: 'high',
     verify: 'next-or-perceive',
     intents: [
-      { key: 'next-or-perceive', reason: 'Inspect the new tab. Its URL has not committed.' },
+      { key: 'next-or-perceive', reason: 'Reopen the page in a new tab. The original tab is no longer usable.' },
     ],
     avoid: [
-      'repeating the click',
+      'perceiving, evaluating, or closing the popup',
+      'sending another command to the original tab',
       'treating an empty popup URL as a successful about:blank open',
-      'sending another command to the original tab when the receipt says the opener is blocked',
+      'claiming the original tab recovered',
     ],
   },
   // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refused the command, or it reached a disallowed origin.
