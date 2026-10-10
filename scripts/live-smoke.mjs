@@ -160,6 +160,29 @@ function assertIncludes(text, needle, label) {
   if (!text.includes(needle)) throw new Error(`${label} missing ${JSON.stringify(needle)}\nOutput:\n${text}`);
 }
 
+// #648: Next follows the failed-request receipt. A body already on the receipt
+// points at the page. An unreadable body points at `netlog <target> --id N --body`.
+// A request still pending after settle has no failed line; Next stays `perceive`.
+function diagnosticFailedRequestNext(targetPrefix, failedRequests, { pending = false } = {}) {
+  if (pending) return `cdp perceive ${targetPrefix}`;
+  const list = Array.isArray(failedRequests) ? failedRequests : [];
+  const unread = list.find(item => item && !item.errorText && !item.body);
+  if (list.length > 0 && !unread) return `cdp perceive ${targetPrefix} --since-action`;
+  if (unread && unread.id != null) return `cdp netlog ${targetPrefix} --id ${unread.id} --body`;
+  return `cdp netlog ${targetPrefix}`;
+}
+
+function diagnosticFailedRequestFromLine(line) {
+  const text = String(line || '');
+  const idMatch = /^Request failed: #(\d+)\s/.exec(text);
+  const bodyAt = text.indexOf('; body: ');
+  return {
+    id: idMatch ? Number(idMatch[1]) : null,
+    errorText: / → failed \(/.test(text) ? 'failed' : null,
+    body: bodyAt === -1 ? null : { text: text.slice(bodyAt + '; body: '.length) },
+  };
+}
+
 // Wait for /json/version to become reachable via cdp list. A fresh profile on a busy host can take
 // well over 15 s to commit the first page, so wait on a deadline rather than a fixed retry count.
 let list = '';
@@ -594,7 +617,17 @@ assertIncludes(clickOut, 'Clicked', 'click #combat');
 assertIncludes(clickOut, 'Next:', 'click next command');
 const diagnosticOut = step('diagnostic action evidence', () => run(['click', target, '#diagnostic']));
 assertIncludes(diagnosticOut, 'Clicked', 'click #diagnostic');
-assertIncludes(diagnosticOut, 'Next:', 'diagnostic next command');
+const diagnosticFailedLine = diagnosticOut.split('\n').find(line => line.startsWith('Request failed:') && line.includes('/api/fail'));
+if (!diagnosticFailedLine || !diagnosticFailedLine.includes('/api/fail → 500')) {
+  throw new Error(`diagnostic receipt should contain Request failed: … /api/fail → 500\nOutput:\n${diagnosticOut}`);
+}
+if (!diagnosticFailedLine.includes('; body:') || !diagnosticFailedLine.includes('smoke diagnostic')) {
+  throw new Error(`diagnostic receipt should include a body excerpt\nOutput:\n${diagnosticOut}`);
+}
+const diagnosticReceiptNext = diagnosticFailedRequestNext(target, [diagnosticFailedRequestFromLine(diagnosticFailedLine)]);
+if (!diagnosticOut.split('\n').includes(`Next: ${diagnosticReceiptNext}`)) {
+  throw new Error(`diagnostic receipt Next should be ${diagnosticReceiptNext}\nOutput:\n${diagnosticOut}`);
+}
 const sinceActionOut = step('perceive since-action', () => run(['perceive', target, '--since-action']));
 assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
 if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {
@@ -622,19 +655,28 @@ if (!['network-failure', 'network-pending'].includes(parsedDiagnosticAction.effe
 if (parsedDiagnosticAction.outcome?.status !== 'attention' || parsedDiagnosticAction.outcome?.needsAttention !== true) {
   throw new Error(`diagnostic action json should include an attention outcome:\n${diagnosticJsonOut}`);
 }
-// #533: receipts name the 8-character prefix; a failed request points at netlog, a pending one at perceive.
+// #648: the same Next rule as the text receipt. A body on the failed request
+// points at perceive --since-action; an unreadable body points at netlog --id N --body.
 const diagnosticActionTarget = String(parsedDiagnosticAction.target?.targetId || target).slice(0, 8);
-const diagnosticNextVerb = parsedDiagnosticAction.effects?.diagnosis?.kind === 'network-pending' ? 'perceive' : 'netlog';
-const diagnosticNextCommand = `cdp ${diagnosticNextVerb} ${diagnosticActionTarget}`;
+const diagnosticFailedRequest = (parsedDiagnosticAction.effects?.failedRequests || [])
+  .find(item => String(item?.url || '').includes('/api/fail'));
+if (!diagnosticFailedRequest || diagnosticFailedRequest.status !== 500 || !String(diagnosticFailedRequest.body?.text || '').includes('smoke diagnostic')) {
+  throw new Error(`diagnostic action json should name /api/fail → 500 with a body excerpt:\n${diagnosticJsonOut}`);
+}
+const diagnosticNextCommand = diagnosticFailedRequestNext(
+  diagnosticActionTarget,
+  parsedDiagnosticAction.effects?.failedRequests,
+  { pending: parsedDiagnosticAction.effects?.diagnosis?.kind === 'network-pending' },
+);
 if (parsedDiagnosticAction.verdict?.status !== 'recover' || parsedDiagnosticAction.verdict?.primaryNextStep !== diagnosticNextCommand) {
-  throw new Error(`diagnostic action json should include a recovery verdict (${diagnosticNextCommand}):\n${diagnosticJsonOut}`);
+  throw new Error(`diagnostic action json primaryNextStep should be ${diagnosticNextCommand}:\n${diagnosticJsonOut}`);
 }
 if (parsedDiagnosticAction.effects?.diagnosis?.nextCommand !== diagnosticNextCommand) {
-  throw new Error(`diagnostic action json should include a ${diagnosticNextVerb} next command:\n${diagnosticJsonOut}`);
+  throw new Error(`diagnostic action json nextCommand should be ${diagnosticNextCommand}:\n${diagnosticJsonOut}`);
 }
 const diagnosticRecoveryCommands = parsedDiagnosticAction.effects?.diagnosis?.recovery?.commands?.map(entry => entry.command) || [];
-if (!diagnosticRecoveryCommands.some(command => command.includes('cdp netlog'))) {
-  throw new Error(`diagnostic action json should include a recovery netlog command:\n${diagnosticJsonOut}`);
+if (!diagnosticRecoveryCommands.includes(diagnosticNextCommand)) {
+  throw new Error(`diagnostic action json recovery should include ${diagnosticNextCommand}:\n${diagnosticJsonOut}`);
 }
 if (!diagnosticRecoveryCommands.some(command => command.includes('perceive') && command.includes('--since-action'))) {
   throw new Error(`diagnostic action json should include a recovery since-action command:\n${diagnosticJsonOut}`);
