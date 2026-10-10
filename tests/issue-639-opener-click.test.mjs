@@ -43,8 +43,14 @@ createServer((req, res) => {
   const path = String(req.url || '/').split('?')[0];
   const body = path === '/host.html' ? host : path === '/inner2' ? inner : null;
   if (!body) { res.writeHead(404); res.end('no'); return; }
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-  res.end(body);
+  const send = () => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(body);
+  };
+  // /inner2 is slow on purpose: Chrome 154 publishes the popup with an empty
+  // URL before the response arrives. The click must wait for /inner2.
+  if (path === '/inner2') setTimeout(send, 1500);
+  else send();
 }).listen(port, '127.0.0.1', () => process.stdout.write('ready\\n'));
 `;
 
@@ -161,6 +167,20 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       const unstuck = run(['eval', target, '1+1'], 8000);
       expect(unstuck.status, `${unstuck.stdout}\n${unstuck.stderr}`).toBe(0);
       expect(unstuck.stdout.trim()).toBe('2');
+
+      const noop = run(['click', target, '#noop']);
+      expect(noop.status, `${noop.stdout}\n${noop.stderr}`).toBe(0);
+      expect(noop.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/);
+      const afterNoop = run(['eval', target, '1+1'], 8000);
+      expect(afterNoop.status, `${afterNoop.stdout}\n${afterNoop.stderr}`).toBe(0);
+      expect(afterNoop.stdout.trim()).toBe('2');
+      const noopTab = noop.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
+      if (noopTab) run(['closetab', noopTab], 8000);
+
+      const js = run(['click', target, '#popup', '--js']);
+      expect(js.status, `${js.stdout}\n${js.stderr}`).not.toBe(0);
+      expect(`${js.stdout}\n${js.stderr}`).toMatch(/click-no-change/);
+      expect(`${js.stdout}\n${js.stderr}`).not.toMatch(/opened new tab/);
     } finally {
       try { chrome.kill('SIGTERM'); } catch { /* already gone */ }
       try { server.kill('SIGTERM'); } catch { /* already gone */ }

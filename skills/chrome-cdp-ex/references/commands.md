@@ -1340,8 +1340,9 @@ existing expected case (clipboard, PDF viewer). A main-frame navigation, includi
 page starts itself, drops the previous comparison baseline. The next click compares the
 loaded document. If that baseline cannot be captured, the receipt says the baseline is stale
 (`Outcome: dispatched`) and does not report `Kind: click-no-change`. A button that
-opens a tab with `window.open` reports `→ opened new tab` and exits 0. A download
-the browser started, or a `download` attribute with no download event, also exits 0.
+opens a tab with `window.open` reports `→ opened new tab` and exits 0 once that
+target has a URL. An empty URL that never commits exits 1 with `Kind: opener-blocked`.
+A download the browser started, or a `download` attribute with no download event, also exits 0.
 `clickxy` and elements that are not those controls are unchanged. Exit code is 1 for every failed kind. If anything else is on top
 (a fixed sidebar, sticky header, toast, or dialog), nothing is sent and the click exits 1:
 `Error: click not sent: <BUTTON> "Loop attack" at (549,219) is covered by <P#phase7-load-generation> "load:1" (inside position:fixed <ASIDE.sidebar>)…`,
@@ -1377,11 +1378,15 @@ the tab it opens. The click compares page targets before and after and reports
 `Clicked <A> "Docs" → opened new tab 9DE1D904 https://…`, exits 0, and its Next is
 `perceive 9DE1D904 -C -d 8`. A button or other control that is not a link and opens
 a tab with `window.open` uses the same `→ opened new tab` suffix when the new
-target's opener is this tab. If that popup blocks the probe read, the new target
-is still the result: the receipt is `opened new tab`, not `Kind: no-input-events`,
-and the opener's stuck execution is terminated so a later command on the original
-tab can run. A `clickxy` that names a child frame, a new tab, or a download prints
-the one-line receipt. A named target that reuses an already open tab
+target's opener is this tab and that target has a URL. An empty URL is the
+popup before its first commit, not `about:blank`. The click waits for a URL.
+If none commits, the command exits 1 with `Kind: opener-blocked` and Next
+`perceive <new-prefix> -C -d 8`. It does not say the new tab opened normally.
+When the opener is blocked, the receipt says so and does not offer a command
+on the original tab. A committed `about:blank` whose script holds the opener
+is still `opened new tab` after that execution is terminated, so a later
+command on the original tab can run. It is not `Kind: no-input-events`. A `clickxy`
+that names a child frame, a new tab, or a download prints the one-line receipt. A named target that reuses an already open tab
 prints `→ opened in tab <prefix> <url>`. It is `Kind: no-navigation` (exit 1)
 only when this tab did not navigate and no tab opened within the click's
 navigation wait. A named target whose tab already shows the link URL is reloaded

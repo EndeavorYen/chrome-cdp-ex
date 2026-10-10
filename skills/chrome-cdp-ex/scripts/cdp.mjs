@@ -274,6 +274,11 @@ const CLICK_HREF_PROBE_TIMEOUT_MS = 120;
 // skip the probe.
 const CLICK_OPENER_BLOCK_GRACE_MS = 400;
 const CLICK_OPENER_RESPOND_TIMEOUT_MS = 400;
+// window.open(url) publishes the new target before its first commit, with an
+// empty URL. That is not about:blank. Wait for a real URL before calling the
+// open a success. A committed about:blank (window.open('about:blank')) is not
+// this wait.
+const CLICK_POPUP_COMMIT_WAIT_MS = 3000;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 // `wait <ms>` is the longest single command a daemon serves.
 const WAIT_DURATION_MAX_MS = 60 * 60 * 1000;
@@ -17644,6 +17649,39 @@ function clickMisdirectedError(x, y, selector = '', { sent = true, landedOn = ''
   return err;
 }
 
+function isUncommittedPageUrl(url = '') {
+  return !String(url || '').trim();
+}
+
+function openedTabUncommitted(opened) {
+  return Boolean(opened) && opened.existing !== true && isUncommittedPageUrl(opened.url);
+}
+
+// The new target never left its initial empty document. about:blank is not a
+// stand-in for that. Next looks at the popup. A command against the opener is
+// not offered: when the opener is blocked it will not answer, and the receipt
+// must not say the original tab is usable.
+function openerBlockedError(opened, { blocked = false } = {}) {
+  const prefix = targetPrefixForDisplay(opened?.targetId || '');
+  const err = new Error(blocked
+    ? `click: the opener is blocked and the new tab ${prefix} has not loaded.`
+    : `click: the new tab ${prefix} has not loaded.`);
+  err.openerBlocked = {
+    targetId: String(opened?.targetId || ''),
+    targetPrefix: prefix,
+    blocked: blocked === true,
+  };
+  return err;
+}
+
+async function uncommittedPopupError(cdp, sid, opened) {
+  const answered = await openerStillResponds(cdp, sid);
+  if (answered) return openerBlockedError(opened, { blocked: false });
+  await releaseBlockedOpener(cdp, sid);
+  const recovered = await openerStillResponds(cdp, sid);
+  return openerBlockedError(opened, { blocked: !recovered });
+}
+
 function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown', { crossOriginFrame = false } = {}) {
   const target = selector ? ` for ${selector}` : '';
   if (crossOriginFrame) {
@@ -18035,16 +18073,24 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     mouse.catch(() => {});
     const blockingTab = await openedTabBlockingDispatch(cdp, sid, probeTarget.pagesBeforePromise || null, mouse);
     if (blockingTab) {
-      if (!await openerStillResponds(cdp, sid)) await releaseBlockedOpener(cdp, sid);
-      const opened = await openedTabNow(cdp, sid, probeTarget.pagesBeforePromise) || blockingTab;
-      return { openedTab: opened };
+      if (openedTabUncommitted(blockingTab)) throw await uncommittedPopupError(cdp, sid, blockingTab);
+      // A committed about:blank whose opener does not answer is the popup
+      // script holding this tab. A real URL is not that case: terminating a
+      // long click handler that already opened a page would cut it short.
+      if (isBlankPageUrl(blockingTab.url) && !await openerStillResponds(cdp, sid)) {
+        await releaseBlockedOpener(cdp, sid);
+      }
+      return { openedTab: blockingTab };
     }
     await mouse;
     const framed = probeTarget.framed === true;
     const openedInstead = async () => {
       const opened = await openedTabNow(cdp, sid, probeTarget.pagesBeforePromise || null);
       if (!opened) return null;
-      if (!await openerStillResponds(cdp, sid)) await releaseBlockedOpener(cdp, sid);
+      if (openedTabUncommitted(opened)) throw await uncommittedPopupError(cdp, sid, opened);
+      if (isBlankPageUrl(opened.url) && !await openerStillResponds(cdp, sid)) {
+        await releaseBlockedOpener(cdp, sid);
+      }
       return opened;
     };
     if (!probe.installed) {
@@ -18230,21 +18276,26 @@ async function openedTabAfterClick(cdp, sid, pagesBeforePromise) {
   return openedTabNow(cdp, sid, pagesBeforePromise);
 }
 
-// A new target this tab opened. A blank URL is polled until it commits or the
-// navigation budget ends: window.open can report about:blank while the load
-// is still starting, and substituting an empty href would drop the URL token.
+// A new target this tab opened. An empty URL is the initial document of
+// window.open(url), before the navigation commits. Keep polling that target
+// until it has a URL. A committed about:blank is returned as itself.
 async function openedTabNow(cdp, sid, pagesBeforePromise) {
   if (!pagesBeforePromise) return null;
   const before = await pagesBeforePromise;
   if (!before) return null;
   const watch = clickNewTabWatchFromTargets(sid, before);
   if (!watch?.openerId) return null;
-  const deadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
+  let deadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
+  let extended = false;
   let opened = null;
   while (Date.now() <= deadline) {
     const pages = await boundedPageTargets(cdp, Math.max(1, deadline - Date.now()));
     opened = pages && findClickOpenedTab(pages, watch, '');
-    if (!opened || !isBlankPageUrl(opened.url)) return opened;
+    if (opened && !openedTabUncommitted(opened)) return opened;
+    if (opened && !extended) {
+      extended = true;
+      deadline = Date.now() + CLICK_POPUP_COMMIT_WAIT_MS;
+    }
     const pause = Math.min(40, deadline - Date.now());
     if (pause <= 0) break;
     await sleep(pause);
@@ -18254,30 +18305,37 @@ async function openedTabNow(cdp, sid, pagesBeforePromise) {
 
 // While the mouse ack is still outstanding, a new opener-owned target means
 // window.open already ran. A healthy ack lands well inside the grace, so this
-// returns null and the probe still runs. Past the grace the ack is blocked
-// the way an opener-coupled popup blocks it (#639).
+// returns null and the probe still runs. An empty URL is not a committed
+// about:blank: wait for the navigation instead of treating the opener as blocked.
+// A committed about:blank that outlives the grace is the blocked-opener case.
 async function openedTabBlockingDispatch(cdp, sid, pagesBeforePromise, mousePromise) {
   if (!pagesBeforePromise) return null;
   let settled = false;
   mousePromise.then(() => { settled = true; }, () => { settled = true; });
   const before = await pagesBeforePromise;
-  if (settled || !before) return null;
+  if (!before) return null;
   const watch = clickNewTabWatchFromTargets(sid, before);
   if (!watch?.openerId) return null;
-  const deadline = Date.now() + CLICK_MOUSE_ACK_TIMEOUT_MS;
-  let seenAt = 0;
-  while (!settled && Date.now() < deadline) {
+  const mouseDeadline = Date.now() + CLICK_MOUSE_ACK_TIMEOUT_MS;
+  let commitDeadline = 0;
+  let blankSince = 0;
+  while (Date.now() < mouseDeadline || (commitDeadline && Date.now() < commitDeadline)) {
     const pages = await boundedPageTargets(cdp, 250);
-    if (settled) return null;
     const found = pages && findClickOpenedTab(pages, watch, '');
     if (found && !isBlankPageUrl(found.url)) return found;
-    if (found) {
-      if (!seenAt) seenAt = Date.now();
-      if (Date.now() - seenAt >= CLICK_OPENER_BLOCK_GRACE_MS) return found;
+    if (found && isUncommittedPageUrl(found.url)) {
+      blankSince = 0;
+      if (!commitDeadline) commitDeadline = Date.now() + CLICK_POPUP_COMMIT_WAIT_MS;
+      if (Date.now() >= commitDeadline) return found;
+    } else if (found) {
+      if (!blankSince) blankSince = Date.now();
+      if (Date.now() - blankSince >= CLICK_OPENER_BLOCK_GRACE_MS) return found;
     } else {
-      seenAt = 0;
+      blankSince = 0;
+      if (settled || Date.now() >= mouseDeadline) return null;
     }
-    const pause = Math.min(40, deadline - Date.now());
+    const limit = commitDeadline || mouseDeadline;
+    const pause = Math.min(40, limit - Date.now());
     if (pause > 0) await sleep(pause);
   }
   return null;
@@ -18341,6 +18399,7 @@ async function observeClickOutsideDocument(cdp, sid, point, probeTarget, target,
     } catch (error) {
       if (clickDeliveryMissedPage(error)) {
         const opened = await openedTabNow(cdp, sid, outside.pagesBeforePromise);
+        if (openedTabUncommitted(opened)) throw await uncommittedPopupError(cdp, sid, opened);
         if (opened) return formatOutsideClickSuffix({ openedTab: opened }, null);
         if (outside.downloadWatch?.armed) {
           retainLateClickDownloadWatch(cdp, outside);
@@ -18350,12 +18409,14 @@ async function observeClickOutsideDocument(cdp, sid, point, probeTarget, target,
       throw error;
     }
     if (dispatched?.openedTab) {
+      if (openedTabUncommitted(dispatched.openedTab)) throw await uncommittedPopupError(cdp, sid, dispatched.openedTab);
       return formatOutsideClickSuffix({ openedTab: dispatched.openedTab }, dispatched.childFrame);
     }
     const followed = await confirmClickFollowedHref(cdp, sid, target, outside.newTabWatch, outside);
     const opened = !followed && outside.pagesBeforePromise
       ? await openedTabAfterClick(cdp, sid, outside.pagesBeforePromise)
       : null;
+    if (openedTabUncommitted(opened)) throw await uncommittedPopupError(cdp, sid, opened);
     const merged = followed || (opened ? { openedTab: opened } : null);
     const suffix = formatOutsideClickSuffix(merged, dispatched?.childFrame);
     if (outside.downloadWatch?.armed && suffix.includes('no download event was observed')) {
@@ -18390,8 +18451,9 @@ function clickOpenedTabUrl(url, href) {
   if (!isBlankPageUrl(url)) return url;
   const fallback = String(href || '').trim();
   if (fallback) return fallback;
-  const observed = String(url || '').trim();
-  return observed || 'about:blank';
+  // An empty target URL has not committed. Do not rewrite it to about:blank:
+  // that reported a still-loading window.open(url) as a successful blank tab.
+  return String(url || '').trim();
 }
 
 function formatClickOpenedTab(opened) {

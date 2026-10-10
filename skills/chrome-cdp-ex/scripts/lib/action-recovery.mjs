@@ -530,6 +530,29 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyCoveredClickFailure(err, { base, targetId, input });
   }
 
+  // #639: window.open published a target whose URL never committed. Next is the
+  // popup. Do not send the agent back to the opener or tell it to click again.
+  if (err?.openerBlocked && typeof err.openerBlocked === 'object') {
+    const prefix = String(err.openerBlocked.targetPrefix || '').trim()
+      || (err.openerBlocked.targetId ? String(err.openerBlocked.targetId).slice(0, 8) : '');
+    const next = prefix ? `cdp perceive ${prefix} -C -d 8` : 'cdp list';
+    const blocked = err.openerBlocked.blocked === true;
+    return {
+      ...base,
+      kind: 'opener-blocked',
+      dispatched: true,
+      reason: blocked
+        ? 'The click opened a tab that has not loaded, and the opener is blocked.'
+        : 'The click opened a tab that has not loaded.',
+      nextCommand: next,
+      hints: [
+        `Inspect the new tab with \`${next}\`.`,
+        'Do not repeat the click.',
+        ...(blocked ? ['The original tab is blocked. Do not send it another command until the popup is closed or the page is usable again.'] : []),
+      ],
+    };
+  }
+
   // #552: after covered, before the generic overlay/"hit test" matcher.
   if ((err?.clickMisdirected && typeof err.clickMisdirected === 'object') || MISDIRECTED_CLICK_MESSAGE_RE.test(originalMessage)) {
     return classifyMisdirectedClickFailure(err, { base, targetId });
@@ -1626,6 +1649,20 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'report', reason: 'Preserve any partial diagnostics already captured.' },
     ],
     avoid: [],
+  },
+  // #639: window.open published a target whose URL never committed.
+  'opener-blocked': {
+    strategy: 'inspect-uncommitted-popup',
+    priority: 'high',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Inspect the new tab. Its URL has not committed.' },
+    ],
+    avoid: [
+      'repeating the click',
+      'treating an empty popup URL as a successful about:blank open',
+      'sending another command to the original tab when the receipt says the opener is blocked',
+    ],
   },
   // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refused the command, or it reached a disallowed origin.
   policy: {

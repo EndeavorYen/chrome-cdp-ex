@@ -506,6 +506,142 @@ describe('#639 click that opens a tab with window.open', () => {
     expect(receipt).not.toMatch(/jsclick/);
   });
 
+  it('waits for a window.open url instead of reporting the empty document as about:blank', async () => {
+    T.rememberSessionTarget('sid', TAB_ID);
+    const targets = [{ targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' }];
+    let polls = 0;
+    const cdp = {
+      send(method, params = {}) {
+        const src = method === 'Runtime.evaluate' ? String(params.expression || '') : '';
+        if (src.includes('__chromeCdpExClickProbe')) {
+          return Promise.resolve(probeResult({
+            cdpClickProbe: true, ok: true, installed: true, scope: 'top', top: true, href: PAGE,
+          }));
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: {
+            ok: true, x: 20, y: 20, tag: 'BUTTON', text: 'Open inner2', role: 'button',
+            href: null, linkTarget: null, frameName: '', pageHref: PAGE, hit: { covered: false },
+          } } });
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+          targets.push({
+            targetId: NEW_ID, type: 'page', url: '', title: '', openerId: TAB_ID,
+          });
+        }
+        if (method === 'Target.getTargets') {
+          polls += 1;
+          if (polls >= 4) {
+            const popup = targets.find(info => info.targetId === NEW_ID);
+            if (popup) popup.url = 'http://127.0.0.1:8765/inner2';
+          }
+          return Promise.resolve({ targetInfos: targets.slice() });
+        }
+        return Promise.resolve({});
+      },
+    };
+    const text = await T.clickStr(cdp, 'sid', '#popup', new Map());
+    expect(text).toBe('Clicked <BUTTON> "Open inner2" → opened new tab F78D41FA http://127.0.0.1:8765/inner2');
+    expect(text).not.toMatch(/about:blank/);
+  });
+
+  it('does not report an uncommitted popup as opened about:blank', async () => {
+    T.rememberSessionTarget('sid', TAB_ID);
+    const targets = [{ targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' }];
+    let terminated = false;
+    const cdp = {
+      send(method, params = {}) {
+        const src = method === 'Runtime.evaluate' ? String(params.expression || '') : '';
+        if (src.trim() === '1') return Promise.resolve({ result: { type: 'number', value: 1 } });
+        if (method === 'Runtime.terminateExecution') {
+          terminated = true;
+          return Promise.resolve({});
+        }
+        if (src.includes('__chromeCdpExClickProbe')) {
+          return Promise.resolve(probeResult({
+            cdpClickProbe: true, ok: true, installed: true, scope: 'top', top: true, href: PAGE,
+          }));
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: {
+            ok: true, x: 20, y: 20, tag: 'BUTTON', text: 'Open inner2', role: 'button',
+            href: null, linkTarget: null, frameName: '', pageHref: PAGE, hit: { covered: false },
+          } } });
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+          targets.push({
+            targetId: NEW_ID, type: 'page', url: '', title: '', openerId: TAB_ID,
+          });
+        }
+        if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: targets.slice() });
+        return Promise.resolve({});
+      },
+    };
+    const err = await T.clickStr(cdp, 'sid', '#popup', new Map()).catch(error => error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.openerBlocked?.blocked).toBe(false);
+    expect(terminated).toBe(false);
+    const cli = T.formatActionFailure(err, {
+      action: 'click',
+      target: { targetId: TAB_ID, input: '#popup', commandArgs: ['#popup'] },
+    });
+    expect(cli).toMatch(/the new tab F78D41FA has not loaded/);
+    expect(cli).toMatch(/Kind: opener-blocked/);
+    expect(cli).toMatch(/Next: cdp perceive F78D41FA -C -d 8/);
+    expect(cli).not.toMatch(/about:blank/);
+    expect(cli).not.toMatch(/opened new tab/);
+    expect(cli).not.toMatch(/jsclick/);
+  });
+
+  it('says the opener is blocked when an uncommitted popup leaves it unresponsive', async () => {
+    T.rememberSessionTarget('sid', TAB_ID);
+    const targets = [{ targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' }];
+    let terminated = false;
+    const cdp = {
+      send(method, params = {}) {
+        const src = method === 'Runtime.evaluate' ? String(params.expression || '') : '';
+        if (src.trim() === '1') return Promise.reject(new Error('Timeout: Runtime.evaluate'));
+        if (method === 'Runtime.terminateExecution') {
+          terminated = true;
+          return Promise.resolve({});
+        }
+        if (src.includes('__chromeCdpExClickProbe')) {
+          return Promise.resolve(probeResult({
+            cdpClickProbe: true, ok: true, installed: true, scope: 'top', top: true, href: PAGE,
+          }));
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: {
+            ok: true, x: 20, y: 20, tag: 'BUTTON', text: 'Open inner2', role: 'button',
+            href: null, linkTarget: null, frameName: '', pageHref: PAGE, hit: { covered: false },
+          } } });
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+          targets.push({
+            targetId: NEW_ID, type: 'page', url: '', title: '', openerId: TAB_ID,
+          });
+        }
+        if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: targets.slice() });
+        return Promise.resolve({});
+      },
+    };
+    const err = await T.clickStr(cdp, 'sid', '#popup', new Map()).catch(error => error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.openerBlocked?.blocked).toBe(true);
+    expect(terminated).toBe(true);
+    const cli = T.formatActionFailure(err, {
+      action: 'click',
+      target: { targetId: TAB_ID, input: '#popup', commandArgs: ['#popup'] },
+    });
+    expect(cli).toMatch(/the opener is blocked and the new tab F78D41FA has not loaded/);
+    expect(cli).toMatch(/Kind: opener-blocked/);
+    expect(cli).toMatch(/Next: cdp perceive F78D41FA -C -d 8/);
+    expect(cli).not.toMatch(/perceive AB78B41A/);
+    expect(cli).not.toMatch(/about:blank/);
+    expect(cli).not.toMatch(/opened new tab/);
+    expect(cli).not.toMatch(/jsclick/);
+  });
+
   it('still fail-closes a button whose click changes nothing and opens no tab', async () => {
     const err = await T.runActionWithFeedback({
       action: 'click',
