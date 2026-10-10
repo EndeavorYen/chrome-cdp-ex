@@ -124,6 +124,9 @@ describe('#639 clickxy into a cross-origin iframe', () => {
     });
     expect(receipt).toMatch(/child-frame delivered/);
     expect(receipt).toMatch(/Next: cdp shot AB78B41A/);
+    expect(receipt).not.toMatch(/clickxy: dispatched/);
+    expect(receipt).not.toMatch(/Outcome:/);
+    expect(receipt.length).toBeLessThan(220);
     expect(receipt).not.toMatch(/jsclick/);
     expect(receipt).not.toMatch(/Kind:/);
   });
@@ -412,6 +415,94 @@ describe('#639 click that opens a tab with window.open', () => {
     expect(receipt).toMatch(/opened new tab F78D41FA/);
     expect(receipt).toMatch(/Next: cdp perceive F78D41FA -C -d 8/);
     expect(receipt).not.toMatch(/Kind: click-no-change/);
+    expect(receipt).not.toMatch(/jsclick/);
+  });
+
+  it('reports the new tab when the opener blocks the probe and releases the opener', async () => {
+    T.rememberSessionTarget('sid', TAB_ID);
+    const targets = [{ targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' }];
+    let released = false;
+    let releaseProbe = () => {};
+    const cdp = {
+      send(method, params = {}, _sessionId, timeoutMs) {
+        const src = method === 'Runtime.evaluate' ? String(params.expression || '') : '';
+        if (src.trim() === '1') {
+          if (released) return Promise.resolve({ result: { type: 'number', value: 1 } });
+          return Promise.reject(new Error('Timeout: Runtime.evaluate'));
+        }
+        if (method === 'Runtime.terminateExecution') {
+          released = true;
+          releaseProbe();
+          return Promise.resolve({});
+        }
+        if (src.includes('__chromeCdpExClickProbe')) {
+          if (src.includes('installed: true')) {
+            return Promise.resolve(probeResult({
+              cdpClickProbe: true, ok: true, installed: true, scope: 'top', top: true, href: PAGE,
+            }));
+          }
+          return new Promise((_resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('Timeout: Runtime.evaluate')), timeoutMs || 15000);
+            releaseProbe = () => {
+              clearTimeout(timer);
+              reject(new Error('Timeout: Runtime.evaluate'));
+            };
+          });
+        }
+        if (method === 'Runtime.evaluate' && (src === 'location.href' || src.includes('visibilityState'))) {
+          return Promise.resolve({ result: { type: 'string', value: src.includes('visibility') ? 'visible' : PAGE } });
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: {
+            ok: true,
+            x: 20,
+            y: 20,
+            tag: 'BUTTON',
+            text: 'Open inner2',
+            role: 'button',
+            href: null,
+            linkTarget: null,
+            frameName: '',
+            pageHref: PAGE,
+            hit: { covered: false },
+          } } });
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+          targets.push({
+            targetId: NEW_ID,
+            type: 'page',
+            url: 'about:blank',
+            title: '',
+            openerId: TAB_ID,
+          });
+          return new Promise(resolve => { setTimeout(resolve, 1500); });
+        }
+        if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: targets.slice() });
+        return Promise.resolve({});
+      },
+    };
+    const started = Date.now();
+    const text = await T.clickStr(cdp, 'sid', '#popup', new Map());
+    expect(Date.now() - started).toBeLessThan(2500);
+    expect(text).toBe('Clicked <BUTTON> "Open inner2" → opened new tab F78D41FA about:blank');
+    expect(released).toBe(true);
+    const receipt = await T.runActionWithFeedback({
+      action: 'click',
+      target: {
+        targetId: TAB_ID,
+        input: '#popup',
+        resolvedBy: 'selector',
+        label: '#popup',
+        commandArgs: ['#popup'],
+        clickTrust: { tag: 'BUTTON', role: 'button' },
+      },
+      dispatch: async () => text,
+      feedbackPolicy: 'settle-diff',
+      observe: async () => NO_CHANGE,
+    });
+    expect(receipt).toMatch(/opened new tab F78D41FA about:blank/);
+    expect(receipt).toMatch(/Next: cdp perceive F78D41FA -C -d 8/);
+    expect(receipt).not.toMatch(/Kind:/);
     expect(receipt).not.toMatch(/jsclick/);
   });
 

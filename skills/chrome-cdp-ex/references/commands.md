@@ -1377,7 +1377,11 @@ the tab it opens. The click compares page targets before and after and reports
 `Clicked <A> "Docs" → opened new tab 9DE1D904 https://…`, exits 0, and its Next is
 `perceive 9DE1D904 -C -d 8`. A button or other control that is not a link and opens
 a tab with `window.open` uses the same `→ opened new tab` suffix when the new
-target's opener is this tab. A named target that reuses an already open tab
+target's opener is this tab. If that popup blocks the probe read, the new target
+is still the result: the receipt is `opened new tab`, not `Kind: no-input-events`,
+and the opener's stuck execution is terminated so a later command on the original
+tab can run. A `clickxy` that names a child frame, a new tab, or a download prints
+the one-line receipt. A named target that reuses an already open tab
 prints `→ opened in tab <prefix> <url>`. It is `Kind: no-navigation` (exit 1)
 only when this tab did not navigate and no tab opened within the click's
 navigation wait. A named target whose tab already shows the link URL is reloaded

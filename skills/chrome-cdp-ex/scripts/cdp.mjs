@@ -268,6 +268,12 @@ const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
 const CLICK_NAVIGATION_WAIT_MS = 500;
 const SEARCH_SUBMIT_PROBE_WAIT_MS = 1500;
 const CLICK_HREF_PROBE_TIMEOUT_MS = 120;
+// A popup that keeps the opener's main thread busy never lets the click probe
+// return. Wait this long after the new target appears before treating the
+// opener as blocked, so a healthy click that acks in well under this does not
+// skip the probe.
+const CLICK_OPENER_BLOCK_GRACE_MS = 400;
+const CLICK_OPENER_RESPOND_TIMEOUT_MS = 400;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 // `wait <ms>` is the longest single command a daemon serves.
 const WAIT_DURATION_MAX_MS = 60 * 60 * 1000;
@@ -9702,7 +9708,14 @@ const DEFAULT_SKINNY_MUTATING_ACTIONS = new Set([
 function isDefaultSkinnyMutatingAction(result = {}) {
   // A stale navigation baseline has to say so. The one-line receipt would hide it.
   if (result.target?.baselineStale === true || result.effects?.baselineStale === true) return false;
-  return DEFAULT_SKINNY_MUTATING_ACTIONS.has(String(result.action || '').toLowerCase());
+  const action = String(result.action || '').toLowerCase();
+  // clickxy stays on the full envelope when nothing outside the page was observed,
+  // so a coordinate click that changes nothing still says so. A child frame, a new
+  // tab, or a download is the result; that receipt is the one-line dispatch text.
+  if (action === 'clickxy') {
+    return Boolean(result.effects?.childFrame || result.effects?.openedTab || result.effects?.download);
+  }
+  return DEFAULT_SKINNY_MUTATING_ACTIONS.has(action);
 }
 
 function isHandoffNextCommand(command) {
@@ -17700,8 +17713,34 @@ async function readClickEventProbe(cdp, sid, probe = {}) {
     }
     const raw = await evalStr(cdp, sid, clickEventProbeReadAtPointScript(probe.x, probe.y));
     return parseClickEventProbeOutput(raw);
-  } catch {
+  } catch (error) {
+    // A timed-out evaluate stays queued in the renderer. Drop it, or every
+    // later eval on this tab waits behind it (#639).
+    if (isTimeoutError(error)) await releaseBlockedOpener(cdp, sid);
     return null;
+  }
+}
+
+// #639: a popup script that touches window.opener can hold the opener's main
+// thread. Terminate that execution so the abandoned probe, and the next
+// command on this tab, are not stuck behind it.
+async function releaseBlockedOpener(cdp, sid) {
+  try {
+    await cdpDomains(cdp).Runtime.terminateExecution({}, sid, 1000);
+  } catch {
+    // The opener can already be idle. Termination is best-effort.
+  }
+}
+
+async function openerStillResponds(cdp, sid) {
+  try {
+    await evalStr(cdp, sid, '1', false, {
+      timeoutMs: CLICK_OPENER_RESPOND_TIMEOUT_MS,
+      raw: true,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -17989,10 +18028,29 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
   }
   const navigation = watchMainFrameNavigation(cdp, sid);
   try {
-    await dispatchClickMouseSequence(cdp, sid, x, y);
+    const mouse = dispatchClickMouseSequence(cdp, sid, x, y);
+    // The mouse ack can sit out its full timeout while the popup holds the
+    // opener. The rejection is handled here so returning early is not an
+    // unhandled rejection; awaiting `mouse` still surfaces a real failure.
+    mouse.catch(() => {});
+    const blockingTab = await openedTabBlockingDispatch(cdp, sid, probeTarget.pagesBeforePromise || null, mouse);
+    if (blockingTab) {
+      if (!await openerStillResponds(cdp, sid)) await releaseBlockedOpener(cdp, sid);
+      const opened = await openedTabNow(cdp, sid, probeTarget.pagesBeforePromise) || blockingTab;
+      return { openedTab: opened };
+    }
+    await mouse;
     const framed = probeTarget.framed === true;
+    const openedInstead = async () => {
+      const opened = await openedTabNow(cdp, sid, probeTarget.pagesBeforePromise || null);
+      if (!opened) return null;
+      if (!await openerStillResponds(cdp, sid)) await releaseBlockedOpener(cdp, sid);
+      return opened;
+    };
     if (!probe.installed) {
       if (framed) return;
+      const opened = await openedInstead();
+      if (opened) return { openedTab: opened };
       throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
     }
     if (probe.scope === 'top' && framed) return;
@@ -18006,10 +18064,14 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
           landedOn: readout.landedOn || '',
         });
       }
+      const opened = await openedInstead();
+      if (opened) return { openedTab: opened };
       throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
     }
     if (readout?.ok && clickProbeSawPageEvent(readout.seen)) return;
     if (!readout?.ok && await clickProbeWipedByNavigation(cdp, sid, probe, navigation.seen)) return;
+    const opened = await openedInstead();
+    if (opened) return { openedTab: opened };
     throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
   } finally {
     navigation.stop();
@@ -18165,14 +18227,60 @@ async function beginClickOutsideWatch(cdp, sid, target = {}, opts = {}) {
 }
 
 async function openedTabAfterClick(cdp, sid, pagesBeforePromise) {
+  return openedTabNow(cdp, sid, pagesBeforePromise);
+}
+
+// A new target this tab opened. A blank URL is polled until it commits or the
+// navigation budget ends: window.open can report about:blank while the load
+// is still starting, and substituting an empty href would drop the URL token.
+async function openedTabNow(cdp, sid, pagesBeforePromise) {
   if (!pagesBeforePromise) return null;
   const before = await pagesBeforePromise;
   if (!before) return null;
   const watch = clickNewTabWatchFromTargets(sid, before);
   if (!watch?.openerId) return null;
-  const pages = await boundedPageTargets(cdp, CLICK_NAVIGATION_WAIT_MS);
-  if (!pages) return null;
-  return findClickOpenedTab(pages, watch, '');
+  const deadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
+  let opened = null;
+  while (Date.now() <= deadline) {
+    const pages = await boundedPageTargets(cdp, Math.max(1, deadline - Date.now()));
+    opened = pages && findClickOpenedTab(pages, watch, '');
+    if (!opened || !isBlankPageUrl(opened.url)) return opened;
+    const pause = Math.min(40, deadline - Date.now());
+    if (pause <= 0) break;
+    await sleep(pause);
+  }
+  return opened;
+}
+
+// While the mouse ack is still outstanding, a new opener-owned target means
+// window.open already ran. A healthy ack lands well inside the grace, so this
+// returns null and the probe still runs. Past the grace the ack is blocked
+// the way an opener-coupled popup blocks it (#639).
+async function openedTabBlockingDispatch(cdp, sid, pagesBeforePromise, mousePromise) {
+  if (!pagesBeforePromise) return null;
+  let settled = false;
+  mousePromise.then(() => { settled = true; }, () => { settled = true; });
+  const before = await pagesBeforePromise;
+  if (settled || !before) return null;
+  const watch = clickNewTabWatchFromTargets(sid, before);
+  if (!watch?.openerId) return null;
+  const deadline = Date.now() + CLICK_MOUSE_ACK_TIMEOUT_MS;
+  let seenAt = 0;
+  while (!settled && Date.now() < deadline) {
+    const pages = await boundedPageTargets(cdp, 250);
+    if (settled) return null;
+    const found = pages && findClickOpenedTab(pages, watch, '');
+    if (found && !isBlankPageUrl(found.url)) return found;
+    if (found) {
+      if (!seenAt) seenAt = Date.now();
+      if (Date.now() - seenAt >= CLICK_OPENER_BLOCK_GRACE_MS) return found;
+    } else {
+      seenAt = 0;
+    }
+    const pause = Math.min(40, deadline - Date.now());
+    if (pause > 0) await sleep(pause);
+  }
+  return null;
 }
 
 function clickDeliveryMissedPage(error) {
@@ -18226,13 +18334,23 @@ async function observeClickOutsideDocument(cdp, sid, point, probeTarget, target,
   try {
     let dispatched;
     try {
-      dispatched = await dispatchClick(cdp, sid, point.x, point.y, probeTarget);
+      dispatched = await dispatchClick(cdp, sid, point.x, point.y, {
+        ...probeTarget,
+        pagesBeforePromise: outside.pagesBeforePromise,
+      });
     } catch (error) {
-      if (outside.downloadWatch?.armed && clickDeliveryMissedPage(error)) {
-        retainLateClickDownloadWatch(cdp, outside);
-        retainWatch = true;
+      if (clickDeliveryMissedPage(error)) {
+        const opened = await openedTabNow(cdp, sid, outside.pagesBeforePromise);
+        if (opened) return formatOutsideClickSuffix({ openedTab: opened }, null);
+        if (outside.downloadWatch?.armed) {
+          retainLateClickDownloadWatch(cdp, outside);
+          retainWatch = true;
+        }
       }
       throw error;
+    }
+    if (dispatched?.openedTab) {
+      return formatOutsideClickSuffix({ openedTab: dispatched.openedTab }, dispatched.childFrame);
     }
     const followed = await confirmClickFollowedHref(cdp, sid, target, outside.newTabWatch, outside);
     const opened = !followed && outside.pagesBeforePromise
@@ -18259,13 +18377,21 @@ function findClickOpenedTab(targetInfos, watch, href) {
     if (before === undefined) {
       const opener = Boolean(watch.openerId) && info.openerId === watch.openerId;
       if (opener || navigationDestinationMatches(url, href)) {
-        return { targetId: info.targetId, url: isBlankPageUrl(url) ? String(href) : url, existing: false };
+        return { targetId: info.targetId, url: clickOpenedTabUrl(url, href), existing: false };
       }
     } else if (info.targetId !== watch.openerId && before !== url && navigationDestinationMatches(url, href)) {
       return { targetId: info.targetId, url, existing: true };
     }
   }
   return null;
+}
+
+function clickOpenedTabUrl(url, href) {
+  if (!isBlankPageUrl(url)) return url;
+  const fallback = String(href || '').trim();
+  if (fallback) return fallback;
+  const observed = String(url || '').trim();
+  return observed || 'about:blank';
 }
 
 function formatClickOpenedTab(opened) {
@@ -19043,8 +19169,8 @@ async function clickXyStr(cdp, sid, x, y) {
   const cx = parseFloat(x);
   const cy = parseFloat(y);
   if (isNaN(cx) || isNaN(cy)) throw new Error('x and y must be numbers (CSS pixels)');
-  const dispatched = await dispatchClick(cdp, sid, cx, cy, { x: cx, y: cy });
-  return `Clicked at CSS (${cx}, ${cy})${formatChildFrameClickSuffix(dispatched?.childFrame)}`;
+  const suffix = await observeClickOutsideDocument(cdp, sid, { x: cx, y: cy }, { x: cx, y: cy }, {}, {});
+  return `Clicked at CSS (${cx}, ${cy})${suffix}`;
 }
 
 // Type text using Input.insertText (works in cross-origin iframes, unlike eval)

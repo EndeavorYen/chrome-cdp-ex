@@ -77,6 +77,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Runtime.enable': 'session-control',
   'Runtime.evaluate': 'escape-potentially-mutating',
   'Runtime.releaseObjectGroup': 'session-control',
+  'Runtime.terminateExecution': 'page-mutation',
   'Target.activateTarget': 'browser-mutation',
   'Target.attachToTarget': 'session-control',
   'Target.detachFromTarget': 'session-control',
@@ -440,8 +441,10 @@ describe('Phase 6 direct CDP characterization', () => {
     // Network.streamResourceContent fallback for a no-store body the page never read.
     // #639 added readOpaqueFrameTargets → Target.getTargets, and dispatchClickIntoOpaqueFrame →
     // Target.attachToTarget plus Target.detachFromTarget, to probe a cross-origin frame.
-    expect(inventory).toHaveLength(181);
-    expect(digest).toBe('sha256:89fd931a36d68bff572a12a5175d9e7b2cc5fedc98208bedfb855d6617bbc85b');
+    // #639 releaseBlockedOpener → Runtime.terminateExecution, so a probe the opener
+    // blocks does not stay queued on the original tab.
+    expect(inventory).toHaveLength(182);
+    expect(digest).toBe('sha256:a3302d3b950ba677c838c8658e087992ba5a66c3f2b964d294a4e2c4db974460');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
