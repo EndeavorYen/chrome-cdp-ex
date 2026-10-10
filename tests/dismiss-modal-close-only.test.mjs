@@ -101,6 +101,64 @@ describe('#653 dismiss-modal presses only a control whose job is to close', () =
     expect(cancelPlan.clicked).toBe(0);
   });
 
+  // #653: CLOSE_LABEL_RE's Chinese alternative was `^(關閉|取消)` with no end anchor, so a
+  // title or aria-label that only starts with a close word was pressed.
+  it('does not press a control whose title is "關閉帳號"', () => {
+    const closeAccount = element({ text: '關閉帳號', attrs: { title: '關閉帳號' } });
+    const parsed = fakeDialogPage({ buttons: [closeAccount], heading: '帳號設定' }).run();
+    expect(closeAccount.clicked).toBe(0);
+    expect(parsed).toEqual({
+      ok: false, reason: 'no-close-button', dialogs: 1,
+      name: '帳號設定', buttons: ['關閉帳號'],
+    });
+  });
+
+  it('does not press a control whose aria-label is "取消訂閱"', () => {
+    const unsubscribe = element({ attrs: { 'aria-label': '取消訂閱' } });
+    const parsed = fakeDialogPage({ buttons: [unsubscribe], heading: '訂閱方案' }).run();
+    expect(unsubscribe.clicked).toBe(0);
+    expect(parsed).toEqual({
+      ok: false, reason: 'no-close-button', dialogs: 1,
+      name: '訂閱方案', buttons: ['取消訂閱'],
+    });
+  });
+
+  it('uses one visible() for the close search and the open-dialog count', () => {
+    const source = T.dialogVisibleFunctionSource();
+    expect(source).toMatch(/^function visible\(el\) \{/);
+    expect(T.dismissModalScript()).toContain(source);
+    expect(T.openDialogCountScript()).toContain(source);
+    expect(T.dismissModalScript().match(/function visible\(el\)/g)).toHaveLength(1);
+    expect(T.openDialogCountScript().match(/function visible\(el\)/g)).toHaveLength(1);
+  });
+
+  it('presses a Chinese close label that names the dialog', () => {
+    for (const label of ['關閉', '取消', '關閉對話框', '關閉視窗', '關閉此視窗', '取消彈窗']) {
+      const close = element({ attrs: { 'aria-label': label } });
+      const parsed = fakeDialogPage({ buttons: [element({ text: '繼續' }), close], heading: '提示' }).run();
+      expect(parsed, label).toMatchObject({ ok: true, label });
+      expect(close.clicked, label).toBe(1);
+    }
+  });
+
+  it('lists a single-symbol button by its aria-label', () => {
+    const letter = element({ text: '訂', attrs: { 'aria-label': '不要用這個' } });
+    const icons = element({ text: '🗑★', attrs: { 'aria-label': '不要用這個' } });
+    const titled = element({ text: '⚙', attrs: { title: '設定' } });
+    const trash = element({ text: '🗑', attrs: { 'aria-label': '取消訂閱' } });
+    const trashVs = element({ text: '🗑\uFE0F', attrs: { 'aria-label': '刪除' } });
+    const parsed = fakeDialogPage({
+      buttons: [letter, icons, titled, trash, trashVs],
+      heading: '訂閱方案',
+    }).run();
+    expect(trash.clicked).toBe(0);
+    expect(trashVs.clicked).toBe(0);
+    expect(parsed).toEqual({
+      ok: false, reason: 'no-close-button', dialogs: 1, name: '訂閱方案',
+      buttons: ['訂', '🗑★', '⚙', '取消訂閱', '刪除'],
+    });
+  });
+
   it('names the dialog and its buttons when it has no close control', () => {
     const parsed = fakeDialogPage({
       buttons: [element({ text: 'Stay signed in' }), element({ text: 'Sign out' })],
