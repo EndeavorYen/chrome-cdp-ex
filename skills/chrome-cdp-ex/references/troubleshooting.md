@@ -87,6 +87,8 @@ cdp eval <target> "document.visibilityState"
 
 The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
 
+A `clickxy` into a cross-origin frame is not that failure when the frame saw the events (`→ child-frame delivered`) or when the frame cannot be probed (`→ child-frame unobserved`). Both exit 0 and Next is `cdp shot <target>`. If the frame is probed and sees no events, `Kind: no-input-events` stays, and Next is `shot` rather than another click.
+
 `hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take about 5s for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and exactly one Next command: `CDP_BACKGROUND=0 cdp hover <target> <sel>` when the tab is hidden, otherwise `cdp perceive <target> -C -d 8`.
 
 ## `eval` says Identifier has already been declared
@@ -114,7 +116,7 @@ The mouse click's point passed the pre-dispatch hit test, but the event did not 
 
 ## Click fails with `Kind: click-no-change`
 
-`click` or `jsclick` reached a control that should react (a button, link, input, or the other controls listed under `click` in `commands.md`) and the page showed no change. The receipt includes `Outcome: no-change` and exits 1. A clipboard or PDF-viewer click that is expected to leave the tree unchanged still exits 0. A checkbox or select that toggles, a download, a navigation, or a new tab still exits 0. A main-frame navigation, including one the page starts itself, drops the previous comparison baseline; the next click compares the document that is loaded. If that baseline cannot be captured, the receipt says the baseline is stale and does not report `Kind: click-no-change`. Inspect with `cdp perceive <target> --since-action` before retrying.
+`click` or `jsclick` reached a control that should react (a button, link, input, or the other controls listed under `click` in `commands.md`) and the page showed no change. The receipt includes `Outcome: no-change` and exits 1. A clipboard or PDF-viewer click that is expected to leave the tree unchanged still exits 0. A checkbox or select that toggles, a download, a navigation, a new tab (including `window.open`), or a child-frame click still exits 0. A main-frame navigation, including one the page starts itself, drops the previous comparison baseline; the next click compares the document that is loaded. If that baseline cannot be captured, the receipt says the baseline is stale and does not report `Kind: click-no-change`. Inspect with `cdp perceive <target> --since-action` before retrying.
 
 ## Click fails with `Kind: covered`
 

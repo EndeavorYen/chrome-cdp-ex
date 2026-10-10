@@ -530,6 +530,24 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyCoveredClickFailure(err, { base, targetId, input });
   }
 
+  // #639 / #677: window.open published a target whose URL never committed.
+  // The original tab is unusable. perceive, eval, and closetab on either tab hang.
+  if (err?.openerBlocked && typeof err.openerBlocked === 'object') {
+    const pageUrl = String(err.openerBlocked.pageUrl || '').trim();
+    const reopen = /^https?:\/\//i.test(pageUrl) ? `cdp open ${recoveryCommandArg(pageUrl)}` : 'cdp open about:blank';
+    return {
+      ...base,
+      kind: 'opener-blocked',
+      dispatched: true,
+      reason: 'The original tab is no longer usable.',
+      nextCommand: reopen,
+      hints: [
+        'Reopen the tab with the Next command, or restart the browser.',
+        'Do not perceive, eval, or close the popup. Those commands hang, and closing the popup does not recover the original tab.',
+      ],
+    };
+  }
+
   // #552: after covered, before the generic overlay/"hit test" matcher.
   if ((err?.clickMisdirected && typeof err.clickMisdirected === 'object') || MISDIRECTED_CLICK_MESSAGE_RE.test(originalMessage)) {
     return classifyMisdirectedClickFailure(err, { base, targetId });
@@ -713,6 +731,23 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
         `See what the pointer gesture changed with \`${sinceAction}\` before retrying.`,
         'Drop --html5 for libraries that drag with pointer or mouse events (sortable lists, sliders, splitters).',
         'For HTML5 drag-and-drop, drag the element that is draggable (draggable="true", or a link or image).',
+      ],
+    };
+  }
+
+  // #639: the child frame was probed and saw nothing. Repeating with jsclick can
+  // press a control that already ran in that frame, so the next step is a shot.
+  if (err?.crossOriginFrame?.delivered === false || lower.includes('cross-origin frame received no')) {
+    const shot = `cdp shot ${targetId}`;
+    return {
+      ...base,
+      kind: 'no-input-events',
+      dispatched: false,
+      reason: 'The cross-origin frame was probed and received no mouse or click events.',
+      nextCommand: shot,
+      hints: [
+        `Inspect the frame with \`${shot}\`.`,
+        'The mouse events were already sent to that frame. Do not send the click again.',
       ],
     };
   }
@@ -1609,6 +1644,21 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'report', reason: 'Preserve any partial diagnostics already captured.' },
     ],
     avoid: [],
+  },
+  // #639 / #677: window.open published a target whose URL never committed.
+  'opener-blocked': {
+    strategy: 'reopen-or-restart',
+    priority: 'high',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Reopen the page in a new tab. The original tab is no longer usable.' },
+    ],
+    avoid: [
+      'perceiving, evaluating, or closing the popup',
+      'sending another command to the original tab',
+      'treating an empty popup URL as a successful about:blank open',
+      'claiming the original tab recovered',
+    ],
   },
   // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refused the command, or it reached a disallowed origin.
   policy: {
