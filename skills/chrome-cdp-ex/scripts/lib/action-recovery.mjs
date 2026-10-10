@@ -903,6 +903,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
       nextCommand: perceiveCommand,
       hints: [
         'Left and right look for overflow-x; up and down stay on the vertical container.',
+        'An overflow:hidden region is not chosen automatically. Name it with `--scroll-container <css>`.',
         'Content inside an iframe scrolls inside that frame, not in the top page.',
       ],
     };
