@@ -181,7 +181,10 @@ function classifyFillValueFailure(err, { base, target, input, perceiveCommand })
   };
 }
 
-const COVERED_CLICK_MESSAGE_RE = /^click point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by /;
+// #601: the printed sentence is `click not sent: <target> at (x,y) is covered by …`.
+// The older `click point (x, y) of <target> is covered by` sentence still classifies.
+// Drag keeps its own sentence, so COVERED_DRAG_MESSAGE_RE stays aligned with that wording.
+const COVERED_CLICK_MESSAGE_RE = /^(?:click not sent: <[^>]*>.* is covered by |click point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by )/;
 const MISDIRECTED_CLICK_MESSAGE_RE = /did not reach the intended element|mouse click was misdirected/i;
 const CLICK_NO_CHANGE_MESSAGE_RE = /did not react \(Outcome: no-change\)/;
 const COVERED_DRAG_MESSAGE_RE = /^drag (start|drop) point \(-?[\d.]+, -?[\d.]+\) of <[^>]*>.* is covered by /;
@@ -267,8 +270,10 @@ function classifyClickNoChangeFailure(err, { base, targetId }) {
 }
 
 // #436: another element is on top at the click point, so the mouse click was not sent. A covering
-// dialog is dismissed first; fixed/sticky layout (sidebar, header, toast) is bypassed with a JS
-// click, which calls HTMLElement.click() without hit-testing.
+// dialog is dismissed first. Overlay (#601) is for a fixed/sticky layer that covers most of the
+// viewport, does not contain the target, and can receive hits. Smaller page chrome (sidebar,
+// header, toast, bottom strip), a pointer-events:none shell, and the target's own app shell are
+// bypassed with a JS click, which calls HTMLElement.click() without hit-testing.
 function classifyCoveredClickFailure(err, { base, targetId, input }) {
   const raw = err?.clickCovered && typeof err.clickCovered === 'object' ? err.clickCovered : {};
   const covering = {
@@ -278,6 +283,7 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
     dialog: raw.dialog === true,
     recentred: raw.recentred === true,
     clipped: raw.clipped === true,
+    large: raw.large === true,
   };
   const arg = recoveryCommandArg(input);
   const jsClick = arg ? `cdp click ${targetId} ${arg} --js` : 'cdp help click';
@@ -289,7 +295,7 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
     dispatched: false,
     covering,
     reason: 'Another element covers the click point, so a real mouse click would land on it instead of the target. Nothing was clicked.',
-    nextCommand: covering.dialog ? dismiss : jsClick,
+    nextCommand: covering.dialog ? dismiss : (covering.large ? overlay : jsClick),
     hints: [
       ...(covering.dialog
         ? [`A dialog covers the target: close it with \`${dismiss}\`, then click again.`]
@@ -1437,7 +1443,7 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
     verify: 'since-action',
     intents: [
       { key: 'overlay', reason: 'See which element covers the click point.' },
-      { key: 'next-or-perceive', reason: 'Close a covering dialog, or JS-click past fixed layout.' },
+      { key: 'next-or-perceive', reason: 'Close a covering dialog, inspect a full-screen cover, or JS-click past small fixed layout.' },
       { key: 'since-action', reason: 'Confirm the target handler ran.' },
     ],
     avoid: ['retrying the same mouse click while another element covers the click point'],

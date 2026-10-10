@@ -15056,7 +15056,7 @@ describe('overlay detector', () => {
       schema: 'chrome-cdp-ex.overlays.v1',
       overlayCount: 1,
       blocking: true,
-      nextCommand: 'cdp dismiss-modal 62E1DF19ABCDEF',
+      nextCommand: 'cdp dismiss-modal 62E1DF19',
     });
     const text = await T.overlayStr(cdp, 'sid1', '62E1DF19ABCDEF', [], new Map(), {});
     expect(text).toContain('Overlay detector: blocking');

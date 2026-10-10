@@ -235,8 +235,8 @@ describe('#436 click does not dispatch when the click point is covered', () => {
     const err = await T.clickStr(cdp, 'sid', '#loop-attack').catch(e => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toBe(
-      'click point (551, 218) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation> "load:1" '
-      + '(inside position:fixed <ASIDE.sidebar>). The mouse click was not sent: it would land on the covering element.'
+      'click not sent: <BUTTON> "Loop attack" at (551,218) is covered by <P#phase7-load-generation> "load:1" '
+      + '(inside position:fixed <ASIDE.sidebar>).'
     );
     expect(err.clickCovered).toMatchObject({ by: COVERED_HIT.by, within: '<ASIDE.sidebar>', dialog: false });
     expect(cdp.calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toEqual([]);
@@ -253,8 +253,8 @@ describe('#436 click does not dispatch when the click point is covered', () => {
     });
     const err = await T.clickStr(cdp, 'sid', '@12', refMap, {}).catch(e => e);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/^click point \(551, 218\) of <BUTTON> "Loop attack" \(@12\) is covered by <P#phase7-load-generation>/);
-    expect(err.message).toContain('even after scrolling it to the viewport centre');
+    expect(err.message).toMatch(/^click not sent: <BUTTON> "Loop attack" \(@12\) at \(551,218\) is covered by <P#phase7-load-generation>/);
+    expect(err.message).toContain('(also after scrolling to centre)');
     expect(cdp.calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toEqual([]);
     const rectCall = cdp.calls.find(call => call.method === 'Runtime.callFunctionOn'
       && String(call.params.functionDeclaration).includes('scrollIntoView'));
@@ -275,7 +275,7 @@ describe('#436 click does not dispatch when the click point is covered', () => {
 
 describe('#436 covered click failure is classified with an executable Next', () => {
   function coveredError(hit = COVERED_HIT) {
-    const err = new Error(`click point (551, 218) of <BUTTON> "Loop attack" is covered by ${hit.by}. The mouse click was not sent: it would land on the covering element.`);
+    const err = new Error(`click not sent: <BUTTON> "Loop attack" at (551,218) is covered by ${hit.by}.`);
     err.clickCovered = hit;
     return err;
   }
@@ -312,7 +312,7 @@ describe('#436 covered click failure is classified with an executable Next', () 
   it('prints Error / Kind / Next lines', () => {
     const text = formatActionFailure(coveredError(), { action: 'click', target: { targetId: TARGET_ID, input: '#loop-attack' } });
     expect(text.split('\n')).toEqual([
-      'Error: click point (551, 218) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation> "load:1". The mouse click was not sent: it would land on the covering element.',
+      'Error: click not sent: <BUTTON> "Loop attack" at (551,218) is covered by <P#phase7-load-generation> "load:1".',
       'Kind: covered',
       `Next: cdp click ${TARGET_ID.slice(0, 8)} "#loop-attack" --js`,
     ]);
@@ -341,7 +341,7 @@ describe('#436 covered click failure is classified with an executable Next', () 
     });
     const err = await handler({ args: ['#loop-attack'] }).catch(e => e);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/^Error: click point \(551, 218\) of <BUTTON> "Loop attack" is covered by <P#phase7-load-generation>/);
+    expect(err.message).toMatch(/^Error: click not sent: <BUTTON> "Loop attack" at \(551,218\) is covered by <P#phase7-load-generation>/);
     expect(err.message).toMatch(/^Kind: covered$/m);
     expect(err.message).toMatch(new RegExp(`^Next: cdp click ${TARGET_ID.slice(0, 8)} "#loop-attack" --js$`, 'm'));
     expect(cdp.calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toEqual([]);

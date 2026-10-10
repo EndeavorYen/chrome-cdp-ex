@@ -88,7 +88,7 @@ describe('#551 a click target clipped by a scrollable ancestor', () => {
       return null;
     })();
     expect(error.message).toContain('clipped by its scroll container');
-    expect(error.message).toContain('The mouse click was not sent');
+    expect(error.message).toContain('click not sent:');
     expect(error.clickCovered).toMatchObject({ clipped: true, dialog: false });
 
     const { classifyActionFailure } = await import('../skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs');

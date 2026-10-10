@@ -13339,13 +13339,49 @@ function clickPointHitFunctionSource() {
       return '<' + tag + id + classes + '>' + (text ? ' "' + text + '"' : '');
     };
     // Only on the failure path: the nearest fixed/sticky layer and whether a dialog is on top.
+    // #601 large: walk from the hit upward. Measure only the first fixed/sticky ancestor that
+    // does not contain the click target and can receive hits (pointer-events is not none).
+    // A pointer-events:none shell (react-hot-toast) and a fixed app shell that contains the
+    // target do not qualify, so Next stays a JS click.
     const dialogSelector = 'dialog,[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
     let layer = null;
     let dialog = false;
+    let largeCover = null;
     for (let node = top, guard = 0; node && node.nodeType === 1 && guard < 64; node = composedParent(node), guard++) {
       const position = positionOf(node);
-      if (!layer && (position === 'fixed' || position === 'sticky')) layer = { node, position };
+      if (position === 'fixed' || position === 'sticky') {
+        if (!layer) layer = { node, position };
+        if (!largeCover && !composedContains(node, target)) {
+          let pointerEvents = '';
+          try { pointerEvents = getComputedStyle(node).pointerEvents || ''; } catch { pointerEvents = ''; }
+          if (pointerEvents !== 'none') largeCover = node;
+        }
+      }
       if (!dialog && typeof node.matches === 'function' && node.matches(dialogSelector)) dialog = true;
+    }
+    // More than half the viewport is a blocker the user cannot click past. A header, sidebar, toast,
+    // or bottom strip stays under that and keeps the JS-click recovery.
+    const coverBox = node => {
+      const r = node.getBoundingClientRect();
+      const boxX = Number(r.x != null ? r.x : r.left) || 0;
+      const boxY = Number(r.y != null ? r.y : r.top) || 0;
+      const boxW = Number(r.width != null ? r.width : (Number(r.right) - Number(r.left))) || 0;
+      const boxH = Number(r.height != null ? r.height : (Number(r.bottom) - Number(r.top))) || 0;
+      return { x: boxX, y: boxY, w: boxW, h: boxH };
+    };
+    let large = false;
+    if (largeCover && typeof largeCover.getBoundingClientRect === 'function') {
+      const box = coverBox(largeCover);
+      const vw = Number(window.innerWidth) || 0;
+      const vh = Number(window.innerHeight) || 0;
+      if (vw > 0 && vh > 0 && box.w > 0 && box.h > 0) {
+        const left = Math.max(box.x, 0);
+        const topEdge = Math.max(box.y, 0);
+        const right = Math.min(box.x + box.w, vw);
+        const bottom = Math.min(box.y + box.h, vh);
+        const area = Math.max(0, right - left) * Math.max(0, bottom - topEdge);
+        large = area > vw * vh * 0.5;
+      }
     }
     return {
       covered: true,
@@ -13358,6 +13394,7 @@ function clickPointHitFunctionSource() {
       // A clipped target's own container (an ancestor at the point) is not a dialog to dismiss.
       dialog: clipped && composedContains(top, target) ? false : dialog,
       ...(clipped ? { clipped: true } : {}),
+      ...(large ? { large: true } : {}),
     };
   }`;
 }
@@ -17879,13 +17916,11 @@ function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
     ? `position:${hit.byPosition} ${hit.by}`
     : String(hit.by || '<unknown>');
   const within = hit.within ? ` (inside position:${hit.withinPosition} ${hit.within})` : '';
-  const recentred = hit.recentred ? ' even after scrolling it to the viewport centre' : '';
+  const recentred = hit.recentred ? ' (also after scrolling to centre)' : '';
   // #551: the target's scroll container cuts it off at the click point.
-  const clipped = hit.clipped ? ' is clipped by its scroll container, so the point' : '';
-  const err = new Error(
-    `click point (${Math.round(Number(x) || 0)}, ${Math.round(Number(y) || 0)}) of ${target}${clipped} is covered by ${by}${within}${recentred}. `
-    + 'The mouse click was not sent: it would land on the covering element.'
-  );
+  const clipped = hit.clipped ? ', clipped by its scroll container,' : '';
+  const point = `(${Math.round(Number(x) || 0)},${Math.round(Number(y) || 0)})`;
+  const err = new Error(`click not sent: ${target} at ${point}${clipped} is covered by ${by}${within}${recentred}.`);
   err.clickCovered = {
     by: String(hit.by || ''),
     within: hit.within || null,
@@ -17894,6 +17929,7 @@ function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
     dialog: hit.dialog === true,
     recentred: hit.recentred === true,
     clipped: hit.clipped === true,
+    large: hit.large === true,
   };
   throw err;
 }
@@ -28280,8 +28316,9 @@ function formatOverlayReport(model, targetId) {
       if (text) lines.push(`   Text: ${text}`);
     }
   }
+  const prefix = actionTargetCommandPrefix({ targetId });
   const next = model.blocking
-    ? (model.nextCommand || `cdp dismiss-modal ${targetId}`)
+    ? (model.nextCommand || `cdp dismiss-modal ${prefix}`)
     : 'continue; if click still fails, run `status` or `perceive --since-action` before retrying';
   lines.push(`Next: ${next}`);
   return lines.join('\n');
@@ -28323,7 +28360,7 @@ async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), ref
     ? await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState, { objectId, functionDeclaration: `function() { return ${overlayDetectorScript({ targetPoint, objectBoundTarget: true })}; }` })
     : await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
   const model = JSON.parse(raw);
-  if (model.blocking && !model.nextCommand) model.nextCommand = `cdp dismiss-modal ${targetId}`;
+  if (model.blocking && !model.nextCommand) model.nextCommand = `cdp dismiss-modal ${actionTargetCommandPrefix({ targetId })}`;
   if (fopts.format === 'json') return formatJson(model);
   return formatOverlayReport(model, targetId);
 }
@@ -31411,7 +31448,10 @@ ACTION FEEDBACK
   names scrollIntoView first.   Mouse click @ref still
   fail-closes with no-input-events. Mouse click @ref / CSS hit-tests the
   click point first: when another element is on top it fails with
-  Kind: covered, names that element, and sends nothing. After the click is
+  Kind: covered, names that element, and sends nothing. Next is overlay when a
+  fixed or sticky layer that does not contain the target and can receive hits
+  covers most of the viewport, dismiss-modal for a dialog, and click --js for a
+  header, sidebar, toast, bottom strip, or pointer-events:none shell. After the click is
   sent, the intended element must receive it (Kind: misdirected when it lands
   elsewhere). A click or jsclick on a control that should react exits 1 with
   Kind: click-no-change when nothing visible changes. click, fill and select
