@@ -16,8 +16,8 @@ function FakeElement() {}
 FakeElement.prototype.scrollTo = function (...args) { return this._nativeScrollTo(...args); };
 FakeElement.prototype.scrollBy = function (...args) { return this._nativeScrollBy(...args); };
 
-function overflowElement({ id, scrollHeight, clientHeight, clientWidth = 800, overflowY = 'auto', scrollTop = 0 }) {
-  const state = { scrollTop, scrollHeight, clientHeight, clientWidth, overflowY, scrollEvents: 0 };
+function overflowElement({ id, scrollHeight, clientHeight, clientWidth = 800, overflowY = 'auto', overflowX = 'visible', scrollTop = 0 }) {
+  const state = { scrollTop, scrollHeight, clientHeight, clientWidth, overflowY, overflowX, scrollEvents: 0 };
   const clamp = value => Math.max(0, Math.min(state.scrollHeight - state.clientHeight, Math.round(Number(value) || 0)));
   const el = {
     id,
@@ -257,6 +257,196 @@ describe('#640 directional scroll', () => {
     expect(wide.scrollLeft).toBe(0);
   });
 
+  // A full-page overflow-x:hidden wrapper (a closed side menu) still accepts scrollLeft.
+  // Automatic selection must not pick it over a smaller overflow-x:auto carousel.
+  it('scrolls the inner carousel when a larger overflow-x:hidden wrapper surrounds it', async () => {
+    const wrap = horizontalElement({
+      id: 'wrap',
+      scrollWidth: 2000,
+      clientWidth: 1200,
+      clientHeight: 800,
+      scrollHeight: 800,
+      overflowX: 'hidden',
+      overflowY: 'hidden',
+    });
+    const car = horizontalElement({
+      id: 'car',
+      scrollWidth: 1600,
+      clientWidth: 400,
+      clientHeight: 120,
+      scrollHeight: 120,
+      overflowX: 'auto',
+      overflowY: 'hidden',
+    });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [wrap, car] }));
+    expect(await T.scrollStr(cdp, 'sid', 'right', '300')).toBe('Scrolled #car by (300, 0): scrollLeft 0 → 300');
+    expect(car.scrollLeft).toBe(300);
+    expect(wrap.scrollLeft).toBe(0);
+    expect(wrap._state.scrollEvents).toBe(0);
+  });
+
+  it('fails not-scrollable when the only sideways overflow is overflow-x:hidden', async () => {
+    const wrap = horizontalElement({
+      id: 'wrap',
+      scrollWidth: 2000,
+      clientWidth: 1200,
+      clientHeight: 800,
+      scrollHeight: 800,
+      overflowX: 'hidden',
+      overflowY: 'hidden',
+    });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [wrap] }));
+    let error;
+    try { await T.scrollStr(cdp, 'sid', 'right', '300'); } catch (caught) { error = caught; }
+    expect(error?.message).toBe('scroll: nothing scrolled: nothing on the page scrolls horizontally. Position: (0, 0)');
+    expect(wrap.scrollLeft).toBe(0);
+    const failure = classifyActionFailure(error, { action: 'scroll', target: { targetId: 'ABCDEF1234567890', input: 'right 300' } });
+    expect(failure).toMatchObject({ kind: 'not-scrollable', nextCommand: 'cdp perceive ABCDEF12 -C -d 8' });
+  });
+
+  it('still scrolls an overflow-x:hidden box when --scroll-container names it', async () => {
+    const wrap = horizontalElement({
+      id: 'wrap',
+      scrollWidth: 2000,
+      clientWidth: 1200,
+      clientHeight: 800,
+      scrollHeight: 800,
+      overflowX: 'hidden',
+      overflowY: 'hidden',
+    });
+    const car = horizontalElement({
+      id: 'car',
+      scrollWidth: 1600,
+      clientWidth: 400,
+      clientHeight: 120,
+      scrollHeight: 120,
+      overflowX: 'auto',
+      overflowY: 'hidden',
+    });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [wrap, car] }));
+    expect(await T.scrollStr(cdp, 'sid', 'right', '300', ['--scroll-container', '#wrap']))
+      .toBe('Scrolled #wrap by (300, 0): scrollLeft 0 → 300');
+    expect(wrap.scrollLeft).toBe(300);
+    expect(car.scrollLeft).toBe(0);
+  });
+
+  it('scrolls the inner list when a larger overflow-y:hidden wrapper surrounds it', async () => {
+    const wrap = overflowElement({
+      id: 'wrap',
+      scrollHeight: 5000,
+      clientHeight: 800,
+      clientWidth: 1200,
+      overflowY: 'hidden',
+      overflowX: 'hidden',
+    });
+    const list = overflowElement({
+      id: 'list',
+      scrollHeight: 4000,
+      clientHeight: 400,
+      clientWidth: 400,
+      overflowY: 'auto',
+      overflowX: 'hidden',
+    });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [wrap, list] }));
+    expect(await T.scrollStr(cdp, 'sid', 'down', '500')).toBe('Scrolled #list by (0, 500): scrollTop 0 → 500 / 3600 max');
+    expect(list.scrollTop).toBe(500);
+    expect(wrap.scrollTop).toBe(0);
+    expect(wrap._state.scrollEvents).toBe(0);
+  });
+
+  it('scrolls that inner list to the bottom instead of the hidden wrapper', async () => {
+    const wrap = overflowElement({
+      id: 'wrap',
+      scrollHeight: 5000,
+      clientHeight: 800,
+      clientWidth: 1200,
+      overflowY: 'hidden',
+      overflowX: 'hidden',
+    });
+    const list = overflowElement({
+      id: 'list',
+      scrollHeight: 4000,
+      clientHeight: 400,
+      clientWidth: 400,
+      overflowY: 'auto',
+      overflowX: 'hidden',
+    });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [wrap, list] }));
+    expect(await T.scrollStr(cdp, 'sid', 'to', 'bottom'))
+      .toBe('Scrolled to bottom. #list scrollTop: 3600 / 3600 max (at-bottom: yes)');
+    expect(list.scrollTop).toBe(3600);
+    expect(wrap.scrollTop).toBe(0);
+  });
+
+  it('fails not-scrollable when the only vertical overflow is overflow-y:hidden', async () => {
+    const wrap = overflowElement({
+      id: 'wrap',
+      scrollHeight: 5000,
+      clientHeight: 800,
+      clientWidth: 1200,
+      overflowY: 'hidden',
+      overflowX: 'hidden',
+    });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [wrap] }));
+    let error;
+    try { await T.scrollStr(cdp, 'sid', 'down', '500'); } catch (caught) { error = caught; }
+    expect(error?.message).toBe('scroll: nothing scrolled: nothing on the page scrolls vertically. Position: (0, 0)');
+    expect(wrap.scrollTop).toBe(0);
+    const failure = classifyActionFailure(error, { action: 'scroll', target: { targetId: 'ABCDEF1234567890', input: 'down 500' } });
+    expect(failure).toMatchObject({ kind: 'not-scrollable', nextCommand: 'cdp perceive ABCDEF12 -C -d 8' });
+  });
+
+  it('still scrolls an overflow-y:hidden box when --scroll-container names it', async () => {
+    const wrap = overflowElement({
+      id: 'wrap',
+      scrollHeight: 5000,
+      clientHeight: 800,
+      clientWidth: 1200,
+      overflowY: 'hidden',
+      overflowX: 'hidden',
+    });
+    const list = overflowElement({
+      id: 'list',
+      scrollHeight: 4000,
+      clientHeight: 400,
+      clientWidth: 400,
+      overflowY: 'auto',
+      overflowX: 'hidden',
+    });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [wrap, list] }));
+    expect(await T.scrollStr(cdp, 'sid', 'down', '500', ['--scroll-container', '#wrap']))
+      .toBe('Scrolled #wrap by (0, 500): scrollTop 0 → 500 / 4200 max');
+    expect(wrap.scrollTop).toBe(500);
+    expect(list.scrollTop).toBe(0);
+  });
+
+  it('treats overflow scroll and overlay as automatic containers, and not clip', async () => {
+    for (const overflowX of ['scroll', 'overlay']) {
+      const car = horizontalElement({ id: 'car', scrollWidth: 1600, clientWidth: 400, overflowX, overflowY: 'hidden' });
+      const cdp = pageCdp(page({ docScrollMax: 0, containers: [car] }));
+      expect(await T.scrollStr(cdp, 'sid', 'right', '300')).toBe('Scrolled #car by (300, 0): scrollLeft 0 → 300');
+    }
+    for (const overflowY of ['scroll', 'overlay']) {
+      const list = overflowElement({ id: 'list', scrollHeight: 4000, clientHeight: 400, overflowY, overflowX: 'visible' });
+      const cdp = pageCdp(page({ docScrollMax: 0, containers: [list] }));
+      expect(await T.scrollStr(cdp, 'sid', 'down', '200')).toBe('Scrolled #list by (0, 200): scrollTop 0 → 200 / 3600 max');
+    }
+    const clipped = horizontalElement({ id: 'clip', scrollWidth: 2000, clientWidth: 400, overflowX: 'clip', overflowY: 'clip' });
+    const cdp = pageCdp(page({ docScrollMax: 0, containers: [clipped] }));
+    await expect(T.scrollStr(cdp, 'sid', 'right', '300')).rejects.toThrow(/nothing on the page scrolls horizontally/);
+    expect(clipped.scrollLeft).toBe(0);
+  });
+
+  it('exports to bottom without treating overflow hidden as an automatic container', () => {
+    const line = T.playwrightStepFromCommand({
+      action: 'scroll',
+      command: ['scroll', 'to', 'bottom'],
+      replayable: true,
+    }).lines[0];
+    expect(line).toMatch(/\/\(auto\|scroll\|overlay\)\//);
+    expect(line).not.toContain('hidden');
+  });
+
   it('names the axis when nothing scrolls that way, and Next is a shell command', async () => {
     const list = overflowElement({ id: 'list', scrollHeight: 4000, clientHeight: 400 });
     const cdp = pageCdp(page({ docScrollMax: 0, containers: [list] }));
@@ -281,8 +471,8 @@ describe('#640 directional scroll', () => {
     ].join('\n'));
     const cli = T.formatCliError(new Error(formatted), { cmd: 'scroll', targetPrefix: 'ABCDEF12', args: ['right', '300'] });
     const nextLine = cli.split('\n').at(-1);
-    expect(nextLine).toBe('Next: cdp perceive ABCDEF12 -C -d 8 # Kind: not-scrollable');
-    const command = nextLine.replace(/^Next:\s*/, '');
+    expect(nextLine).toBe('Next: cdp perceive ABCDEF12 -C -d 8 (Kind: not-scrollable)');
+    const command = nextLine.replace(/^Next:\s*/, '').replace(/ \(Kind: [^)]+\)$/, '');
     const syntax = spawnSync('bash', ['-nc', command], { encoding: 'utf8' });
     expect(syntax.status, syntax.stderr).toBe(0);
   });

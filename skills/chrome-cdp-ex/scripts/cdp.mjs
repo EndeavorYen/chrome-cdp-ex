@@ -12736,7 +12736,7 @@ function playwrightStepFromCommand(action = {}) {
         }
         const dest = edge === 'top' ? '0' : 'edge';
         return finish([
-          `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { Element.prototype.scrollTo.call(scrolling, { left: 0, top: ${edge === 'top' ? '0' : 'docMax'}, behavior: 'instant' }); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) Element.prototype.scrollTo.call(best, { top: ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}, behavior: 'instant' }); });`,
+          `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { Element.prototype.scrollTo.call(scrolling, { left: 0, top: ${edge === 'top' ? '0' : 'docMax'}, behavior: 'instant' }); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) Element.prototype.scrollTo.call(best, { top: ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}, behavior: 'instant' }); });`,
         ]);
       }
       const direction = scrollArgs[0] || '';
@@ -18994,10 +18994,20 @@ function scrollEdgeLogicSource() {
         atBottom: scrollMax <= tolerance || scrollTop >= scrollMax - tolerance,
       };
     };
-    const clipsOn = function(el, axis) {
+    const overflowKeyword = function(el, axis) {
       const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(el) : null;
       const named = style && (axis === 'x' ? style.overflowX : style.overflowY);
-      return /(auto|scroll|overlay|hidden)/.test(String(named || (style && style.overflow) || ''));
+      return String(named || (style && style.overflow) || '');
+    };
+    // Explicit --scroll-container still accepts hidden: the caller named that box.
+    const clipsOn = function(el, axis) {
+      return /(auto|scroll|overlay|hidden)/.test(overflowKeyword(el, axis));
+    };
+    // Automatic selection matches perceive's Scroll line (auto, scroll, overlay).
+    // overflow:hidden still accepts scrollLeft/scrollTop, so a full-page side-menu
+    // wrapper would otherwise win the largest-area score and shove the page.
+    const autoScrollableOverflow = function(el, axis) {
+      return /(auto|scroll|overlay)/.test(overflowKeyword(el, axis));
     };
     const overflowMax = function(el, axis) {
       if (axis === 'x') return Math.max(0, (Number(el.scrollWidth) || 0) - (Number(el.clientWidth) || 0));
@@ -19013,7 +19023,12 @@ function scrollEdgeLogicSource() {
       if (isDocumentScroller(el)) return false;
       return overflowMax(el, axis) > tolerance && clipsOn(el, axis);
     };
-    // Up/down stay on this vertical check. to top / to bottom use it too.
+    const isAutoScrollableOn = function(el, axis) {
+      if (isDocumentScroller(el)) return false;
+      return overflowMax(el, axis) > tolerance && autoScrollableOverflow(el, axis);
+    };
+    // Explicit --scroll-container matching, including a named overflow:hidden box.
+    // Automatic up/down and to top/to bottom use isAutoScrollableOn.
     const isOverflow = function(el) {
       return isOverflowOn(el, 'y');
     };
@@ -19029,7 +19044,7 @@ function scrollEdgeLogicSource() {
       let bestScore = 0;
       for (let i = 0; i < nodes.length; i++) {
         const el = nodes[i];
-        if (!isOverflowOn(el, axis)) continue;
+        if (!isAutoScrollableOn(el, axis)) continue;
         const max = overflowMax(el, axis);
         const area = (Number(el.clientWidth) || 0) * (Number(el.clientHeight) || 0);
         const score = max * Math.max(1, area);
@@ -19114,7 +19129,9 @@ function scrollEdgeLogicSource() {
 // #640: a directional scroll moves the document when it can scroll on that axis (or the move is
 // diagonal), else the page's main overflow container on that axis. Up/down use scrollHeight and
 // overflow-y (the same container as `to bottom`). Left/right use scrollWidth and overflow-x, so a
-// horizontal-only carousel is found without --scroll-container.
+// horizontal-only carousel is found without --scroll-container. Automatic selection accepts
+// overflow auto, scroll, or overlay on that axis. overflow hidden stays out of that search;
+// --scroll-container still scrolls a named hidden box.
 // Kept out of scrollEdgeLogicSource: an edge scroll never calls scrollBy.
 function scrollByLogicSource() {
   return `
@@ -33130,11 +33147,9 @@ function cliErrorNextLine(recovery) {
 }
 
 // #533: the Kind rides on the last line, so `| tail -1` still says what kind of failure it was.
-// not-scrollable's Next is the command to paste. `(Kind: …)` is a shell syntax error in bash and
-// PowerShell; a trailing `#` comment keeps the Kind and still runs.
+// Every kind, including not-scrollable, uses `(Kind: …)`.
 function cliErrorKindSuffix(recovery) {
   if (!recovery?.kind) return '';
-  if (recovery.kind === 'not-scrollable') return ` # Kind: ${recovery.kind}`;
   return ` (Kind: ${recovery.kind})`;
 }
 
@@ -33146,8 +33161,7 @@ const HALT_TRAILER_RE = /^(?:(?:Flow|Replay) halted at |Repeat halted at iterati
 const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
 
 // Text that arrives already formatted (a classified action failure, or a message with its own Next:)
-// keeps its lines and must still end with the Kind on `Next:` (T8). not-scrollable uses
-// ` # Kind: …` so the command can be pasted; every other kind keeps `(Kind: …)`.
+// keeps its lines and must still end with the Kind on `Next:` (T8). Every kind uses `(Kind: …)`.
 // - The Kind is the failed block's own: an unindented `Kind:` line, or the first line of a
 //   `Recovery:` block, searched upwards from that Next: to the step header. Indented step output
 //   (`  Kind: page`) never counts. With none, the recovery classification of that block alone gives
@@ -33177,7 +33191,7 @@ function withKindOnLastNextLine(text, recoveryFor) {
   }
   kind ||= recoveryFor(lines.slice(blockStart, nextIndex).join('\n')).kind;
   const next = lines[nextIndex];
-  const nextWithKind = /\(Kind: [^)]+\)$/.test(next) || / # Kind: \S+$/.test(next)
+  const nextWithKind = /\(Kind: [^)]+\)$/.test(next)
     ? next
     : `${next}${cliErrorKindSuffix({ kind })}`;
   if (nextIndex === lines.length - 1) {
