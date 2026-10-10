@@ -28373,20 +28373,28 @@ async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), ref
 // over global-key presses.
 // ---------------------------------------------------------------------------
 
-function dismissModalScript() {
-  return `(function() {
-    function visible(el) {
+// Page-side visibility predicate shared by dismissModalScript and openDialogCountScript.
+// Both scripts run in the page, so this returns source text rather than a function the page can call.
+function dialogVisibleFunctionSource() {
+  return `function visible(el) {
       if (!el) return false;
       const r = el.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) return false;
       const cs = getComputedStyle(el);
       if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return false;
       return true;
-    }
+    }`;
+}
+
+function dismissModalScript() {
+  return `(function() {
+    ${dialogVisibleFunctionSource()}
     // #653: only a control whose job is to close counts. Accept words (OK, 確認, Continue) and labels
-    // that merely contain a close word ("Cancel subscription", "Book") are a decision for the agent.
+    // that merely contain a close word ("Cancel subscription", "Book") are the user's decision.
+    // A Chinese close label is the whole string: 關閉 or 取消, optionally followed by 對話框, 視窗,
+    // 此視窗 or 彈窗. title "關閉帳號" and aria-label "取消訂閱" are not close controls.
     const CLOSE_TEXT = ['close', 'dismiss', 'cancel', '關閉', '取消', '×', '✕', '✖', 'x'];
-    const CLOSE_LABEL_RE = /^(close|dismiss|cancel)(\\s+(this\\s+)?(dialog|modal|popup|window|banner|message|notification|panel))?$|^(關閉|取消)/i;
+    const CLOSE_LABEL_RE = /^(close|dismiss|cancel)(\\s+(this\\s+)?(dialog|modal|popup|window|banner|message|notification|panel))?$|^(關閉|取消)(對話框|視窗|此視窗|彈窗)?$/i;
     function textOf(el) {
       return String(el.textContent || '').replace(/\\s+/g, ' ').trim();
     }
@@ -28464,12 +28472,7 @@ function dismissModalScript() {
 
 function openDialogCountScript() {
   return `(function() {
-    const visible = el => {
-      const r = el.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) return false;
-      const cs = getComputedStyle(el);
-      return cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) !== 0;
-    };
+    ${dialogVisibleFunctionSource()}
     return Array.from(document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')).filter(visible).length;
   })()`;
 }
@@ -34700,7 +34703,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   findListeningBrowserProcess, listeningSocketInodes,
   persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
-  dismissModalStr, dismissModalScript, openDialogCountScript,
+  dismissModalStr, dismissModalScript, openDialogCountScript, dialogVisibleFunctionSource,
   // Screenshot
   captureScreenshot, screencastFallback,
   resetScreenshotTier, getScreenshotTier, createScreenshotTierState, screenshotFallbackReason, SCREENSHOT_TIMEOUT,
