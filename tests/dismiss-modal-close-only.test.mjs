@@ -155,7 +155,19 @@ describe('#653 dismiss-modal presses only a control whose job is to close', () =
     expect(trashVs.clicked).toBe(0);
     expect(parsed).toEqual({
       ok: false, reason: 'no-close-button', dialogs: 1, name: '訂閱方案',
-      buttons: ['訂', '🗑★', '⚙', '取消訂閱', '刪除'],
+      buttons: ['訂', '🗑★', '設定', '取消訂閱', '刪除'],
+    });
+  });
+
+  // #668: a single-symbol button with only a title was listed as the symbol.
+  // The title names it in the button list and does not make it a close control.
+  it('lists a single-symbol button by its title when it has no aria-label', () => {
+    const gear = element({ text: '⚙', attrs: { title: '設定' } });
+    const parsed = fakeDialogPage({ buttons: [gear], heading: '偏好' }).run();
+    expect(gear.clicked).toBe(0);
+    expect(parsed).toEqual({
+      ok: false, reason: 'no-close-button', dialogs: 1, name: '偏好',
+      buttons: ['設定'],
     });
   });
 

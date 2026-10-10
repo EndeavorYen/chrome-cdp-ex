@@ -28653,7 +28653,9 @@ function dismissModalScript() {
       return String(d.getAttribute('aria-label') || labelled || (heading ? textOf(heading) : '')).slice(0, 80);
     }
     // One Unicode symbol (🗑, with or without a variation selector) is the icon.
-    // The button list uses that control's aria-label, such as 取消訂閱.
+    // The button list uses that control's aria-label, such as 取消訂閱, or its title
+    // when it has no aria-label (⚙ with title 設定). The title is a list name only:
+    // dismissLabel still decides whether the control closes the dialog.
     function singleSymbol(text) {
       if (!text) return false;
       const core = text.replace(/[\\uFE0E\\uFE0F]/g, '');
@@ -28662,9 +28664,9 @@ function dismissModalScript() {
     }
     function buttonListName(el) {
       const text = textOf(el);
-      const aria = String(el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
-      if (aria && singleSymbol(text)) return aria;
-      return text || labelOf(el) || String(el.value || '');
+      const named = labelOf(el);
+      if (named && singleSymbol(text)) return named;
+      return text || named || String(el.value || '');
     }
     function dialogButtons(d) {
       return Array.from(d.querySelectorAll('button, [role="button"], a[href], input[type="button"], input[type="submit"]'))
