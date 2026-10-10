@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { createServer } from 'http';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve, dirname } from 'path';
@@ -53,20 +52,28 @@ let server;
 
 function cleanup() {
   if (browser && !browser.killed) browser.kill('SIGTERM');
-  if (server) server.close();
+  if (server && !server.killed) server.kill('SIGTERM');
   try { rmSync(profileDir, { recursive: true, force: true }); } catch {}
 }
 process.on('exit', cleanup);
 process.on('SIGINT', () => { cleanup(); process.exit(130); });
 process.on('SIGTERM', () => { cleanup(); process.exit(143); });
 
-server = createServer((req, res) => {
-  if (req.url === '/' || req.url === '/smoke-page.html') {
+// The fixture server has to accept Chrome's reload request while `cdp reload`
+// is blocked in spawnSync. An in-process server never sees that request, so
+// the navigation does not commit.
+const smokeHttpServer = `
+import { createServer } from 'http';
+import { readFileSync } from 'fs';
+const [pagePath, portRaw] = process.argv.slice(1);
+const httpServer = createServer((req, res) => {
+  const path = String(req.url || '/').split('?')[0];
+  if (path === '/' || path === '/smoke-page.html') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(readFileSync(page));
+    res.end(readFileSync(pagePath));
     return;
   }
-  if (req.url?.startsWith('/api/fail')) {
+  if (path.startsWith('/api/fail')) {
     res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
     res.end('{"ok":false,"error":"smoke diagnostic"}');
     return;
@@ -74,9 +81,29 @@ server = createServer((req, res) => {
   res.writeHead(404);
   res.end('not found');
 });
-await new Promise((resolveServer, reject) => {
-  server.once('error', reject);
-  server.listen(serverPort, '127.0.0.1', resolveServer);
+httpServer.listen(Number(portRaw), '127.0.0.1', () => {
+  process.stdout.write('ready\\n');
+});
+`;
+server = spawn(process.execPath, ['--input-type=module', '-e', smokeHttpServer, page, String(serverPort)], {
+  stdio: ['ignore', 'pipe', 'inherit'],
+});
+await new Promise((resolveServer, rejectServer) => {
+  let buf = '';
+  const timer = setTimeout(() => rejectServer(new Error('smoke HTTP server did not start')), 5000);
+  const fail = (error) => {
+    clearTimeout(timer);
+    rejectServer(error);
+  };
+  server.stdout.on('data', (chunk) => {
+    buf += chunk;
+    if (buf.includes('ready')) {
+      clearTimeout(timer);
+      resolveServer();
+    }
+  });
+  server.once('error', fail);
+  server.once('exit', (code) => fail(new Error(`smoke HTTP server exited before ready (${code})`)));
 });
 
 const url = `http://127.0.0.1:${serverPort}/smoke-page.html`;
@@ -131,6 +158,29 @@ function runFailureStdout(args, opts = {}) {
 }
 function assertIncludes(text, needle, label) {
   if (!text.includes(needle)) throw new Error(`${label} missing ${JSON.stringify(needle)}\nOutput:\n${text}`);
+}
+
+// #648: Next follows the failed-request receipt. A body already on the receipt
+// points at the page. An unreadable body points at `netlog <target> --id N --body`.
+// A request still pending after settle has no failed line; Next stays `perceive`.
+function diagnosticFailedRequestNext(targetPrefix, failedRequests, { pending = false } = {}) {
+  if (pending) return `cdp perceive ${targetPrefix}`;
+  const list = Array.isArray(failedRequests) ? failedRequests : [];
+  const unread = list.find(item => item && !item.errorText && !item.body);
+  if (list.length > 0 && !unread) return `cdp perceive ${targetPrefix} --since-action`;
+  if (unread && unread.id != null) return `cdp netlog ${targetPrefix} --id ${unread.id} --body`;
+  return `cdp netlog ${targetPrefix}`;
+}
+
+function diagnosticFailedRequestFromLine(line) {
+  const text = String(line || '');
+  const idMatch = /^Request failed: #(\d+)\s/.exec(text);
+  const bodyAt = text.indexOf('; body: ');
+  return {
+    id: idMatch ? Number(idMatch[1]) : null,
+    errorText: / → failed \(/.test(text) ? 'failed' : null,
+    body: bodyAt === -1 ? null : { text: text.slice(bodyAt + '; body: '.length) },
+  };
 }
 
 // Wait for /json/version to become reachable via cdp list. A fresh profile on a busy host can take
@@ -567,7 +617,17 @@ assertIncludes(clickOut, 'Clicked', 'click #combat');
 assertIncludes(clickOut, 'Next:', 'click next command');
 const diagnosticOut = step('diagnostic action evidence', () => run(['click', target, '#diagnostic']));
 assertIncludes(diagnosticOut, 'Clicked', 'click #diagnostic');
-assertIncludes(diagnosticOut, 'Next:', 'diagnostic next command');
+const diagnosticFailedLine = diagnosticOut.split('\n').find(line => line.startsWith('Request failed:') && line.includes('/api/fail'));
+if (!diagnosticFailedLine || !diagnosticFailedLine.includes('/api/fail → 500')) {
+  throw new Error(`diagnostic receipt should contain Request failed: … /api/fail → 500\nOutput:\n${diagnosticOut}`);
+}
+if (!diagnosticFailedLine.includes('; body:') || !diagnosticFailedLine.includes('smoke diagnostic')) {
+  throw new Error(`diagnostic receipt should include a body excerpt\nOutput:\n${diagnosticOut}`);
+}
+const diagnosticReceiptNext = diagnosticFailedRequestNext(target, [diagnosticFailedRequestFromLine(diagnosticFailedLine)]);
+if (!diagnosticOut.split('\n').includes(`Next: ${diagnosticReceiptNext}`)) {
+  throw new Error(`diagnostic receipt Next should be ${diagnosticReceiptNext}\nOutput:\n${diagnosticOut}`);
+}
 const sinceActionOut = step('perceive since-action', () => run(['perceive', target, '--since-action']));
 assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
 if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {
@@ -595,19 +655,28 @@ if (!['network-failure', 'network-pending'].includes(parsedDiagnosticAction.effe
 if (parsedDiagnosticAction.outcome?.status !== 'attention' || parsedDiagnosticAction.outcome?.needsAttention !== true) {
   throw new Error(`diagnostic action json should include an attention outcome:\n${diagnosticJsonOut}`);
 }
-// #533: receipts name the 8-character prefix; a failed request points at netlog, a pending one at perceive.
+// #648: the same Next rule as the text receipt. A body on the failed request
+// points at perceive --since-action; an unreadable body points at netlog --id N --body.
 const diagnosticActionTarget = String(parsedDiagnosticAction.target?.targetId || target).slice(0, 8);
-const diagnosticNextVerb = parsedDiagnosticAction.effects?.diagnosis?.kind === 'network-pending' ? 'perceive' : 'netlog';
-const diagnosticNextCommand = `cdp ${diagnosticNextVerb} ${diagnosticActionTarget}`;
+const diagnosticFailedRequest = (parsedDiagnosticAction.effects?.failedRequests || [])
+  .find(item => String(item?.url || '').includes('/api/fail'));
+if (!diagnosticFailedRequest || diagnosticFailedRequest.status !== 500 || !String(diagnosticFailedRequest.body?.text || '').includes('smoke diagnostic')) {
+  throw new Error(`diagnostic action json should name /api/fail → 500 with a body excerpt:\n${diagnosticJsonOut}`);
+}
+const diagnosticNextCommand = diagnosticFailedRequestNext(
+  diagnosticActionTarget,
+  parsedDiagnosticAction.effects?.failedRequests,
+  { pending: parsedDiagnosticAction.effects?.diagnosis?.kind === 'network-pending' },
+);
 if (parsedDiagnosticAction.verdict?.status !== 'recover' || parsedDiagnosticAction.verdict?.primaryNextStep !== diagnosticNextCommand) {
-  throw new Error(`diagnostic action json should include a recovery verdict (${diagnosticNextCommand}):\n${diagnosticJsonOut}`);
+  throw new Error(`diagnostic action json primaryNextStep should be ${diagnosticNextCommand}:\n${diagnosticJsonOut}`);
 }
 if (parsedDiagnosticAction.effects?.diagnosis?.nextCommand !== diagnosticNextCommand) {
-  throw new Error(`diagnostic action json should include a ${diagnosticNextVerb} next command:\n${diagnosticJsonOut}`);
+  throw new Error(`diagnostic action json nextCommand should be ${diagnosticNextCommand}:\n${diagnosticJsonOut}`);
 }
 const diagnosticRecoveryCommands = parsedDiagnosticAction.effects?.diagnosis?.recovery?.commands?.map(entry => entry.command) || [];
-if (!diagnosticRecoveryCommands.some(command => command.includes('cdp netlog'))) {
-  throw new Error(`diagnostic action json should include a recovery netlog command:\n${diagnosticJsonOut}`);
+if (!diagnosticRecoveryCommands.includes(diagnosticNextCommand)) {
+  throw new Error(`diagnostic action json recovery should include ${diagnosticNextCommand}:\n${diagnosticJsonOut}`);
 }
 if (!diagnosticRecoveryCommands.some(command => command.includes('perceive') && command.includes('--since-action'))) {
   throw new Error(`diagnostic action json should include a recovery since-action command:\n${diagnosticJsonOut}`);
@@ -867,6 +936,13 @@ const noDownloadOut = step('click --expect-download times out without a download
   { timeout: 60000 },
 ));
 assertIncludes(noDownloadOut, 'Kind: timeout', 'expect-download timeout kind');
+
+// Reload is last so it cannot reset earlier fixture state. The same daemon
+// must still evaluate afterwards.
+const reloadOut = step('reload keeps the daemon usable', () => run(['reload', target], { timeout: 30000 }));
+assertIncludes(reloadOut, 'Page reloaded', 'reload receipt');
+const titleAfterReload = step('evaluate after reload', () => run(['eval', target, 'document.title']));
+assertIncludes(titleAfterReload, 'chrome-cdp-ex long-session smoke', 'post-reload title');
 
 console.log(`Live smoke passed using ${browserName} on CDP_PORT=${port}`);
 console.log(results.join('\n'));
