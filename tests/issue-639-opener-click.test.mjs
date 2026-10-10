@@ -112,14 +112,17 @@ describe('headless Chrome window.open with an opener (#639)', () => {
           }
         });
       });
+      const readyAt = Date.now() + 45000;
       let version = null;
-      for (let attempt = 0; attempt < 40 && !version; attempt += 1) {
+      while (Date.now() < readyAt && !version?.webSocketDebuggerUrl) {
+        if (chrome.exitCode != null) break;
         try {
           const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(400) });
           if (response.ok) version = await response.json();
         } catch {
-          await new Promise(resolveWait => setTimeout(resolveWait, 200));
+          // DevTools is not accepting connections yet.
         }
+        if (!version?.webSocketDebuggerUrl) await new Promise(resolveWait => setTimeout(resolveWait, 200));
       }
       expect(version?.webSocketDebuggerUrl).toBeTruthy();
       const url = `http://127.0.0.1:${httpPort}/host.html`;

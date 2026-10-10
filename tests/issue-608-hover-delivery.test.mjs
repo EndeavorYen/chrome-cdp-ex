@@ -196,14 +196,19 @@ describe('headless background tab hover (#608)', () => {
     });
     let socket;
     try {
+      // A parallel suite can keep the first headless Chrome from opening DevTools
+      // for well over the old 20s budget. Keep polling until the URL exists.
+      const readyAt = Date.now() + 45000;
       let version;
-      for (let attempt = 0; attempt < 100 && !version; attempt += 1) {
+      while (Date.now() < readyAt && !version?.webSocketDebuggerUrl) {
         if (chrome.exitCode != null) break;
         try {
-          version = await fetch(`http://127.0.0.1:${port}/json/version`).then(response => response.json());
+          const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(400) });
+          if (response.ok) version = await response.json();
         } catch {
-          await new Promise(resolveWait => setTimeout(resolveWait, 200));
+          // DevTools is not accepting connections yet.
         }
+        if (!version?.webSocketDebuggerUrl) await new Promise(resolveWait => setTimeout(resolveWait, 200));
       }
       expect(
         version?.webSocketDebuggerUrl,
