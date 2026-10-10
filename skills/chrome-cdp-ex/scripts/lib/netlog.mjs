@@ -104,7 +104,7 @@ function timingOf(timing) {
 
 // One store per daemon. Ids grow monotonically and are never reused (also not
 // after clear()), so an id printed by `netlog` keeps naming the same request.
-export function createNetlogRequestStore({ capacity = DETAIL_CAPACITY, shouldTrack = () => true, now = Date.now } = {}) {
+export function createNetlogRequestStore({ capacity = DETAIL_CAPACITY, shouldTrack = () => true, now = Date.now, onChange = null } = {}) {
   let seq = 0;
   const byId = new Map();
   const idByRequestId = new Map();
@@ -118,6 +118,10 @@ export function createNetlogRequestStore({ capacity = DETAIL_CAPACITY, shouldTra
   function detailFor(requestId) {
     const id = idByRequestId.get(requestId);
     return id === undefined ? null : byId.get(id) || null;
+  }
+
+  function noteChange() {
+    try { onChange?.(); } catch { /* persistence must not break capture */ }
   }
 
   function evict() {
@@ -290,6 +294,7 @@ export function createNetlogRequestStore({ capacity = DETAIL_CAPACITY, shouldTra
       detail.state = 'complete';
       detail.encodedDataLength = Number.isFinite(params.encodedDataLength) ? params.encodedDataLength : null;
       detail.endTimestamp = Number.isFinite(params.timestamp) ? params.timestamp : null;
+      noteChange();
     },
     'Network.loadingFailed': (params = {}) => {
       const detail = detailFor(params.requestId);
@@ -301,6 +306,7 @@ export function createNetlogRequestStore({ capacity = DETAIL_CAPACITY, shouldTra
       detail.corsError = params.corsErrorStatus?.corsError ? String(params.corsErrorStatus.corsError) : null;
       detail.endTimestamp = Number.isFinite(params.timestamp) ? params.timestamp : null;
       if (params.type) detail.resourceType = String(params.type);
+      noteChange();
     },
   };
 
@@ -308,6 +314,28 @@ export function createNetlogRequestStore({ capacity = DETAIL_CAPACITY, shouldTra
     handlers,
     idFor: requestId => idByRequestId.get(requestId) ?? null,
     get: id => byId.get(Number(id)) || null,
+    // Load a saved snapshot. Ids already in this store are left alone. The
+    // restored requestId cannot collide with a live Chrome requestId.
+    restore(details = [], nextId = 0) {
+      for (const detail of Array.isArray(details) ? details : []) {
+        if (!detail || !Number.isInteger(detail.id) || detail.id < 1 || byId.has(detail.id)) continue;
+        const requestId = `restored:${detail.id}`;
+        const copy = {
+          ...detail,
+          requestId,
+          restored: true,
+          redirects: Array.isArray(detail.redirects) ? detail.redirects : [],
+          requestHeaders: detail.requestHeaders && typeof detail.requestHeaders === 'object' ? detail.requestHeaders : {},
+          responseHeaders: detail.responseHeaders && typeof detail.responseHeaders === 'object' ? detail.responseHeaders : null,
+        };
+        byId.set(copy.id, copy);
+        idByRequestId.set(requestId, copy.id);
+        if (copy.id > seq) seq = copy.id;
+      }
+      if (Number.isInteger(nextId) && nextId > seq) seq = nextId;
+      evict();
+      return byId.size;
+    },
     clear() {
       byId.clear();
       idByRequestId.clear();
@@ -315,6 +343,7 @@ export function createNetlogRequestStore({ capacity = DETAIL_CAPACITY, shouldTra
       ignored.clear();
     },
     get size() { return byId.size; },
+    get nextId() { return seq; },
     get pendingExtraInfo() { return earlyExtra.size; },
   };
 }
@@ -696,16 +725,23 @@ export function buildNetlogRequestModel(detail, { body = null, unsafeFull = fals
   const target = targetId || '<target>';
   const shownUrl = value => (unsafeFull ? String(value || '') : redactUrl(value || ''));
   const hasResponse = detail.status != null || detail.responseHeaders != null;
+  const restored = detail.restored === true;
   const nextSteps = [];
-  if (includeBody && body?.available && body.truncated && !savedTo) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --out <file>`);
-  nextSteps.push(`cdp netlog ${target}`);
-  if (!includeBody) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --body  # include the redacted body`);
-  else if (!unsafeFull) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --body --unsafe-full  # raw body, headers and URL`);
+  if (restored) {
+    nextSteps.push(`cdp netlog ${target}`);
+  } else {
+    if (includeBody && body?.available && body.truncated && !savedTo) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --out <file>`);
+    nextSteps.push(`cdp netlog ${target}`);
+    if (!includeBody) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --body  # include the redacted body`);
+    else if (!unsafeFull) nextSteps.push(`cdp netlog ${target} --id ${detail.id} --body --unsafe-full  # raw body, headers and URL`);
+  }
   return {
     schema: NETLOG_REQUEST_SCHEMA,
     targetId: targetId || null,
     id: detail.id,
-    redacted: !unsafeFull,
+    redacted: restored ? true : !unsafeFull,
+    ...(restored ? { restored: true } : {}),
+    ...(detail.headersOmitted === true ? { headersOmitted: true } : {}),
     state: detail.state,
     request: {
       method: detail.method,
@@ -781,6 +817,10 @@ export function formatNetlogRequestText(model) {
     : ' [unsafe-full: headers, URL and body not redacted]';
   const lines = [`Request #${model.id}${model.redacted ? '' : unsafeBanner}`];
   lines.push(`  ${request.method} ${request.url}${request.urlTruncated ? ' …(URL truncated)' : ''}`);
+  if (model.restored) {
+    lines.push('  Restored after the tab daemon restarted. URL and headers were stored redacted. Chrome no longer holds the response body.');
+  }
+  if (model.headersOmitted) lines.push('  Headers were omitted from the saved log because it reached its size cap.');
   if (response?.status != null) {
     lines.push(`  Status: ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
   } else {

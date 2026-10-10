@@ -121,6 +121,7 @@
     "package/skills/chrome-cdp-ex/scripts/lib/session-policy.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/source-maps.mjs",
+    "package/skills/chrome-cdp-ex/scripts/lib/tab-observation.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-artifacts.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-contract.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs",

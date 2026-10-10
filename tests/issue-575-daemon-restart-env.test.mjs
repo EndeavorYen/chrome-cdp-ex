@@ -41,7 +41,7 @@ function fakeCdp({ fail = [] } = {}) {
   };
 }
 
-const DISMISS_OFFLINE_NOTICE = 'daemon restarted: dialog=dismiss, throttle=offline, 2 mocks restored, netlog buffer was reset';
+const DISMISS_OFFLINE_NOTICE = 'daemon restarted: dialog=dismiss, throttle=offline, 2 mocks restored, 0 netlog entries restored, 0 actions restored';
 
 describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
   it('T1-T3: dismiss, offline, and two mock rules survive a new session', async () => {
@@ -214,7 +214,7 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
     expect(outcome.mocksReset).toBe(true);
     expect(outcome.mockCount).toBe(2);
     const notice = T.formatDaemonRestartNotice(outcome);
-    expect(notice).toBe('daemon restarted: dialog=dismiss, throttle=offline, 2 mocks were reset, netlog buffer was reset');
+    expect(notice).toBe('daemon restarted: dialog=dismiss, throttle=offline, 2 mocks were reset, 0 netlog entries restored, 0 actions restored');
   });
 
   it('T6: an unreadable record forces dismiss and says so', async () => {
@@ -231,7 +231,7 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
     expect(session.networkMocks).toEqual([]);
     expect(outcome.unreadable).toBe(true);
     expect(T.formatDaemonRestartNotice(outcome)).toBe(
-      'daemon restarted: dialog=dismiss (saved record unreadable), throttle was reset, mocks were reset, netlog buffer was reset',
+      'daemon restarted: dialog=dismiss (saved record unreadable), throttle was reset, mocks were reset, 0 netlog entries restored, 0 actions restored',
     );
     expect(cdp.calls).toEqual([]);
   });
@@ -264,7 +264,7 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
       mocksReset: false,
       unreadable: false,
     }, { restarted: true });
-    expect(notice).toBe('daemon restarted: dialog=accept, throttle=off, 0 mocks restored, netlog buffer was reset');
+    expect(notice).toBe('daemon restarted: dialog=accept, throttle=off, 0 mocks restored, 0 netlog entries restored, 0 actions restored');
   });
 
   it('T8: closetab removes the saved environment record and keeps its success text', async () => {
@@ -340,7 +340,7 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
   });
 
   it('download and MCP skip the restart line and still read the JSON or screenshot under it', async () => {
-    const notice = 'daemon restarted: dialog=dismiss, throttle=offline, 0 mocks restored, netlog buffer was reset';
+    const notice = 'daemon restarted: dialog=dismiss, throttle=offline, 0 mocks restored, 0 netlog entries restored, 0 actions restored';
     const { createEvaluate } = await import('../skills/chrome-cdp-ex/scripts/download.mjs');
     const run = async () => ({
       stdout: `${notice}\n${JSON.stringify({ result: { type: 'string', value: 'abc' } })}`,
