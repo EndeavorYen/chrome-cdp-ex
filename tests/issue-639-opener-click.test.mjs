@@ -172,45 +172,61 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       expect(afterJs.status, `${afterJs.stdout}\n${afterJs.stderr}`).toBe(0);
       expect(afterJs.stdout.trim()).toBe('2');
 
-      const spin = run(['click', target, '#spin'], 15000);
-      expect(spin.status, `${spin.stdout}\n${spin.stderr}`).toBe(0);
-      expect(spin.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ /);
-      expect(spin.stdout).not.toMatch(/Kind: no-input-events/);
-      expect(spin.stdout).not.toMatch(/jsclick/);
-      const unstuck = run(['eval', target, '1+1'], 8000);
-      expect(unstuck.status, `${unstuck.stdout}\n${unstuck.stderr}`).toBe(0);
-      expect(unstuck.stdout.trim()).toBe('2');
-      const spinTab = spin.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
-      if (spinTab) run(['closetab', spinTab], 8000);
+      // #677: on Google Chrome stable 154 the opener can stay unusable. That
+      // receipt is exit 1, Kind opener-blocked, Next `cdp open <url>`. Running
+      // that Next must open a new tab whose eval succeeds. Later clicks use
+      // that tab: the original one does not accept input. Where the opener
+      // recovers, the original tab still answers 1+1.
+      const acceptOpener = (pageTarget, selector, { url = null } = {}) => {
+        const result = run(['click', pageTarget, selector], 20000);
+        const text = `${result.stdout}\n${result.stderr}`;
+        const opened = result.stdout.match(/opened new tab ([0-9A-Fa-f]+) (\S+)/);
+        if (result.status === 0 && opened) {
+          if (url) expect(result.stdout).toMatch(url);
+          expect(text).not.toMatch(/Kind: opener-blocked/);
+          expect(text).not.toMatch(/Kind: no-input-events/);
+          expect(text).not.toMatch(/jsclick/);
+          const unstuck = run(['eval', pageTarget, '1+1'], 8000);
+          expect(unstuck.status, `${unstuck.stdout}\n${unstuck.stderr}`).toBe(0);
+          expect(unstuck.stdout.trim()).toBe('2');
+          run(['closetab', opened[1]], 8000);
+          return { branch: 'recovered', target: pageTarget };
+        }
+        expect(result.status, text).not.toBe(0);
+        expect(text).toMatch(/the original tab is no longer usable/);
+        expect(text).toMatch(/Reopen the tab or restart the browser/);
+        expect(text).toMatch(/Kind: opener-blocked/);
+        expect(text).not.toMatch(/perceive/);
+        expect(text).not.toMatch(/opened new tab/);
+        expect(text).not.toMatch(/about:blank/);
+        expect(text).not.toMatch(/closetab/);
+        const next = text.match(/Next: cdp open (\S+)/);
+        expect(next, text).toBeTruthy();
+        const reopened = run(['open', next[1]], 20000);
+        expect(reopened.status, `${reopened.stdout}\n${reopened.stderr}`).toBe(0);
+        const fresh = reopened.stdout.match(/Opened new tab:\s+([0-9A-Fa-f]+)/)?.[1];
+        expect(fresh, reopened.stdout).toBeTruthy();
+        const freshEval = run(['eval', fresh, '1+1'], 8000);
+        expect(freshEval.status, `${freshEval.stdout}\n${freshEval.stderr}`).toBe(0);
+        expect(freshEval.stdout.trim()).toBe('2');
+        return { branch: 'blocked', target: fresh };
+      };
 
-      // Chrome stable 154 can leave this opener unusable (#677). A committed URL
-      // is still reported. Either result is accepted; the stuck receipt must not
-      // send the agent back to the hung tab.
-      const click = run(['click', target, '#popup'], 20000);
-      const clickText = `${click.stdout}\n${click.stderr}`;
-      if (click.status === 0 && /opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/.test(click.stdout)) {
-        expect(click.stdout).not.toMatch(/about:blank/);
-        const after = run(['eval', target, '1+1'], 8000);
-        expect(after.status, `${after.stdout}\n${after.stderr}`).toBe(0);
-        expect(after.stdout.trim()).toBe('2');
-        const popup = click.stdout.match(/opened new tab ([0-9A-Fa-f]+)/)?.[1];
-        if (popup) run(['closetab', popup], 8000);
-      } else {
-        expect(click.status, clickText).not.toBe(0);
-        expect(clickText).toMatch(/the original tab is no longer usable/);
-        expect(clickText).toMatch(/Reopen the tab or restart the browser/);
-        expect(clickText).toMatch(/Kind: opener-blocked/);
-        expect(clickText).toMatch(/Next: cdp open /);
-        expect(clickText).not.toMatch(/perceive/);
-        expect(clickText).not.toMatch(/opened new tab/);
-        expect(clickText).not.toMatch(/about:blank/);
-        expect(clickText).not.toMatch(/closetab/);
-      }
+      let page = target;
+      const spin = acceptOpener(page, '#spin');
+      expect(['recovered', 'blocked']).toContain(spin.branch);
+      page = spin.target;
+
+      const popup = acceptOpener(page, '#popup', {
+        url: /opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/,
+      });
+      expect(['recovered', 'blocked']).toContain(popup.branch);
+      console.log(`opener-click branches: #spin ${spin.branch}; #popup ${popup.branch}`);
     } finally {
       try { chrome.kill('SIGTERM'); } catch { /* already gone */ }
       try { server.kill('SIGTERM'); } catch { /* already gone */ }
       try { run(['stop', '--all'], 8000); } catch { /* daemon may already be gone */ }
       try { rmSync(profile, { recursive: true, force: true }); } catch { /* profile may still be closing */ }
     }
-  }, 90000);
+  }, 120000);
 });
