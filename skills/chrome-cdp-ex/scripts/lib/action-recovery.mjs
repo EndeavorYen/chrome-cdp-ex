@@ -858,16 +858,16 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     };
   }
 
-  // #640: neither the document nor a scroll container moves on the requested axis.
+  // #640: neither the document nor an overflow element moves on the requested axis.
   if (action === 'scroll' && lower.includes('nothing scrolled')) {
     return {
       ...base,
       kind: 'not-scrollable',
       dispatched: true,
-      reason: 'Nothing on the page scrolls in that direction: the document does not, and no scroll container was found.',
+      reason: 'Nothing on the page scrolls on the requested axis.',
       nextCommand: perceiveCommand,
       hints: [
-        'If the list scrolls inside an element perceive does not show as scrollable, name it with `--scroll-container <css>`.',
+        'Left and right look for overflow-x; up and down stay on the vertical container.',
         'Content inside an iframe scrolls inside that frame, not in the top page.',
       ],
     };
