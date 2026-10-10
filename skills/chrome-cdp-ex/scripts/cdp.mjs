@@ -202,6 +202,14 @@ import {
   writeNetlogBodyFile,
 } from './lib/netlog.mjs';
 import {
+  readTabObservation,
+  removeTabObservation,
+  restoredNetlogEntry,
+  snapshotNetlogForDisk,
+  tabObservePath,
+  writeTabObservation,
+} from './lib/tab-observation.mjs';
+import {
   COMMAND_SURFACE,
   SURVIVOR_COMMANDS,
   isCommandSurface,
@@ -1441,7 +1449,10 @@ function createEarlyResponseStatusStore({
 
 // CDP Network event handlers for the daemon's request/response buffer. Only action-relevant
 // requests are tracked; static assets are skipped as noise.
-function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRequest, now = Date.now }) {
+function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRequest, now = Date.now, session = null } = {}) {
+  function rememberNetwork() {
+    if (session) rememberTabObservation(session);
+  }
   function appendNetworkResponse(requestId, req, { status = null, type = req.type, size = 0, failed = false, errorText = null } = {}) {
     pendingReqs.delete(requestId);
     netReqBuf.push({
@@ -1456,6 +1467,7 @@ function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRe
       ...(errorText ? { errorText } : {}),
       ts: req.ts,
     });
+    rememberNetwork();
   }
   return {
     'Network.requestWillBeSent': (params) => {
@@ -1492,7 +1504,10 @@ function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRe
     },
     'Network.loadingFinished': (params) => {
       const req = pendingReqs.get(params.requestId);
-      if (!req) return;
+      if (!req) {
+        if (session?.netRequestStore?.idFor?.(params.requestId) != null) rememberNetwork();
+        return;
+      }
       appendNetworkResponse(params.requestId, req, {
         status: null,
         size: params.encodedDataLength || 0,
@@ -1500,7 +1515,10 @@ function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRe
     },
     'Network.loadingFailed': (params) => {
       const req = pendingReqs.get(params.requestId);
-      if (!req) return;
+      if (!req) {
+        if (session?.netRequestStore?.idFor?.(params.requestId) != null) rememberNetwork();
+        return;
+      }
       appendNetworkResponse(params.requestId, req, {
         status: null,
         type: params.type,
@@ -1514,6 +1532,9 @@ function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRe
 class RingBuffer {
   constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
   push(entry) { entry._seq = ++this.seq; this.buf.push(entry); if (this.buf.length > this.capacity) this.buf.shift(); }
+  load(entries) {
+    for (const entry of Array.isArray(entries) ? entries : []) this.push({ ...entry });
+  }
   since(seq) { return this.buf.filter(e => e._seq > seq); }
   all() { return [...this.buf]; }
   latest() { return this.seq; }
@@ -1834,8 +1855,8 @@ function daemonBackgroundMode(targetId, { env = process.env, runtimeDir = RUNTIM
 
 // Dialog mode, throttle, and mock rules (#575). They used to live only in the daemon process, so a
 // crash, idle exit, or kill -9 brought the next daemon back to auto-accept. The file is written when
-// the setting changes, not at exit, because kill -9 never runs the exit hook. The netlog ring buffer
-// is observation and is not stored; the next daemon names that loss on its first receipt.
+// the setting changes, not at exit, because kill -9 never runs the exit hook. The netlog buffer and
+// the action log are stored the same way, in cdp-<targetId>.observe.json (#606, #618).
 const TAB_ENV_SCHEMA = 'chrome-cdp-ex.tab-env.v1';
 const TAB_ENV_SUFFIX = '.env.json';
 // Only files that match the defaults (accept, throttle off, no mocks) are removed past this.
@@ -2098,7 +2119,134 @@ function formatDaemonRestartNotice(outcome = {}) {
     const verb = outcome.mocksReset ? (count === 1 ? 'was reset' : 'were reset') : 'restored';
     mockPart = `${count} ${noun} ${verb}`;
   }
-  return `${DAEMON_RESTART_NOTICE_PREFIX} ${dialogPart}, ${throttlePart}, ${mockPart}, netlog buffer was reset`;
+  const netlogPart = outcome.netlogUnreadable
+    ? 'netlog buffer was reset (saved record unreadable)'
+    : formatRestoredCount(outcome.netlogCount, 'netlog entry', 'netlog entries');
+  const actionPart = outcome.actionsUnreadable
+    ? 'action log was reset (saved record unreadable)'
+    : formatRestoredCount(outcome.actionCount, 'action', 'actions');
+  return `${DAEMON_RESTART_NOTICE_PREFIX} ${dialogPart}, ${throttlePart}, ${mockPart}, ${netlogPart}, ${actionPart}`;
+}
+
+function formatRestoredCount(count, one, many) {
+  const n = Number.isInteger(count) && count > 0 ? count : 0;
+  return `${n} ${n === 1 ? one : many} restored`;
+}
+
+function observationNoticeFields(observation) {
+  const unreadable = observation?.status === 'unreadable';
+  return {
+    netlogCount: Number.isInteger(observation?.netlogCount) ? observation.netlogCount : 0,
+    netlogUnreadable: unreadable,
+    actionCount: Number.isInteger(observation?.actionCount) ? observation.actionCount : 0,
+    actionsUnreadable: unreadable,
+  };
+}
+
+function withObservationNotice(outcome, session) {
+  return { ...(outcome || {}), ...observationNoticeFields(session?.observationRestore) };
+}
+
+function netlogBufferForDisk(session) {
+  const netReqBuf = session?.buffers?.network;
+  if (!netReqBuf || typeof netReqBuf.all !== 'function') return netReqBuf;
+  // Restored rows stay on disk until a main-frame navigation after this daemon is ready.
+  // After that, save the same window `netlog` prints, so the next daemon does not bring them back.
+  if (session.restoredNetlogHold === true) return netReqBuf;
+  const lastNavigationTs = session.buffers?.navigation?.all?.().at(-1)?.ts ?? null;
+  if (!Number.isFinite(Number(lastNavigationTs))) return netReqBuf;
+  const visible = filterNetlogEntries(netReqBuf.all(), { lastNavigationTs, holdRestored: false });
+  return { all: () => visible };
+}
+
+function observationSnapshot(session) {
+  return {
+    actionSeq: Number.isInteger(session?.actionSeq) ? session.actionSeq : (session?.actionLog?.length || 0),
+    actions: session?.actionLog || [],
+    environment: session?.environmentLog || [],
+    netlog: snapshotNetlogForDisk(netlogBufferForDisk(session), session?.netRequestStore),
+  };
+}
+
+function rememberTabObservation(session) {
+  if (!session?.targetId || !session.runtimeDir) return false;
+  try {
+    const snapshot = observationSnapshot(session);
+    const comparable = JSON.stringify({
+      actionSeq: snapshot.actionSeq,
+      actions: snapshot.actions,
+      environment: snapshot.environment,
+      netlog: snapshot.netlog,
+    });
+    if (session.observationComparable === comparable) return true;
+    const saved = writeTabObservation(session.targetId, snapshot, { runtimeDir: session.runtimeDir });
+    session.observationWriteFailed = !saved;
+    if (saved) session.observationComparable = comparable;
+    return saved;
+  } catch {
+    // A capture or action already happened. Saving it must not fail that command.
+    session.observationWriteFailed = true;
+    return false;
+  }
+}
+
+function restoreTabObservation(session) {
+  if (!session || session.observationRestore?.applied === true) return session?.observationRestore || null;
+  if (!session.runtimeDir || !session.targetId) {
+    session.observationRestore = { applied: true, status: 'absent', netlogCount: 0, actionCount: 0, environmentCount: 0 };
+    return session.observationRestore;
+  }
+  const saved = readTabObservation(session.targetId, { runtimeDir: session.runtimeDir });
+  if (saved.status !== 'ok') {
+    session.observationRestore = {
+      applied: true,
+      status: saved.status === 'unreadable' ? 'unreadable' : 'absent',
+      netlogCount: 0,
+      actionCount: 0,
+      environmentCount: 0,
+    };
+    return session.observationRestore;
+  }
+  let loaded = false;
+  if (!session.actionLog?.length && saved.actions.length) {
+    session.actionLog = saved.actions;
+    session.actionSeq = saved.actionSeq;
+    loaded = true;
+  }
+  if (!session.environmentLog?.length && saved.environment.length) {
+    session.environmentLog = saved.environment;
+    loaded = true;
+  }
+  const netReqBuf = session.buffers?.network;
+  const netlogWaiting = saved.netlog.entries.length > 0 && !(netReqBuf && typeof netReqBuf.all === 'function');
+  let netlogCount = 0;
+  if (netReqBuf && typeof netReqBuf.all === 'function' && netReqBuf.all().length === 0 && saved.netlog.entries.length) {
+    const entries = saved.netlog.entries.map((entry, index) => restoredNetlogEntry(entry, index));
+    if (typeof netReqBuf.load === 'function') netReqBuf.load(entries);
+    else for (const entry of entries) netReqBuf.push(entry);
+    netlogCount = netReqBuf.all().length;
+    session.netRequestStore?.restore?.(saved.netlog.details, saved.netlog.nextId);
+    if (netlogCount > 0) session.restoredNetlogHold = true;
+  }
+  if (loaded) session.observationLoaded = true;
+  if (netlogWaiting) {
+    session.observationRestore = {
+      applied: false,
+      status: 'ok',
+      netlogCount: 0,
+      actionCount: loaded ? (session.actionLog?.length || 0) : 0,
+      environmentCount: loaded ? (session.environmentLog?.length || 0) : 0,
+    };
+    return session.observationRestore;
+  }
+  session.observationRestore = {
+    applied: true,
+    status: 'ok',
+    netlogCount,
+    actionCount: loaded ? (session.actionLog?.length || 0) : 0,
+    environmentCount: loaded ? (session.environmentLog?.length || 0) : 0,
+  };
+  return session.observationRestore;
 }
 
 function armDaemonRestartNotice(session, outcome, { restarted = false } = {}) {
@@ -11297,13 +11445,14 @@ function clickDownloadBrowser(cdp, sessionId, targetId) {
 const SESSION_LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 
 // Per-tab runtime artifacts: `cdp-<target>.log` (and its rotated `.1`), `cdp-<target>-screenshots/`,
-// `cdp-<target>-downloads/` (#472) and `cdp-<target>.crash.json`. Neither `closetab`, `stop` nor daemon exit removes them, so each
+// `cdp-<target>-downloads/` (#472), `cdp-<target>.observe.json` (#606, #618) and `cdp-<target>.crash.json`.
+// closetab removes the observation file immediately. stop and daemon exit do not, so each
 // daemon prunes them when it starts (#462). A tab's set goes once its newest file is older than
 // RUNTIME_ARTIFACT_MAX_AGE_MS and it is not one of the RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS newest
 // sets. The set of a live daemon or of the current target is never touched.
 const RUNTIME_ARTIFACT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS = 20;
-const RUNTIME_ARTIFACT_PATTERN = /^cdp-(.+?)(\.log|\.log\.1|\.crash\.json|-screenshots|-downloads)$/;
+const RUNTIME_ARTIFACT_PATTERN = /^cdp-(.+?)(\.log|\.log\.1|\.crash\.json|\.observe\.json|-screenshots|-downloads)$/;
 
 // Async with fs/promises by default, so a large prune (many screenshot folders, a virus
 // scanner on Windows) runs on the libuv pool instead of blocking the daemon's event loop.
@@ -11704,6 +11853,7 @@ function appendSessionEnvironmentLog(session, event, { ts = Date.now() } = {}) {
     session.environmentLog.splice(0, session.environmentLog.length - MAX_ENVIRONMENT_LOG_ENTRIES);
   }
   appendSessionEventLog(session, entry);
+  rememberTabObservation(session);
   return entry;
 }
 
@@ -11715,6 +11865,7 @@ function initializeSessionLog(session, {
   rotateBytes = SESSION_LOG_ROTATE_BYTES,
 } = {}) {
   if (!session.logPath) return null;
+  restoreTabObservation(session);
   let existing = 0;
   try { existing = size(session.logPath); } catch { existing = 0; }
   // A new process for a tab that already has a log is a restart: its ref map is empty
@@ -11828,6 +11979,7 @@ function markSessionActionsPolicyFailed(session, sinceSequence, message) {
     marked += 1;
     appendSessionEventLog(session, { kind: 'action-policy-failure', ts: Date.now(), sequence: entry.sequence, eventId: entry.eventId || null, message });
   }
+  if (marked) rememberTabObservation(session);
   return marked;
 }
 
@@ -11885,6 +12037,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     session.actionLog.splice(0, session.actionLog.length - MAX_ACTION_LOG_ENTRIES);
   }
   appendSessionEventLog(session, { kind: 'action', ts, action: entry });
+  rememberTabObservation(session);
   return entry;
 }
 
@@ -12542,6 +12695,7 @@ function buildRecordActionsModel(session) {
     }, secret);
   });
   const environment = buildRecordEnvironmentModel(session);
+  const unreadable = session.observationRestore?.status === 'unreadable';
   return {
     schema: 'chrome-cdp-ex.record-actions.v1',
     targetId: session.targetId,
@@ -12551,6 +12705,16 @@ function buildRecordActionsModel(session) {
     environment,
     actionCount: actions.length,
     actions,
+    ...(session.observationLoaded ? { restored: true } : {}),
+    ...(unreadable ? {
+      unavailable: {
+        reason: 'saved-action-log-unreadable',
+        message: 'Saved action log could not be read after the tab daemon restarted. This is not an empty session.',
+      },
+    } : {}),
+    ...(session.observationWriteFailed ? {
+      saveError: 'The action log could not be saved. A restarted daemon will not have this latest copy.',
+    } : {}),
   };
 }
 
@@ -12567,8 +12731,13 @@ function formatRecordActions(session, { format = 'text' } = {}) {
   const lines = [
     `Recorded actions: ${model.actionCount}`,
     `Session: ${model.targetId}`,
-    'Source: current daemon session action log',
+    session.observationRestore?.status === 'unreadable'
+      ? 'Source: saved action log could not be read after the tab daemon restarted'
+      : (session.observationLoaded
+        ? 'Source: saved action log restored after the tab daemon exited'
+        : 'Source: current daemon session action log'),
   ];
+  if (model.saveError) lines.push(model.saveError);
   if (model.environment.length) {
     lines.push(`Environment controls: ${model.environmentCount}`);
     for (const entry of model.environment) {
@@ -12578,7 +12747,8 @@ function formatRecordActions(session, { format = 'text' } = {}) {
     }
   }
   if (model.actions.length === 0) {
-    lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then record-actions again.');
+    if (model.unavailable) lines.push(model.unavailable.message);
+    else lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then record-actions again.');
     return lines.join('\n');
   }
   for (const step of model.actions) {
@@ -22185,11 +22355,11 @@ async function handleOpeningJavaScriptDialog(cdp, fallbackSessionId, params, msg
   return { ok: false, error: lastError };
 }
 
-function filterNetlogEntries(entries = [], { lastNavigationTs = null, lookbackMs = 2500 } = {}) {
+function filterNetlogEntries(entries = [], { lastNavigationTs = null, lookbackMs = 2500, holdRestored = false } = {}) {
   const list = Array.isArray(entries) ? entries : [];
   if (!Number.isFinite(Number(lastNavigationTs))) return [...list];
   const since = Number(lastNavigationTs) - (Number.isFinite(Number(lookbackMs)) ? Number(lookbackMs) : 2500);
-  return list.filter(entry => Number(entry?.ts) >= since);
+  return list.filter(entry => (holdRestored && entry?.restored === true) || Number(entry?.ts) >= since);
 }
 
 // URLs are redacted by default (#455); --unsafe-full prints them verbatim.
@@ -22198,6 +22368,10 @@ function netlogStr(netReqBuf, flag, options = {}) {
   if (flag === '--clear') {
     netReqBuf.clear();
     options.requestStore?.clear();
+    if (options.session) {
+      options.session.restoredNetlogHold = false;
+      rememberTabObservation(options.session);
+    }
     return 'Network log cleared';
   }
   const model = buildNetlogListModel(filterNetlogEntries(netReqBuf.all(), options), {
@@ -22207,6 +22381,12 @@ function netlogStr(netReqBuf, flag, options = {}) {
     unsafeFull: options.unsafeFull === true,
     targetId: options.targetId,
   });
+  if (options.observationUnreadable && model.total === 0) {
+    const message = 'Saved network log could not be read after the tab daemon restarted. This is not an empty capture.';
+    model.unavailable = { reason: 'saved-netlog-unreadable', message };
+    if (options.format === 'json') return formatJson(model);
+    return `${message} Next: cdp netlog ${model.targetId || '<target>'}`;
+  }
   return options.format === 'json' ? formatJson(model) : formatNetlogListText(model);
 }
 
@@ -22238,7 +22418,9 @@ async function netlogRequestStr(cdp, sid, requestStore, opts, { targetId = '', w
   const wantFetch = includeBody || Boolean(opts.out);
   let body = null;
   let file = null;
-  if (wantFetch) {
+  if (wantFetch && detail.restored === true) {
+    body = unavailableBody('this request was restored after the tab daemon restarted; Chrome no longer holds the response body');
+  } else if (wantFetch) {
     if (detail.state === 'failed') {
       body = unavailableBody(`the request failed (${detail.errorText}), so there is no response body`);
     } else {
@@ -22750,7 +22932,7 @@ async function throttleStr(cdp, sid, session, args = []) {
   return parsed.format === 'json' ? formatJson(model) : formatThrottleText(model);
 }
 
-function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq }) {
+function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq, session = null }) {
   consoleBuf?.clear();
   exceptionBuf?.clear();
   navBuf?.clear();
@@ -22760,6 +22942,10 @@ function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, 
   if (lastReadSeq) {
     lastReadSeq.console = consoleBuf?.latest?.() || 0;
     lastReadSeq.exception = exceptionBuf?.latest?.() || 0;
+  }
+  if (session) {
+    session.restoredNetlogHold = false;
+    rememberTabObservation(session);
   }
 }
 
@@ -24249,8 +24435,9 @@ async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, excep
   // document. Clearing those buffers after the load event dropped exceptions
   // thrown while the new document loaded, and cutting again here would move
   // the cut past those same entries. Navigation and network reads are not cut
-  // that way, so those buffers are still cleared.
-  clearObservationBuffers({ navBuf, netReqBuf, pendingReqs, networkStatusByRequest });
+  // that way, so those buffers are still cleared. The cleared netlog is saved
+  // so a later daemon does not bring the pre-reload requests back.
+  clearObservationBuffers({ navBuf, netReqBuf, pendingReqs, networkStatusByRequest, session });
   const consoleCutMoved = documentConsoleCutSeq(buffers.console) !== consoleCutBefore;
   const exceptionCutMoved = documentConsoleCutSeq(buffers.exception) !== exceptionCutBefore;
   if (!consoleCutMoved || !exceptionCutMoved) {
@@ -24967,6 +25154,7 @@ async function closetabStr(cdp, targetId, { force = false, runtimeDir = RUNTIME_
   // have nothing left to apply to.
   removeTabMode(targetId, { runtimeDir });
   removeTabEnvironment(targetId, { runtimeDir });
+  removeTabObservation(targetId, { runtimeDir });
   return `Closed tab: ${targetId.slice(0, 8)}`;
 }
 
@@ -28872,7 +29060,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const contentBoundaryNonce = createContentBoundaryNonce();
   const pendingReqs = session.pendingRequests; // requestId → {method, url, ts}
   const networkStatusByRequest = createEarlyResponseStatusStore(); // ExtraInfo statuses that arrived before their request
-  const netRequestStore = createNetlogRequestStore({ shouldTrack: shouldTrackActionNetworkRequest });
+  const netRequestStore = createNetlogRequestStore({
+    shouldTrack: shouldTrackActionNetworkRequest,
+    onChange: () => rememberTabObservation(session),
+  });
   let lastReadSeq = { console: 0, exception: 0 };
 
   // --- Ref system & perceive diff state ---
@@ -28885,6 +29076,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     navigation: navBuf,
     network: netReqBuf,
   };
+  session.netRequestStore = netRequestStore;
+  // Before any CDP event, so a replayed navigation cannot hide the saved netlog (#606).
+  restoreTabObservation(session);
 
   // Enable domains for background collection and ref resolution
   await enableDaemonDomains(cdp, sessionId);
@@ -28912,13 +29106,17 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       // Top-level navigation (or Vite HMR full reload) invalidates all @refs.
       session.pageGeneration += 1;
       invalidateSessionRefs(session, 'navigation');
+      if (session.daemonReady && session.restoredNetlogHold) {
+        session.restoredNetlogHold = false;
+        rememberTabObservation(session);
+      }
     }
   });
 
   // --- Network request/response tracking ---
   // Per-request detail behind `netlog --id N` (#467), fed by its own listeners.
   for (const [event, handler] of Object.entries(netRequestStore.handlers)) cdp.onEvent(event, handler);
-  const networkObserver = createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRequest });
+  const networkObserver = createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRequest, session });
   for (const [event, handler] of Object.entries(networkObserver)) cdp.onEvent(event, handler);
 
   cdp.onEvent('Fetch.requestPaused', (params) => {
@@ -28938,7 +29136,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const savedEnvironment = readTabEnvironment(targetId);
   const dialogAutoAcceptRef = { value: savedDialogAccepts(savedEnvironment) };
   session.dialogMode = dialogAutoAcceptRef.value ? 'accept' : 'dismiss';
-  session.environmentRestore = environmentRestoreOutcome(savedEnvironment);
+  session.environmentRestore = withObservationNotice(environmentRestoreOutcome(savedEnvironment), session);
   let environmentReady = Promise.resolve();
   const jsDialogs = createJavaScriptDialogSession();
   cdp.onEvent('Page.javascriptDialogOpening', (params, msg) => {
@@ -29565,11 +29763,14 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }
       return commandResult(netlogStr(netReqBuf, opts.clear ? '--clear' : null, {
         lastNavigationTs: navBuf.all().at(-1)?.ts ?? null,
+        holdRestored: session.restoredNetlogHold === true,
+        observationUnreadable: session.observationRestore?.status === 'unreadable',
         unsafeFull: opts.unsafeFull,
         format: opts.format,
         filters: opts,
         requestStore: netRequestStore,
         targetId: session.targetId,
+        session,
       }), null);
     },
     press: async args => {
@@ -29660,7 +29861,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           } catch (error) {
             throw redactRestoreActionError(error, fopts.args);
           }
-          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq });
+          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq, session });
           session.pageGeneration += 1;
           invalidateSessionRefs(session, 'navigation');
           return restoreResult;
@@ -30054,18 +30255,26 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     // Only the daemon that owns the endpoint starts the tab's session log (the loser would truncate it).
     onServing: () => {
       runtimePrune.arm();
+      session.daemonReady = true;
       const started = initializeSessionLog(session);
-      const restarted = started?.restarted === true;
+      const restarted = started?.restarted === true
+        || session.observationRestore?.status === 'unreadable'
+        || (session.observationRestore?.netlogCount || 0) > 0
+        || (session.observationRestore?.actionCount || 0) > 0
+        || session.observationLoaded === true;
       environmentReady = (async () => {
         try {
-          session.environmentRestore = await applySavedNetworkControls(cdp, sessionId, session, savedEnvironment);
+          session.environmentRestore = withObservationNotice(
+            await applySavedNetworkControls(cdp, sessionId, session, savedEnvironment),
+            session,
+          );
         } catch {
           // Dialog mode was already taken from the file. Leave throttle and mocks off and say so.
-          session.environmentRestore = {
+          session.environmentRestore = withObservationNotice({
             ...environmentRestoreOutcome(savedEnvironment),
             throttleReset: savedEnvironment?.status === 'ok' ? Boolean(savedEnvironment.throttle) : true,
             mocksReset: savedEnvironment?.status === 'ok' ? Boolean(savedEnvironment.mocks?.length) : true,
-          };
+          }, session);
           session.networkThrottle = null;
           session.networkMocks = [];
         }
@@ -34745,6 +34954,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isHiddenTabCaptureError, HIDDEN_TAB_CAPTURE_TIMEOUT_MS, BATCH_BLOCKED, REPEAT_BLOCKED, REPLAY_BLOCKED,
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
   tabEnvPath, readTabEnvironment, writeTabEnvironment, removeTabEnvironment, rememberTabEnvironment,
+  tabObservePath, rememberTabObservation, restoreTabObservation, removeTabObservation,
   setDialogMode, applySavedTabEnvironment, formatDaemonRestartNotice, armDaemonRestartNotice, applyDaemonRestartNotice,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
