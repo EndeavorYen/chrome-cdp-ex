@@ -530,8 +530,23 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return classifyCoveredClickFailure(err, { base, targetId, input });
   }
 
-  // #639 / #677: window.open published a target whose URL never committed.
-  // The original tab is unusable. perceive, eval, and closetab on either tab hang.
+  // #677: the popup's URL has not committed, and the original tab still answers.
+  if (err?.popupUncommitted && typeof err.popupUncommitted === 'object') {
+    return {
+      ...base,
+      kind: 'popup-uncommitted',
+      dispatched: true,
+      reason: 'The popup navigation did not commit. The original tab is still usable.',
+      nextCommand: 'cdp list',
+      hints: [
+        'Do not repeat the click. It already opened a popup.',
+        'The original tab still accepts commands. Closing the popup is not required.',
+      ],
+    };
+  }
+
+  // #639 / #677: the opener still did not answer after its execution was terminated.
+  // perceive, eval, and closetab on either tab hang, and closing the popup does not recover it.
   if (err?.openerBlocked && typeof err.openerBlocked === 'object') {
     const pageUrl = String(err.openerBlocked.pageUrl || '').trim();
     const reopen = /^https?:\/\//i.test(pageUrl) ? `cdp open ${recoveryCommandArg(pageUrl)}` : 'cdp open about:blank';
@@ -1645,7 +1660,21 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
     ],
     avoid: [],
   },
-  // #639 / #677: window.open published a target whose URL never committed.
+  // #677: window.open's navigation has not committed, and the opener still answers.
+  'popup-uncommitted': {
+    strategy: 'inspect-tabs',
+    priority: 'high',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'List tabs. The original tab is still usable; do not repeat the click.' },
+    ],
+    avoid: [
+      'repeating the click',
+      'reporting the initial document as a successful about:blank open',
+      'claiming the original tab is unusable',
+    ],
+  },
+  // #639 / #677: the opener did not answer even after terminateExecution.
   'opener-blocked': {
     strategy: 'reopen-or-restart',
     priority: 'high',

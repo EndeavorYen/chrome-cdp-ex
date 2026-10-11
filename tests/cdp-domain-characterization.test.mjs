@@ -443,8 +443,10 @@ describe('Phase 6 direct CDP characterization', () => {
     // Target.attachToTarget plus Target.detachFromTarget, to probe a cross-origin frame.
     // #639 releaseBlockedOpener → Runtime.terminateExecution, so a probe the opener
     // blocks does not stay queued on the original tab.
-    expect(inventory).toHaveLength(182);
-    expect(digest).toBe('sha256:a3302d3b950ba677c838c8658e087992ba5a66c3f2b964d294a4e2c4db974460');
+    // #677 added noteUncommittedPopup → Target.attachToTarget, Page.enable, and
+    // Target.detachFromTarget, so an empty popup URL can name its destination.
+    expect(inventory).toHaveLength(185);
+    expect(digest).toBe('sha256:a05a2a13a622b90b5c211b9b14afaad5cd5d9805e3db25ac4d99adfe08820776');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

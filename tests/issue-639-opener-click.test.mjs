@@ -39,9 +39,10 @@ const port = Number(process.argv[2]);
 const root = process.argv[3];
 const host = readFileSync(root + '/host.html');
 const inner = '<!doctype html><meta charset=utf-8><title>inner2</title><p id="ready">inner2 ready</p>';
+const slow = '<!doctype html><meta charset=utf-8><title>slow</title><p id="ready">slow ready</p>';
 createServer((req, res) => {
   const path = String(req.url || '/').split('?')[0];
-  const body = path === '/host.html' ? host : path === '/inner2' ? inner : null;
+  const body = path === '/host.html' ? host : path === '/inner2' ? inner : path === '/slow' ? slow : null;
   if (!body) { res.writeHead(404); res.end('no'); return; }
   const send = () => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
@@ -49,7 +50,9 @@ createServer((req, res) => {
   };
   // /inner2 is slow on purpose: Chrome 154 publishes the popup with an empty
   // URL before the response arrives. The click must wait for /inner2.
+  // /slow is past the old 3s empty-url deadline and still inside the navigation cap.
   if (path === '/inner2') setTimeout(send, 1500);
+  else if (path === '/slow') setTimeout(send, 5000);
   else send();
 }).listen(port, '127.0.0.1', () => process.stdout.write('ready\\n'));
 `;
@@ -59,6 +62,7 @@ const HOST_HTML = `<!doctype html>
 <title>host</title>
 <style>button{display:block;width:240px;height:36px;margin:16px 40px}</style>
 <button id="popup" onclick="window.open('/inner2','_blank')">Open inner2</button>
+<button id="slow" onclick="window.open('/slow','_blank')">Open slow</button>
 <button id="noop" onclick="window.open('/inner2','_blank','noopener')">Open noopener</button>
 <button id="plain" onclick="document.title='plain-clicked'">Plain</button>
 <button id="spin" onclick="openSpin()">Open spin</button>
@@ -122,7 +126,9 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       const readyAt = Date.now() + 45000;
       let version = null;
       while (Date.now() < readyAt && !version?.webSocketDebuggerUrl) {
-        if (chrome.exitCode != null) break;
+        if (chrome.exitCode !== null) {
+          throw new Error(`browser exited before DevTools accepted connections (exit ${chrome.exitCode})`);
+        }
         try {
           const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(400) });
           if (response.ok) version = await response.json();
@@ -133,6 +139,7 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       }
       expect(version?.webSocketDebuggerUrl).toBeTruthy();
       const url = `http://127.0.0.1:${httpPort}/host.html`;
+      const hostUrl = url;
       const opened = run(['open', url]);
       expect(opened.status, `${opened.stdout}\n${opened.stderr}`).toBe(0);
       const target = opened.stdout.match(/Opened new tab:\s+([0-9A-Fa-f]+)/)?.[1];
@@ -202,6 +209,7 @@ describe('headless Chrome window.open with an opener (#639)', () => {
         expect(text).not.toMatch(/closetab/);
         const next = text.match(/Next: cdp open (\S+)/);
         expect(next, text).toBeTruthy();
+        expect(next[1], text).toBe(hostUrl);
         const reopened = run(['open', next[1]], 20000);
         expect(reopened.status, `${reopened.stdout}\n${reopened.stderr}`).toBe(0);
         const fresh = reopened.stdout.match(/Opened new tab:\s+([0-9A-Fa-f]+)/)?.[1];
@@ -221,7 +229,19 @@ describe('headless Chrome window.open with an opener (#639)', () => {
         url: /opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/inner2/,
       });
       expect(['recovered', 'blocked']).toContain(popup.branch);
-      console.log(`opener-click branches: #spin ${spin.branch}; #popup ${popup.branch}`);
+
+      // A response slower than the old 3s empty-url deadline still commits.
+      // The original tab stays usable. This must not be Kind: opener-blocked.
+      const slow = run(['click', page, '#slow'], 20000);
+      const slowText = `${slow.stdout}\n${slow.stderr}`;
+      expect(slow.status, slowText).toBe(0);
+      expect(slow.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/slow/);
+      expect(slowText).not.toMatch(/Kind: opener-blocked/);
+      expect(slowText).not.toMatch(/Kind: popup-uncommitted/);
+      expect(slowText).not.toMatch(/about:blank/);
+      const afterSlow = run(['eval', page, '1+1'], 8000);
+      expect(afterSlow.status, `${afterSlow.stdout}\n${afterSlow.stderr}`).toBe(0);
+      expect(afterSlow.stdout.trim()).toBe('2');
     } finally {
       try { chrome.kill('SIGTERM'); } catch { /* already gone */ }
       try { server.kill('SIGTERM'); } catch { /* already gone */ }
