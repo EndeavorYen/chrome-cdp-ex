@@ -79,9 +79,10 @@ describe('Phase 6 command-surface characterization', () => {
     const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
     // #658: catalog help names dismiss-by-default and --accept-dialog on click, nav, dialog, and reload.
     // perceive --verbose is one help line on that same catalog.
-    expect(Buffer.byteLength(catalogHelp)).toBe(29458);
+    // #616: the flow summary names millisecond waits and the outside-quotes semicolon rule.
+    expect(Buffer.byteLength(catalogHelp)).toBe(29837);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:6d90c994cd759d5cfaed7983bb63380bb60d2116983344ea2fa216576100ad16');
+      .toBe('sha256:6a8df7577eeb32950108e8dea2394105235e8d5dfd540c0211066557991531ef');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;

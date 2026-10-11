@@ -12,6 +12,10 @@
 
 ### Bug Fixes
 
+* `flow` runs a millisecond `wait` that is valid on its own. `wait 2000` waits two seconds and prints the standalone wait receipt. `wait dom stable` and `wait network idle` are unchanged. Any other `wait` name is still a usage error, and the message includes the millisecond form ([#616](https://github.com/EndeavorYen/chrome-cdp-ex/issues/616)).
+
+* `flow` splits steps on a semicolon only outside quotes (`'`, `"`, `` ` ``). `\;` is a literal semicolon. `eval`, `eval64`, and `call` keep one script body: wrapping quotes are not JavaScript, and an unquoted body continues until the next segment starts with a command name, alias, or `assert`. An unclosed quote fails before any step runs. `cdp help flow` states the rule ([#617](https://github.com/EndeavorYen/chrome-cdp-ex/issues/617)).
+
 * A `click`, `fill`, or `press` that opens a native `confirm()`, `prompt()`, or `beforeunload` was delivered. Dismissing that dialog (the default) stays `Kind: native-dialog`, and `Next` is the same command with `--accept-dialog`. It is not reclassified as `no-click-box`, `no-input-events`, `press-not-delivered`, `click-no-change`, or a fill value failure. `reload` and `nav` kept back by `beforeunload` stay `Kind: navigation-cancelled` ([#658](https://github.com/EndeavorYen/chrome-cdp-ex/issues/658), [#614](https://github.com/EndeavorYen/chrome-cdp-ex/issues/614), [#607](https://github.com/EndeavorYen/chrome-cdp-ex/issues/607), [#615](https://github.com/EndeavorYen/chrome-cdp-ex/issues/615)).
 
 * `click` does not send a mouse event at (0, 0) when the target has no positive box inside the viewport (a zero-size control, or one that stays off-screen). It exits 1 with `Kind: no-click-box` and one Next, `cdp jsclick <target> <sel>`. A descendant or associated label with a positive in-viewport box is clicked at that box. `clickxy` is unchanged ([#614](https://github.com/EndeavorYen/chrome-cdp-ex/issues/614)).

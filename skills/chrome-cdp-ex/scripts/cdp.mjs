@@ -17523,7 +17523,14 @@ function replaceCallerPayload(args, indexes, value) {
 }
 
 function rewriteFlowInput(input, cwd, depth) {
-  const steps = String(input).split(';');
+  // Same quote and `\;` boundaries as the step parser. A semicolon inside quotes
+  // stays in that step; an escaped semicolon stays escaped in the raw text.
+  let steps;
+  try {
+    steps = splitFlowSegmentsRaw(String(input));
+  } catch {
+    return input;
+  }
   let changed = false;
   const next = steps.map(step => {
     const trimmed = step.trim();
@@ -26515,6 +26522,8 @@ function commandMeta(cmd) {
 }
 
 const BATCH_PARALLEL_SAFE_SCRIPT_COMMANDS = new Set(['eval', 'eval64', 'call']);
+// Same three script commands: their flow step is one body, not a word list.
+const FLOW_SCRIPT_COMMANDS = BATCH_PARALLEL_SAFE_SCRIPT_COMMANDS;
 
 function isParallelSafeCookieList(command) {
   return command.name === 'cookies'
@@ -26849,32 +26858,219 @@ async function repeatStr({ run, probeCondition }, args) {
 }
 
 // --- Flow: sequential step runner ---
+// A semicolon separates steps only outside quotes (' " `). \; outside quotes is a
+// literal semicolon. eval/eval64/call then keep consuming segments until the next
+// segment starts with a command name, alias, or assert, so a script's own
+// semicolons stay in that one step. Wrapping quotes on a script body are flow
+// delimiters and are not part of the JavaScript.
+let flowStepHeads = null;
+
+function flowStepHeadSet() {
+  if (!flowStepHeads) {
+    flowStepHeads = new Set(['assert', FOREGROUND_ACTIVATE_COMMAND]);
+    for (const command of COMMANDS) {
+      flowStepHeads.add(command.name);
+      for (const alias of command.aliases || []) flowStepHeads.add(alias);
+    }
+  }
+  return flowStepHeads;
+}
+
+function firstFlowToken(segment) {
+  const trimmed = String(segment || '').trim();
+  if (!trimmed) return '';
+  const opener = trimmed[0];
+  if (opener === '"' || opener === "'" || opener === '`') return '';
+  const match = /^[^\s]+/.exec(trimmed);
+  return match ? match[0] : '';
+}
+
+// Raw slices keep `\;` and the original quotes so a path rewrite can rejoin
+// unchanged steps without turning a literal semicolon into a separator.
+function splitFlowSegmentsRaw(input) {
+  const segments = [];
+  let start = 0;
+  let quote = '';
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === '\\') {
+        if (i + 1 >= input.length) throw new Error('flow: dangling escape in steps');
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '\\' && input[i + 1] === ';') {
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === ';') {
+      segments.push(input.slice(start, i));
+      start = i + 1;
+    }
+  }
+  if (quote) throw new Error('flow: unclosed quote in steps');
+  segments.push(input.slice(start));
+  return segments;
+}
+
+function decodeFlowEscapedSemicolon(segment) {
+  let out = '';
+  let quote = '';
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      out += ch;
+      if (ch === '\\') {
+        if (i + 1 >= segment.length) throw new Error('flow: dangling escape in steps');
+        out += segment[++i];
+        continue;
+      }
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '\\' && segment[i + 1] === ';') {
+      out += ';';
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') quote = ch;
+    out += ch;
+  }
+  if (quote) throw new Error('flow: unclosed quote in steps');
+  return out;
+}
+
+function splitFlowSegments(input) {
+  return splitFlowSegmentsRaw(input).map(decodeFlowEscapedSemicolon);
+}
+
+function mergeFlowScriptSegments(segments) {
+  const steps = [];
+  let index = 0;
+  while (index < segments.length) {
+    if (!segments[index].trim()) {
+      index++;
+      continue;
+    }
+    const head = firstFlowToken(segments[index]);
+    if (!FLOW_SCRIPT_COMMANDS.has(head)) {
+      steps.push(segments[index].trim());
+      index++;
+      continue;
+    }
+    let combined = segments[index];
+    let next = index + 1;
+    while (next < segments.length) {
+      const piece = segments[next];
+      if (piece.trim() && flowStepHeadSet().has(firstFlowToken(piece))) break;
+      combined += `;${piece}`;
+      next++;
+    }
+    steps.push(combined.trim());
+    index = next;
+  }
+  return steps;
+}
+
+function unwrapFlowScriptBody(text) {
+  if (!text) return '';
+  const opener = text[0];
+  if (opener !== '"' && opener !== "'" && opener !== '`') return text;
+  let decoded = '';
+  for (let i = 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\') {
+      const next = text[i + 1];
+      if (next == null) throw new Error('flow: dangling escape in steps');
+      decoded += (next === opener || next === '\\' || next === ';') ? next : `\\${next}`;
+      i++;
+      continue;
+    }
+    if (ch === opener) {
+      if (i !== text.length - 1) return text;
+      return decoded;
+    }
+    decoded += ch;
+  }
+  throw new Error('flow: unclosed quote in steps');
+}
+
+function scriptCommandArgs(cmd, body) {
+  const args = [];
+  let rest = String(body || '').trim();
+  if (cmd === 'eval') {
+    while (rest) {
+      const match = /^(--fire-and-forget|--faf|--raw|--b64|-b)(?:\s+([\s\S]*))?$/.exec(rest);
+      if (!match) break;
+      args.push(match[1]);
+      rest = String(match[2] || '').trim();
+      if (match[1] === '--b64' || match[1] === '-b') break;
+    }
+  }
+  if (!rest) return args;
+  const text = unwrapFlowScriptBody(rest);
+  if (!text) return args;
+  args.push(...text.split(/\s+/));
+  return args;
+}
+
+function parseFlowLine(line) {
+  const trimmed = String(line || '').trim();
+  const head = firstFlowToken(trimmed);
+  if (head === 'wait') {
+    const parts = tokenizeCommandLine(trimmed).map(token => token.value);
+    const what = parts.slice(1).join(' ').toLowerCase();
+    if (what === 'dom stable' || what === 'network idle') return { kind: 'wait', what };
+    // `cdp wait <ms>` is a real command. Flow used to send every wait to the settle helper.
+    if (parts.length === 2 && /^\d+$/.test(parts[1])) return { kind: 'command', cmd: 'wait', args: [parts[1]] };
+    return { kind: 'wait', what };
+  }
+  if (head === 'assert') {
+    const parts = tokenizeCommandLine(trimmed).map(token => token.value);
+    const assertionKind = parts[1];
+    const value = parts.slice(2).join(' ').replace(/^(['"`])(.*)\1$/, '$2');
+    const kinds = {
+      selector: 'selector-exists',
+      'selector-missing': 'selector-missing',
+      text: 'text',
+    };
+    if (!kinds[assertionKind] || !value) {
+      throw new Error('flow assert: use "assert selector <css>", "assert selector-missing <css>", or "assert text <value>".');
+    }
+    return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
+  }
+  if (head === FOREGROUND_ACTIVATE_COMMAND) throw new Error(`flow: "${head}" is internal and not allowed as a step`);
+  if (FLOW_SCRIPT_COMMANDS.has(head)) {
+    return { kind: 'command', cmd: head, args: scriptCommandArgs(head, trimmed.slice(head.length)) };
+  }
+  const tokens = tokenizeCommandLine(trimmed);
+  return { kind: 'command', cmd: tokens[0].value, args: commandArgsFromTokens(tokens.slice(1)) };
+}
+
 function parseFlowSteps(input) {
   if (typeof input !== 'string' || !input.trim()) return [];
-  return input.split(';').map(s => s.trim()).filter(Boolean).map(line => {
-    const tokens = tokenizeCommandLine(line);
-    const parts = tokens.map(token => token.value);
-    const head = parts[0];
-    if (head === 'wait') {
-      const what = parts.slice(1).join(' ').toLowerCase();
-      return { kind: 'wait', what };
-    }
-    if (head === 'assert') {
-      const assertionKind = parts[1];
-      const value = parts.slice(2).join(' ').replace(/^(['"])(.*)\1$/, '$2');
-      const kinds = {
-        selector: 'selector-exists',
-        'selector-missing': 'selector-missing',
-        text: 'text',
-      };
-      if (!kinds[assertionKind] || !value) {
-        throw new Error('flow assert: use "assert selector <css>", "assert selector-missing <css>", or "assert text <value>".');
-      }
-      return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
-    }
-    if (head === FOREGROUND_ACTIVATE_COMMAND) throw new Error(`flow: "${head}" is internal and not allowed as a step`);
-    return { kind: 'command', cmd: head, args: commandArgsFromTokens(tokens.slice(1)) };
-  });
+  return mergeFlowScriptSegments(splitFlowSegments(input)).map(parseFlowLine);
+}
+
+function flowStepHelpLines() {
+  return [
+    'A semicolon separates flow steps only outside quotes. Quotes are single quotes, double quotes, or backticks.',
+    'A backslash-semicolon (\\;) is a literal semicolon and does not start a step.',
+    'wait <milliseconds> is the standalone wait command, for example wait 2000.',
+    'wait dom stable and wait network idle still wait for the page and fail the flow on timeout.',
+    'eval, eval64, and call take one script body. Wrapping quotes around that body are flow delimiters, not JavaScript.',
+    'Inside those quotes, \\\\ keeps a backslash, an escaped quote keeps that quote, and \\; keeps a semicolon. Any other backslash stays.',
+    'An unquoted script body continues across semicolons until the next segment starts with a command name, alias, or assert.',
+    'Quote that body, or write \\;, when a statement after a semicolon starts with one of those words.',
+    'An unclosed quote fails the flow before any step runs.',
+  ];
 }
 
 function flowStepModel(step = {}, index = 0, state = {}) {
@@ -26987,7 +27183,7 @@ async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
     }
     throw new Error(`wait network idle timed out after ${max}ms (${pendingReqs?.size || 0} pending requests)`);
   }
-  throw new Error(`Unknown wait: "${what}". Use "dom stable" or "network idle".`);
+  throw new Error(`Unknown wait: "${what}". Use "dom stable", "network idle", or a millisecond count such as wait 2000.`);
 }
 
 async function flowStr({ run, settle, assertCondition }, input, { format = 'text', targetId = null, throwOnFailure = false } = {}) {
@@ -32903,11 +33099,14 @@ Usage: cdp <command> [args]
                                     --plain     Human-readable per-step output (default: pretty JSON)
                                     --compact   One line per step (head + first line of result)
 {{command:flow}}
-                                    Each step is a normal command (e.g. "click @1") or a wait alias:
+                                    Each step is a normal command (e.g. "click @1"), a millisecond wait
+                                    such as wait 2000, or a settle alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
+                                    A semicolon separates flow steps only outside quotes (' " \`).
+                                    \\; is a literal semicolon. eval, eval64, and call keep one script body.
                                     Assertions: "assert selector <css>", "assert selector-missing <css>", "assert text <value>".
                                     Halts and exits non-zero on the first failing step; JSON preserves chrome-cdp-ex.flow.v1.
-                                    Example: flow A7BA "click @1; wait dom stable; summary; console --errors"
+                                    Example: flow A7BA "click @1; wait 2000; eval const x = 1; x; summary"
 {{command:repeat}}
                                     --continue / -c: keep going through errors and report tally.
                                     --until-selector <css> | --until-selector-missing <css> | --until-text <text>
@@ -33122,6 +33321,7 @@ function helpTopicStr(topic) {
   if (record.name === 'spawn-debug-browser') lines.push(...spawnDebugBrowserHelpDetails());
   if (record.name === 'eval' || record.name === 'eval64') lines.push(...evalScopeHelpLines());
   if (record.name === 'press') lines.push(...pressHelpLines());
+  if (record.name === 'flow') lines.push(...flowStepHelpLines());
   lines.push('Run `cdp help` for the survivor card; leftover verbs: `cdp help <command>`.');
   return `${lines.join('\n')}\n`;
 }
@@ -34370,7 +34570,15 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       kind: 'usage',
       strategy: 'show-help',
       run: 'cdp help flow',
-      reason: 'flow wait only accepts "dom stable" or "network idle". Print usage instead of probing status.',
+      reason: 'flow wait accepts "dom stable", "network idle", or a millisecond count such as wait 2000. Print usage instead of probing status.',
+    };
+  }
+  if (lower.includes('flow: unclosed quote') || lower.includes('flow: dangling escape')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help flow',
+      reason: 'A flow quote or escape was not closed, so the step boundary is ambiguous. Close it, or run cdp help flow.',
     };
   }
   if (lower.includes('batch --parallel:')) {
