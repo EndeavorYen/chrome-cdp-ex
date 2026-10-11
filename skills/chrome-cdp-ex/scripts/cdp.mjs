@@ -17116,10 +17116,11 @@ function sameArgList(left, right) {
 
 // Rejoin a rewritten flow or batch step. Quote only values the tokenizer would
 // split or drop. A selector such as #f stays bare so the step text is stable.
+// A backslash is not whitespace, so a Windows path with no spaces stays bare.
 function rejoinRewrittenCommand(head, args) {
   const parts = [head, ...args.map(arg => {
     const text = String(arg ?? '');
-    if (text === '' || /[\s"'\\;|]/.test(text)) return shellQuoteCliArg(text);
+    if (text === '' || /[\s"';|]/.test(text)) return shellQuoteCliArg(text);
     return text;
   })];
   return parts.join(' ');
