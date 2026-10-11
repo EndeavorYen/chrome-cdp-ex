@@ -34057,7 +34057,6 @@ function bareNextCommand(line) {
     .replace(/^\s*Next:\s*/, '')
     .replace(/\s+\(ask first\)/g, '')
     .replace(/\s+\(Kind:\s*[^)]+\)\s*$/, '')
-    .replace(/\s+#.*$/, '')
     .trim();
 }
 

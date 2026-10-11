@@ -23,6 +23,24 @@ function walkMjs(dir, out = []) {
   return out;
 }
 
+// A `#` starts a shell comment only outside quotes. Inside `"#form #delete"` it is the selector.
+function hasShellComment(command) {
+  let quote = '';
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '#' && (i === 0 || /\s/.test(command[i - 1]))) return true;
+  }
+  return false;
+}
+
 // A Next line is `Next:` plus a shell command and nothing else (#637).
 export function nextLineFailures(text) {
   const failures = [];
@@ -34,7 +52,7 @@ export function nextLineFailures(text) {
       failures.push(`empty Next command: ${line}`);
       continue;
     }
-    if (/\(Kind:/.test(command) || /\(ask first\)/.test(command) || /(^|\s)#/.test(command)) {
+    if (/\(Kind:/.test(command) || /\(ask first\)/.test(command) || hasShellComment(command)) {
       failures.push(`trailing text: ${line}`);
       continue;
     }
@@ -106,6 +124,18 @@ describe('#637 Next lines are bare shell commands', () => {
           target: { targetId, input: '#delete', commandArgs: ['#delete'] },
         },
         next: `Next: cdp click ${prefix} "#delete" --accept-dialog`,
+      },
+      {
+        action: 'click',
+        err: T.nativeDialogDismissedError(confirm, {
+          action: 'click',
+          target: { targetId, input: '#form #delete', commandArgs: ['#form #delete'] },
+        }),
+        context: {
+          action: 'click',
+          target: { targetId, input: '#form #delete', commandArgs: ['#form #delete'] },
+        },
+        next: `Next: cdp click ${prefix} "#form #delete" --accept-dialog`,
       },
       {
         action: 'fill',
