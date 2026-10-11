@@ -663,7 +663,7 @@ scripts/cdp.mjs table   <target> [selector] [--format json]  # bounded mounted s
 scripts/cdp.mjs cookies <target> [--unsafe-full]      # list cookies; values are <redacted> unless --unsafe-full
 scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value; domain=.example.com; secure"
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
-scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
+scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; dismiss is the default, accept is explicit
 scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (alias: resize; e.g. 375x812)
 scripts/cdp.mjs emulate <target> dark|light|off        # prefers-color-scheme / reduced-motion media features
 scripts/cdp.mjs emulate <target> --focus               # background tab behaves as focused: hasFocus() true, focus events fire (off clears it)
@@ -757,14 +757,24 @@ cdp drag <target> @12 640,300 --steps 20                         # drop at a vie
 
 ### Dialog handling
 
-The daemon answers JavaScript dialogs (alert, confirm, prompt, beforeunload) in the background so they don't block automation. The default is to **accept**: `confirm()` gets OK, `prompt()` gets its default text, and a `beforeunload` "Leave site?" prompt during `nav`, `reload`, or a navigating click is accepted, which discards that page's unsaved changes. Use `dialog` to check history or switch to dismiss.
+The daemon answers JavaScript dialogs (alert, confirm, prompt, beforeunload) in the background so they don't block the page. The default is to **dismiss**. Nothing is accepted unless this command passes `--accept-dialog`, or `dialog <target> accept` was set earlier.
 
-`dialog accept` / `dialog dismiss`, `throttle`, and `mock add` / `mock clear` are written to `cdp-<targetId>.env.json` in the runtime dir (mode 0600) when the command succeeds. The next daemon for that tab, including after an idle exit, a crash, or `kill -9`, applies that dialog mode before it answers a dialog, then applies the throttle profile and mock rules. Hit counts are not kept. The netlog buffer and the action log are written to `cdp-<targetId>.observe.json` in the runtime dir (mode 0600) when they change, so they survive an idle exit, a crash, or `kill -9`. The file keeps the last 100 netlog entries, the last 100 actions, and the last 100 environment steps, and it stays at or under 1 MiB. The first command result after such a restart (not `meta`, `list_raw`, or `_activate`) begins with a line such as `daemon restarted: dialog=dismiss, throttle=offline, 2 mocks restored, 3 netlog entries restored, 1 action restored`. When nothing was saved the counts are 0. When that file cannot be read, the line says `netlog buffer was reset (saved record unreadable), action log was reset (saved record unreadable)`, and `netlog` / `record-actions` say the saved log could not be read instead of looking empty. `closetab` removes `cdp-<targetId>.observe.json`. Text output includes that line; `--format json` prints it first and leaves the JSON body unchanged. The next command does not repeat it. If throttle or mocks cannot be applied, the line says `throttle was reset` or `2 mocks were reset` and those controls stay off, while a saved dismiss mode stays dismiss. A file that cannot be parsed selects dismiss rather than auto-accept. `closetab` removes the file. Once more than 64 of these files exist, only a file that matches the defaults (dialog accept, throttle off, no mocks) may be removed. A dismiss mode, a throttle profile, mock rules, or a file that cannot be parsed is kept until `closetab`, so a saved dismiss is not dropped to make room. If the file cannot be written, the command fails instead of reporting the setting as saved. A tab that never saved one keeps auto-accept, throttle off, and mocks off, and its first daemon prints no restart line. `download` and MCP JSON or screenshot results skip that one restart line when they read the body underneath it.
+| Dialog | Default | What the page does | Command |
+|---|---|---|---|
+| `confirm()` | Cancel | returns false, so the OK branch (a DELETE or POST) does not run | exit 1, `Kind: native-dialog`, the dialog text, and `Next` is the same command with `--accept-dialog` |
+| `prompt()` | Cancel | returns null, so the default text is not submitted | same `Kind: native-dialog`. `--accept-dialog` submits the dialog's default text |
+| `beforeunload` | Stay | the page keeps its unsaved changes | `nav` / `reload` exit 1 with `Kind: navigation-cancelled`. Other commands use `Kind: native-dialog`. `--accept-dialog` leaves the page |
+| `alert()` | Close | one button; the page continues either way | the command continues. The receipt says `Dialog: alert "…" → dismissed` |
+
+`dismiss-modal` closes an HTML dialog. It does not answer a native `confirm()` that the daemon has already dismissed.
+
+`dialog accept` / `dialog dismiss`, `throttle`, and `mock add` / `mock clear` are written to `cdp-<targetId>.env.json` in the runtime dir (mode 0600) when the command succeeds. The next daemon for that tab, including after an idle exit, a crash, or `kill -9`, applies that dialog mode before it answers a dialog, then applies the throttle profile and mock rules. Hit counts are not kept. The netlog buffer and the action log are written to `cdp-<targetId>.observe.json` in the runtime dir (mode 0600) when they change, so they survive an idle exit, a crash, or `kill -9`. The file keeps the last 100 netlog entries, the last 100 actions, and the last 100 environment steps, and it stays at or under 1 MiB. The first command result after such a restart (not `meta`, `list_raw`, or `_activate`) begins with a line such as `daemon restarted: dialog=dismiss, throttle=offline, 2 mocks restored, 3 netlog entries restored, 1 action restored`. When nothing was saved the counts are 0. When that file cannot be read, the line says `netlog buffer was reset (saved record unreadable), action log was reset (saved record unreadable)`, and `netlog` / `record-actions` say the saved log could not be read instead of looking empty. `closetab` removes `cdp-<targetId>.observe.json`. Text output includes that line; `--format json` prints it first and leaves the JSON body unchanged. The next command does not repeat it. If throttle or mocks cannot be applied, the line says `throttle was reset` or `2 mocks were reset` and those controls stay off, while a saved dismiss mode stays dismiss. A file that cannot be parsed selects dismiss rather than auto-accept. `closetab` removes the file. Once more than 64 of these files exist, only a file that matches the defaults (dialog dismiss, throttle off, no mocks) may be removed. An explicit accept mode, a throttle profile, mock rules, or a file that cannot be parsed is kept until `closetab`, so a saved accept is not dropped to make room. If the file cannot be written, the command fails instead of reporting the setting as saved. A tab that never saved one keeps dismiss, throttle off, and mocks off, and its first daemon prints no restart line. `download` and MCP JSON or screenshot results skip that one restart line when they read the body underneath it.
 
 ```bash
 scripts/cdp.mjs dialog <target>              # show recent dialog history
-scripts/cdp.mjs dialog <target> accept       # set auto-accept mode (default)
-scripts/cdp.mjs dialog <target> dismiss      # set auto-dismiss mode
+scripts/cdp.mjs dialog <target> accept       # accept later dialogs until dismiss (explicit)
+scripts/cdp.mjs dialog <target> dismiss      # dismiss (the default)
+scripts/cdp.mjs click <target> "#delete" --accept-dialog   # accept dialogs this command opens only
 ```
 
 Receipts report a dialog only when it was answered while an action command was running (from dispatch until the receipt is built). A dialog answered at any other time, for example by a timer between commands or during a read-only command, is not in any receipt; it appears only in `dialog <target>` history. The text receipt adds one line per dialog, at most three, then `Dialog: and N more`:
@@ -776,18 +786,29 @@ Dialog: beforeunload → dismissed (navigation was cancelled; the page stayed)
 Dialog: confirm "Leave?" → accept failed; the dialog may still be open
 ```
 
-In dismiss mode a page's `beforeunload` prompt cancels `reload` and `nav`: the page stays as it was, with its unsaved changes. The command then fails (exit 1, `dispatch.ok=false`) instead of reporting `Page reloaded` or `Navigated to`. The evidence is a `beforeunload` dismissed during the command with no new main-frame document:
+A dismissed `confirm()` or `prompt()` fails the command that opened it (exit 1). The DELETE or POST that runs only after OK is not sent:
+
+```text
+Error: native confirm "Delete this item?" was dismissed
+Kind: native-dialog
+Dialog: confirm "Delete this item?"
+Next: cdp click <target> "#delete" --accept-dialog
+```
+
+`--accept-dialog` accepts dialogs opened by that one command. It does not change the saved mode. `dialog <target> accept` accepts later dialogs too, including a later `confirm()`, until `dialog <target> dismiss`. MCP `click` and `navigate` take `acceptDialog: true`. Other commands pass `--accept-dialog` on the CLI or through `run_command`.
+
+A dismissed `beforeunload` cancels `reload` and `nav`: the page stays as it was, with its unsaved changes. The command then fails (exit 1, `dispatch.ok=false`) instead of reporting `Page reloaded` or `Navigated to`. The evidence is a `beforeunload` dismissed during the command with no new main-frame document:
 
 ```text
 Error: the page's beforeunload prompt was dismissed, so the reload was cancelled; the page did not change
 Kind: navigation-cancelled
-Accepting discards the page's unsaved changes; then retry `cdp reload <target>`.
-To keep the unsaved changes, leave dialog handling at dismiss and check the page with `cdp status <target>`.
-Next: cdp dialog <target> accept
+Accepting leaves the page and discards unsaved changes. `cdp reload <target> --accept-dialog` accepts this beforeunload only.
+To keep the unsaved changes, leave the default dismiss and check the page with `cdp status <target>`.
+Next: cdp reload <target> --accept-dialog
 Dialog: beforeunload → dismissed (navigation was cancelled; the page stayed)
 ```
 
-Refs and console/network buffers are kept, because the document did not change. Run `dialog <target> accept` only if those unsaved changes may be discarded. A slow `beforeunload` handler can open its prompt well after Chrome has acknowledged the reload, or after the tab already shows the pending URL. So in dismiss mode, `reload` waits up to 3 s for either the new document or the prompt before it reports `Page reloaded`. In the same mode, `nav` waits up to 3 s for Chrome's answer to the navigation before it trusts the pending URL. Accept mode never waits for this.
+Refs and console/network buffers are kept, because the document did not change. `dialog <target> accept` also leaves the page, and it accepts later `confirm()` dialogs too. A slow `beforeunload` handler can open its prompt well after Chrome has acknowledged the reload, or after the tab already shows the pending URL. So when the dialog will be dismissed, `reload` waits up to 3 s for either the new document or the prompt before it reports `Page reloaded`. `nav` waits up to 3 s for Chrome's answer to the navigation before it trusts the pending URL. Accept mode never waits for this.
 
 Action JSON (`chrome-cdp-ex.action.v1`, including `--compact`) adds the optional `effects.dialogs[]`, present only when a dialog opened during the action: `{ type, message, accepted, url?, handled? }`. `message` is redacted and capped at 200 characters, `url` is the page that raised the dialog with sensitive query values redacted, and `handled: false` appears only when the answer could not be delivered. At most 5 entries are listed; `effects.dialogsOmitted` counts the rest. `fill --format json` (`chrome-cdp-ex.fill.v1`) and the `verify-click` model carry the same optional `dialogs` / `dialogsOmitted` fields, and `report` shows the same `Dialog:` lines under each action (JSON: `evidence.dialogs`).
 

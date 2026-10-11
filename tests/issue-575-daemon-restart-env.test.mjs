@@ -242,8 +242,8 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
     const dialogRef = { value: true };
     const cdp = fakeCdp();
     const outcome = await T.applySavedTabEnvironment(cdp, 'sid-575', session, dialogRef, { runtimeDir: dir });
-    expect(dialogRef.value).toBe(true);
-    expect(session.dialogMode).toBe('accept');
+    expect(dialogRef.value).toBe(false);
+    expect(session.dialogMode).toBe('dismiss');
     expect(session.networkThrottle).toBeNull();
     expect(session.networkMocks).toEqual([]);
     expect(cdp.calls).toEqual([]);
@@ -256,15 +256,8 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
 
   it('T7: a restart with no saved record still names the lost netlog buffer', () => {
     const session = T.createSessionState({ targetId: 'T575', sessionId: 'sid' });
-    const notice = T.armDaemonRestartNotice(session, {
-      dialog: 'accept',
-      throttleProfile: 'off',
-      throttleReset: false,
-      mockCount: 0,
-      mocksReset: false,
-      unreadable: false,
-    }, { restarted: true });
-    expect(notice).toBe('daemon restarted: dialog=accept, throttle=off, 0 mocks restored, 0 netlog entries restored, 0 actions restored');
+    const notice = T.armDaemonRestartNotice(session, T.environmentRestoreOutcome({ status: 'absent' }), { restarted: true });
+    expect(notice).toBe('daemon restarted: dialog=dismiss, throttle=off, 0 mocks restored, 0 netlog entries restored, 0 actions restored');
   });
 
   it('T8: closetab removes the saved environment record and keeps its success text', async () => {
@@ -293,22 +286,22 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
     return readdirSync(dir).filter(name => name.startsWith('cdp-') && name.endsWith('.env.json'));
   }
 
-  it('keeps dismiss, throttle, mocks, and unreadable records when the file cap is passed', () => {
+  it('keeps explicit accept, throttle, mocks, and unreadable records when the file cap is passed', () => {
     const dir = runtimeDir();
     const old = Date.parse('2020-01-01T00:00:00.000Z');
     for (let i = 0; i < 62; i += 1) {
-      T.writeTabEnvironment(`ACCEPT${String(i).padStart(4, '0')}`, {
-        dialog: 'accept',
+      T.writeTabEnvironment(`DISMISS${String(i).padStart(4, '0')}`, {
+        dialog: 'dismiss',
         throttle: null,
         mocks: [],
       }, { runtimeDir: dir, now: () => old + i });
     }
-    T.writeTabEnvironment('DISMISS00', { dialog: 'dismiss', throttle: null, mocks: [] }, {
+    T.writeTabEnvironment('ACCEPT00', { dialog: 'accept', throttle: null, mocks: [] }, {
       runtimeDir: dir,
       now: () => old + 100,
     });
     T.writeTabEnvironment('THROTTLE', {
-      dialog: 'accept',
+      dialog: 'dismiss',
       throttle: { profile: 'offline', offline: true, latencyMs: 0, downloadKbps: 0, uploadKbps: 0 },
       mocks: [],
     }, { runtimeDir: dir, now: () => old + 101 });
@@ -320,11 +313,11 @@ describe('#575 tab daemon restart restores dialog, throttle, and mocks', () => {
       now: () => Date.parse('2026-01-01T00:00:00.000Z'),
     });
 
-    expect(T.readTabEnvironment('DISMISS00', { runtimeDir: dir }).dialog).toBe('dismiss');
+    expect(T.readTabEnvironment('ACCEPT00', { runtimeDir: dir }).dialog).toBe('accept');
     expect(T.readTabEnvironment('THROTTLE', { runtimeDir: dir }).throttle.profile).toBe('offline');
     expect(T.readTabEnvironment('UNREAD00', { runtimeDir: dir }).status).toBe('unreadable');
     expect(T.readTabEnvironment('NEW575', { runtimeDir: dir }).dialog).toBe('dismiss');
-    expect(T.readTabEnvironment('ACCEPT0000', { runtimeDir: dir }).status).toBe('absent');
+    expect(T.readTabEnvironment('DISMISS0000', { runtimeDir: dir }).status).toBe('absent');
     expect(envFiles(dir)).toHaveLength(64);
   });
 

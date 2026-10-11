@@ -110,6 +110,10 @@ cdp eval <target> "JSON.stringify(window.__job)"
 
 Bringing the window forward (or `CDP_BACKGROUND=0` for a background tab) lets painting resume.
 
+## Action fails with `Kind: native-dialog`
+
+A native `confirm()`, `prompt()`, or `beforeunload` was dismissed. The default is dismiss: `confirm()` returns false, so a DELETE or POST that runs only after OK is not sent. The `Error:` line names the dialog text. `Next:` is the same command with `--accept-dialog`, which accepts dialogs that command opens and does not turn accept on for later commands. `dialog <target> accept` accepts later dialogs too. `dismiss-modal` closes an HTML dialog; it does not answer a native `confirm()` the daemon has already dismissed. An `alert()` is closed and the command continues, because that dialog has one button.
+
 ## Click fails with `Kind: misdirected`
 
 The mouse click's point passed the pre-dispatch hit test, but the event did not reach the intended element (or that element was gone before dispatch). `dispatched: true` means the input was sent and landed elsewhere; the `Error:` line names that element when the page reported it. `dispatched: false` means nothing was sent. Inspect with `cdp perceive <target> --since-action` before retrying. `cdp click <target> <sel> --js` runs the handler without hit-testing when that handler still needs to run. Do not treat the click as proof the control ran.

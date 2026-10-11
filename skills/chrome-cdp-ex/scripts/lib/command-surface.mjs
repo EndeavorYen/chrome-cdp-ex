@@ -511,6 +511,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
         target: stringSchema('Target prefix or named alias.'),
         selector: stringSchema('CSS selector, @ref, @c ref, accessible name, or text=<exact visible text>.'),
         js: booleanSchema('Use HTMLElement.click() fallback instead of CDP mouse events.'),
+        acceptDialog: booleanSchema('Accept a native confirm, prompt, or beforeunload opened by this click. Default is dismiss.'),
         qa: booleanSchema('Return a compact QA summary instead of full action evidence.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
       },
@@ -662,6 +663,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
       properties: {
         target: stringSchema('Target prefix or named alias.'),
         url: stringSchema('HTTP(S) URL to open.'),
+        acceptDialog: booleanSchema('Accept a beforeunload prompt opened by this navigation. Default is to stay on the page.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
       },
       additionalProperties: false,
@@ -879,7 +881,7 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"cookiedel","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Network"],"help":{"synopsis":"cookiedel <target> <name>","summary":"Delete a cookie by name","order":57,"section":"interaction"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
   {"name":"evalraw","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"raw-cdp","authorization":"raw-cdp","evidencePolicy":"raw-audit","domains":[],"help":{"synopsis":"evalraw <target> <method> [json]","summary":"Send a raw CDP command; returns JSON result","order":72,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
   {"name":"batch","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"composite","authorization":"composite","evidencePolicy":"none","domains":[],"help":{"synopsis":"batch <target> <cmds> [--parallel] [--format json]","summary":"Execute multiple commands in one call","order":73,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
-  {"name":"dialog","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"protected-mutation","authorization":"mutation","evidencePolicy":"none","domains":["Page"],"help":{"synopsis":"dialog <target> [accept|dismiss]","summary":"Show dialog history; set auto-accept (default) or auto-dismiss","order":58,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"dialog","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"protected-mutation","authorization":"mutation","evidencePolicy":"none","domains":["Page"],"help":{"synopsis":"dialog <target> [accept|dismiss]","summary":"Show dialog history. Default is dismiss; accept is explicit","order":58,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"viewport","aliases":["resize"],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Emulation","Runtime","Page"],"help":{"synopsis":"viewport|resize <target> [WxH]","summary":"Show or set viewport size (e.g. 375x812, 1280x720)","order":59,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"viewport","mapper":"viewport"}},
   {"name":"emulate","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Emulation"],"help":{"synopsis":"emulate <target> [dark|light|no-preference|--focus|off|status]","summary":"Media feature and focus emulation via CDP Emulation.setEmulatedMedia / setFocusEmulationEnabled","order":60,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"upload","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"state-change","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM"],"help":{"synopsis":"upload <target> <selector> <paths> [--format json]","summary":"Upload file(s) to <input type=\"file\"> (comma-separated paths)","order":61,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
@@ -1042,8 +1044,8 @@ function surfaceDigest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export const COMMAND_SURFACE_IDENTITY = 'ec10ae9ada88310df6428c43bda3af19b0a5210ffa42d62fae1f9748c5955325';
-export const MCP_SURFACE_IDENTITY = '4640b960e76bee4439690408c4fe6949e789973907eefbcf9461e432f74106ea';
+export const COMMAND_SURFACE_IDENTITY = 'a9ffb2b42b0a163535b9076e779fd1467a02c0a7a87aa57811cc565770a391f6';
+export const MCP_SURFACE_IDENTITY = '3ce39f3eb2a2d922d26a3dbe8fa18cc242748ecdfde16cfd204d13c0a21616b2';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }

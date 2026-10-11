@@ -142,8 +142,9 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
     expect(text).not.toContain('Outcome: changed');
     expect(text).toMatch(/^Error: .*beforeunload prompt was dismissed.*reload was cancelled/m);
     expect(text).toContain('Kind: navigation-cancelled');
-    expect(text).toContain(`then retry \`cdp reload ${PREFIX}\``);
-    expect(text).toContain(`Next: cdp dialog ${PREFIX} accept`);
+    expect(text).toContain(`\`${`cdp reload ${PREFIX} --accept-dialog`}\` accepts this beforeunload only`);
+    expect(text).toContain(`Next: cdp reload ${PREFIX} --accept-dialog`);
+    expect(text).not.toContain(`Next: cdp dialog ${PREFIX} accept`);
     expect(text).toContain('Dialog: beforeunload → dismissed (navigation was cancelled; the page stayed)');
     // The page did not change: its refs and buffers are still valid.
     expect(state.session.refs.map.size).toBe(1);
@@ -153,10 +154,10 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
   it('the receipt also names a non-destructive next step (#500 review)', async () => {
     const state = daemonState();
     const { output } = await runCommand('reload', state, fakeChrome(state));
-    expect(output.message).toContain(`To keep the unsaved changes, leave dialog handling at dismiss and check the page with \`cdp status ${PREFIX}\`.`);
+    expect(output.message).toContain(`To keep the unsaved changes, leave the default dismiss and check the page with \`cdp status ${PREFIX}\`.`);
     const jsonState = daemonState();
     const json = JSON.parse((await runCommand('reload', jsonState, fakeChrome(jsonState), { format: 'json' })).output);
-    expect(json.nextSteps).toEqual(expect.arrayContaining([`cdp dialog ${PREFIX} accept`, `cdp status ${PREFIX}`]));
+    expect(json.nextSteps).toEqual(expect.arrayContaining([`cdp reload ${PREFIX} --accept-dialog`, `cdp status ${PREFIX}`]));
   });
 
   it('reload JSON: dispatch.ok=false with effects.failure.kind navigation-cancelled', async () => {
@@ -165,7 +166,7 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
     const json = JSON.parse(output);
     expect(json.dispatch.ok).toBe(false);
     expect(json.outcome.status).toBe('failed');
-    expect(json.effects.failure).toMatchObject({ kind: 'navigation-cancelled', nextCommand: `cdp dialog ${PREFIX} accept` });
+    expect(json.effects.failure).toMatchObject({ kind: 'navigation-cancelled', nextCommand: `cdp reload ${PREFIX} --accept-dialog` });
     expect(json.effects.dialogs).toEqual([{ type: 'beforeunload', message: '', accepted: false, url: PAGE_URL }]);
     expect(json.effects.diagnosis.recovery.avoid.join(' ')).toMatch(/dismiss/);
   });
@@ -207,8 +208,9 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
     expect(text).not.toContain('Navigated to');
     expect(text).toMatch(/^Error: .*beforeunload prompt was dismissed.*navigation was cancelled/m);
     expect(text).toContain('Kind: navigation-cancelled');
-    expect(text).toContain(`then retry \`cdp nav ${PREFIX} ${NEXT_URL}\``);
-    expect(text).toContain(`Next: cdp dialog ${PREFIX} accept`);
+    expect(text).toContain(`cdp nav ${PREFIX} ${NEXT_URL} --accept-dialog`);
+    expect(text).toContain(`Next: cdp nav ${PREFIX} ${NEXT_URL} --accept-dialog`);
+    expect(text).not.toContain(`Next: cdp dialog ${PREFIX} accept`);
   });
 
   it('nav: the pending URL is observed before Page.navigate resolves with ERR_ABORTED (slow handler, #500 review)', async () => {

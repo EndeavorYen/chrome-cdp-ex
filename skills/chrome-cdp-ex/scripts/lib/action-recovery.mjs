@@ -315,22 +315,53 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
 function classifyNavigationCancelledFailure(err, { base, targetId, input }) {
   const action = err.navigationCancelled.action === 'reload' ? 'reload' : 'nav';
   const arg = recoveryCommandArg(input);
-  const retry = action === 'reload' ? `cdp reload ${targetId}` : `cdp nav ${targetId}${arg ? ` ${arg}` : ''}`;
-  const accept = `cdp dialog ${targetId} accept`;
-  const retryLine = `Accepting discards the page's unsaved changes; then retry \`${retry}\`.`;
-  // The non-destructive branch: dismiss mode was set on purpose, the draft may matter (#500 review).
-  const keepLine = `To keep the unsaved changes, leave dialog handling at dismiss and check the page with \`cdp status ${targetId}\`.`;
+  const retry = action === 'reload'
+    ? `cdp reload ${targetId} --accept-dialog`
+    : `cdp nav ${targetId}${arg ? ` ${arg}` : ''} --accept-dialog`;
+  const retryLine = `Accepting leaves the page and discards unsaved changes. \`${retry}\` accepts this beforeunload only.`;
+  // The non-destructive branch: the default is dismiss, and the draft may matter (#500 review, #658).
+  const keepLine = `To keep the unsaved changes, leave the default dismiss and check the page with \`cdp status ${targetId}\`.`;
   return {
     ...base,
     kind: 'navigation-cancelled',
-    reason: `Dialog handling is set to dismiss, so the page's beforeunload prompt cancelled the ${action === 'reload' ? 'reload' : 'navigation'}. The page did not change and keeps its unsaved changes.`,
-    nextCommand: accept,
+    reason: `A beforeunload prompt was dismissed, so the ${action === 'reload' ? 'reload' : 'navigation'} was cancelled. The page did not change and keeps its unsaved changes.`,
+    nextCommand: retry,
     detailLines: [retryLine, keepLine],
     hints: [
-      `Switch dialog handling back to accept with \`${accept}\` only if the page's unsaved changes may be discarded.`,
+      `Accept this beforeunload for this command only with \`${retry}\`.`,
+      `\`cdp dialog ${targetId} accept\` also accepts later confirm() dialogs.`,
       retryLine,
       keepLine,
-      'Do not retry while dialog handling is dismiss: the prompt cancels it again.',
+      'Do not retry without --accept-dialog: the prompt cancels it again.',
+    ],
+  };
+}
+
+function classifyNativeDialogFailure(err, { base, targetId, action }) {
+  const dialog = err.nativeDialog;
+  const type = String(dialog.type || 'dialog');
+  const message = String(dialog.message || '').replace(/\s+/g, ' ').trim();
+  const quoted = message ? ` "${message}"` : '';
+  const args = Array.isArray(dialog.commandArgs) ? dialog.commandArgs : [];
+  const rendered = args.map(arg => recoveryCommandArg(arg)).filter(Boolean).join(' ');
+  const verb = String(dialog.action || action || 'click');
+  const retry = rendered
+    ? `cdp ${verb} ${targetId} ${rendered} --accept-dialog`
+    : `cdp ${verb} ${targetId} --accept-dialog`;
+  const branch = type === 'beforeunload'
+    ? 'The page stayed. Accepting leaves the page and discards unsaved changes.'
+    : type === 'prompt'
+      ? 'prompt() returned null. Accepting submits the dialog\'s default text.'
+      : 'The page did not run the branch that runs only after OK.';
+  return {
+    ...base,
+    kind: 'native-dialog',
+    reason: `A native ${type}${quoted} was dismissed. ${branch}`,
+    nextCommand: retry,
+    detailLines: [`Dialog: ${type}${quoted}`],
+    hints: [
+      `Accept this dialog for this command only with \`${retry}\`.`,
+      `\`cdp dialog ${targetId} accept\` also accepts later confirm() dialogs.`,
     ],
   };
 }
@@ -497,6 +528,11 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
 
   if (err?.navigationCancelled && typeof err.navigationCancelled === 'object') {
     return classifyNavigationCancelledFailure(err, { base, targetId, input });
+  }
+
+  // #658: a dismissed confirm/prompt/beforeunload must not look like a successful action.
+  if (err?.nativeDialog && typeof err.nativeDialog === 'object') {
+    return classifyNativeDialogFailure(err, { base, targetId, action });
   }
 
   // #466: a session-policy refusal names URLs and commands that the checks below would misread.
@@ -1508,10 +1544,23 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
     priority: 'high',
     verify: 'status',
     intents: [
-      { key: 'next-or-status', reason: 'Switch dialog handling to accept (discards the page\'s unsaved changes), then retry.' },
-      { key: 'status', reason: 'Confirm which page the tab is on.' },
+      { key: 'next-or-status', reason: 'Retry with --accept-dialog to leave the page and discard unsaved changes.' },
+      { key: 'status', reason: 'Confirm the tab is still on the page with the unsaved changes.' },
     ],
-    avoid: ['retrying reload / nav while dialog handling is dismiss: the beforeunload prompt cancels it again'],
+    avoid: ['retrying reload or nav without --accept-dialog while the default dismisses beforeunload: the prompt cancels it again'],
+  },
+  // #658: confirm/prompt/beforeunload dismissed by default. Accept is an explicit flag.
+  'native-dialog': {
+    strategy: 'accept-dialog-explicitly',
+    priority: 'high',
+    verify: 'next-or-status',
+    intents: [
+      { key: 'next-or-status', reason: 'Retry the same command with --accept-dialog to accept this native dialog once.' },
+    ],
+    avoid: [
+      'retrying the command without --accept-dialog',
+      'treating a dismissed confirm as a successful click',
+    ],
   },
   disabled: {
     strategy: 'wait-or-inspect',
