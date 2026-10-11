@@ -247,12 +247,16 @@ when applicable. `wait 2000` is the standalone `wait` command and runs inside
 `flow` the same way.
 
 A semicolon separates flow steps only outside quotes (`'`, `"`, or `` ` ``).
-`\;` is a literal semicolon. `eval`, `eval64`, and `call` take one script body:
-wrapping quotes are flow delimiters, not JavaScript, and an unquoted body
-continues across semicolons until the next segment starts with a command name,
-alias, or `assert`. Quote that body when the next statement starts with one of
-those words. An unclosed quote fails the flow before any step runs.
-`cdp help flow` prints this rule.
+A quote opens only at the start of a word (the start of a step, or after
+whitespace). A quote inside a word stays literal, so `O'Brien` and `don't` do
+not start a quote. `type don't; summary` and `eval don't; summary` are two
+steps. `eval "don't; summary"` is one step. `\;` is a literal semicolon.
+`eval`, `eval64`, and `call` take one script body: wrapping quotes are flow
+delimiters, not JavaScript, and spaces, newlines, and tabs in that body stay
+byte-for-byte. An unquoted body continues across semicolons until the next
+segment starts with a command name, alias, or `assert`. Quote that body when
+the next statement starts with one of those words. An unclosed quote fails the
+flow before any step runs. `cdp help flow` prints this rule.
 
 Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.

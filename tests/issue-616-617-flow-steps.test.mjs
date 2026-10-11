@@ -8,6 +8,10 @@ process.env.NODE_ENV = 'test';
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
 const SPLIT_RULE = 'A semicolon separates flow steps only outside quotes';
+const QUOTE_RULE = 'A quote opens only at the start of a word';
+const QUOTED_BODY = "const s = 'a  b';\n\ts";
+const SINGLE_QUOTED_BODY = 'const s = "a  b";\n\ts';
+const UNQUOTED_BODY = 'const  s = 1;\n\treturn s';
 
 function expressionOf(input) {
   const [step] = T.parseFlowSteps(input);
@@ -80,7 +84,7 @@ describe('flow script and quote splitting (#617)', () => {
   it('keeps an unquoted eval script with semicolons as one expression', () => {
     expect(expressionOf('eval const x = 1; x + 2')).toBe('const x = 1; x + 2');
     expect(T.parseFlowSteps('eval const x = 1; x + 2; summary')).toEqual([
-      { kind: 'command', cmd: 'eval', args: ['const', 'x', '=', '1;', 'x', '+', '2'] },
+      { kind: 'command', cmd: 'eval', args: ['const x = 1; x + 2'] },
       { kind: 'command', cmd: 'summary', args: [] },
     ]);
   });
@@ -118,7 +122,7 @@ describe('flow script and quote splitting (#617)', () => {
       expression: 'const x = 1; x',
     });
     expect(T.parseFlowSteps('call async () => { const x = 1; return x; }; summary')).toEqual([
-      { kind: 'command', cmd: 'call', args: ['async', '()', '=>', '{', 'const', 'x', '=', '1;', 'return', 'x;', '}'] },
+      { kind: 'command', cmd: 'call', args: ['async () => { const x = 1; return x; }'] },
       { kind: 'command', cmd: 'summary', args: [] },
     ]);
     expect(T.parseFlowSteps('eval64 "YQ=="; summary')).toEqual([
@@ -138,6 +142,64 @@ describe('flow script and quote splitting (#617)', () => {
     ]);
     expect(T.parseFlowSteps('assert text `a;b`')).toEqual([
       { kind: 'assert', condition: { kind: 'text', value: 'a;b' } },
+    ]);
+  });
+
+  it.each([
+    { cmd: 'eval', kind: 'double-quoted', body: QUOTED_BODY, source: `"${QUOTED_BODY}"` },
+    { cmd: 'eval', kind: 'single-quoted', body: SINGLE_QUOTED_BODY, source: `'${SINGLE_QUOTED_BODY}'` },
+    { cmd: 'eval', kind: 'backtick-quoted', body: QUOTED_BODY, source: `\`${QUOTED_BODY}\`` },
+    { cmd: 'eval', kind: 'unquoted', body: UNQUOTED_BODY, source: UNQUOTED_BODY },
+    { cmd: 'eval64', kind: 'double-quoted', body: QUOTED_BODY, source: `"${QUOTED_BODY}"` },
+    { cmd: 'eval64', kind: 'single-quoted', body: SINGLE_QUOTED_BODY, source: `'${SINGLE_QUOTED_BODY}'` },
+    { cmd: 'eval64', kind: 'backtick-quoted', body: QUOTED_BODY, source: `\`${QUOTED_BODY}\`` },
+    { cmd: 'eval64', kind: 'unquoted', body: UNQUOTED_BODY, source: UNQUOTED_BODY },
+    { cmd: 'call', kind: 'double-quoted', body: QUOTED_BODY, source: `"${QUOTED_BODY}"` },
+    { cmd: 'call', kind: 'single-quoted', body: SINGLE_QUOTED_BODY, source: `'${SINGLE_QUOTED_BODY}'` },
+    { cmd: 'call', kind: 'backtick-quoted', body: QUOTED_BODY, source: `\`${QUOTED_BODY}\`` },
+    { cmd: 'call', kind: 'unquoted', body: UNQUOTED_BODY, source: UNQUOTED_BODY },
+  ])('$cmd $kind body keeps two spaces, a newline, and a tab', ({ cmd, body, source }) => {
+    const [step] = T.parseFlowSteps(`${cmd} ${source}`);
+    expect(step).toMatchObject({ kind: 'command', cmd, args: [body] });
+    expect(step.args[0]).toBe(body);
+    if (cmd === 'eval') expect(T.parseEvalArgs(step.args).expression).toBe(body);
+  });
+
+  it('keeps eval flags and passes the flagged script body byte-for-byte', () => {
+    const step = T.parseFlowSteps(`eval --raw --fire-and-forget "${QUOTED_BODY}"`)[0];
+    expect(step.args).toEqual(['--raw', '--fire-and-forget', QUOTED_BODY]);
+    expect(T.parseEvalArgs(step.args)).toMatchObject({
+      raw: true,
+      fireAndForget: true,
+      expression: QUOTED_BODY,
+    });
+    expect(T.parseFlowSteps('eval --b64 "YQ=="; summary')[0].args).toEqual(['--b64', 'YQ==']);
+  });
+
+  it("parses fill #name O'Brien; click @1 as two steps with value O'Brien", () => {
+    expect(T.parseFlowSteps("fill #name O'Brien; click @1")).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#name', "O'Brien"] },
+      { kind: 'command', cmd: 'click', args: ['@1'] },
+    ]);
+  });
+
+  it("parses type don't; summary as two steps", () => {
+    // Non-script command: an apostrophe inside the word does not open a quote.
+    expect(T.parseFlowSteps("type don't; summary")).toEqual([
+      { kind: 'command', cmd: 'type', args: ["don't"] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+  });
+
+  it("parses eval don't; summary as two steps, and a quoted script as one", () => {
+    // Script command, same quote rule: `don't` is one word, so `summary` is the next step.
+    // A quote at the start of the body still holds the semicolon, so that form is one eval.
+    expect(T.parseFlowSteps("eval don't; summary")).toEqual([
+      { kind: 'command', cmd: 'eval', args: ["don't"] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps(`eval "don't; summary"`)).toEqual([
+      { kind: 'command', cmd: 'eval', args: ["don't; summary"] },
     ]);
   });
 
@@ -170,8 +232,10 @@ describe('flow step rule documentation (#616 #617)', () => {
     const help = T.helpTopicStr('flow');
     const commands = readFileSync(new URL('../skills/chrome-cdp-ex/references/commands.md', import.meta.url), 'utf8');
     const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
-    for (const text of [help, T.CATALOG_USAGE, commands, reference]) {
+    const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
+    for (const text of [help, T.CATALOG_USAGE, commands, reference, skill]) {
       expect(text).toContain(SPLIT_RULE);
+      expect(text).toContain(QUOTE_RULE);
       expect(text).toContain('wait 2000');
     }
     expect(help).toContain('eval, eval64, and call');

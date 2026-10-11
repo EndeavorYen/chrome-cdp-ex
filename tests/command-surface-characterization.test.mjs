@@ -80,9 +80,10 @@ describe('Phase 6 command-surface characterization', () => {
     // #658: catalog help names dismiss-by-default and --accept-dialog on click, nav, dialog, and reload.
     // perceive --verbose is one help line on that same catalog.
     // #616: the flow summary names millisecond waits and the outside-quotes semicolon rule.
-    expect(Buffer.byteLength(catalogHelp)).toBe(29837);
+    // #622: a quote opens only at the start of a word.
+    expect(Buffer.byteLength(catalogHelp)).toBe(29916);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:6a8df7577eeb32950108e8dea2394105235e8d5dfd540c0211066557991531ef');
+      .toBe('sha256:7b94b97bdfbdce767640d2789bbc25e6aa3921d39206a989dfcee3f06c13db60');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
