@@ -1341,7 +1341,7 @@ page starts itself, drops the previous comparison baseline. The next click compa
 loaded document. If that baseline cannot be captured, the receipt says the baseline is stale
 (`Outcome: dispatched`) and does not report `Kind: click-no-change`. A button that
 opens a tab with `window.open` reports `→ opened new tab` and exits 0 once that
-target has a URL. An empty URL is the popup before its first commit. If that popup has started navigating, the click waits for the URL and then reports `→ opened new tab`. If the navigation does not commit and the original tab still answers, the command exits 1 with `Kind: popup-uncommitted` (the original tab is still usable; Next is `cdp list`; do not repeat the click). If the original tab does not answer even after its execution is terminated, it exits 1 with `Kind: opener-blocked`: the original tab is no longer usable, and Next reopens the page.
+target has a URL. An empty URL is the popup before its first commit. If that popup has started navigating, the click waits for the URL and then reports `→ opened new tab`. If the navigation does not commit and the original tab still answers, the command exits 1 with `Kind: popup-uncommitted` (the original tab is still usable; Next is `cdp list`; do not repeat the click). If the original tab does not answer at the empty-url deadline, the click terminates that execution and checks again instead of waiting out the navigation cap. If it still does not answer, it exits 1 with `Kind: opener-blocked`: the original tab is no longer usable, and Next reopens the page.
 A download the browser started, or a `download` attribute with no download event, also exits 0.
 `clickxy` and elements that are not those controls are unchanged. Exit code is 1 for every failed kind. If anything else is on top
 (a fixed sidebar, sticky header, toast, or dialog), nothing is sent and the click exits 1:
@@ -1384,8 +1384,9 @@ destination while the target URL is still empty. The click waits for the commit.
 If the URL commits, the receipt is `→ opened new tab`. If a navigation does not
 commit and the original tab still answers, the command exits 1 with
 `Kind: popup-uncommitted`. The receipt says the original tab is still usable.
-Next is `cdp list`. Do not repeat the click. If the original tab does not answer,
-the click terminates execution on that tab and checks again. If it still does not
+Next is `cdp list`. Do not repeat the click. If the original tab does not answer at the empty-url deadline, the click
+terminates execution on that tab and checks again instead of waiting out the
+navigation cap. If it still does not
 answer, the command exits 1 with `Kind: opener-blocked`. The receipt says the
 original tab is no longer usable. Next is `cdp open <page url>` (reopen the page)
 or restart the browser. Closing the popup does not recover that tab. Do not

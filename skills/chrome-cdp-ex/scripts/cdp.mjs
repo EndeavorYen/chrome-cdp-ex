@@ -280,9 +280,30 @@ const CLICK_OPENER_RESPOND_TIMEOUT_MS = 400;
 // this wait.
 const CLICK_POPUP_COMMIT_WAIT_MS = 3000;
 // Page.frameStartedNavigating names the destination while TargetInfo.url is
-// still empty. A slow document (observed at 8s on Chrome 154) is still in
-// flight. Keep waiting for that commit, and stop before the click's own budget.
+// still empty. A slow document is still in flight. Keep waiting for that
+// commit when the opener still answers.
 const CLICK_POPUP_NAVIGATION_CAP_MS = 12000;
+const CLICK_OPENER_TERMINATE_TIMEOUT_MS = 1000;
+// A mouse ack that already timed out means the renderer may be stuck. The probe
+// read must not then spend the default 15s CDP timeout.
+const CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS = 1500;
+// Worst case when the opener stays stuck, including terminate and the recheck.
+// The mouse-ack wait overlaps the empty-popup commit wait. One bounded probe
+// read applies only when the popup was not observed before that ack gave up:
+// max(CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS)
+//   + CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS
+//   + CLICK_OPENER_RESPOND_TIMEOUT_MS
+//   + CLICK_OPENER_TERMINATE_TIMEOUT_MS
+//   + CLICK_OPENER_RESPOND_TIMEOUT_MS
+// = max(6000, 3000) + 1500 + 400 + 1000 + 400
+// = 9300
+// The live opener test allows 20000 for the whole click process.
+const CLICK_STUCK_OPENER_BUDGET_MS =
+  Math.max(CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS)
+  + CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS
+  + CLICK_OPENER_RESPOND_TIMEOUT_MS
+  + CLICK_OPENER_TERMINATE_TIMEOUT_MS
+  + CLICK_OPENER_RESPOND_TIMEOUT_MS;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 // `wait <ms>` is the longest single command a daemon serves.
 const WAIT_DURATION_MAX_MS = 60 * 60 * 1000;
@@ -17357,22 +17378,26 @@ function handledLater(promise) {
 async function dispatchMouseEventAllowingAckTimeout(cdp, sid, params) {
   try {
     await cdpDomains(cdp).Input.dispatchMouseEvent(params, sid, HOVER_MOUSE_ACK_TIMEOUT_MS);
+    return { timedOut: false };
   } catch (error) {
     // Same Chrome 151 compositor-ack stall as hover: the event is already
     // forwarded, so waiting out the default 15s RPC would separate press from
     // release by seconds and the link default action never runs.
     if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
+    return { timedOut: true };
   }
 }
 
 async function dispatchClickMouseEvent(cdp, sid, params) {
   try {
     await cdpDomains(cdp).Input.dispatchMouseEvent(params, sid, CLICK_MOUSE_ACK_TIMEOUT_MS);
+    return { timedOut: false };
   } catch (error) {
     // Press/release may sit behind Chrome 151's ~5s hit-test/compositor stall.
     // Swallow only that timeout so overlapping events can still inject; the
     // page-side probe below fail-closes if nothing actually reached the DOM.
     if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
+    return { timedOut: true };
   }
 }
 
@@ -17750,26 +17775,46 @@ async function noteUncommittedPopup(cdp, watch, targetId) {
   };
 }
 
+function openerStuckRecheckReserveMs() {
+  return CLICK_OPENER_RESPOND_TIMEOUT_MS
+    + CLICK_OPENER_TERMINATE_TIMEOUT_MS
+    + CLICK_OPENER_RESPOND_TIMEOUT_MS;
+}
+
+async function finishStuckOpener(cdp, sid, found, watch, deadlines) {
+  await releaseBlockedOpener(cdp, sid);
+  if (!await openerStillResponds(cdp, sid)) return { done: { ...found, openerDead: true } };
+  if (watch.url && deadlines.nav && Date.now() < deadlines.nav) return { keepWaiting: true };
+  return { done: { ...found, openerAlive: true, pendingUrl: watch.url || '' } };
+}
+
 // Empty URL and a live opener: keep waiting while a navigation is in flight.
-// Empty URL and a silent opener: terminate that execution once, then either
-// continue or report the tab unusable. Do not treat the initial document as about:blank.
+// Empty URL and a silent opener: terminate that execution once the empty-url
+// deadline has passed, even if a destination was announced. Do not spend the
+// navigation cap on an opener that is not answering. Do not treat the initial
+// document as about:blank.
 async function considerUncommittedPopup(cdp, sid, found, watch, deadlines) {
   await noteUncommittedPopup(cdp, watch, found.targetId);
   if (watch.committed && watch.url) return { done: { ...found, url: watch.url } };
   if (!deadlines.commit) deadlines.commit = Date.now() + CLICK_POPUP_COMMIT_WAIT_MS;
   if (watch.url && !deadlines.nav) deadlines.nav = Date.now() + CLICK_POPUP_NAVIGATION_CAP_MS;
-  const limit = watch.url ? deadlines.nav : deadlines.commit;
-  if (Date.now() < limit) return { keepWaiting: true };
-  if (await openerStillResponds(cdp, sid)) {
-    return { done: { ...found, openerAlive: true, pendingUrl: watch.url || '' } };
+  const now = Date.now();
+  const stillWaiting = watch.url ? now < deadlines.nav : now < deadlines.commit;
+  const stuckAt = Number(deadlines.stuckDeadline) || 0;
+  const timeToCheckStuck = stuckAt > 0 && now >= stuckAt - openerStuckRecheckReserveMs();
+  const commitPassed = now >= deadlines.commit;
+  if (stillWaiting && !timeToCheckStuck && !(watch.url && commitPassed && !deadlines.openerChecked)) {
+    return { keepWaiting: true };
   }
-  await releaseBlockedOpener(cdp, sid);
-  if (!await openerStillResponds(cdp, sid)) return { done: { ...found, openerDead: true } };
-  if (watch.url) {
-    if (!deadlines.nav) deadlines.nav = Date.now() + CLICK_POPUP_NAVIGATION_CAP_MS;
-    if (Date.now() < deadlines.nav) return { keepWaiting: true };
+  if (stillWaiting && deadlines.openerChecked && !timeToCheckStuck) return { keepWaiting: true };
+  if (!deadlines.openerChecked || !stillWaiting) {
+    const alive = await openerStillResponds(cdp, sid);
+    if (stillWaiting) deadlines.openerChecked = true;
+    if (alive && stillWaiting) return { keepWaiting: true };
+    if (alive) return { done: { ...found, openerAlive: true, pendingUrl: watch.url || '' } };
+    return finishStuckOpener(cdp, sid, found, watch, deadlines);
   }
-  return { done: { ...found, openerAlive: true, pendingUrl: watch.url || '' } };
+  return { keepWaiting: true };
 }
 
 function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown', { crossOriginFrame = false } = {}) {
@@ -17828,18 +17873,21 @@ async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0,
   }
 }
 
-async function readClickEventProbe(cdp, sid, probe = {}) {
+async function readClickEventProbe(cdp, sid, probe = {}, timeoutMs) {
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined;
   try {
     if (probe.objectId) {
       const res = await cdpDomains(cdp).Runtime.callFunctionOn({
         objectId: probe.objectId,
         functionDeclaration: clickEventProbeReadOnNodeDeclaration(),
         returnByValue: true,
-      }, sid);
+      }, sid, budget);
       if (res.exceptionDetails) return null;
       return parseClickEventProbeOutput(res.result?.value);
     }
-    const raw = await evalStr(cdp, sid, clickEventProbeReadAtPointScript(probe.x, probe.y));
+    const raw = await evalStr(cdp, sid, clickEventProbeReadAtPointScript(probe.x, probe.y), false, {
+      timeoutMs: budget,
+    });
     return parseClickEventProbeOutput(raw);
   } catch (error) {
     // A timed-out evaluate stays queued in the renderer. Drop it, or every
@@ -17854,7 +17902,7 @@ async function readClickEventProbe(cdp, sid, probe = {}) {
 // command on this tab, are not stuck behind it.
 async function releaseBlockedOpener(cdp, sid) {
   try {
-    await cdpDomains(cdp).Runtime.terminateExecution({}, sid, 1000);
+    await cdpDomains(cdp).Runtime.terminateExecution({}, sid, CLICK_OPENER_TERMINATE_TIMEOUT_MS);
   } catch {
     // The opener can already be idle. Termination is best-effort.
   }
@@ -17995,7 +18043,8 @@ async function dispatchClickMouseSequence(cdp, sid, x, y) {
   const pressed = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 }));
   await sleep(50);
   const released = handledLater(dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 }));
-  await Promise.all([moved, pressed, released]);
+  const settled = await Promise.all([moved, pressed, released]);
+  return { timedOut: settled.some(outcome => outcome?.timedOut === true) };
 }
 
 function childFrameHrefSuffix(href) {
@@ -18155,13 +18204,16 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
     return dispatchClickIntoOpaqueFrame(cdp, sid, x, y, probe, probeTarget);
   }
   const navigation = watchMainFrameNavigation(cdp, sid);
+  const stuckDeadline = Date.now() + CLICK_STUCK_OPENER_BUDGET_MS;
   try {
     const mouse = dispatchClickMouseSequence(cdp, sid, x, y);
     // The mouse ack can sit out its full timeout while the popup holds the
     // opener. The rejection is handled here so returning early is not an
     // unhandled rejection; awaiting `mouse` still surfaces a real failure.
     mouse.catch(() => {});
-    const blockingTab = await openedTabBlockingDispatch(cdp, sid, probeTarget.pagesBeforePromise || null, mouse);
+    const blockingTab = await openedTabBlockingDispatch(
+      cdp, sid, probeTarget.pagesBeforePromise || null, mouse, stuckDeadline,
+    );
     if (blockingTab) {
       throwIfUncommittedPopup(blockingTab);
       // A committed about:blank whose opener does not answer is the popup
@@ -18172,10 +18224,11 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
       }
       return { openedTab: blockingTab };
     }
-    await mouse;
+    const mouseOutcome = await mouse;
+    const probeTimeout = mouseOutcome?.timedOut ? CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS : undefined;
     const framed = probeTarget.framed === true;
     const openedInstead = async () => {
-      const opened = await openedTabNow(cdp, sid, probeTarget.pagesBeforePromise || null);
+      const opened = await openedTabNow(cdp, sid, probeTarget.pagesBeforePromise || null, stuckDeadline);
       if (!opened) return null;
       throwIfUncommittedPopup(opened);
       if (isBlankPageUrl(opened.url) && !await openerStillResponds(cdp, sid)) {
@@ -18190,7 +18243,7 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
       throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
     }
     if (probe.scope === 'top' && framed) return;
-    const readout = await readClickEventProbe(cdp, sid, probe);
+    const readout = await readClickEventProbe(cdp, sid, probe, probeTimeout);
     if (probe.verifiesTarget) {
       if (readout?.ok && clickProbeSawPageEvent(readout.reached)) return;
       if (!readout?.ok && await clickProbeWipedByNavigation(cdp, sid, probe, navigation.seen)) return;
@@ -18362,6 +18415,56 @@ async function beginClickOutsideWatch(cdp, sid, target = {}, opts = {}) {
   };
 }
 
+function createPageTargetFeed(cdp) {
+  let inflight = null;
+  return async function take(budget) {
+    if (!inflight) {
+      inflight = getPages(cdp).then(
+        pages => (Array.isArray(pages) ? pages.filter(info => info?.targetId) : null),
+        () => null,
+      ).finally(() => { inflight = null; });
+    }
+    const current = inflight;
+    let timer;
+    try {
+      const raced = await Promise.race([
+        current.then(pages => ({ ready: true, pages })),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve({ ready: false }), Math.max(1, Number(budget) || 1));
+        }),
+      ]);
+      return raced.ready ? raced.pages : null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+function popupWatchFromBefore(sid, before) {
+  if (before) return { watch: clickNewTabWatchFromTargets(sid, before), haveBefore: true };
+  const openerId = SESSION_TARGET_IDS.get(sid) || null;
+  if (!openerId) return { watch: null, haveBefore: false };
+  return { watch: { openerId, pagesBefore: new Map() }, haveBefore: false };
+}
+
+function findUncommittedOwnedPopup(targetInfos, watch) {
+  const pageUrl = watch?.pagesBefore?.get?.(watch.openerId) || '';
+  for (const info of targetInfos || []) {
+    if (!watch?.openerId || info.openerId !== watch.openerId) continue;
+    if (info.targetId === watch.openerId) continue;
+    if (!isUncommittedPageUrl(info.url)) continue;
+    if (watch.pagesBefore?.get?.(info.targetId) !== undefined) continue;
+    return { targetId: info.targetId, url: '', existing: false, pageUrl };
+  }
+  return null;
+}
+
+function openedPopupFromPages(pages, watch, haveBefore) {
+  if (!pages || !watch) return null;
+  if (haveBefore) return findClickOpenedTab(pages, watch, '');
+  return findUncommittedOwnedPopup(pages, watch);
+}
+
 async function openedTabAfterClick(cdp, sid, pagesBeforePromise) {
   return openedTabNow(cdp, sid, pagesBeforePromise);
 }
@@ -18369,14 +18472,14 @@ async function openedTabAfterClick(cdp, sid, pagesBeforePromise) {
 // A new target this tab opened. An empty URL is the initial document of
 // window.open(url), before the navigation commits. Keep polling that target
 // until it has a URL. A committed about:blank is returned as itself.
-async function openedTabNow(cdp, sid, pagesBeforePromise) {
+async function openedTabNow(cdp, sid, pagesBeforePromise, stuckDeadline = 0) {
   if (!pagesBeforePromise) return null;
   const before = await pagesBeforePromise;
-  if (!before) return null;
-  const watch = clickNewTabWatchFromTargets(sid, before);
+  const { watch, haveBefore } = popupWatchFromBefore(sid, before);
   if (!watch?.openerId) return null;
-  const deadlines = { commit: 0, nav: 0 };
+  const deadlines = { commit: 0, nav: 0, stuckDeadline, openerChecked: false };
   const popupWatch = createPopupCommitWatch();
+  const poll = createPageTargetFeed(cdp);
   let opened = null;
   try {
     let idleDeadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
@@ -18386,9 +18489,9 @@ async function openedTabNow(cdp, sid, pagesBeforePromise) {
         || (deadlines.commit && now < deadlines.commit)
         || (deadlines.nav && now < deadlines.nav);
       const pages = waiting || (opened && openedTabUncommitted(opened))
-        ? await boundedPageTargets(cdp, 250)
+        ? await poll(250)
         : null;
-      if (pages) opened = findClickOpenedTab(pages, watch, '');
+      if (pages) opened = openedPopupFromPages(pages, watch, haveBefore);
       if (opened && !openedTabUncommitted(opened)) return opened;
       if (opened && popupWatch.committed && popupWatch.url) return { ...opened, url: popupWatch.url };
       if (opened && openedTabUncommitted(opened)) {
@@ -18412,17 +18515,17 @@ async function openedTabNow(cdp, sid, pagesBeforePromise) {
 // about:blank. If that popup has started an http(s) navigation, wait for the
 // commit instead of calling the opener dead. A committed about:blank that
 // outlives the grace is the blocked-opener case.
-async function openedTabBlockingDispatch(cdp, sid, pagesBeforePromise, mousePromise) {
+async function openedTabBlockingDispatch(cdp, sid, pagesBeforePromise, mousePromise, stuckDeadline = 0) {
   if (!pagesBeforePromise) return null;
   let settled = false;
   mousePromise.then(() => { settled = true; }, () => { settled = true; });
   const before = await pagesBeforePromise;
-  if (!before) return null;
-  const watch = clickNewTabWatchFromTargets(sid, before);
+  const { watch, haveBefore } = popupWatchFromBefore(sid, before);
   if (!watch?.openerId) return null;
   const mouseDeadline = Date.now() + CLICK_MOUSE_ACK_TIMEOUT_MS;
-  const deadlines = { commit: 0, nav: 0 };
+  const deadlines = { commit: 0, nav: 0, stuckDeadline, openerChecked: false };
   const popupWatch = createPopupCommitWatch();
+  const poll = createPageTargetFeed(cdp);
   let blankSince = 0;
   let lastUncommitted = null;
   try {
@@ -18434,8 +18537,8 @@ async function openedTabBlockingDispatch(cdp, sid, pagesBeforePromise, mouseProm
       // The last sleep lands on the deadline. One more look decides the popup
       // instead of handing an empty URL back to the probe for another wait.
       if (!open && !lastUncommitted) return null;
-      const pages = await boundedPageTargets(cdp, 250);
-      const found = pages && findClickOpenedTab(pages, watch, '');
+      const pages = await poll(250);
+      const found = openedPopupFromPages(pages, watch, haveBefore);
       if (found && !isBlankPageUrl(found.url)) return found;
       if (found && popupWatch.committed && popupWatch.url) return { ...found, url: popupWatch.url };
       if (found && isUncommittedPageUrl(found.url)) {
@@ -35581,6 +35684,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr, scanshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
   HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, HOVER_REVEAL_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
+  CLICK_POPUP_COMMIT_WAIT_MS, CLICK_POPUP_NAVIGATION_CAP_MS, CLICK_OPENER_RESPOND_TIMEOUT_MS,
+  CLICK_OPENER_TERMINATE_TIMEOUT_MS, CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS, CLICK_STUCK_OPENER_BUDGET_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,

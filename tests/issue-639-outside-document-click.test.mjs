@@ -775,6 +775,90 @@ describe('#639 click that opens a tab with window.open', () => {
     expect(cli).not.toMatch(/jsclick/);
   });
 
+  it('does not spend the navigation cap when the announced popup never loads and the opener is stuck', async () => {
+    expect(T.CLICK_STUCK_OPENER_BUDGET_MS).toBe(
+      Math.max(T.CLICK_MOUSE_ACK_TIMEOUT_MS, T.CLICK_POPUP_COMMIT_WAIT_MS)
+      + T.CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS
+      + T.CLICK_OPENER_RESPOND_TIMEOUT_MS
+      + T.CLICK_OPENER_TERMINATE_TIMEOUT_MS
+      + T.CLICK_OPENER_RESPOND_TIMEOUT_MS,
+    );
+    expect(T.CLICK_STUCK_OPENER_BUDGET_MS).toBe(9300);
+    expect(T.CLICK_STUCK_OPENER_BUDGET_MS).toBeLessThan(20000);
+    T.rememberSessionTarget('sid', TAB_ID);
+    const targets = [{ targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' }];
+    const handlers = new Map();
+    const started = Date.now();
+    let terminated = false;
+    const cdp = {
+      onEvent(method, handler) {
+        if (!handlers.has(method)) handlers.set(method, new Set());
+        handlers.get(method).add(handler);
+        return () => handlers.get(method).delete(handler);
+      },
+      send(method, params = {}, sessionId, timeoutMs) {
+        const emit = (name, payload, sid) => {
+          for (const handler of handlers.get(name) || []) handler(payload, { sessionId: sid });
+        };
+        const src = method === 'Runtime.evaluate' ? String(params.expression || '') : '';
+        if (src.trim() === '1') {
+          return new Promise((_resolve, reject) => {
+            setTimeout(() => reject(new Error('Timeout: Runtime.evaluate')), timeoutMs || T.CLICK_OPENER_RESPOND_TIMEOUT_MS);
+          });
+        }
+        if (method === 'Runtime.terminateExecution') {
+          terminated = true;
+          return new Promise(resolve => {
+            setTimeout(resolve, timeoutMs || T.CLICK_OPENER_TERMINATE_TIMEOUT_MS);
+          });
+        }
+        if (src.includes('__chromeCdpExClickProbe')) {
+          return Promise.resolve(probeResult({
+            cdpClickProbe: true, ok: true, installed: true, scope: 'top', top: true, href: PAGE,
+          }));
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: {
+            ok: true, x: 20, y: 20, tag: 'BUTTON', text: 'Open inner2', role: 'button',
+            href: null, linkTarget: null, frameName: '', pageHref: PAGE, hit: { covered: false },
+          } } });
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+          targets.push({
+            targetId: NEW_ID, type: 'page', url: '', title: '', openerId: TAB_ID,
+          });
+        }
+        if (method === 'Target.attachToTarget') return Promise.resolve({ sessionId: 'popup-sid' });
+        if (method === 'Page.enable' && sessionId === 'popup-sid') {
+          emit('Page.frameStartedNavigating', {
+            url: 'http://127.0.0.1:8765/inner2',
+            frameId: 'frame',
+          }, 'popup-sid');
+          return Promise.resolve({});
+        }
+        if (method === 'Target.detachFromTarget') return Promise.resolve({});
+        if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: targets.map(info => ({ ...info })) });
+        return Promise.resolve({});
+      },
+    };
+    const err = await T.clickStr(cdp, 'sid', '#popup', new Map()).catch(error => error);
+    const elapsed = Date.now() - started;
+    expect(err).toBeInstanceOf(Error);
+    expect(terminated).toBe(true);
+    expect(elapsed).toBeGreaterThan(T.CLICK_POPUP_COMMIT_WAIT_MS - 200);
+    expect(elapsed).toBeLessThan(T.CLICK_STUCK_OPENER_BUDGET_MS);
+    const cli = T.formatActionFailure(err, {
+      action: 'click',
+      target: { targetId: TAB_ID, input: '#popup', commandArgs: ['#popup'] },
+    });
+    expect(cli).toMatch(/the original tab is no longer usable/);
+    expect(cli).toMatch(/Kind: opener-blocked/);
+    expect(cli).toMatch(/Next: cdp open http:\/\/127\.0\.0\.1:8765\/host\.html/);
+    expect(cli).not.toMatch(/Kind: popup-uncommitted/);
+    expect(cli).not.toMatch(/still usable/);
+    expect(cli).not.toMatch(/about:blank/);
+  }, 15000);
+
   it('still fail-closes a button whose click changes nothing and opens no tab', async () => {
     const err = await T.runActionWithFeedback({
       action: 'click',

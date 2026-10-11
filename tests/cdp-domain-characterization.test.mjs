@@ -445,16 +445,19 @@ describe('Phase 6 direct CDP characterization', () => {
     // blocks does not stay queued on the original tab.
     // #677 added noteUncommittedPopup → Target.attachToTarget, Page.enable, and
     // Target.detachFromTarget, so an empty popup URL can name its destination.
+    // A stuck opener terminates with CLICK_OPENER_TERMINATE_TIMEOUT_MS, and the
+    // probe read after a timed-out mouse ack uses `budget` instead of the default.
     expect(inventory).toHaveLength(185);
-    expect(digest).toBe('sha256:a05a2a13a622b90b5c211b9b14afaad5cd5d9805e3db25ac4d99adfe08820776');
+    expect(digest).toBe('sha256:430baa0d79100a8b0830c3e511772e741111018f5e5d1bd29a3995a98530c840');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
+      'CLICK_OPENER_TERMINATE_TIMEOUT_MS',
       'HOVER_MOUSE_ACK_TIMEOUT_MS',
       'Math.min(1000, Math.max(100, deadline - now() + 100))',
       'REF_RESOLVE_TIMEOUT', 'RELOAD_DISPATCH_TIMEOUT', 'RELOAD_OBSERVE_TIMEOUT', 'SOURCE_MAP_LATE_REPLY_TIMEOUT_MS',
       'STATUS_VITALS_TIMEOUT',
-      'options.timeoutMs', 'probeTimeoutMs', 'timeoutMs',
+      'budget', 'options.timeoutMs', 'probeTimeoutMs', 'timeoutMs',
     ]);
     expect([...new Set(inventory.map(entry => entry.session))].sort())
       .toEqual(['<browser>', 'attached.sessionId', 'sessionId', 'sid', 'undefined']);

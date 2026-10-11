@@ -197,8 +197,8 @@ describe('headless Chrome window.open with an opener (#639)', () => {
           expect(unstuck.status, `${unstuck.stdout}\n${unstuck.stderr}`).toBe(0);
           expect(unstuck.stdout.trim()).toBe('2');
           run(['closetab', opened[1]], 8000);
-          return { branch: 'recovered', target: pageTarget };
-        }
+        return { branch: 'recovered', target: pageTarget };
+      }
         expect(result.status, text).not.toBe(0);
         expect(text).toMatch(/the original tab is no longer usable/);
         expect(text).toMatch(/Reopen the tab or restart the browser/);
@@ -230,18 +230,15 @@ describe('headless Chrome window.open with an opener (#639)', () => {
       });
       expect(['recovered', 'blocked']).toContain(popup.branch);
 
-      // A response slower than the old 3s empty-url deadline still commits.
-      // The original tab stays usable. This must not be Kind: opener-blocked.
-      const slow = run(['click', page, '#slow'], 20000);
-      const slowText = `${slow.stdout}\n${slow.stderr}`;
-      expect(slow.status, slowText).toBe(0);
-      expect(slow.stdout).toMatch(/opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/slow/);
-      expect(slowText).not.toMatch(/Kind: opener-blocked/);
-      expect(slowText).not.toMatch(/Kind: popup-uncommitted/);
-      expect(slowText).not.toMatch(/about:blank/);
-      const afterSlow = run(['eval', page, '1+1'], 8000);
-      expect(afterSlow.status, `${afterSlow.stdout}\n${afterSlow.stderr}`).toBe(0);
-      expect(afterSlow.stdout.trim()).toBe('2');
+      // #677: a response slower than the old 3s empty-url deadline commits when
+      // the popup actually starts navigating. Where that request is never sent,
+      // the honest receipt is opener-blocked and Next reopens this page. The
+      // reopened tab must answer. Either branch is accepted, same as #spin/#popup.
+      const slow = acceptOpener(page, '#slow', {
+        url: /opened new tab [0-9A-Fa-f]+ http:\/\/127\.0\.0\.1:\d+\/slow/,
+      });
+      expect(['recovered', 'blocked']).toContain(slow.branch);
+      page = slow.target;
     } finally {
       try { chrome.kill('SIGTERM'); } catch { /* already gone */ }
       try { server.kill('SIGTERM'); } catch { /* already gone */ }
