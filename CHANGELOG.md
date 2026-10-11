@@ -12,6 +12,8 @@
 
 ### Bug Fixes
 
+* A `click`, `fill`, or `press` that opens a native `confirm()`, `prompt()`, or `beforeunload` was delivered. Dismissing that dialog (the default) stays `Kind: native-dialog`, and `Next` is the same command with `--accept-dialog`. It is not reclassified as `no-click-box`, `no-input-events`, `press-not-delivered`, `click-no-change`, or a fill value failure. `reload` and `nav` kept back by `beforeunload` stay `Kind: navigation-cancelled` ([#658](https://github.com/EndeavorYen/chrome-cdp-ex/issues/658), [#614](https://github.com/EndeavorYen/chrome-cdp-ex/issues/614), [#607](https://github.com/EndeavorYen/chrome-cdp-ex/issues/607), [#615](https://github.com/EndeavorYen/chrome-cdp-ex/issues/615)).
+
 * `click` does not send a mouse event at (0, 0) when the target has no positive box inside the viewport (a zero-size control, or one that stays off-screen). It exits 1 with `Kind: no-click-box` and one Next, `cdp jsclick <target> <sel>`. A descendant or associated label with a positive in-viewport box is clicked at that box. `clickxy` is unchanged ([#614](https://github.com/EndeavorYen/chrome-cdp-ex/issues/614)).
 
 * `flow` and `batch` treat a quoted word as one argument and do not store the quote characters. `fill #note " "` types one space, and `fill #note "hello world"` types `hello world`. A selector that already contains quotes, such as `input[name="q"]`, stays one token. A quoted word that starts with `-` is text, so `"--secret"` is not the `--secret` flag. A direct `fill` argument is unchanged. A rewritten step quotes a value only when the tokenizer would split it. A backslash is not a split, so a Windows path with no spaces stays unquoted ([#615](https://github.com/EndeavorYen/chrome-cdp-ex/issues/615)).

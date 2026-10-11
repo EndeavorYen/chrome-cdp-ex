@@ -23157,6 +23157,38 @@ function nativeDialogDismissedError(entry, { action = 'click', target = {} } = {
   return err;
 }
 
+// A click, fill, or press that opened one of these dialogs reached the page.
+// Reporting it as not delivered would hide the --accept-dialog Next (#658, #607, #614).
+const INPUT_NOT_DELIVERED_KINDS = new Set([
+  'no-click-box',
+  'no-input-events',
+  'press-not-delivered',
+  'click-no-change',
+  'fill-no-change',
+  'fill-value-mismatch',
+]);
+
+function classifiedFailureKind(message) {
+  return String(message || '').match(/^Kind:\s*(\S+)/m)?.[1] || null;
+}
+
+function inputFailureYieldsToDismissedDialog(err, { action = 'action', target = {} } = {}) {
+  if (!err || err.nativeDialog || err.navigationCancelled) return false;
+  const message = actionFailureMessage(err);
+  const printed = isClassifiedActionFailureText(message) ? classifiedFailureKind(message) : null;
+  if (printed === 'native-dialog' || printed === 'navigation-cancelled') return false;
+  if (printed) return INPUT_NOT_DELIVERED_KINDS.has(printed);
+  return INPUT_NOT_DELIVERED_KINDS.has(classifyActionFailure(err, { action, target }).kind);
+}
+
+// Prefer the dismissed dialog over a not-delivered or no-change receipt.
+// A dialog from before this command, an alert, or an accepted dialog stays as it was.
+function errorYieldingToDismissedDialog(err, { dialogBuf, sinceSeq = 0, action = 'click', target = {} } = {}) {
+  const dismissed = dismissedDecisionDialogSince(dialogBuf, sinceSeq);
+  if (!dismissed || !inputFailureYieldsToDismissedDialog(err, { action, target })) return err;
+  return nativeDialogDismissedError(dismissed, { action, target });
+}
+
 function dialogStr(dialogBuf, dialogAutoAcceptRef, flag) {
   if (flag === 'accept') { dialogAutoAcceptRef.value = true; return 'Dialog auto-accept: ON (explicit)'; }
   if (flag === 'dismiss') { dialogAutoAcceptRef.value = false; return 'Dialog auto-accept: OFF (dialogs will be dismissed/rejected)'; }
@@ -30289,7 +30321,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           actionTarget.dialogBlocked = true;
         }
         await pageInfoPromise;
-        throw error;
+        // A confirm opened by this click, fill, or press means the input was delivered.
+        throw errorYieldingToDismissedDialog(error, {
+          dialogBuf,
+          sinceSeq: observationBaseline.dialog,
+          action,
+          target: actionTarget,
+        });
       }
     };
     const observeThenFlush = async () => {
@@ -31183,15 +31221,24 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       await throwIfDecisionDialogDismissed(cmd, args, dialogSince);
       return { ok: true, result: result ?? '' };
     } catch (e) {
-      const rawError = actionFailureMessage(e);
+      if (jsDialogs.hasPending()) await jsDialogs.waitForPending(1500).catch(() => {});
       const commandMeta = COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd));
       const isMutatingCommand = commandMeta?.mutates === true;
-      const alreadyClassified = isClassifiedActionFailureText(rawError);
       const lastAction = session.lastAction || {};
       const context = {
         action: isMutatingCommand && lastAction.action ? lastAction.action : cmd,
         target: isMutatingCommand && lastAction.target ? lastAction.target : { targetId, input: args?.[0], label: args?.[0] },
       };
+      // click-no-change is thrown after dispatch returns. The dialog buffer still
+      // shows the confirm that click opened, so the --accept-dialog Next stays.
+      e = errorYieldingToDismissedDialog(e, {
+        dialogBuf,
+        sinceSeq: dialogSince,
+        action: context.action,
+        target: context.target,
+      });
+      const rawError = actionFailureMessage(e);
+      const alreadyClassified = isClassifiedActionFailureText(rawError);
       const failure = classifyActionFailure(e, context);
       const error = alreadyClassified || failure.kind === 'native-dialog' || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
         ? formatActionFailure(e, context)
@@ -36016,7 +36063,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   tabObservePath, rememberTabObservation, restoreTabObservation, removeTabObservation,
   setDialogMode, applySavedTabEnvironment, formatDaemonRestartNotice, armDaemonRestartNotice, applyDaemonRestartNotice,
   savedDialogAccepts, environmentRestoreOutcome, takeAcceptDialogFlag, nativeDialogShouldAccept,
-  dismissedDecisionDialogSince, nativeDialogDismissedError, ACCEPT_DIALOG_FLAG,
+  dismissedDecisionDialogSince, nativeDialogDismissedError, errorYieldingToDismissedDialog, ACCEPT_DIALOG_FLAG,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   recordCommandUsage, USAGE_LOG_MAX_BYTES, getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, readCdpUserAgent, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,

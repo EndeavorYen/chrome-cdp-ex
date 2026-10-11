@@ -114,7 +114,7 @@ Bringing the window forward (or `CDP_BACKGROUND=0` for a background tab) lets pa
 
 ## Action fails with `Kind: native-dialog`
 
-A native `confirm()`, `prompt()`, or `beforeunload` was dismissed. The default is dismiss: `confirm()` returns false, so a DELETE or POST that runs only after OK is not sent. The `Error:` line names the dialog text. `Next:` is the same command with `--accept-dialog`, which accepts dialogs that command opens and does not turn accept on for later commands. `dialog <target> accept` accepts later dialogs too. `dismiss-modal` closes an HTML dialog; it does not answer a native `confirm()` the daemon has already dismissed. An `alert()` is closed and the command continues, because that dialog has one button.
+A native `confirm()`, `prompt()`, or `beforeunload` was dismissed. The default is dismiss: `confirm()` returns false, so a DELETE or POST that runs only after OK is not sent. The `Error:` line names the dialog text. `Next:` is the same command with `--accept-dialog`, which accepts dialogs that command opens and does not turn accept on for later commands. A `click`, `fill`, or `press` that opened the dialog was delivered: dismissing it is not `Kind: no-click-box`, `no-input-events`, `press-not-delivered`, `click-no-change`, or a fill value failure, and that `--accept-dialog` Next stays. `reload` and `nav` stopped by `beforeunload` stay `Kind: navigation-cancelled`. `dialog <target> accept` accepts later dialogs too. `dismiss-modal` closes an HTML dialog; it does not answer a native `confirm()` the daemon has already dismissed. An `alert()` is closed and the command continues, because that dialog has one button.
 
 ## Click fails with `Kind: misdirected`
 

@@ -787,7 +787,7 @@ Dialog: beforeunload → dismissed (navigation was cancelled; the page stayed)
 Dialog: confirm "Leave?" → accept failed; the dialog may still be open
 ```
 
-A dismissed `confirm()` or `prompt()` fails the command that opened it (exit 1). The DELETE or POST that runs only after OK is not sent:
+A dismissed `confirm()` or `prompt()` fails the command that opened it (exit 1). The DELETE or POST that runs only after OK is not sent. The click, fill, or press that opened it was delivered, so the receipt stays `Kind: native-dialog` with this `--accept-dialog` Next. It does not become `no-click-box`, `no-input-events`, `press-not-delivered`, `click-no-change`, or a fill value failure:
 
 ```text
 Error: native confirm "Delete this item?" was dismissed

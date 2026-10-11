@@ -568,18 +568,19 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     hints: [`Refresh page perception with \`${perceiveCommand}\`, then choose the next action from fresh refs.`],
   };
 
-  if (action === 'fill' && err?.fillValue && typeof err.fillValue === 'object') {
-    // Structured fill state wins over message matching: the requested text is part of the message.
-    return classifyFillValueFailure(err, { base, target, input, perceiveCommand });
-  }
-
+  // #658: a dismissed confirm, prompt, or beforeunload is the action's result.
+  // It stays ahead of fill's value check and the not-delivered matchers, so
+  // --accept-dialog is not replaced by jsclick, perceive, or a value inspection.
   if (err?.navigationCancelled && typeof err.navigationCancelled === 'object') {
     return classifyNavigationCancelledFailure(err, { base, targetId, input });
   }
-
-  // #658: a dismissed confirm/prompt/beforeunload must not look like a successful action.
   if (err?.nativeDialog && typeof err.nativeDialog === 'object') {
     return classifyNativeDialogFailure(err, { base, targetId, action });
+  }
+
+  if (action === 'fill' && err?.fillValue && typeof err.fillValue === 'object') {
+    // Structured fill state wins over message matching: the requested text is part of the message.
+    return classifyFillValueFailure(err, { base, target, input, perceiveCommand });
   }
 
   // #466: a session-policy refusal names URLs and commands that the checks below would misread.
