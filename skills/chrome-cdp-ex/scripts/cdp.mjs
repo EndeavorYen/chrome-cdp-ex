@@ -13580,7 +13580,7 @@ async function suggestStaleRefReplacement(cdp, sid, ref, refState, { contextId =
   try {
     raw = await evalStr(cdp, sid, staleRefMatchExpression(identity.role, identity.name), false, {
       timeoutMs: REF_RESOLVE_TIMEOUT,
-      ...(contextId != null ? { contextId } : {}),
+      ...(contextId !== null && contextId !== undefined ? { contextId } : {}),
     });
   } catch {
     return null;
