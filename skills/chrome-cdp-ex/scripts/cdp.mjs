@@ -58,6 +58,7 @@ import {
   urlFlagValue,
   wrapContentBoundary,
 } from './lib/session-policy.mjs';
+import { ASK_HUMAN_FIRST_LINE, formatNextClosingLines, formatNextLine } from './lib/next-line.mjs';
 import {
   addTableSampleBatch,
   buildTableExportBundle,
@@ -3394,6 +3395,8 @@ function cdpRecoveryFromDoctor(checks) {
     strategy: rec.strategy || 'enable-persistent-daily-dir',
     run: rec.run || null,
     ask: rec.ask || null,
+    // No launch command: Next is the follow-up (`cdp doctor` / `cdp list`), not the ask prose.
+    then: rec.run ? null : (rec.after || null),
     consentRequired: Boolean(rec.consentRequired && rec.run),
     reason: rec.reason || null,
   };
@@ -22421,8 +22424,8 @@ async function checkpointStr(cdp, sid, { format = 'text', now = Date.now(), unsa
       ? 'Warning: raw cookie and storage values are included. Protect this artifact like a secret.'
       : 'Values: cookie values, URL secrets, and sensitive storage values are redacted by default.',
     unsafeFullCapture
-      ? 'Next: save `checkpoint --unsafe-full --format json` output and restore with `restore --file <path>`.'
-      : 'Next: use `checkpoint --unsafe-full --format json` only when restore fidelity is required.',
+      ? 'Save this output, then restore it with `cdp restore <target> --file <path>`.'
+      : 'Use `cdp checkpoint <target> --unsafe-full --format json` only when restore fidelity is required.',
   ].join('\n');
 }
 
@@ -23523,12 +23526,14 @@ function throttleModel(session, parsed) {
 function formatThrottleText(model) {
   const lines = [`Network throttle: ${formatThrottleSummary(model)}`];
   if (model.mode === 'status') {
-    lines.push(`Next: cdp throttle ${model.targetId} slow-3g  # apply a preset`);
+    lines.push('Apply a preset.');
+    lines.push(formatNextLine(`cdp throttle ${model.targetId} slow-3g`));
   } else if (model.profile === 'off') {
     lines.push('Network conditions reset to browser defaults.');
-    lines.push(`Next: cdp throttle ${model.targetId} slow-3g  # re-apply a preset`);
+    lines.push('Re-apply a preset.');
+    lines.push(formatNextLine(`cdp throttle ${model.targetId} slow-3g`));
   } else {
-    lines.push(`Next: cdp throttle ${model.targetId} off`);
+    lines.push(formatNextLine(`cdp throttle ${model.targetId} off`));
   }
   return lines.join('\n');
 }
@@ -27892,15 +27897,17 @@ function formatDoctorReport(checks) {
   const node = model.checks.find(c => c.label === 'Node');
   const cdp = model.checks.find(c => c.label === 'CDP');
   const recommendation = model.recommendation || {};
-  const next = recommendation.run || recommendation.ask || doctorCliPrefix(node) + ' list';
-  const ask = recommendation.consentRequired && recommendation.run ? ' (ask first)' : '';
+  const prefix = doctorCliPrefix(node);
+  const command = recommendation.run || recommendation.after || `${prefix} list`;
   // #534: say so when the attached browser runs a daily profile; quiet otherwise.
   const profile = model.checks.find(c => c.label === 'Profile' && c.status === 'WARN');
   return [
     `Node: ${node?.detail || 'unknown'}`,
     `CDP: ${cdp?.detail || 'unknown'}`,
     profile ? `Profile: ${profile.detail}` : null,
-    `Next: ${next}${ask}`,
+    !recommendation.run && recommendation.ask ? recommendation.ask : null,
+    recommendation.consentRequired && recommendation.run ? ASK_HUMAN_FIRST_LINE : null,
+    formatNextLine(command),
   ].filter(Boolean).join('\n');
 }
 
@@ -33408,9 +33415,9 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     return {
       kind: 'target-resolution',
       strategy: 'rediscover-target',
-      run: 'cdp list  # if empty: cdp open https://example.com',
+      run: 'cdp list',
       then: 'cdp open https://example.com',
-      reason: 'The requested tab target could not be resolved from the current page list.',
+      reason: 'The requested tab target could not be resolved from the current page list. If the list is empty, open a page.',
     };
   }
   if (
@@ -33422,8 +33429,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     return {
       kind: 'target-resolution',
       strategy: 'choose-longer-prefix',
-      run: 'cdp list  # copy a longer target prefix',
-      reason: 'More than one tab matches the provided target prefix.',
+      run: 'cdp list',
+      reason: 'More than one tab matches the provided target prefix. Copy a longer target prefix.',
     };
   }
   if (cmd === 'target' && (lower.includes('provide --url') || lower.includes('and/or --title'))) {
@@ -33914,7 +33921,7 @@ function formatCliErrorRecovery(recovery) {
     `  Kind: ${recovery.kind}`,
     `  Strategy: ${recovery.strategy}`,
   ];
-  if (recovery.run) lines.push(`  Run: ${recovery.run}${recovery.consentRequired ? ' (ask first)' : ''}`);
+  if (recovery.run) lines.push(`  Run: ${recovery.run}`);
   if (recovery.ask && recovery.ask !== recovery.run) lines.push(`  Ask: ${recovery.ask}`);
   if (!recovery.run && !recovery.ask) lines.push(`  Run: ${recovery.run}`);
   if (recovery.then) lines.push(`  Then: ${recovery.then}`);
@@ -34005,13 +34012,13 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
       'Retry safe: no',
       ...formatCliErrorRecovery(model.recovery),
       `Transport: ${model.diagnostics.transport.phase}/${model.diagnostics.transport.kind}: ${model.diagnostics.transport.message}`,
-      `Next: ${model.recovery.run}${cliErrorKindSuffix(model.recovery)}`,
+      ...formatNextClosingLines(model.recovery),
     ].join('\n');
   }
   const message = String(err?.message || err || '').trim();
   if (!message) {
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
-    return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}${cliErrorKindSuffix(recovery)}`].join('\n');
+    return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), ...formatNextClosingLines(recovery)].join('\n');
   }
   // With `text`, classify that part alone: the err object still carries the whole message.
   const recoveryFor = (text = null) => buildCliErrorRecovery(text ?? message, { cmd, targetPrefix, platform, err: text == null ? err : null, args });
@@ -34021,25 +34028,12 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
 
   const recovery = recoveryFor();
   lines.push(...formatCliErrorRecovery(recovery));
-  lines.push(cliErrorNextLine(recovery));
+  lines.push(...formatNextClosingLines(recovery));
   return lines.join('\n');
 }
 
-// Same Next line as doctor: the command (marked when consent is needed), else what to ask the user;
-// #533: the Kind rides on it, so `| tail -1` still says what kind of failure it was.
-function cliErrorNextLine(recovery) {
-  const command = recovery.run
-    ? `${recovery.run}${recovery.consentRequired ? ' (ask first)' : ''}`
-    : (recovery.ask || recovery.run);
-  return `Next: ${command}${cliErrorKindSuffix(recovery)}`;
-}
-
-// #533: the Kind rides on the last line, so `| tail -1` still says what kind of failure it was.
-// Every kind, including not-scrollable, uses `(Kind: …)`.
-function cliErrorKindSuffix(recovery) {
-  if (!recovery?.kind) return '';
-  return ` (Kind: ${recovery.kind})`;
-}
+// #637: Next is only the command. Kind stays on its own line. A consent gate is
+// `Ask a human first` on its own line, never a suffix of the command.
 
 // Lines printed after a failure's own Next: line that do not replace it: a composite command's halt
 // summary (flow, repeat, replay), and the receipts a failed action appends (#460 answered dialogs,
@@ -34049,44 +34043,63 @@ const HALT_TRAILER_RE = /^(?:(?:Flow|Replay) halted at |Repeat halted at iterati
 const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
 
 // Text that arrives already formatted (a classified action failure, or a message with its own Next:)
-// keeps its lines and must still end with the Kind on `Next:` (T8). Every kind uses `(Kind: …)`.
+// keeps its lines. Next stays a bare command (#637).
 // - The Kind is the failed block's own: an unindented `Kind:` line, or the first line of a
 //   `Recovery:` block, searched upwards from that Next: to the step header. Indented step output
 //   (`  Kind: page`) never counts. With none, the recovery classification of that block alone gives
-//   it, so an earlier step's output cannot decide it.
+//   it, so an earlier step's output cannot decide it. That kind is inserted on its own line.
 // - When only trailers follow that Next: (`Flow halted at step i/n`, `Done: …`, `Dialog: …`,
 //   `Downloaded "…"`), it is the failure's command and is repeated as the last line. When anything
 //   else follows (`repeat: condition not satisfied`), that Next: is stale, and a fresh recovery Next:
 //   classified from the lines after it is appended instead.
-function withKindOnLastNextLine(text, recoveryFor) {
-  const lines = String(text).split('\n');
-  const nextIndex = lines.findLastIndex(line => /^Next:/.test(line));
-  const trailers = nextIndex < 0 ? lines : lines.slice(nextIndex + 1);
-  if (nextIndex < 0) return [...lines, cliErrorNextLine(recoveryFor())].join('\n');
-  if (!trailers.every(line => HALT_TRAILER_RE.test(line))) {
-    // That Next: is stale; the failure is in the lines after it, so classify those alone.
-    return [...lines, cliErrorNextLine(recoveryFor(trailers.join('\n')))].join('\n');
-  }
+function bareNextCommand(line) {
+  return String(line)
+    .replace(/^\s*Next:\s*/, '')
+    .replace(/\s+\(ask first\)/g, '')
+    .replace(/\s+\(Kind:\s*[^)]+\)\s*$/, '')
+    .trim();
+}
+
+function kindBeforeNext(lines, nextIndex) {
   let kind = null;
   let blockStart = 0;
-  for (let i = nextIndex - 1; i >= 0 && !kind; i--) {
-    kind = lines[i].match(/^Kind: (\S+)/)?.[1]
-      || (lines[i - 1] === 'Recovery:' ? lines[i].match(/^\s+Kind: (\S+)/)?.[1] : null);
+  for (let i = nextIndex - 1; i >= 0; i--) {
+    if (!kind) {
+      kind = lines[i].match(/^Kind: (\S+)/)?.[1]
+        || (lines[i - 1] === 'Recovery:' ? lines[i].match(/^\s+Kind: (\S+)/)?.[1] : null);
+    }
     if (STEP_HEADER_RE.test(lines[i])) {
       blockStart = i;
       break;
     }
   }
-  kind ||= recoveryFor(lines.slice(blockStart, nextIndex).join('\n')).kind;
-  const next = lines[nextIndex];
-  const nextWithKind = /\(Kind: [^)]+\)$/.test(next)
-    ? next
-    : `${next}${cliErrorKindSuffix({ kind })}`;
-  if (nextIndex === lines.length - 1) {
-    lines[nextIndex] = nextWithKind;
+  return { kind, blockStart };
+}
+
+function withKindOnLastNextLine(text, recoveryFor) {
+  const lines = String(text).split('\n');
+  const nextIndex = lines.findLastIndex(line => /^Next:/.test(line));
+  const trailers = nextIndex < 0 ? lines : lines.slice(nextIndex + 1);
+  if (nextIndex < 0) {
+    const existingKind = [...lines].reverse().map(line => line.match(/^Kind: (\S+)/)?.[1]).find(Boolean) || null;
+    return [...lines, ...formatNextClosingLines(recoveryFor(), { includeKind: true, existingKind })].join('\n');
+  }
+  if (!trailers.every(line => HALT_TRAILER_RE.test(line))) {
+    // That Next: is stale; the failure is in the lines after it, so classify those alone.
+    return [...lines, ...formatNextClosingLines(recoveryFor(trailers.join('\n')), { includeKind: true })].join('\n');
+  }
+  const command = bareNextCommand(lines[nextIndex]);
+  lines[nextIndex] = formatNextLine(command);
+  const found = kindBeforeNext(lines, nextIndex);
+  const kind = found.kind || recoveryFor(lines.slice(found.blockStart, nextIndex).join('\n')).kind;
+  const bare = formatNextLine(command);
+  if (lines.at(-1) !== bare) {
+    if (kind && found.kind !== kind) lines.push(`Kind: ${kind}`);
+    lines.push(bare);
     return lines.join('\n');
   }
-  return [...lines, nextWithKind].join('\n');
+  if (kind && !found.kind) lines.splice(nextIndex, 0, `Kind: ${kind}`);
+  return lines.join('\n');
 }
 
 function formatDaemonCommandError(err, options = {}) {
@@ -34390,7 +34403,8 @@ function formatOpenReadyMessage(targetId, url = '') {
   const lines = [
     'Tab ready — debugging approved.',
     `Target: ${target}${url ? `  ${url}` : ''}`,
-    `Next: cdp click ${target} @ref  # choose a ref from the perception below`,
+    'Choose a ref from the perception below.',
+    formatNextLine(`cdp click ${target} @ref`),
     `Then: cdp perceive ${target} --since-action`,
     `Report: cdp report ${target}`,
   ];

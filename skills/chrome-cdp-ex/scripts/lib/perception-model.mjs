@@ -71,7 +71,7 @@ export function goldenPathPerceiveRecommendation(targetPrefix) {
     stage: 'perceive',
     targetPrefix,
     run: `cdp perceive ${targetPrefix} -C -d 8`,
-    after: `cdp click ${targetPrefix} @ref  # choose a ref from perceive`,
+    after: `cdp click ${targetPrefix} @ref`,
     evidence: `cdp perceive ${targetPrefix} --since-action`,
     report: `cdp report ${targetPrefix}`,
     reason: 'observe the real page before choosing an action target. For "what does this page say", run cdp text ' + targetPrefix + ' --auto',
@@ -80,7 +80,7 @@ export function goldenPathPerceiveRecommendation(targetPrefix) {
 
 export function goldenPathActRecommendation(targetPrefix, { ref = '@ref', fromPerceptionBelow = false } = {}) {
   const refText = ref === '@ref'
-    ? `cdp click ${targetPrefix} @ref  # choose a ref from ${fromPerceptionBelow ? 'the perception below' : 'perceive'}`
+    ? `cdp click ${targetPrefix} @ref`
     : `cdp click ${targetPrefix} ${ref}`;
   return buildGoldenPathRecommendation({
     stage: 'act',
@@ -89,7 +89,9 @@ export function goldenPathActRecommendation(targetPrefix, { ref = '@ref', fromPe
     after: `cdp perceive ${targetPrefix} --since-action`,
     report: `cdp report ${targetPrefix}`,
     reason: ref === '@ref'
-      ? 'perception is ready; choose an interactive ref and act'
+      ? (fromPerceptionBelow
+        ? 'Choose a ref from the perception below.'
+        : 'perception is ready; choose an interactive ref and act')
       : `use the first interactive ref ${ref} from perception, then verify action evidence`,
   });
 }
@@ -100,7 +102,7 @@ export function goldenPathBrowserPermissionRecommendation(targetPrefix) {
     targetPrefix,
     run: `cdp perceive ${targetPrefix} -C -d 8`,
     ask: 'Click Allow if Chrome asks.',
-    after: `cdp click ${targetPrefix} @ref  # choose a ref from perceive`,
+    after: `cdp click ${targetPrefix} @ref`,
     evidence: `cdp perceive ${targetPrefix} --since-action`,
     report: `cdp report ${targetPrefix}`,
     requiresUserAction: true,

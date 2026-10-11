@@ -458,7 +458,7 @@ describe('#640 directional scroll', () => {
     expect(line).not.toContain('hidden');
   });
 
-  it('names the axis when nothing scrolls that way, and the command before the Kind suffix is a shell command', async () => {
+  it('names the axis when nothing scrolls that way, and Next is a bare shell command', async () => {
     const list = overflowElement({ id: 'list', scrollHeight: 4000, clientHeight: 400 });
     const cdp = pageCdp(page({ docScrollMax: 0, containers: [list] }));
     let error;
@@ -483,7 +483,8 @@ describe('#640 directional scroll', () => {
     const cli = T.formatCliError(new Error(formatted), { cmd: 'scroll', targetPrefix: 'ABCDEF12', args: ['right', '300'] });
     const nextLine = cli.split('\n').at(-1);
     const runnable = 'cdp perceive ABCDEF12 -C -d 8';
-    expect(nextLine).toBe(`Next: ${runnable} (Kind: not-scrollable)`);
+    expect(nextLine).toBe(`Next: ${runnable}`);
+    expect(cli).toMatch(/^Kind: not-scrollable$/m);
     const syntax = spawnSync('bash', ['-nc', runnable], { encoding: 'utf8' });
     expect(syntax.status, syntax.stderr).toBe(0);
   });

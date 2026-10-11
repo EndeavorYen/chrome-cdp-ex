@@ -81,11 +81,11 @@ describe('#538 a vanished prefix names its successor page', () => {
   it('T3: an empty-string argument survives in the rerun command', () => {
     const err = errorFrom(() => T.resolveLiveTargetBinding({ requested: '1667E1A4', livePages: [page(NEW)], lastSeenPages: [page(OLD)] }));
     const out = T.formatCliError(err, { cmd: 'fill', targetPrefix: '1667E1A4', args: ['#pw', ''] });
-    expect(out.split('\n').at(-1)).toBe('Next: cdp fill B7BB111A "#pw" "" (Kind: target-resolution)');
+    expect(out.split('\n').at(-1)).toBe('Next: cdp fill B7BB111A "#pw" ""');
     const padded = T.formatCliError(err, { cmd: 'fill', targetPrefix: '1667E1A4', args: ['#x', ' ', '  hi '] });
-    expect(padded.split('\n').at(-1)).toBe("Next: cdp fill B7BB111A \"#x\" ' ' '  hi ' (Kind: target-resolution)");
+    expect(padded.split('\n').at(-1)).toBe("Next: cdp fill B7BB111A \"#x\" ' ' '  hi '");
     const quoted = T.formatCliError(err, { cmd: 'fill', targetPrefix: '1667E1A4', args: ['#x', " it's "] });
-    expect(quoted.split('\n').at(-1)).toBe("Next: cdp fill B7BB111A \"#x\" ' it'\\''s ' (Kind: target-resolution)");
+    expect(quoted.split('\n').at(-1)).toBe("Next: cdp fill B7BB111A \"#x\" ' it'\\''s '");
   });
 
   it('a New Tab page is never named as a successor', () => {
@@ -114,7 +114,7 @@ describe('#538 a vanished prefix names its successor page', () => {
     const out = T.formatCliError(err, { cmd: 'nav', targetPrefix: '1667E1A4', args: [PAGE_URL] });
     expect(out).toMatch(/Kind: target-resolution/);
     expect(out).toMatch(/Strategy: use-successor-target/);
-    expect(out.split('\n').at(-1)).toBe(`Next: cdp nav B7BB111A ${PAGE_URL} (Kind: target-resolution)`);
+    expect(out.split('\n').at(-1)).toBe(`Next: cdp nav B7BB111A ${PAGE_URL}`);
   });
 
   it('T5: troubleshooting explains that a target id can change without the tab closing', () => {

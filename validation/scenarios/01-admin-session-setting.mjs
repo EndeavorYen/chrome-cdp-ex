@@ -45,7 +45,7 @@ export const scenario = {
     { trap: '`click <t> "Save settings"` is read as a CSS selector: a 2 s wait, then a message asking for the visible text.', refs: 'B-10 #641' },
     { trap: 'Setting the value with eval fires no change event, so Save settings stays disabled.', refs: 'T-05' },
     { trap: 'Before #634, `cookies <t>` printed the HttpOnly session value in clear; now only `cookies <t> --unsafe-full` does.', refs: 'B-03 #634' },
-    { trap: 'Error Next lines end in "(Kind: …)" and fail when pasted into a shell.', refs: 'B-06 #637' },
+    { trap: 'Before #637, a Next line ended with "(Kind: …)" or "(ask first)" and failed when pasted. Next is only the command; Kind and "Ask a human first" are separate lines.', refs: 'B-06 #637' },
   ],
   referencePath: [
     'list → the "Settings · Acme Admin" tab',

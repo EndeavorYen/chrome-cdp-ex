@@ -9442,7 +9442,9 @@ describe('formatCliError', () => {
     expect(out).toContain('Recovery:');
     expect(out).toContain('Kind: target-resolution');
     expect(out).toContain('Strategy: rediscover-target');
-    expect(out).toContain('Run: cdp list  # if empty: cdp open https://example.com');
+    expect(out).toContain('Run: cdp list');
+    expect(out).toContain('If the list is empty, open a page.');
+    expect(out).not.toContain('# if empty');
     expect(out).toContain('Then: cdp open https://example.com');
     expect(out).toContain('Next: cdp list');
     expect(out).toContain('cdp open https://example.com');
@@ -9453,7 +9455,7 @@ describe('formatCliError', () => {
 
     expect(out).toContain('Error: Ambiguous prefix "AABB"');
     expect(out).toContain('Next: cdp list');
-    expect(out).toContain('copy a longer target prefix');
+    expect(out).toContain('Copy a longer target prefix');
   });
 
   it('turns daemon disconnects into a restartable perceive command', () => {
@@ -9501,8 +9503,8 @@ describe('formatCliError', () => {
   it('preserves already-classified action failures', () => {
     const out = formatCliError('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD');
 
-    // #533: the lines pass through; the Kind also joins the last Next line for `| tail -1`.
-    expect(out).toBe('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD (Kind: overlay)');
+    // #637: the lines pass through. Kind stays on its own line; Next is only the command.
+    expect(out).toBe('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD');
   });
 
   it('builds a structured JSON handoff for top-level CLI errors', () => {
@@ -9518,11 +9520,11 @@ describe('formatCliError', () => {
       recovery: {
         kind: 'target-resolution',
         strategy: 'rediscover-target',
-        run: 'cdp list  # if empty: cdp open https://example.com',
+        run: 'cdp list',
         then: 'cdp open https://example.com',
       },
       nextSteps: [
-        'cdp list  # if empty: cdp open https://example.com',
+        'cdp list',
         'cdp open https://example.com',
       ],
     });
@@ -9813,7 +9815,7 @@ describe('open onboarding guidance', () => {
       approval: 'approved',
       autoPerceive: { attempted: true, ok: true },
       nextSteps: [
-        'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+        'cdp click AABBCCDD @ref',
         'cdp perceive AABBCCDD --since-action',
         'cdp report AABBCCDD',
       ],
@@ -9822,14 +9824,14 @@ describe('open onboarding guidance', () => {
       source: 'golden-path',
       stage: 'act',
       targetPrefix: 'AABBCCDD',
-      run: 'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+      run: 'cdp click AABBCCDD @ref',
       after: 'cdp perceive AABBCCDD --since-action',
       report: 'cdp report AABBCCDD',
       requiresUserAction: false,
       consentRequired: false,
     });
     expect(model.recommendation.commands).toEqual([
-      'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+      'cdp click AABBCCDD @ref',
       'cdp perceive AABBCCDD --since-action',
       'cdp report AABBCCDD',
     ]);
@@ -13716,7 +13718,8 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('CDP: cannot reach 127.0.0.1:9222');
     expect(out).toContain('Next: cdp spawn-debug-browser edge --port 9222 --user-data-dir');
     expect(out).toMatch(/daily-edge/);
-    expect(out).toMatch(/\(ask first\)/);
+    expect(out).toMatch(/^Ask a human first$/m);
+    expect(out).not.toMatch(/\(ask first\)/);
     expect(out).not.toContain('Wizard:');
     expect(out).not.toContain('chrome-cdp-ex doctor');
     expect(out).not.toMatch(/perceive .* -C -d 8/);
@@ -13736,7 +13739,8 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('CDP: DevToolsActivePort points to 9222 but /json/version unreachable: fetch failed');
     expect(out).toContain('Next: cdp spawn-debug-browser edge --port 9222 --user-data-dir');
     expect(out).toMatch(/daily-edge/);
-    expect(out).toMatch(/\(ask first\)/);
+    expect(out).toMatch(/^Ask a human first$/m);
+    expect(out).not.toMatch(/\(ask first\)/);
     expect(out).not.toMatch(/^Next: cdp doctor$/m);
   });
 

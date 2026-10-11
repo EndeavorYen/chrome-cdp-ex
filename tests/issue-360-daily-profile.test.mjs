@@ -39,7 +39,8 @@ describe('#360 daily-profile debug first step', () => {
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
     expect(report).toMatch(/spawn-debug-browser chrome/);
     expect(report).toMatch(/daily-chrome/);
-    expect(report).toMatch(/\(ask first\)/);
+    expect(report).toMatch(/^Ask a human first$/m);
+    expect(report).not.toMatch(/\(ask first\)/);
     expect(report).toContain('cdp spawn-debug-browser chrome');
     expect(report).not.toMatch(/perceive .* -C -d 8/);
   });

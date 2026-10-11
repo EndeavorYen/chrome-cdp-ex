@@ -83,7 +83,9 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
     });
     expect(launched).toEqual([]);
     expect(text).toContain(`profile ${PROFILE} is already open on port 9333`);
-    expect(text).toContain('Next: CDP_PORT=9333 cdp list (Kind: profile-in-use)');
+    expect(text).toContain('Next: CDP_PORT=9333 cdp list');
+    expect(text).toMatch(/Kind: profile-in-use/);
+    expect(text).not.toMatch(/\(Kind:/);
     expect(text).not.toContain('--headless --no-sandbox');
   });
 
@@ -96,7 +98,9 @@ describe('#550 spawn-debug-browser profile already open on another port', () => 
       readBrowserProcessArgv: () => [EXE, '--remote-debugging-port=9333', `--user-data-dir=${PROFILE}`],
     });
     expect(launched).toEqual([]);
-    expect(text).toContain('Next: CDP_PORT=9333 cdp list (Kind: profile-in-use)');
+    expect(text).toContain('Next: CDP_PORT=9333 cdp list');
+    expect(text).toMatch(/Kind: profile-in-use/);
+    expect(text).not.toMatch(/\(Kind:/);
   });
 
   it('T3 still launches when the named port does not answer', async () => {
