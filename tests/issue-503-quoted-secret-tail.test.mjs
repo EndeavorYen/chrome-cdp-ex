@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 process.env.NODE_ENV = 'test';
 
 const { redactSensitiveString, REDACTED_VALUE: R, MAX_QUOTED_VALUE_CHARS } = await import('../skills/chrome-cdp-ex/scripts/lib/redaction.mjs');
-const { scalingRatio } = await import('./linear-timing-helpers.mjs');
+const { linearTimeFailure } = await import('./linear-timing-helpers.mjs');
 
 // #503: a quoted secret was redacted only up to its first line break or
 // escaped quote, so the rest of the secret stayed visible.
@@ -137,10 +137,8 @@ describe('#503 quoted-value scanning stays linear', () => {
     it(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, SIZE / 4);
-      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text, { capMs: 500 });
-      // 4x the input: linear is ~4x the time, quadratic ~16x.
-      expect(largeMs).toBeLessThan(500);
-      expect(largeMs < 15 || ratio < 8, `ratio ${ratio.toFixed(1)} at ${largeMs.toFixed(1)} ms`).toBe(true);
+      // Bounds live in linearTimeFailure so a Windows timing flake cannot grow a one-off limit (#678).
+      expect(linearTimeFailure(redactSensitiveString, small, text, { capMs: 500 })).toBeNull();
     });
   }
 

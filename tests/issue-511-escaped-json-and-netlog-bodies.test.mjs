@@ -8,7 +8,7 @@ process.env.NODE_ENV = 'test';
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const { redactSensitiveString, redactSensitiveValue, redactJsonText, REDACTED_VALUE: R } = await import('../skills/chrome-cdp-ex/scripts/lib/redaction.mjs');
 const { redactBodyText } = await import('../skills/chrome-cdp-ex/scripts/lib/netlog.mjs');
-const { scalingRatio } = await import('./linear-timing-helpers.mjs');
+const { linearTimeFailure } = await import('./linear-timing-helpers.mjs');
 
 const BS = '\\';
 const PARTS = ['QZ7', 'XJ3', 'JQ9'];
@@ -227,10 +227,7 @@ describe('#511/#513 stay linear', () => {
     it(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, text.length / 4);
-      const { ratio, largeMs } = scalingRatio(redactSensitiveString, small, text, { capMs: 1000 });
-      // 4x the input: linear is ~4x the time, quadratic ~16x.
-      expect(largeMs).toBeLessThan(1000);
-      expect(largeMs < 30 || ratio < 8, `ratio ${ratio.toFixed(1)} at ${largeMs.toFixed(1)} ms`).toBe(true);
+      expect(linearTimeFailure(redactSensitiveString, small, text, { capMs: 1000, floorMs: 30 })).toBeNull();
     });
   }
 
