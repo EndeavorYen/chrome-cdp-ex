@@ -8046,7 +8046,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
   ];
   const SHARED_COMMIT_TITLE = 'Add diffusers weights (modular pipeline) (#2)';
   const LIVE_INTERACTIVE = 'Interactive: 113 a, 1 input[text], 21 button, 9 div, 2 input[search], 1 iframe';
-  const LIVE_COORDS = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+  const LIVE_COORDS = 'Coords: viewport CSS px (clickxy-ready; fixed/sticky tagged)';
   const LIVE_CENSUS_COUNTS = {
     a: 113,
     'input[text]': 1,

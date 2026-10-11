@@ -33,7 +33,7 @@ Six findings got open pull requests after the Phase B issues were filed. They ar
 | B-01, `press Enter` clicks a listing link (#632) | #647; #627 for #607 | In scenario 2 Haiku clicked Search instead of pressing Enter, so the probe never hit it. Scenario 2's trap path shows the failure. |
 | B-11, `--since-action` renumbers refs (#642) | #650 (merged) | No probe run clicked a ref read from a since-action diff. |
 | Covered click's Next is `click --js` (#601) | #624 | In scenario 3 the cover is a full-viewport backdrop beside the dialog, so #624 turns that Next from `click --js` into `overlay`. #624 keeps `dismiss-modal` as the Next for dialog covers; proposal 3 makes that Next safe to follow. |
-| `perceive -C` length (#598, #599) | #628 | In scenarios 1, 4 and 8 Haiku finished `select` tasks with the CSS selectors from `[Visible controls]`, because `select @ref` fails (B-02). #628 keeps one `@ref selector` per row; that selector must stay. |
+| `perceive -C` length (#598, #599) | #628 | In scenarios 1, 4 and 8 Haiku finished `select` tasks with the CSS selectors from `[Visible controls]`, because `select @ref` fails (B-02). #628 prints a repeated visible-control line once and keeps the selector on the remaining line. |
 | netlog lost on daemon restart (#606) | #625 | It edits `lib/netlog.mjs`. Proposal 1 keeps its own change there to one branch. |
 
 ## Ranking
