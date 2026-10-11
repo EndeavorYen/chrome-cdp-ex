@@ -75,6 +75,9 @@ describe('caller cwd for daemon file paths (#577)', () => {
   it('resolves the same paths inside flow, batch, and repeat', () => {
     expect(T.absolutizeCallerFileArgs('flow', ['shot shots/a.png; perceive -C'], CALLER))
       .toEqual([`shot ${abs('shots/a.png')}; perceive -C`]);
+    const backslash = 'shots\\a.png';
+    expect(T.absolutizeCallerFileArgs('flow', [`shot ${backslash}; perceive -C`], CALLER))
+      .toEqual([`shot ${abs(backslash)}; perceive -C`]);
     expect(T.absolutizeCallerFileArgs('flow', ['--format', 'json', 'screenshot shots/a.png'], CALLER))
       .toEqual(['--format', 'json', `screenshot ${abs('shots/a.png')}`]);
     expect(T.absolutizeCallerFileArgs('flow', ['elshot #f shots/panel.png'], CALLER))

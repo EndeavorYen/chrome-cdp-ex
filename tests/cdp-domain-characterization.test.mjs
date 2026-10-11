@@ -288,6 +288,20 @@ function responseFor(method, params = {}) {
     case 'Target.getTargets': return { targetInfos: [] };
     case 'Accessibility.getFullAXTree': return { nodes: [] };
     case 'Runtime.evaluate':
+      if (String(params.expression).includes('chrome-cdp-ex.press-probe.v1')) {
+        const installing = String(params.expression).includes("addEventListener('keydown'");
+        return {
+          result: {
+            value: {
+              marker: 'chrome-cdp-ex.press-probe.v1',
+              ok: true,
+              installed: true,
+              matched: !installing,
+              count: installing ? 0 : 1,
+            },
+          },
+        };
+      }
       if (String(params.expression).includes('visibleControls')) return { result: { value: PERCEPTION_META } };
       if (String(params.expression).includes('title: document.title')) {
         return { result: { value: JSON.stringify({ title: 'Fixture', url: 'https://example.test/fixture', readyState: 'complete' }) } };
@@ -385,9 +399,14 @@ function domainInvocations() {
     },
     {
       domain: 'Input',
-      // Default Enter is two key events. Probing a results link is press --search-submit.
-      methods: ['Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'],
-      callDigest: '72e120b9c22dc9beedf3966f0f9dd7df81ba521dd8efc3c886ff0a2792cca675',
+      // Default Enter installs a keydown probe, sends keyDown and keyUp, then reads and removes the probe.
+      // Probing a results link is press --search-submit.
+      methods: [
+        'Runtime.evaluate',
+        'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent',
+        'Runtime.evaluate', 'Runtime.evaluate',
+      ],
+      callDigest: '8fafa971a892f92a57fd1fdabd3308a2883d10f5d2abed6a24875bdfc697b4d6',
       result: 'Pressed Enter',
       invoke: cdp => cdpTest.pressStr(cdp, 'SESSION', 'Enter'),
     },

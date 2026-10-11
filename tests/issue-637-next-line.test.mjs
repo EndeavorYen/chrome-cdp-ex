@@ -206,6 +206,60 @@ describe('#637 Next lines are bare shell commands', () => {
     }
   });
 
+  // #627: a click with no viewport box, and a press the page never received,
+  // name Kind on its own line. Next is only the command, including through the CLI wrapper.
+  it('keeps fail-closed input Next lines as bare shell commands', () => {
+    const targetId = 'ABCDEF1234567890';
+    const prefix = 'ABCDEF12';
+    const samples = [
+      {
+        action: 'click',
+        err: Object.assign(
+          new Error('click: #hidden (0×0) has no clickable box in the viewport. Nothing was clicked.'),
+          { noClickBox: { selector: '#hidden', w: 0, h: 0, inViewport: false } },
+        ),
+        context: { action: 'click', target: { targetId, input: '#hidden', commandArgs: ['#hidden'] } },
+        kind: 'no-click-box',
+        next: `Next: cdp jsclick ${prefix} "#hidden"`,
+      },
+      {
+        action: 'press',
+        err: Object.assign(
+          new Error('press: Escape was not delivered. The page received no keydown.'),
+          { pressNotDelivered: { key: 'Escape', visibility: 'visible' } },
+        ),
+        context: { action: 'press', target: { targetId, input: 'Escape', commandArgs: ['Escape'] } },
+        kind: 'press-not-delivered',
+        next: `Next: cdp perceive ${prefix} -C -d 8`,
+      },
+      {
+        action: 'press',
+        err: Object.assign(
+          new Error('press: Escape was not delivered. The page received no keydown. document.visibilityState is hidden.'),
+          { pressNotDelivered: { key: 'Escape', visibility: 'hidden' } },
+        ),
+        context: { action: 'press', target: { targetId, input: 'Escape', commandArgs: ['Escape'] } },
+        kind: 'press-not-delivered',
+        next: `Next: CDP_BACKGROUND=0 cdp press ${prefix} Escape`,
+      },
+    ];
+    for (const sample of samples) {
+      const text = T.formatActionFailure(sample.err, sample.context);
+      const cli = T.formatCliError(new Error(text), {
+        cmd: sample.action,
+        targetPrefix: prefix,
+        args: sample.context.target.commandArgs,
+      });
+      expect(text.split('\n').at(-1), text).toBe(sample.next);
+      expect(cli.split('\n').at(-1), cli).toBe(sample.next);
+      expect(text, text).toMatch(new RegExp(`^Kind: ${sample.kind}$`, 'm'));
+      expect(cli, cli).toMatch(new RegExp(`^Kind: ${sample.kind}$`, 'm'));
+      expect(cli, cli).not.toMatch(/\(Kind:/);
+      expectRunnableNext(text);
+      expectRunnableNext(cli);
+    }
+  });
+
   it('has no Kind suffix, ask-first suffix, or trailing comment on a Next line in shipped scripts', () => {
     const hits = [];
     for (const root of SCAN_ROOTS) {
