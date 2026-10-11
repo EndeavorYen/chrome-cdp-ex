@@ -2415,6 +2415,10 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "acceptDialog": {
+              "description": "Accept a native confirm, prompt, or beforeunload opened by this click. Default is dismiss.",
+              "type": "boolean"
+            },
             "confirm": {
               "const": true,
               "description": "Must be true to acknowledge browser-state mutation.",
@@ -2535,6 +2539,10 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "acceptDialog": {
+              "description": "Accept a beforeunload prompt opened by this navigation. Default is to stay on the page.",
+              "type": "boolean"
+            },
             "confirm": {
               "const": true,
               "description": "Must be true to acknowledge browser-state mutation.",

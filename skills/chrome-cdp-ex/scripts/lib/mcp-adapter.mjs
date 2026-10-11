@@ -335,6 +335,7 @@ export function buildMcpToolCommand(name, args = {}) {
       requireConfirm(args, 'click');
       const command = ['click', requireString(args, 'target')];
       if (args.js) command.push('--js');
+      if (args.acceptDialog === true) command.push('--accept-dialog');
       command.push(requireString(args, 'selector'));
       if (args.qa || args.summary) command.push('--qa');
       return optionalFormatJson(command);
@@ -416,7 +417,9 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'navigate': {
       requireConfirm(args, 'navigate');
-      return optionalFormatJson(['nav', requireString(args, 'target'), requireString(args, 'url')]);
+      const command = ['nav', requireString(args, 'target'), requireString(args, 'url')];
+      if (args.acceptDialog === true) command.push('--accept-dialog');
+      return optionalFormatJson(command);
     }
     case 'press': {
       requireConfirm(args, 'press');
