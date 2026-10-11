@@ -13418,9 +13418,7 @@ function formatUnknownRefError(ref, state = {}) {
   if (reason === 'navigation') {
     return `Unknown ref: ${ref}. Refs were cleared because the page navigated/reloaded after the last perceive (e.g. Vite HMR or in-app routing). Run "perceive" to refresh refs, or use a stable CSS selector for long loops.`;
   }
-  if (reason === 'dom-mutation') {
-    return `Unknown ref: ${ref}. Refs were invalidated by DOM changes after the last perceive. Run "perceive" again, or use a stable CSS selector in batch/loops.`;
-  }
+  if (reason === 'dom-mutation') return formatDomMutationStaleMessage(ref);
   if (reason === 'daemon-restart') {
     return `Unknown ref: ${ref}. Refs from the previous daemon were cleared because this tab's daemon restarted. Run "perceive" to refresh refs, or use a CSS selector.`;
   }
@@ -13451,13 +13449,163 @@ function isMissingDomNodeError(error) {
     || /backend node.*(?:not found|does not exist)/.test(message);
 }
 
-function staleRefError(refMap, ref, refState, cause) {
-  invalidateRefMapping(refMap, ref, refState);
-  const error = new Error(
-    formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${cause.message}`,
-    { cause },
-  );
+function formatDomMutationStaleMessage(ref, suggestion = null) {
+  const base = `${ref} is stale: the DOM changed after the last perceive.`;
+  const selector = String(suggestion?.selector || '').trim();
+  if (suggestion?.count !== 1 || suggestion?.selectorUnique !== true || !selector || selector.startsWith('@')) {
+    return base;
+  }
+  const role = String(suggestion.role || 'element');
+  const name = String(suggestion.name ?? '');
+  return `${base} It now matches 1 element: [${role}] "${name}" (${selector}).`;
+}
+
+function perceiveTextForStaleRef(ref, refState) {
+  const frame = parseFrameRef(ref);
+  if (frame && refState?.frameLastOutputs instanceof Map) {
+    const framed = refState.frameLastOutputs.get(frame.frameRef);
+    if (framed) return String(framed);
+  }
+  return String(refState?.lastPerceiveText || '');
+}
+
+function identityForStaleRef(ref, refState) {
+  const text = perceiveTextForStaleRef(ref, refState);
+  if (!text) return null;
+  const hit = refAnnotationsFromTreeLines(text.split('\n')).find(item => item.ref === ref);
+  if (!hit) return null;
+  const role = String(hit.role || '').trim();
+  const name = String(hit.name || '').trim();
+  if (!role || !name) return null;
+  return { role, name };
+}
+
+// Read-only lookup. A unique role+name match may be named in the error. Nothing is clicked,
+// and the old @ref is never returned as the replacement.
+function staleRefMatchExpression(role, name) {
+  const wantedRole = JSON.stringify(String(role || '').toLowerCase());
+  const wantedName = JSON.stringify(String(name || ''));
+  return `(() => {
+    const marker = 'chrome-cdp-ex-stale-ref-match';
+    const wantedRole = ${wantedRole};
+    const wantedName = ${wantedName};
+    const norm = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const roleOf = (el) => {
+      const explicit = norm(el.getAttribute && el.getAttribute('role')).toLowerCase();
+      if (explicit) return explicit;
+      const tag = String(el.tagName || '').toLowerCase();
+      if (tag === 'a') return 'link';
+      if (tag === 'button' || tag === 'summary') return 'button';
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'select') return el.multiple ? 'listbox' : 'combobox';
+      if (tag === 'input') {
+        const type = String(el.getAttribute('type') || 'text').toLowerCase();
+        if (type === 'checkbox' || type === 'radio') return type;
+        if (type === 'button' || type === 'submit' || type === 'reset' || type === 'image') return 'button';
+        return 'textbox';
+      }
+      if (el.isContentEditable) return 'textbox';
+      return '';
+    };
+    const accName = (el) => {
+      const aria = el.getAttribute && el.getAttribute('aria-label');
+      if (aria && norm(aria)) return norm(aria);
+      const labelledBy = el.getAttribute && el.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const doc = el.ownerDocument;
+        const parts = String(labelledBy).split(/\\s+/).map((id) => {
+          const node = doc && doc.getElementById ? doc.getElementById(id) : null;
+          return node ? (node.innerText || node.textContent || '') : '';
+        }).filter(Boolean);
+        if (parts.length) return norm(parts.join(' '));
+      }
+      if (String(el.tagName || '').toUpperCase() === 'IMG') {
+        const alt = el.getAttribute('alt');
+        if (alt && norm(alt)) return norm(alt);
+      }
+      const tag = String(el.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+        const doc = el.ownerDocument;
+        if (el.id && doc && doc.querySelector) {
+          let label = null;
+          try { label = doc.querySelector('label[for="' + CSS.escape(el.id) + '"]'); } catch (err) { label = null; }
+          const labelText = label ? norm(label.innerText || label.textContent || '') : '';
+          if (labelText) return labelText;
+        }
+        const wrap = el.closest ? el.closest('label') : null;
+        const wrapText = wrap ? norm(wrap.innerText || wrap.textContent || '') : '';
+        if (wrapText) return wrapText;
+        const placeholder = el.getAttribute('placeholder');
+        if (placeholder && norm(placeholder)) return norm(placeholder);
+      }
+      return norm(el.innerText || el.textContent || '');
+    };
+    const selectorFor = (el) => {
+      const tag = String(el.tagName || '').toLowerCase();
+      if (!el.id) return tag;
+      let id = el.id;
+      try { if (window.CSS && CSS.escape) id = CSS.escape(el.id); } catch (err) { id = el.id; }
+      return tag + '#' + id;
+    };
+    const nodes = document.querySelectorAll('a, button, input, select, textarea, summary, [role], [contenteditable], [aria-label]');
+    const matches = [];
+    for (const el of nodes) {
+      if (!el.isConnected) continue;
+      if (roleOf(el) !== wantedRole) continue;
+      if (accName(el) !== wantedName) continue;
+      matches.push(el);
+      if (matches.length >= 3) break;
+    }
+    if (matches.length !== 1) {
+      return JSON.stringify({ marker, count: matches.length, selector: '', selectorUnique: false, role: wantedRole, name: wantedName });
+    }
+    const selector = selectorFor(matches[0]);
+    let selectorUnique = false;
+    try { selectorUnique = document.querySelectorAll(selector).length === 1; } catch (err) { selectorUnique = false; }
+    return JSON.stringify({
+      marker,
+      count: 1,
+      selector: selectorUnique ? selector : '',
+      selectorUnique,
+      role: wantedRole,
+      name: wantedName,
+    });
+  })()`;
+}
+
+async function suggestStaleRefReplacement(cdp, sid, ref, refState, { contextId = null } = {}) {
+  const identity = identityForStaleRef(ref, refState);
+  if (!identity) return null;
+  let raw = '';
+  try {
+    raw = await evalStr(cdp, sid, staleRefMatchExpression(identity.role, identity.name), false, {
+      timeoutMs: REF_RESOLVE_TIMEOUT,
+      ...(contextId !== null && contextId !== undefined ? { contextId } : {}),
+    });
+  } catch {
+    return null;
+  }
+  let parsed = null;
+  try { parsed = JSON.parse(String(raw || '')); } catch { return null; }
+  if (!parsed || parsed.marker !== 'chrome-cdp-ex-stale-ref-match') return null;
+  const selectorUnique = parsed.selectorUnique === true;
+  const selector = selectorUnique ? String(parsed.selector || '').trim() : '';
+  const safeSelector = selector && !selector.startsWith('@') && !/[\r\n]/.test(selector) ? selector : '';
+  return {
+    count: Number(parsed.count) || 0,
+    selector: safeSelector,
+    selectorUnique: Boolean(safeSelector),
+    role: String(parsed.role || identity.role),
+    name: String(parsed.name || identity.name),
+  };
+}
+
+async function staleRefError(cdp, sid, refMap, ref, refState, cause, { invalidate = true, contextId = null } = {}) {
+  if (invalidate) invalidateRefMapping(refMap, ref, refState);
+  const suggestion = await suggestStaleRefReplacement(cdp, sid, ref, refState, { contextId });
+  const error = new Error(formatDomMutationStaleMessage(ref, suggestion), { cause });
   error.code = STALE_REF_ERROR_CODE;
+  if (suggestion) error.staleRefMatch = suggestion;
   return error;
 }
 
@@ -13549,7 +13697,12 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
   } else {
     num = parseInt(ref.slice(1));
     if (isNaN(num) || !refMap.has(num)) {
-      throw new Error(formatUnknownRefError(ref, refState || {}));
+      const state = refState || {};
+      const reason = state.invalidationReason || (state.generation ? null : 'daemon-start');
+      if (reason === 'dom-mutation') {
+        throw await staleRefError(cdp, sid, refMap, ref, state, new Error('ref is not in the map'), { invalidate: false });
+      }
+      throw new Error(formatUnknownRefError(ref, state));
     }
     backendNodeId = refMap.get(num);
   }
@@ -13565,7 +13718,9 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
       executionContextId,
     }, sid, REF_RESOLVE_TIMEOUT));
   } catch (error) {
-    if (isMissingDomNodeError(error)) throw staleRefError(refMap, ref, refState, error);
+    if (isMissingDomNodeError(error)) {
+      throw await staleRefError(cdp, sid, refMap, ref, refState, error, { contextId: executionContextId });
+    }
     throw error;
   }
   if (!object?.objectId) throw new Error('DOM.resolveNode did not return an object id');
@@ -13581,11 +13736,14 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
   if (validationValue?.error) throw new Error(`Trusted ref connectivity probe failed: ${validationValue.error}`);
   const connected = validationValue === true || validationValue?.connected === true;
   if (!connected && (validationValue === false || validationValue?.connected === false)) {
-    throw staleRefError(
+    throw await staleRefError(
+      cdp,
+      sid,
       refMap,
       ref,
       refState,
       new Error('resolved backend node is detached from its owning document'),
+      { contextId: executionContextId },
     );
   }
   if (!connected) throw new Error('Trusted ref connectivity probe returned no connectivity result');
@@ -13594,7 +13752,9 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
     try {
       pageResult = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
     } catch (error) {
-      if (isMissingDomNodeError(error)) throw staleRefError(refMap, ref, refState, error);
+      if (isMissingDomNodeError(error)) {
+        throw await staleRefError(cdp, sid, refMap, ref, refState, error, { contextId: executionContextId });
+      }
       throw error;
     }
     if (!pageResult.object?.objectId) throw new Error('DOM.resolveNode did not return a page-world object id');
@@ -14003,10 +14163,13 @@ async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = false } =
   }
   const value = result.result.value || {};
   if (value.connected !== true) {
-    invalidateRefMapping(refMap, ref, refState);
-    throw new Error(
-      formatUnknownRefError(ref, refState || {}) +
-      ' Original CDP error: resolved backend node is detached from its owning document.'
+    throw await staleRefError(
+      cdp,
+      sid,
+      refMap,
+      ref,
+      refState,
+      new Error('resolved backend node is detached from its owning document'),
     );
   }
   if (frameParsed) {
@@ -14474,7 +14637,7 @@ function omitTypeaheadListboxNodes(nodes, opts = {}) {
 }
 
 const PERCEIVE_COMPACT_FLAGS =
-  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel | --keep-typeahead | --cards | --role feed | --unsafe-full';
+  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel | --keep-typeahead | --cards | --role feed | --unsafe-full | --verbose';
 
 function unknownPerceiveOption(token) {
   throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
@@ -14523,7 +14686,7 @@ function parsePerceiveArgs(args) {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
     keepRefs: false, keepTypeahead: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
-    cards: false, unsafeFull: false,
+    cards: false, unsafeFull: false, verbose: false,
   };
   const requireValue = (flag, index, label) => {
     const value = args[index + 1];
@@ -14557,6 +14720,7 @@ function parsePerceiveArgs(args) {
       opts.maxDepth = parseInt(requireValue(a, i, 'a depth')) || Infinity;
       i++;
     } else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
+    else if (a === '--verbose' || a === '-v') opts.verbose = true;
     else if (a === '--keep-typeahead') opts.keepTypeahead = true;
     else if (a === '--keep-refs') opts.keepRefs = true;
     else if (a === '--adaptive') opts.adaptive = true;
@@ -14950,6 +15114,42 @@ function visibleControlsPageScript(opts = {}) {
 ${visibleControlsCollectorSource()}
       return JSON.stringify(chromeCdpVisibleControls(${JSON.stringify(options)}));
     })()`;
+}
+
+const PERCEIVE_COORDS_LINE = 'Coords: viewport CSS px (clickxy-ready; fixed/sticky tagged)';
+const PERCEIVE_COORDS_LINE_VERBOSE = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+
+function formatPerceiveCoordsLine(verbose = false) {
+  return verbose ? PERCEIVE_COORDS_LINE_VERBOSE : PERCEIVE_COORDS_LINE;
+}
+
+// Drop a line only when that whole line was already printed. A remaining line
+// keeps every field formatVisibleControlLine emitted.
+function dedupeRepeatedLines(lines, priorLines = []) {
+  const seen = new Set();
+  const remember = (line) => {
+    const key = String(line || '').trim();
+    if (key) seen.add(key);
+  };
+  for (const line of priorLines) remember(line);
+  const out = [];
+  for (const line of lines) {
+    const key = String(line || '').trim();
+    if (!key) {
+      out.push(line);
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(line);
+  }
+  return out;
+}
+
+function formatVisibleControlsHeader({ shown, collected, pageTruncated }) {
+  if (pageTruncated) return `[Visible controls] (${shown} shown; --last N for more)`;
+  if (collected > shown) return `[Visible controls] (${shown}/${collected} shown; --last ${collected} for all)`;
+  return '[Visible controls]';
 }
 
 function formatVisibleControlLine(control, index = null) {
@@ -16587,8 +16787,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
     keepRefs = false, keepTypeahead = false, last = null, adaptive = false, sinceAction = false, diffBaseline = null,
-    frameRef = null, cards = false,
+    frameRef = null, cards = false, verbose = false,
   } = opts;
+  if (lastPerceiveStore && typeof lastPerceiveStore === 'object') lastPerceiveStore.outputTruncated = false;
   const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
   const frame = frameContext?.frame || null;
   const frameExecutionContextId = frame ? await createFrameExecutionContext(cdp, sid, frame.id) : null;
@@ -16723,6 +16924,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
     if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
     if (refState && typeof refState === 'object') {
+      refState.lastPerceiveText = output;
       refState.generation = (refState.generation || 0) + 1;
       refState.lastPerceiveAt = Date.now();
       refState.invalidationReason = null;
@@ -16819,9 +17021,11 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     hasPriorityText: treeLines.some(ln => isPriorityPerceiveTextLine(ln)),
   });
   let cRefCounter = 0;
+  let outputTruncated = false;
   if (cursorInteractive && meta.cursorInteractives?.length > 0) {
     const ranked = rankPerceiveCursorItems(meta.cursorInteractives, item => item.text || item.sel);
     const capped = ranked.slice(0, cursorLimit);
+    if (ranked.length > capped.length) outputTruncated = true;
     treeLines.push('');
     treeLines.push(`[Cursor-interactive elements] (non-ARIA clickable)${ranked.length > capped.length ? ' (truncated)' : ''}`);
     for (const ci of capped) {
@@ -16837,14 +17041,20 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
       meta.visibleControls.map(control => attachRefToVisibleControl(control, refAnns, axIdentities)),
       item => item.label || item.ariaLabel || item.text || item.title,
     );
-    const capped = ranked.slice(0, cursorLimit);
-    const truncated = ranked.length > capped.length || meta.visibleControlsTruncated;
+    const formatted = ranked.map(control => `  ${formatVisibleControlLine(control)}`);
+    const listed = verbose ? formatted : dedupeRepeatedLines(formatted, treeLines);
+    const capped = listed.slice(0, cursorLimit);
+    const pageTruncated = Boolean(meta.visibleControlsTruncated);
+    if (pageTruncated || listed.length > capped.length) outputTruncated = true;
     treeLines.push('');
-    treeLines.push(`[Visible controls]${truncated ? ' (truncated)' : ''}`);
-    for (const control of capped) {
-      treeLines.push(`  ${formatVisibleControlLine(control)}`);
-    }
+    treeLines.push(formatVisibleControlsHeader({
+      shown: capped.length,
+      collected: listed.length,
+      pageTruncated,
+    }));
+    for (const line of capped) treeLines.push(line);
   }
+  if (lastPerceiveStore && typeof lastPerceiveStore === 'object') lastPerceiveStore.outputTruncated = outputTruncated;
 
   // === Assemble output ===
   const lines = [];
@@ -16871,7 +17081,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   // Coordinate hint — top-level viewport CSS pixels match clickxy/Input events.
   // Fixed/sticky elements include a "fixed"/"sticky" tag so agents do not
   // misread negative scroll-relative Ys as off-screen.
-  lines.push(`Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)`);
+  lines.push(formatPerceiveCoordsLine(verbose));
 
   lines.push('');
   lines.push(...treeLines);
@@ -16885,6 +17095,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     if (frame) rememberFramePerceiveOutput(refState, frame.ref, perceiveStoreDiffSource(lastPerceiveStore));
     // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
     if (refState && typeof refState === 'object') {
+      refState.lastPerceiveText = output;
       refState.generation = (refState.generation || 0) + 1;
       refState.lastPerceiveAt = Date.now();
       refState.invalidationReason = null;
@@ -16947,7 +17158,7 @@ function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>
     refs: { generation: refState.generation || 0 },
     nodes,
     limits: {
-      truncated: output.includes('truncated'),
+      truncated: output.includes('truncated') || opts.outputTruncated === true,
       ...(opts.last ? { lastTextRows: opts.last, outputTokenBudget: opts.last * 80 } : {}),
     },
   });
@@ -16958,7 +17169,10 @@ async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPer
   if (String(output || '').includes('chrome-cdp-ex.pdf-viewer.v1')) {
     return pdfViewerHandoffModelFromOutput(output, opts.targetPrefix || '<target>');
   }
-  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>', opts);
+  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>', {
+    ...opts,
+    outputTruncated: lastPerceiveStore?.outputTruncated === true,
+  });
 }
 
 async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
@@ -32549,6 +32763,7 @@ Usage: cdp <command> [args]
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
+                                    --verbose / -v: print repeated visible-control lines and the long Coords note
                                     --keep-typeahead: keep focused search suggestion listbox in the tree
                                     --cards / --role feed: compact article/listitem cards (chrome-cdp-ex.cards.v1)
 {{command:snap}}
@@ -35932,7 +36147,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   perceiveTextboxValueFromOutput,
   filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   buildCardsModel, formatCardsJson, formatCardsText,
-  parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
+  parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, dedupeRepeatedLines, controlsStr,
   offsetCssRect, offsetCursorInteractiveItem, mergeMissingDomInteractiveAxNodes, syntheticAxNodeFromDomControl,
   attachRefToVisibleControl, refAnnotationsFromTreeLines, nativeVisibleControlTag,
   isSynthesizableDomControl, shouldSynthesizeMissingFrameInteractives, listDomInteractiveControls,

@@ -1064,7 +1064,7 @@ describe('detached ref propagation contract (#148)', () => {
     }));
     expect(batchModel).toMatchObject({
       counts: { steps: 2, ok: 1, failed: 1 },
-      failedStep: { cmd: 'click', error: expect.stringMatching(/DOM changes/) },
+      failedStep: { cmd: 'click', error: expect.stringMatching(/the DOM changed/) },
       steps: [
         { index: 1, cmd: 'click', ok: false },
         { index: 2, cmd: 'click', ok: true, resultPreview: 'later command completed' },
@@ -1083,7 +1083,7 @@ describe('detached ref propagation contract (#148)', () => {
     expect(flow).toMatchObject({
       halted: true,
       counts: { ok: 0, failed: 1, skipped: 1 },
-      failedStep: { cmd: 'click', error: expect.stringMatching(/DOM changes/) },
+      failedStep: { cmd: 'click', error: expect.stringMatching(/the DOM changed/) },
     });
 
     const replayRun = vi.fn(stale);
@@ -1098,12 +1098,12 @@ describe('detached ref propagation contract (#148)', () => {
     expect(replay).toMatchObject({
       halted: true,
       counts: { ok: 0, failed: 1 },
-      failedStep: { command: ['click', '@1'], error: expect.stringMatching(/DOM changes/) },
+      failedStep: { command: ['click', '@1'], error: expect.stringMatching(/the DOM changed/) },
     });
 
     const repeatRun = vi.fn(stale);
     await expect(cdpTest.repeatStr({ run: repeatRun }, ['3', 'click', '@1']))
-      .rejects.toThrow(/DOM changes.*Repeat halted at iteration 1\/3/s);
+      .rejects.toThrow(/the DOM changed[\s\S]*Repeat halted at iteration 1\/3/);
     expect(repeatRun).toHaveBeenCalledTimes(1);
     expect(repeatRun).toHaveBeenCalledWith({ cmd: 'click', args: ['@1'] });
     expect(fixture.refMap.has(1)).toBe(false);

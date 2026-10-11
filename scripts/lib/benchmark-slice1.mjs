@@ -137,7 +137,7 @@ export function extractChromeCdpListPrefix(output, origin) {
 export function staleClickNote(output) {
   const text = String(output ?? '');
   const parts = [];
-  if (/Kind:\s*stale-ref|Unknown ref|Refs were invalidated|not found in the current page snapshot|did not become interactive/i.test(text)) {
+  if (/Kind:\s*stale-ref|Unknown ref|Refs were invalidated|\bis stale:|not found in the current page snapshot|did not become interactive/i.test(text)) {
     parts.push('first click rejected the stale ref');
   }
   if (/Next:.*perceive/i.test(text)) parts.push('Next included perceive');
