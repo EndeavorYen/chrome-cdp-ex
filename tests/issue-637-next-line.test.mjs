@@ -83,6 +83,99 @@ describe('#637 Next lines are bare shell commands', () => {
     for (const sample of samples) expectRunnableNext(sample);
   });
 
+  // #658: a dismissed confirm, prompt, or beforeunload retries with --accept-dialog.
+  // That Next line is only the command. Kind stays on its own line.
+  it('keeps --accept-dialog retry hints as bare shell commands', () => {
+    const targetId = 'ABCDEF1234567890';
+    const prefix = 'ABCDEF12';
+    const confirm = {
+      type: 'confirm',
+      message: 'Delete this item?',
+      accepted: false,
+      handled: true,
+    };
+    const samples = [
+      {
+        action: 'click',
+        err: T.nativeDialogDismissedError(confirm, {
+          action: 'click',
+          target: { targetId, input: '#delete', commandArgs: ['#delete'] },
+        }),
+        context: {
+          action: 'click',
+          target: { targetId, input: '#delete', commandArgs: ['#delete'] },
+        },
+        next: `Next: cdp click ${prefix} "#delete" --accept-dialog`,
+      },
+      {
+        action: 'fill',
+        err: T.nativeDialogDismissedError({
+          type: 'prompt',
+          message: 'Rename to?',
+          accepted: false,
+          handled: true,
+        }, {
+          action: 'fill',
+          target: { targetId, input: '#name', commandArgs: ['#name', 'new'] },
+        }),
+        context: {
+          action: 'fill',
+          target: { targetId, input: '#name', commandArgs: ['#name', 'new'] },
+        },
+        next: `Next: cdp fill ${prefix} "#name" new --accept-dialog`,
+      },
+      {
+        action: 'click',
+        err: T.nativeDialogDismissedError({
+          type: 'confirm',
+          message: 'Go?',
+          accepted: false,
+          handled: true,
+        }, {
+          action: 'click',
+          target: { targetId, commandArgs: [] },
+        }),
+        context: {
+          action: 'click',
+          target: { targetId, commandArgs: [] },
+        },
+        next: `Next: cdp click ${prefix} --accept-dialog`,
+      },
+      {
+        action: 'reload',
+        err: T.navigationCancelledError('reload', { url: 'https://app.example/items/1' }),
+        context: {
+          action: 'reload',
+          target: { targetId, input: 'reload', commandArgs: [] },
+        },
+        next: `Next: cdp reload ${prefix} --accept-dialog`,
+      },
+      {
+        action: 'nav',
+        err: T.navigationCancelledError('nav', { url: 'https://app.example/next' }),
+        context: {
+          action: 'nav',
+          target: { targetId, input: 'https://app.example/next', commandArgs: ['https://app.example/next'] },
+        },
+        next: `Next: cdp nav ${prefix} https://app.example/next --accept-dialog`,
+      },
+    ];
+    for (const sample of samples) {
+      const text = T.formatActionFailure(sample.err, sample.context);
+      const cli = T.formatCliError(new Error(text), {
+        cmd: sample.action,
+        targetPrefix: prefix,
+        args: sample.context.target.commandArgs,
+      });
+      expect(text.split('\n').at(-1), text).toBe(sample.next);
+      expect(cli.split('\n').at(-1), cli).toBe(sample.next);
+      expect(text, text).toMatch(/^Kind: (?:native-dialog|navigation-cancelled)$/m);
+      expect(cli, cli).not.toMatch(/\(Kind:/);
+      expectRunnableNext(text);
+      expectRunnableNext(cli);
+    }
+  });
+
   it('has no Kind suffix, ask-first suffix, or trailing comment on a Next line in shipped scripts', () => {
     const hits = [];
     for (const root of SCAN_ROOTS) {
