@@ -232,7 +232,8 @@ describe('Kind: hidden-tab recovery', () => {
     expect(recovery).toMatchObject({ kind: 'hidden-tab', run: 'CDP_BACKGROUND=0 cdp shot ABCD1234 /tmp/out.png' });
     const text = T.formatCliError(new Error(message), { cmd: 'elshot', targetPrefix: 'ABCD1234', args: ['#hero'] });
     expect(text).toMatch(/Kind: hidden-tab/);
-    expect(text).toMatch(/^Next: CDP_BACKGROUND=0 cdp elshot ABCD1234 "#hero" \(Kind: hidden-tab\)$/m);
+    expect(text).toMatch(/^Next: CDP_BACKGROUND=0 cdp elshot ABCD1234 "#hero"$/m);
+    expect(text).toMatch(/^\s+Kind: hidden-tab$/m);
   });
 
   it('a daemon error printed by the CLI keeps the command arguments in Next', () => {
@@ -245,7 +246,7 @@ describe('Kind: hidden-tab recovery', () => {
       console: { log: () => {}, error: line => errors.push(line) },
       process: proc,
     });
-    expect(errors.join('\n')).toMatch(/^Next: CDP_BACKGROUND=0 cdp shot ABCD1234 \/tmp\/out\.png \(Kind: hidden-tab\)$/m);
+    expect(errors.join('\n')).toMatch(/^Next: CDP_BACKGROUND=0 cdp shot ABCD1234 \/tmp\/out\.png$/m);
     expect(proc.exitCode).toBe(1);
   });
 });
@@ -303,7 +304,7 @@ describe('hidden-tab recovery never replays steps that already ran', () => {
       expect(recovery.reason, cmd).toMatch(/do not rerun the whole command/i);
     }
     const text = T.formatCliError(new Error(`Flow halted at step 2/2: ${message()}`), { cmd: 'flow', targetPrefix: 'ABCD1234', args: ['click #buy; shot'] });
-    expect(text).toMatch(/^Next: CDP_BACKGROUND=0 cdp shot ABCD1234 \(Kind: hidden-tab\)$/m);
+    expect(text).toMatch(/^Next: CDP_BACKGROUND=0 cdp shot ABCD1234$/m);
     expect(text).not.toMatch(/Next: .*click #buy/);
   });
 

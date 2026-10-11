@@ -95,7 +95,7 @@ describe('hover does not report success before the page is hovered (#608)', () =
     const cli = T.formatCliError(err, { cmd: 'hover', targetPrefix: 'ABCD1234', args: ['#a'] });
     expect(cli).toMatch(/Kind: hover-not-delivered/);
     expect(nextLines(cli)).toEqual([
-      'Next: CDP_BACKGROUND=0 cdp hover ABCD1234 "#a" (Kind: hover-not-delivered)',
+      'Next: CDP_BACKGROUND=0 cdp hover ABCD1234 "#a"',
     ]);
     expect(cli).not.toMatch(/jsclick/);
     expect(cli).not.toMatch(/click --js/);
@@ -110,7 +110,7 @@ describe('hover does not report success before the page is hovered (#608)', () =
     expect(err).toBeInstanceOf(Error);
     const cli = T.formatCliError(err, { cmd: 'hover', targetPrefix: 'ABCD1234', args: ['#a'] });
     expect(nextLines(cli)).toEqual([
-      'Next: cdp perceive ABCD1234 -C -d 8 (Kind: hover-not-delivered)',
+      'Next: cdp perceive ABCD1234 -C -d 8',
     ]);
     expect(cli).not.toMatch(/jsclick/);
     expect(cli).not.toMatch(/click --js/);

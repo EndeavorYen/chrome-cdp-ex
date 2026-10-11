@@ -937,7 +937,7 @@ function validateStep(id, stdout, {
       'Storage: local 2, session 1',
       'Cookies: 1',
       'Values: cookie values, URL secrets, and sensitive storage values are redacted by default.',
-      'Next: use `checkpoint --unsafe-full --format json` only when restore fidelity is required.',
+      'Use `cdp checkpoint <target> --unsafe-full --format json` only when restore fidelity is required.',
     ].join('\n');
     if (stdout !== expected) throw new Error(`checkpoint fixture output is invalid: ${JSON.stringify(stdout)}`);
     return stdout;

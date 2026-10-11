@@ -297,7 +297,7 @@ Each finding has an ID and a candidate class for Phase B (WRONG / BUG / THIN). P
 
 **A-07 Two error classifiers, two output shapes, two Kind vocabularies, and Kinds chosen by matching substrings of the message.** Candidate THIN; one misclassification is WRONG-adjacent.
 - Action path: `classifyActionFailureKind` (`ar:466-979`) prints `Error:` / `Kind:` / detail / `Next:` (`ar:1014-1021`). Kinds include stale-ref, covered, misdirected, click-no-change, disabled, overlay, wrong-frame, dom-rewrite, invalid-selector, selector, not-fillable, drag-*, no-input-events and timeout.
-- CLI path: `buildCliErrorRecovery` (`cdp:31447-32075`, about 45 ordered branches) prints `Error:`, then a `Recovery:` block (`Kind`, `Strategy`, `Run`, `Then`, `Reason`), then `Next: … (Kind: …)` (`cdp:32077-32089`, `cdp:32163-32201`). Kind and the command are each printed twice: the missing-target error is 8 lines and 377 chars. Kinds include target-resolution, browser-cdp, stale-daemon, daemon-disconnect, hidden-tab, screenshot-capture, eval, pdf-viewer and assertion.
+- CLI path: `buildCliErrorRecovery` (`cdp:31447-32075`, about 45 ordered branches) prints `Error:`, then a `Recovery:` block (`Kind`, `Strategy`, `Run`, `Then`, `Reason`), then `Next:`. At audit time that Next line also carried ` (Kind: …)` (`cdp:32077-32089`, `cdp:32163-32201`). #637 leaves Kind on its own line and keeps Next as the command only. Kinds include target-resolution, browser-cdp, stale-daemon, daemon-disconnect, hidden-tab, screenshot-capture, eval, pdf-viewer and assertion.
 - No schema enumerates either vocabulary: `docs/schemas/action-receipt.v1.json` has no kind enum, and no `cli-error.v1` schema file exists. SKILL documents 6 kinds (`SKILL.md:18`, `:36`, `:40`).
 - Probes (`__test__.buildCliErrorRecovery`):
 
@@ -317,7 +317,7 @@ Each finding has an ID and a candidate class for Phase B (WRONG / BUG / THIN). P
 
 **A-09 `Next:` lines are not executable as printed.** Candidate THIN; WRONG against `AGENTS.md:24`.
 - Placeholder templates: `commandUsageTemplate` (`cdp:31357-31430`), e.g. `cdp click <target> <selector|@ref>`; `ar:780`.
-- A typo gives `Next: cdp click (Kind: usage)` with no target, and running that line fails next with "target ID required" (measured).
+- A typo gave `Next: cdp click (Kind: usage)` with no target (measured at audit time). #637 drops the `(Kind: …)` suffix. The command is still target-less, and running it fails next with "target ID required".
 - The binary is `bin/chrome-cdp` (`package.json` `bin`), but every Next line, the card (`cdp:30697`) and `SKILL.md:36` say `cdp`. SKILL never states that `cdp` means `bin/chrome-cdp`.
 - POSIX env prefixes (`CDP_BACKGROUND=0 …`, `CDP_PORT=… …`, `XDG_RUNTIME_DIR=… …`) are never rewritten for PowerShell: there is no `$env:` form anywhere in `cdp.mjs`. `SKILL.md:10` sends Windows users to PowerShell with `chrome-cdp.cmd`.
 

@@ -158,7 +158,7 @@ Reproduced and added to [findings.md](findings.md):
 - `click <t> "Save settings"` is read as a CSS selector: a 2 s wait, then a message asking for the visible text. (B-10 #641)
 - Setting the value with eval fires no change event, so Save settings stays disabled. (T-05)
 - Before #634, `cookies <t>` printed the HttpOnly session value in clear; now only `cookies <t> --unsafe-full` does. (B-03 #634)
-- Error Next lines end in "(Kind: …)" and fail when pasted into a shell. (B-06 #637)
+- Before #637, a Next line ended with "(Kind: …)" or "(ask first)" and failed when pasted. Next is only the command. (B-06 #637)
 
 **Reference path** (the killer path the judge passes):
 
@@ -388,7 +388,7 @@ Reproduced and added to [findings.md](findings.md):
 
 - Both flag tabs have the same title; only the URL column of `list` tells them apart. (scenario)
 - `list` marks one tab with `*`. It is a score-based recommendation with ties broken by target id, not the active tab, so with two identical "Feature flags" tabs it lands on either one. (cdp:4963 rankPageTargets)
-- Error Next lines end in "(Kind: …)" and fail when pasted. (B-06 #637)
+- Before #637, a Next line ended with "(Kind: …)" and failed when pasted. Next is only the command. (B-06 #637)
 
 **Reference path** (the killer path the judge passes):
 

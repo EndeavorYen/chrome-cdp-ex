@@ -71,7 +71,8 @@ describe('#535 hidden-tab capture in background mode', () => {
       expect(err?.code).toBe('hidden_tab');
       const out = T.formatCliError(err, { cmd: 'shot', targetPrefix: 'ABCD1234' });
       expect(out).toMatch(/Kind: hidden-tab/);
-      expect(out.split('\n').at(-1)).toBe('Next: CDP_BACKGROUND=0 cdp shot ABCD1234 (Kind: hidden-tab)');
+      expect(out.split('\n').at(-1)).toBe('Next: CDP_BACKGROUND=0 cdp shot ABCD1234');
+      expect(out).toMatch(/^\s+Kind: hidden-tab$/m);
     }
   });
 });
