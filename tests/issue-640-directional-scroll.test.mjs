@@ -396,6 +396,17 @@ describe('#640 directional scroll', () => {
     expect(failure).toMatchObject({ kind: 'not-scrollable', nextCommand: 'cdp perceive ABCDEF12 -C -d 8' });
   });
 
+  it('hints that an overflow:hidden region is reached with --scroll-container', () => {
+    const error = new Error('scroll: nothing scrolled: nothing on the page scrolls vertically. Position: (0, 0)');
+    const failure = classifyActionFailure(error, {
+      action: 'scroll',
+      target: { targetId: 'ABCDEF1234567890', input: 'down 500' },
+    });
+    const hints = failure.hints.join('\n');
+    expect(hints).toMatch(/--scroll-container/);
+    expect(hints).toMatch(/overflow:hidden/);
+  });
+
   it('still scrolls an overflow-y:hidden box when --scroll-container names it', async () => {
     const wrap = overflowElement({
       id: 'wrap',
@@ -447,7 +458,7 @@ describe('#640 directional scroll', () => {
     expect(line).not.toContain('hidden');
   });
 
-  it('names the axis when nothing scrolls that way, and Next is a shell command', async () => {
+  it('names the axis when nothing scrolls that way, and the command before the Kind suffix is a shell command', async () => {
     const list = overflowElement({ id: 'list', scrollHeight: 4000, clientHeight: 400 });
     const cdp = pageCdp(page({ docScrollMax: 0, containers: [list] }));
     let error;
@@ -471,9 +482,9 @@ describe('#640 directional scroll', () => {
     ].join('\n'));
     const cli = T.formatCliError(new Error(formatted), { cmd: 'scroll', targetPrefix: 'ABCDEF12', args: ['right', '300'] });
     const nextLine = cli.split('\n').at(-1);
-    expect(nextLine).toBe('Next: cdp perceive ABCDEF12 -C -d 8 (Kind: not-scrollable)');
-    const command = nextLine.replace(/^Next:\s*/, '').replace(/ \(Kind: [^)]+\)$/, '');
-    const syntax = spawnSync('bash', ['-nc', command], { encoding: 'utf8' });
+    const runnable = 'cdp perceive ABCDEF12 -C -d 8';
+    expect(nextLine).toBe(`Next: ${runnable} (Kind: not-scrollable)`);
+    const syntax = spawnSync('bash', ['-nc', runnable], { encoding: 'utf8' });
     expect(syntax.status, syntax.stderr).toBe(0);
   });
 
