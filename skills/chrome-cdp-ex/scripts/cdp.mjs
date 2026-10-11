@@ -34180,10 +34180,20 @@ function backgroundDaemonEnv(background, env = process.env) {
   return daemonEnv;
 }
 
+// `open` always creates a blank tab, then navigates only after the tab daemon is attached.
+// The created URL is the signal for whether that navigation has already been requested (#644).
+const OPEN_CREATED_TARGET_URL = 'about:blank';
+
+function openTargetNavigationRequested(createdUrl = OPEN_CREATED_TARGET_URL) {
+  const value = String(createdUrl ?? '').trim();
+  return !isBlankPageUrl(value) && value !== 'about:blank/';
+}
+
 // Background mode opens the tab in its own new window, created without focus: a background tab in an
 // existing window is document.visibilityState=hidden, and Page.captureScreenshot can stall there (#415).
 async function createOpenTarget(cdp, { background = false } = {}) {
-  const params = background ? { url: 'about:blank', newWindow: true, background: true } : { url: 'about:blank' };
+  const url = OPEN_CREATED_TARGET_URL;
+  const params = background ? { url, newWindow: true, background: true } : { url };
   const { targetId } = await cdpDomains(cdp).Target.createTarget( params);
   return targetId;
 }
@@ -34291,10 +34301,17 @@ async function navigateOpenTarget(targetId, sp, url, {
   connectToSocketFn = connectToSocket,
   sendCommandFn = sendCommand,
   background = isBackgroundMode(),
+  createdUrl = OPEN_CREATED_TARGET_URL,
+  navigationRequested = openTargetNavigationRequested(createdUrl),
 } = {}) {
   if (!url || url === 'about:blank') return { attempted: false, ok: true, reason: 'about:blank' };
   const attempts = [];
-  const initialUrl = await waitForOpenTargetUrlFn(targetId, url, 1500);
+  // #644, same class as #339: do not poll for a condition this step has not caused.
+  // A blank tab cannot already equal the requested URL, so look once and do not sleep.
+  // One observation still accepts a target created directly at that URL. The 1500 ms
+  // poll remains only when navigation was already requested and the URL has not landed.
+  const initialTimeoutMs = navigationRequested ? 1500 : 0;
+  const initialUrl = await waitForOpenTargetUrlFn(targetId, url, initialTimeoutMs);
   if (initialUrl.ok) {
     return { attempted: true, ok: true, method: 'Target.createTarget', href: initialUrl.href, error: null };
   }
@@ -34919,7 +34936,10 @@ async function main(options = {}) {
       await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
     const navigation = attached
-      ? await navigateOpenTarget(targetId, sp, url, { background: opts.background })
+      ? await navigateOpenTarget(targetId, sp, url, {
+          background: opts.background,
+          createdUrl: OPEN_CREATED_TARGET_URL,
+        })
       : { attempted: false, ok: false, reason: 'not-attached' };
     const ready = attached
       ? await waitForOpenReady(targetId, { timeoutMs: opts.readyTimeoutMs, url, selector: opts.readySelector })
@@ -35665,7 +35685,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, openTargetNavigationRequested, OPEN_CREATED_TARGET_URL, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   DEFAULT_OPEN_ATTACH_TIMEOUT_MS,
   CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, CATALOG_USAGE, renderCliHelp, renderCardHelp,
   SURVIVOR_COMMANDS, helpStr, helpTopicStr,
