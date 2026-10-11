@@ -1,7 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, freemem, totalmem, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defineConfig } from 'vitest/config';
+import {
+  resolveVitestMaxWorkers,
+  vitestArgsSetMaxWorkers,
+} from './scripts/lib/vitest-max-workers.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -23,12 +27,33 @@ function removeRuntimeRoot() {
 process.prependListener('exit', removeRuntimeRoot);
 process.prependListener('SIGINT', removeRuntimeRoot);
 process.prependListener('SIGTERM', removeRuntimeRoot);
+
+// `--maxWorkers` / `--max-workers` on the Vitest CLI wins. Otherwise size the
+// forks pool from memory so `npm test` does not keep the 3-worker CPU default
+// on a small or already-busy machine (#682).
+const totalMemBytes = totalmem();
+const freeMemBytes = freemem();
+const maxWorkers = vitestArgsSetMaxWorkers(process.argv)
+  ? null
+  : resolveVitestMaxWorkers({
+    totalMemBytes,
+    freeMemBytes,
+    cpuCount: availableParallelism(),
+    override: process.env.CHROME_CDP_EX_VITEST_MAX_WORKERS,
+  });
+if (maxWorkers != null) {
+  const miB = bytes => Math.round(bytes / (1024 * 1024));
+  console.error(
+    `chrome-cdp-ex vitest maxWorkers=${maxWorkers} totalMiB=${miB(totalMemBytes)} freeMiB=${miB(freeMemBytes)}`,
+  );
+}
 const runtimeEnv = process.platform === 'win32'
   ? { LOCALAPPDATA: runtimeRoot }
   : { XDG_RUNTIME_DIR: runtimeRoot };
 
 export default defineConfig({
   test: {
+    ...(maxWorkers == null ? {} : { maxWorkers }),
     setupFiles: ['tests/isolate-runtime-dir.mjs'],
     // Each file re-imports cdp.mjs and snapshots the directory set by the setup file.
     isolate: true,

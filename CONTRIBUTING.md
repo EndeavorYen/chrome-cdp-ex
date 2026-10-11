@@ -53,6 +53,8 @@ npm run lint          # ESLint (warnings allowed, errors fail)
 npm run check:docs    # command, release, and contributor documentation contracts
 ```
 
+`npm test` limits Vitest's forks workers from free and total memory (`os.freemem()` and `os.totalmem()`), with a floor of 1, so a small or busy machine does not keep the CPU default and run out of memory. On a large idle machine the count stays at Vitest's non-watch cap, `max(cpuCount - 1, 1)`. Pin a count with `CHROME_CDP_EX_VITEST_MAX_WORKERS` (an integer from 1 to 64) or with `npm test -- --maxWorkers=<n>`. The CLI flag wins over the env var and the memory formula.
+
 When attach, perceive, or act code changes and a supported browser is installed, also run `npm run smoke:live`. It skips if no supported browser is available. Manual testing with a real Chrome/Edge instance still helps because many CDP behaviors cannot be unit tested; the live smoke starts an isolated profile, exercises long-session workflows, and cleans up its temporary state.
 
 Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Those scripts may remain in `scripts/` and `validation/` as optional historical harnesses; they are not contributor merge instructions.
