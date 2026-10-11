@@ -9,12 +9,20 @@ process.env.NODE_ENV = 'test';
 // caches and daemon sockets under the runtime dir, so tests must never write fixture records
 // into the developer's real XDG_RUNTIME_DIR (or LOCALAPPDATA on Windows), where real `doctor` /
 // `list` runs would trust them (#425). tests/isolate-runtime-dir.mjs puts each file's directory
-// inside this root, so one file cannot leave a record for the next, and this exit handler
-// removes those directories with the root. A worker never runs its own exit listeners (#645).
+// inside this root, so one file cannot leave a record for the next. This file removes
+// the root on exit and on SIGINT / SIGTERM. A worker never runs its own exit listeners (#645).
 const runtimeRoot = mkdtempSync(join(tmpdir(), 'chrome-cdp-ex-vitest-'));
-process.on('exit', () => {
+function removeRuntimeRoot() {
   try { rmSync(runtimeRoot, { recursive: true, force: true }); } catch {}
-});
+}
+// Vitest's logger registers an 'exit' listener before this file loads, and that
+// listener calls process.exit() again. Node then skips every later 'exit' listener,
+// so process.on('exit') here does not run for Ctrl-C or SIGTERM and the directory
+// stays behind (#676). Prepend so removal runs before that re-entrant exit.
+// Signal listeners are prepended too: a signal that never emits 'exit' still removes it.
+process.prependListener('exit', removeRuntimeRoot);
+process.prependListener('SIGINT', removeRuntimeRoot);
+process.prependListener('SIGTERM', removeRuntimeRoot);
 const runtimeEnv = process.platform === 'win32'
   ? { LOCALAPPDATA: runtimeRoot }
   : { XDG_RUNTIME_DIR: runtimeRoot };

@@ -8,7 +8,7 @@ import { afterAll } from 'vitest';
 // daemon sockets then stay inside the file that created them (#645).
 //
 // The directory is created under the run-level root from vitest.config.js. That process
-// deletes the root on exit, and the exit listener does run there. A Vitest worker is stopped
+// deletes the root on exit, SIGINT, and SIGTERM (#676). A Vitest worker is stopped
 // without emitting process 'exit', so a per-file directory placed directly in the OS temp
 // dir is left behind. afterAll removes it when the file finishes; the root removal covers a
 // worker that is killed before the hook. The extra segment stays short so a 32-character

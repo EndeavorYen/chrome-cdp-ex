@@ -21,8 +21,8 @@ describe('test runtime dir isolation', () => {
     expect(root).toBeTruthy();
     expect(runRoot).toBeTruthy();
     expect(resolve(root).startsWith(resolve(tmpdir()) + sep)).toBe(true);
-    // Per-file dirs live under the run root so vitest.config.js removes them on process exit.
-    // A worker does not run process 'exit' listeners (#645).
+    // Per-file dirs live under the run root so vitest.config.js removes them on process
+    // exit, SIGINT, and SIGTERM. A worker does not run process 'exit' listeners (#645, #676).
     expect(resolve(root).startsWith(resolve(runRoot) + sep)).toBe(true);
     expect(resolve(root)).toContain('chrome-cdp-ex-vitest-');
     // cdp.mjs reads cdp-last-endpoint.json from this directory. A second file must not
