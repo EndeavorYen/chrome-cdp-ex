@@ -82,7 +82,9 @@ describe('#658 dismissed dialog stays native-dialog on click, fill, and press', 
     expect(text).not.toMatch(/Kind: no-click-box/);
 
     const printed = T.formatCliError(new Error(text), { cmd: 'click', targetPrefix: PREFIX, args: [input] });
-    expect(printed).toContain(`Next: cdp click ${PREFIX} "#delete" --accept-dialog (Kind: native-dialog)`);
+    expect(printed.split('\n').at(-1)).toBe(`Next: cdp click ${PREFIX} "#delete" --accept-dialog`);
+    expect(printed).toMatch(/^Kind: native-dialog$/m);
+    expect(printed).not.toMatch(/\(Kind:/);
     expect(printed).not.toMatch(/Kind: click-no-change/);
     expect(printed).not.toMatch(/Next:.*jsclick/);
   });
@@ -127,7 +129,9 @@ describe('#658 dismissed dialog stays native-dialog on click, fill, and press', 
     expect(nextLines(text)).toEqual([`Next: cdp press ${PREFIX} Enter --accept-dialog`]);
     expect(text).not.toMatch(/Kind: press-not-delivered/);
     const printed = T.formatCliError(new Error(text), { cmd: 'press', targetPrefix: PREFIX, args: ['Enter'] });
-    expect(printed).toContain(`Next: cdp press ${PREFIX} Enter --accept-dialog (Kind: native-dialog)`);
+    expect(printed.split('\n').at(-1)).toBe(`Next: cdp press ${PREFIX} Enter --accept-dialog`);
+    expect(printed).toMatch(/^Kind: native-dialog$/m);
+    expect(printed).not.toMatch(/\(Kind:/);
     expect(printed).not.toMatch(/CDP_BACKGROUND=0/);
     expect(printed).not.toMatch(/Kind: press-not-delivered/);
   });
