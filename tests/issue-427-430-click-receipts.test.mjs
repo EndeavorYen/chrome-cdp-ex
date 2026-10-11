@@ -98,13 +98,14 @@ describe('#427 failed actions always print an Error line', () => {
     expect(text.split('\n')).toHaveLength(3);
   });
 
-  it('the CLI error renderer passes the formatted failure through, Kind repeated on the last Next line (#533)', () => {
+  it('the CLI error renderer passes the formatted failure through, Kind on its own line (#637)', () => {
     const failure = formatActionFailure(new Error('Named control not found: "x"'), {
       action: 'click',
       target: { targetId: TARGET_ID, input: 'x' },
     });
-    const kind = failure.match(/^Kind: (\S+)/m)[1];
-    expect(T.formatCliError(new Error(failure), { cmd: 'click', targetPrefix: PREFIX })).toBe(`${failure} (Kind: ${kind})`);
+    expect(T.formatCliError(new Error(failure), { cmd: 'click', targetPrefix: PREFIX })).toBe(failure);
+    expect(failure).toMatch(/^Kind: /m);
+    expect(failure).not.toMatch(/\(Kind:/);
   });
 
   it('a failed dispatch receipt rendered as text carries the original error', () => {

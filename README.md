@@ -48,7 +48,7 @@ From a checkout or unpacked release:
 ./bin/chrome-cdp stop
 ```
 
-`click`, `fill`, and `press` print a one-line receipt with the node addressed, the URL, and the next command. Exit 0 means the CDP call finished and those observations were printed. A failed action prints `Error:`, a `Kind:` (for example `covered`, `disabled`, `stale-ref`) and a runnable `Next:`, and exits 1.
+`click`, `fill`, and `press` print a one-line receipt with the node addressed, the URL, and the next command. Exit 0 means the CDP call finished and those observations were printed. A failed action prints `Error:`, a `Kind:` line (for example `covered`, `disabled`, `stale-ref`) and a `Next:` line that is only the shell command, and exits 1.
 
 If `node -v` is older than 22, doctor prints a Node 22 path that `./bin/chrome-cdp` re-execs.
 

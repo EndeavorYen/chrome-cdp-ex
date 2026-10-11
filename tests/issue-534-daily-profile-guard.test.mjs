@@ -104,7 +104,9 @@ describe('#534 CDP_ISOLATED_ONLY gate in getWsUrl', () => {
     const out = T.formatCliError(err, { cmd: 'list' });
     expect(out).toMatch(/Kind: policy/);
     expect(out).toMatch(/Strategy: use-isolated-browser/);
-    expect(out.split('\n').at(-1)).toMatch(/^Next: cdp spawn-debug-browser \S+ --port 9333 --user-data-dir \S+.* \(ask first\) \(Kind: policy\)$/);
+    expect(out).toMatch(/^Ask a human first$/m);
+    expect(out).toMatch(/^\s+Kind: policy$/m);
+    expect(out.split('\n').at(-1)).toMatch(/^Next: cdp spawn-debug-browser \S+ --port 9333 --user-data-dir \S+$/);
   });
 });
 

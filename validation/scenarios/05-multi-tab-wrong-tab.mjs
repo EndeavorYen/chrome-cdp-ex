@@ -38,7 +38,7 @@ export const scenario = {
   weakModelTraps: [
     { trap: 'Both flag tabs have the same title; only the URL column of `list` tells them apart.', refs: 'scenario' },
     { trap: '`list` marks one tab with `*`. It is a score-based recommendation with ties broken by target id, not the active tab, so with two identical "Feature flags" tabs it lands on either one.', refs: 'cdp:4963 rankPageTargets' },
-    { trap: 'Error Next lines end in "(Kind: …)" and fail when pasted.', refs: 'B-06 #637' },
+    { trap: 'Before #637, a Next line ended with "(Kind: …)" and failed when pasted. Next is only the command.', refs: 'B-06 #637' },
   ],
   referencePath: [
     'list → the tab whose URL contains /env/staging/flags',

@@ -29,7 +29,7 @@ export function defaultReportNextSteps(target, hasActions) {
       ]
     : [
         `cdp perceive ${target} -C -d 8`,
-        `cdp click ${target} @ref  # choose a ref from perceive`,
+        `cdp click ${target} @ref`,
       ];
 }
 

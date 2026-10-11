@@ -175,7 +175,9 @@ Consequence: a page's own validation message sends the agent to `help eval`, and
 
 ### B-06 `Next:` lines do not run when copied
 
-- Every CLI error's Next ends with ` (Kind: <kind>)` (`cdp:32196-32206`; also `scripts/lib/session-policy.mjs:629`). Doctor and consent-gated Next lines end with ` (ask first)` (`cdp:26250`, `cdp:32198`).
+The suffix below was the audit measurement. #637 removed it: a `Next:` line is only the shell command, and `Kind:` and `Ask a human first` are separate lines.
+
+- Every CLI error's Next ended with ` (Kind: <kind>)` (`cdp:32196-32206`; also `scripts/lib/session-policy.mjs:629`). Doctor and consent-gated Next lines ended with ` (ask first)` (`cdp:26250`, `cdp:32198`).
   - bash: `echo cdp perceive 5DE36628 -C -d 8 (Kind: unknown)` → `syntax error near unexpected token '('`, exit 2.
   - PowerShell: the same line → "The term 'Kind:' is not recognized as the name of a cmdlet …" (localized on the test host).
 - The command word is `cdp`. The installed entry point is `bin/chrome-cdp` (package.json `bin`); SKILL.md:36 calls `cdp` a shorthand. Nothing named `cdp` is on PATH after install.

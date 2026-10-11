@@ -39,9 +39,9 @@ describe('perception model lib', () => {
 
   it('keeps default act recommendations executable when no ref is known', () => {
     expect(goldenPathActRecommendation('ABC123')).toMatchObject({
-      run: 'cdp click ABC123 @ref  # choose a ref from perceive',
+      run: 'cdp click ABC123 @ref',
       commands: [
-        'cdp click ABC123 @ref  # choose a ref from perceive',
+        'cdp click ABC123 @ref',
         'cdp perceive ABC123 --since-action',
         'cdp report ABC123',
       ],

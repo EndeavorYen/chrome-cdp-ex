@@ -543,11 +543,9 @@ export function alignContractToSurvivors(contract) {
     if (!spelling) return true;
     return servedAllowlist.has(spelling) || spelling === 'rm';
   });
-  const cliCases = (contract?.cliCases || []).map(entry => (
-    entry?.id === 'help' || entry?.id === 'no-args-help'
-      ? { ...entry, stdout: '<survivor-synopsis-file>' }
-      : entry
-  ));
+  // #675: keep captured help and no-args help in the diff. Replacing them with a
+  // placeholder let a stale --unsafe-full synopsis pass check:contracts.
+  const cliCases = contract?.cliCases || [];
   return {
     ...contract,
     commands,
@@ -571,6 +569,32 @@ export function liveSurvivorSynopses(surface = COMMAND_SURFACE) {
     commands[name] = { synopsis: command.help.synopsis, summary: command.help.summary };
   }
   return { schema: 'chrome-cdp-ex.survivor-synopsis.v1', commands };
+}
+
+// Captured no-args / help text must still contain every live survivor synopsis.
+// A hand-edited capture that drops `--unsafe-full` fails here even when the
+// synopsis fixture was updated.
+export function helpCaptureDifferences(cliCases, synopses = liveSurvivorSynopses()) {
+  const differences = [];
+  const commands = synopsisMap(synopses);
+  for (const id of ['no-args-help', 'help']) {
+    const entry = (cliCases || []).find(item => item?.id === id);
+    if (!entry || typeof entry.stdout !== 'string') {
+      differences.push(`${id}: missing captured help`);
+      continue;
+    }
+    for (const name of SURVIVOR_COMMANDS) {
+      const synopsis = commands[name]?.synopsis;
+      if (!synopsis) {
+        differences.push(`${id}: ${name}: missing live synopsis`);
+        continue;
+      }
+      if (!entry.stdout.includes(synopsis)) {
+        differences.push(`${id}: ${name}.synopsis: captured help is missing ${JSON.stringify(synopsis)}`);
+      }
+    }
+  }
+  return differences;
 }
 
 export function survivorSynopsisDifferences(expected, actual) {
@@ -629,6 +653,10 @@ export async function runContractCheck({ rootDir = DEFAULT_ROOT, version, write 
   const synopsisDifferences = survivorSynopsisDifferences(synopsisFixture, liveSurvivorSynopses());
   if (synopsisDifferences.length) {
     throw new Error(`Survivor synopsis drift detected:\n${synopsisDifferences.map(line => `- ${line}`).join('\n')}`);
+  }
+  const helpDifferences = helpCaptureDifferences(expected.cliCases);
+  if (helpDifferences.length) {
+    throw new Error(`Captured help drifted from the live command surface:\n${helpDifferences.map(line => `- ${line}`).join('\n')}`);
   }
   checkPackageInventory(rootDir, version, tarball);
   return { mode: 'check', path };

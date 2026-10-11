@@ -150,6 +150,8 @@ describe('caller cwd for daemon file paths (#577)', () => {
     expect(text).toMatch(/Error: shot: output directory does not exist: \/caller\/work\/shots/);
     expect(text).toMatch(/Kind: usage/);
     expect(text).not.toMatch(/Kind: unknown/);
-    expect(text).toMatch(/Next: cdp help shot \(Kind: usage\)/);
+    expect(text).toMatch(/^Next: cdp help shot$/m);
+    expect(text).toMatch(/Kind: usage/);
+    expect(text).not.toMatch(/\(Kind:/);
   });
 });

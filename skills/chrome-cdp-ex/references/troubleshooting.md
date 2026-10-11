@@ -202,7 +202,8 @@ When the last page list (`pages.json`, written by `list` and by every target com
 
 ```
 Error: No live target matching prefix "1667E1A4". Target 1667E1A4 is gone; the same page (same URL and title) is now B7BB111A: http://127.0.0.1:7860/
-Next: cdp nav B7BB111A http://127.0.0.1:7860/ (Kind: target-resolution)
+Kind: target-resolution
+Next: cdp nav B7BB111A http://127.0.0.1:7860/
 ```
 
 Scripts that run for a long time should not keep a fixed prefix. Resolve the target by URL each time with `cdp target --url <url>`, or check `cdp list` when a prefix stops working.

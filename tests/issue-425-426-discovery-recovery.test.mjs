@@ -190,7 +190,10 @@ describe('#425 unprefixed discovery probes the remembered endpoint', () => {
     const model = T.buildCliErrorModel(r.listError, { cmd: 'list' });
     expect(model.recovery.run).toBe(doctorNext);
     expect(model.recovery.consentRequired).toBe(true);
-    expect(T.formatCliError(r.listError, { cmd: 'list' })).toContain(`Next: ${doctorNext} (ask first)`);
+    const listText = T.formatCliError(r.listError, { cmd: 'list' });
+    expect(listText).toContain('Ask a human first');
+    expect(listText).toContain(`Next: ${doctorNext}`);
+    expect(listText).not.toContain('(ask first)');
   });
 
   it('a stale default-profile record still does not beat the daily dir in list (5c41ea5 kept, now in list too)', async () => {
@@ -248,9 +251,13 @@ describe('#425/#426 never recommend relaunching a profile whose browser is still
     expect(model.recovery.run).toBeNull();
     expect(model.recovery.ask).toBe(r.doctor.recommendation.ask);
     const text = T.formatCliError(r.listError, { cmd: 'list' });
-    expect(text).toContain(`Next: ${r.doctor.recommendation.ask}`);
+    expect(text).toContain(`Ask: ${r.doctor.recommendation.ask}`);
+    expect(text).toMatch(/^Next: cdp doctor$/m);
+    expect(text).not.toContain(`Next: ${r.doctor.recommendation.ask}`);
     expect(text).not.toMatch(/Run: null/);
-    expect(r.doctorText).toContain(`Next: ${r.doctor.recommendation.ask}`);
+    expect(r.doctorText).toContain(r.doctor.recommendation.ask);
+    expect(r.doctorText).toMatch(/^Next: cdp doctor$/m);
+    expect(r.doctorText).not.toContain(`Next: ${r.doctor.recommendation.ask}`);
   });
 
   it('the profile running with this very port that does not answer is not relaunched either', async () => {
