@@ -1872,8 +1872,9 @@ function daemonBackgroundMode(targetId, { env = process.env, runtimeDir = RUNTIM
 // the action log are stored the same way, in cdp-<targetId>.observe.json (#606, #618).
 const TAB_ENV_SCHEMA = 'chrome-cdp-ex.tab-env.v1';
 const TAB_ENV_SUFFIX = '.env.json';
-// Only files that match the defaults (accept, throttle off, no mocks) are removed past this.
-// A dismiss record must not be deleted to make room: the next daemon would auto-accept (#575).
+// Only files that match the defaults (dismiss, throttle off, no mocks) are removed past this.
+// An accept record must not be deleted to make room: the next daemon would drop an explicit
+// accept, and a missing file is dismiss (#658). A dismiss record matches that default.
 const TAB_ENV_RECORDS_MAX = 64;
 const TAB_ENV_THROTTLE_PROFILES = new Set(['offline', 'slow-3g', 'fast-3g', 'lte', 'custom']);
 const RESTART_NOTICE_PROBE_COMMANDS = new Set(['meta', 'list_raw', '_activate']);
@@ -2001,16 +2002,17 @@ function listTabEnvironmentRecords({ runtimeDir = RUNTIME_DIR, readdir = readdir
         try {
           record = JSON.parse(text);
         } catch {
-          // Unreadable files force dismiss on the next daemon. Deleting one would make that
-          // tab auto-accept, so they stay until closetab.
+          // Unreadable files force dismiss on the next daemon. Deleting one is not how a tab
+          // becomes accept, but the record stays until closetab so a corrupt file is not dropped.
           return { path, setAt: '', prunable: false };
         }
         if (!record || record.schema !== TAB_ENV_SCHEMA) return { path, setAt: '', prunable: false };
         const parsed = parseTabEnvironment(text, record.targetId);
-        // A readable accept record with throttle off and no mocks matches a missing file.
-        // Anything else, including dismiss, is kept: dropping it would come back as auto-accept.
+        // A readable dismiss record with throttle off and no mocks matches a missing file.
+        // Anything else, including accept, is kept: dropping an explicit accept would
+        // come back as dismiss, and dropping a throttle or mock record would drop that setting.
         const prunable = parsed.status === 'ok'
-          && parsed.dialog === 'accept'
+          && parsed.dialog === 'dismiss'
           && !parsed.throttle
           && parsed.mocks.length === 0;
         return { path, setAt: String(record.setAt || ''), prunable };
@@ -2033,7 +2035,7 @@ function writeTabEnvironment(targetId, state, {
   const record = {
     schema: TAB_ENV_SCHEMA,
     targetId: String(targetId),
-    dialog: state?.dialog === 'dismiss' ? 'dismiss' : 'accept',
+    dialog: state?.dialog === 'accept' ? 'accept' : 'dismiss',
     throttle: persistedThrottle(state?.throttle),
     mocks: persistedMocks(state?.mocks),
     setAt: new Date(now()).toISOString(),
@@ -2067,7 +2069,7 @@ function removeTabEnvironment(targetId, { runtimeDir = RUNTIME_DIR, remover = un
 function rememberTabEnvironment(session) {
   if (!session?.targetId || !session.runtimeDir) return false;
   const saved = writeTabEnvironment(session.targetId, {
-    dialog: session.dialogMode === 'dismiss' ? 'dismiss' : 'accept',
+    dialog: session.dialogMode === 'accept' ? 'accept' : 'dismiss',
     throttle: session.networkThrottle,
     mocks: session.networkMocks,
   }, { runtimeDir: session.runtimeDir });
@@ -2077,19 +2079,18 @@ function rememberTabEnvironment(session) {
   return true;
 }
 
-// Absent means the caller never chose a mode, so auto-accept stays. Anything we cannot read fails
-// closed: a saved dismiss must not come back as auto-accept (#575).
+// Absent means the caller never chose a mode, so confirm/prompt/beforeunload are dismissed (#658).
+// Anything we cannot read fails closed the same way. Only an explicit accept record accepts.
 function savedDialogAccepts(record) {
-  if (!record || record.status === 'absent') return true;
-  if (record.status !== 'ok') return false;
-  return record.dialog !== 'dismiss';
+  if (!record || record.status !== 'ok') return false;
+  return record.dialog === 'accept';
 }
 
 function environmentRestoreOutcome(saved) {
   if (!saved || saved.status === 'absent') {
     return {
       unreadable: false,
-      dialog: 'accept',
+      dialog: 'dismiss',
       throttleProfile: 'off',
       throttleReset: false,
       mockCount: 0,
@@ -2108,7 +2109,7 @@ function environmentRestoreOutcome(saved) {
   }
   return {
     unreadable: false,
-    dialog: saved.dialog === 'dismiss' ? 'dismiss' : 'accept',
+    dialog: saved.dialog === 'accept' ? 'accept' : 'dismiss',
     throttleProfile: saved.throttle?.profile || 'off',
     throttleReset: false,
     mockCount: Array.isArray(saved.mocks) ? saved.mocks.length : 0,
@@ -13248,7 +13249,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     secretValues: new Map(),
     networkMocks: [],
     networkMockHits: [],
-    dialogMode: 'accept',
+    dialogMode: 'dismiss',
     restartNotice: null,
     clock: null,
     environmentLog: [],
@@ -22791,8 +22792,57 @@ async function evalRawStr(cdp, sid, method, paramsJson, authorization) {
   return JSON.stringify(result, null, 2);
 }
 
+const ACCEPT_DIALOG_FLAG = '--accept-dialog';
+const DECISION_DIALOG_TYPES = new Set(['confirm', 'prompt', 'beforeunload']);
+
+function takeAcceptDialogFlag(args = []) {
+  const list = Array.isArray(args) ? args : [];
+  let acceptDialog = false;
+  const kept = [];
+  for (const arg of list) {
+    if (arg === ACCEPT_DIALOG_FLAG) {
+      acceptDialog = true;
+      continue;
+    }
+    kept.push(arg);
+  }
+  return { args: kept, acceptDialog };
+}
+
+// Accept is never the default. A command flag or a saved `dialog accept` is required (#658).
+function nativeDialogShouldAccept({ commandAccept = false, savedAccept = false } = {}) {
+  return commandAccept === true || savedAccept === true;
+}
+
+// confirm, prompt, and beforeunload change what the page does. alert has one button.
+function dismissedDecisionDialogSince(dialogBuf, sinceSeq = 0) {
+  const entries = typeof dialogBuf?.since === 'function' ? dialogBuf.since(sinceSeq || 0) : [];
+  return entries.find(entry => (
+    DECISION_DIALOG_TYPES.has(String(entry?.type || ''))
+    && entry?.accepted === false
+    && entry?.handled !== false
+  )) || null;
+}
+
+function nativeDialogDismissedError(entry, { action = 'click', target = {} } = {}) {
+  const type = String(entry?.type || 'dialog');
+  const message = compactActionText(
+    redactSensitiveString(String(entry?.message || '')),
+    MAX_ACTION_DIALOG_MESSAGE_CHARS,
+  );
+  const quoted = message ? ` "${message}"` : '';
+  const err = new Error(`native ${type}${quoted} was dismissed`);
+  err.nativeDialog = {
+    type,
+    message,
+    action,
+    commandArgs: Array.isArray(target?.commandArgs) ? [...target.commandArgs] : [],
+  };
+  return err;
+}
+
 function dialogStr(dialogBuf, dialogAutoAcceptRef, flag) {
-  if (flag === 'accept') { dialogAutoAcceptRef.value = true; return 'Dialog auto-accept: ON (default)'; }
+  if (flag === 'accept') { dialogAutoAcceptRef.value = true; return 'Dialog auto-accept: ON (explicit)'; }
   if (flag === 'dismiss') { dialogAutoAcceptRef.value = false; return 'Dialog auto-accept: OFF (dialogs will be dismissed/rejected)'; }
   if (flag) throw new Error(`Unknown dialog flag: "${flag}". Use "accept" or "dismiss".`);
   const mode = dialogAutoAcceptRef.value ? 'ON' : 'OFF';
@@ -29702,20 +29752,25 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // --- Dialog handling (alert/confirm/prompt/beforeunload) ---
   const dialogBuf = new RingBuffer(20);
   session.buffers.dialog = dialogBuf;
-  // Auto-ACCEPT by default (confirm → OK, beforeunload → leave) so a dialog cannot lock the
-  // page; `dialog <target> dismiss` flips it. Action receipts report each answer (#460).
-  // The saved mode is applied here, before any request, and before throttle/mocks are replayed.
-  // Network replay waits until this process owns the socket so a loser does not emulate over the
-  // daemon that won it (#575).
+  // Dismiss by default (confirm → Cancel, prompt → null, beforeunload → stay) so a dialog
+  // cannot lock the page and a confirm() cannot run its OK branch (#658). `dialog <target> accept`
+  // or `--accept-dialog` on the triggering command is required to accept. Action receipts report
+  // each answer (#460). The saved mode is applied here, before any request, and before throttle
+  // and mocks are replayed. Network replay waits until this process owns the socket so a loser
+  // does not emulate over the daemon that won it (#575).
   const savedEnvironment = readTabEnvironment(targetId);
   const dialogAutoAcceptRef = { value: savedDialogAccepts(savedEnvironment) };
   session.dialogMode = dialogAutoAcceptRef.value ? 'accept' : 'dismiss';
+  let commandAcceptDialog = false;
   session.environmentRestore = withObservationNotice(environmentRestoreOutcome(savedEnvironment), session);
   let environmentReady = Promise.resolve();
   const jsDialogs = createJavaScriptDialogSession();
   cdp.onEvent('Page.javascriptDialogOpening', (params, msg) => {
     jsDialogs.track(handleOpeningJavaScriptDialog(cdp, sessionId, params, msg, {
-      accept: dialogAutoAcceptRef.value,
+      accept: nativeDialogShouldAccept({
+        commandAccept: commandAcceptDialog,
+        savedAccept: dialogAutoAcceptRef.value,
+      }),
       dialogBuf,
     }));
   });
@@ -29862,9 +29917,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         // actionFeedback shallow-copies the target before dispatch. The readback
         // lives on the session until it is copied onto that clone (#578).
         if (action === 'viewport') rememberViewportReadback(actionTarget, session);
-        if ((action === 'click' || action === 'jsclick' || action === 'clickxy') && jsDialogs.hasPending()) {
-          await jsDialogs.waitForPending(1500);
-        }
+        if (jsDialogs.hasPending()) await jsDialogs.waitForPending(1500);
+        const dismissedDialog = dismissedDecisionDialogSince(dialogBuf, observationBaseline.dialog);
+        if (dismissedDialog) throw nativeDialogDismissedError(dismissedDialog, { action, target: actionTarget });
         if (shouldSkipActionPageEvaluate(jsDialogs)) {
           actionTarget.dialogBlocked = true;
           actionTarget.dispatchText = String(text || '');
@@ -30327,7 +30382,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         url,
         targetId,
         onSessionId(nextSid) { sessionId = nextSid; },
-        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session, dismissMode: () => !dialogAutoAcceptRef.value }),
+        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session, dismissMode: () => !nativeDialogShouldAccept({ commandAccept: commandAcceptDialog, savedAccept: dialogAutoAcceptRef.value }) }),
       }), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
@@ -30416,7 +30471,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         pendingReqs,
         networkStatusByRequest,
         lastReadSeq,
-        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session, dismissMode: () => !dialogAutoAcceptRef.value }),
+        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session, dismissMode: () => !nativeDialogShouldAccept({ commandAccept: commandAcceptDialog, savedAccept: dialogAutoAcceptRef.value }) }),
       }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
@@ -30709,14 +30764,42 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     return { nonce: contentBoundaryNonce, origin: originLabel(await readTargetUrl()) };
   }
 
-  async function handleCommand({ cmd, args, policy, secrets = null }, execution = undefined, { outermost = false, guarded = false } = {}) {
+  async function throwIfDecisionDialogDismissed(cmd, commandArgs, sinceSeq) {
+    if (jsDialogs.hasPending()) await jsDialogs.waitForPending(1500);
+    const dismissed = dismissedDecisionDialogSince(dialogBuf, sinceSeq);
+    if (!dismissed) return;
+    throw nativeDialogDismissedError(dismissed, {
+      action: cmd,
+      target: {
+        targetId,
+        input: Array.isArray(commandArgs) ? (commandArgs[0] || '') : '',
+        commandArgs: Array.isArray(commandArgs) ? commandArgs : [],
+      },
+    });
+  }
+
+  async function handleCommand({ cmd, args, policy, secrets = null }, execution = undefined, { outermost = false, guarded = false, dialogFlagTaken = false } = {}) {
   await environmentReady;
+  if (!dialogFlagTaken) {
+    const taken = takeAcceptDialogFlag(args);
+    const previousAccept = commandAcceptDialog;
+    commandAcceptDialog = previousAccept || taken.acceptDialog;
+    try {
+      return await handleCommand(
+        { cmd, args: taken.args, policy, secrets },
+        execution,
+        { outermost, guarded, dialogFlagTaken: true },
+      );
+    } finally {
+      commandAcceptDialog = previousAccept;
+    }
+  }
   if (daemonCommandResetsIdle(cmd)) resetIdle();
   if (daemonRequestStorage.getStore() === undefined) {
     const policyState = createRequestPolicyState(policy);
     return runDaemonRequestScope({ cmd, secrets, execution, session }, () => daemonPolicyStorage.run(
       policyState,
-      () => handleCommand({ cmd, args }, execution, { outermost: true }),
+      () => handleCommand({ cmd, args }, execution, { outermost: true, dialogFlagTaken: true }),
     ));
   }
     // #466: with a session policy, every command and step runs inside its checks.
@@ -30726,7 +30809,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         state: policyState,
         cmd,
         args,
-        execute: () => handleCommand({ cmd, args }, execution, { guarded: true }),
+        execute: () => handleCommand({ cmd, args }, execution, { guarded: true, dialogFlagTaken: true }),
         navigationLog: mainFrameNavigationLog,
         compositeSteps: policyCompositeSteps,
         readContentBoundary: outermost ? readContentBoundary : null,
@@ -30735,6 +30818,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         onViolation: ({ sinceAction, error }) => markSessionActionsPolicyFailed(session, sinceAction, error),
       });
     }
+    const dialogSince = typeof dialogBuf?.latest === 'function' ? dialogBuf.latest() : 0;
     try {
       enforceDaemonTableCollectionGate({ cmd, args }, execution);
       let result;
@@ -30748,6 +30832,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         if (route.ok === false) {
           return { ok: false, result: route.result, error: route.error };
         }
+        await throwIfDecisionDialogDismissed(cmd, args, dialogSince);
         return { ok: true, result: route.result ?? '' };
       }
       switch (cmd) {
@@ -30773,6 +30858,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         case 'stop': return { ok: true, result: '', stopAfter: true };
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }
+      await throwIfDecisionDialogDismissed(cmd, args, dialogSince);
       return { ok: true, result: result ?? '' };
     } catch (e) {
       const rawError = actionFailureMessage(e);
@@ -30785,7 +30871,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         target: isMutatingCommand && lastAction.target ? lastAction.target : { targetId, input: args?.[0], label: args?.[0] },
       };
       const failure = classifyActionFailure(e, context);
-      const error = alreadyClassified || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
+      const error = alreadyClassified || failure.kind === 'native-dialog' || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
         ? formatActionFailure(e, context)
         : rawError;
       return { ok: false, error };
@@ -32112,6 +32198,7 @@ Usage: cdp <command> [args]
 {{command:html}}
 {{command:nav}}
                                     Successful document nav is URL+title (+ readyState). --compact is one line.
+                                    --accept-dialog: accept this navigation's beforeunload (default dismisses it; Kind: navigation-cancelled)
 {{command:mock}}
                                     add <urlPattern> --status code --body text [--content-type type]
 {{command:clock}}
@@ -32144,6 +32231,7 @@ Usage: cdp <command> [args]
 {{command:net}}
 {{command:click}}
                                     --js / -j: use HTMLElement.click() (JS fallback)
+                                    --accept-dialog: accept a native confirm, prompt, or beforeunload this click opens (default is dismiss; Kind: native-dialog)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
                                     name: accessible name; one-step jsclick, skinny URL receipt
                                     text=Name / text="Name": same exact visible-name match (not Playwright substring)
@@ -32191,6 +32279,7 @@ Usage: cdp <command> [args]
 {{command:cookieset}}
 {{command:cookiedel}}
 {{command:dialog}}
+                                    Default dismisses confirm, prompt, and beforeunload. accept is explicit and also accepts later confirms.
 {{command:viewport}}
 {{command:emulate}}
                                     color-scheme dark|light|no-preference
@@ -32206,6 +32295,7 @@ Usage: cdp <command> [args]
 {{command:back}}
 {{command:forward}}
 {{command:reload}}
+                                    --accept-dialog: accept this reload's beforeunload (default dismisses it; Kind: navigation-cancelled)
 {{command:closetab}}
 {{command:netlog}}
 {{command:inject}}
@@ -35545,6 +35635,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   tabEnvPath, readTabEnvironment, writeTabEnvironment, removeTabEnvironment, rememberTabEnvironment,
   tabObservePath, rememberTabObservation, restoreTabObservation, removeTabObservation,
   setDialogMode, applySavedTabEnvironment, formatDaemonRestartNotice, armDaemonRestartNotice, applyDaemonRestartNotice,
+  savedDialogAccepts, environmentRestoreOutcome, takeAcceptDialogFlag, nativeDialogShouldAccept,
+  dismissedDecisionDialogSince, nativeDialogDismissedError, ACCEPT_DIALOG_FLAG,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   recordCommandUsage, USAGE_LOG_MAX_BYTES, getWsUrl, classifyBrowserProfile, checkBrowserProfile, splitCommandLine, readBrowserProcessArgv, macCommandLineArgv, readBrowserArgvViaCdp, createIsolatedMemberGate, readCdpUserAgent, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,

@@ -77,10 +77,10 @@ describe('Phase 6 command-surface characterization', () => {
       }
     }
     const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
-    // #639: ACTION FEEDBACK names a download, a new tab, and a cross-origin frame click as exit 0.
-    expect(Buffer.byteLength(catalogHelp)).toBe(28765);
+    // #658: catalog help names dismiss-by-default and --accept-dialog on click, nav, dialog, and reload.
+    expect(Buffer.byteLength(catalogHelp)).toBe(29344);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:4ccf2243506c22a306864b197ed7fca552484e308e0b34a508ff20555e1616c2');
+      .toBe('sha256:5214c16a48809a78642deea8c7f1231bb4b6afedd181d5e1025b53f342e91f38');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
@@ -137,8 +137,9 @@ describe('Phase 6 command-surface characterization', () => {
       expect(canonicalizeContract(tool), tool.name).toEqual(canonicalizeContract(fixtureTools[tool.name]));
     }
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
+    // #658: click and navigate accept an explicit acceptDialog flag. Default remains dismiss.
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:ee6264644325d2b3be68e9f7cd13c30ac8130d5bc778aee599223f7fa591480a');
+      .toBe('sha256:1ccac979f297e6b6f96b496eb406ff2703dcc463a606f9135f9912906eaa35f9');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))
