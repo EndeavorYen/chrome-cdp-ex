@@ -227,6 +227,7 @@ describe('#511/#513 stay linear', () => {
     it(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, text.length / 4);
+      // 30 ms is LINEAR_TIME_FLOOR_ALLOWLIST_MS. Any other floor is rejected by the #678 source check.
       expect(linearTimeFailure(redactSensitiveString, small, text, { capMs: 1000, floorMs: 30 })).toBeNull();
     });
   }
