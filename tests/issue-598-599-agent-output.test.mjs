@@ -423,8 +423,13 @@ describe('stale-ref agent output (#599)', () => {
       { action: 'click', target: { targetId: 'ABC12345', input: '@1' } },
     );
     const cli = formatCliError(new Error(text), { cmd: 'click', targetPrefix: 'ABC12345' });
-    expect(cli).toMatch(/Kind: stale-ref/);
-    expect(cli.trimEnd().endsWith('(Kind: stale-ref)')).toBe(true);
+    // #637: Kind is its own line. Next is only the selector command.
+    expect(text).toMatch(/^Kind: stale-ref$/m);
+    expect(cli).toMatch(/^Kind: stale-ref$/m);
+    expect(text).not.toMatch(/\(Kind:/);
+    expect(cli).not.toMatch(/\(Kind:/);
+    expect(text.trimEnd().endsWith('Next: cdp click ABC12345 "button#save"')).toBe(true);
+    expect(cli.trimEnd().endsWith('Next: cdp click ABC12345 "button#save"')).toBe(true);
     expect(agentChars(text)).toBeLessThan(223);
   });
 
@@ -455,6 +460,15 @@ describe('stale-ref agent output (#599)', () => {
         dispatched: false,
         nextCommand: 'cdp perceive ABC12345 -C -d 8',
       });
+      const printed = formatActionFailure(caught, {
+        action: 'click',
+        target: { targetId: 'ABC12345', input: '@1' },
+      });
+      const cli = formatCliError(new Error(printed), { cmd: 'click', targetPrefix: 'ABC12345' });
+      expect(printed.trimEnd().endsWith('Next: cdp perceive ABC12345 -C -d 8')).toBe(true);
+      expect(cli.trimEnd().endsWith('Next: cdp perceive ABC12345 -C -d 8')).toBe(true);
+      expect(printed).not.toMatch(/\(Kind:/);
+      expect(cli).not.toMatch(/\(Kind:/);
       expect(cdp.calls.some(call => call.method.startsWith('Input.'))).toBe(false);
     }
   });
