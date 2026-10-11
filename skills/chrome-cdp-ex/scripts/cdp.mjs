@@ -31231,17 +31231,18 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       };
       // click-no-change is thrown after dispatch returns. The dialog buffer still
       // shows the confirm that click opened, so the --accept-dialog Next stays.
-      e = errorYieldingToDismissedDialog(e, {
+      // A new binding: ESLint no-ex-assign forbids writing the catch parameter.
+      const actionError = errorYieldingToDismissedDialog(e, {
         dialogBuf,
         sinceSeq: dialogSince,
         action: context.action,
         target: context.target,
       });
-      const rawError = actionFailureMessage(e);
+      const rawError = actionFailureMessage(actionError);
       const alreadyClassified = isClassifiedActionFailureText(rawError);
-      const failure = classifyActionFailure(e, context);
+      const failure = classifyActionFailure(actionError, context);
       const error = alreadyClassified || failure.kind === 'native-dialog' || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
-        ? formatActionFailure(e, context)
+        ? formatActionFailure(actionError, context)
         : rawError;
       return { ok: false, error };
     }
