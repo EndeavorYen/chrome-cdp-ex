@@ -26,12 +26,15 @@ describe('#518 scalingRatio', () => {
   }, 30_000);
 
   it('catches a quadratic scan', () => {
-    const large = 'ab'.repeat(2048);
+    // 4096 chars can finish under the 15 ms noise floor on a fast Windows runner.
+    // linearTimeAllows then treats the scan as noise and returns null. 8000 chars
+    // is the size the Windows quadratic check already measures.
+    const large = 'ab'.repeat(4000);
     const failure = linearTimeFailure(quadraticScan, large.slice(0, large.length / 4), large, {
       platform: 'win32',
       capMs: 5000,
     });
-    expect(failure, failure || 'quadratic scan was accepted').toMatch(/^ratio /);
+    expect(failure ?? 'quadratic scan was accepted').toMatch(/^ratio /);
   }, 30_000);
 
   it('pairs every small run with a large run', () => {
