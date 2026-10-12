@@ -149,11 +149,17 @@ describe('#465 tool annotations come from the command authorization catalog', ()
   });
 });
 
+// #643: a tool result is the CLI text receipt plus a small mcp-result block; format: "json" keeps
+// #465's versioned JSON receipt as text and as structuredContent.
+function mcpResult(code) {
+  return { schema: 'chrome-cdp-ex.mcp-result.v1', ok: code === 0, exitCode: code };
+}
+
 describe('#465 structuredContent for JSON command output', () => {
   it('returns the parsed object next to the unchanged text', async () => {
     const payload = { schema: 'chrome-cdp-ex.doctor.v1', ok: true, checks: [{ id: 'node', ok: true }] };
     const stdout = JSON.stringify(payload, null, 2);
-    const reply = await harness(async () => ({ code: 0, stdout, stderr: '' })).call('doctor', {});
+    const reply = await harness(async () => ({ code: 0, stdout, stderr: '' })).call('doctor', { format: 'json' });
     expect(reply.result).toEqual({
       content: [{ type: 'text', text: stdout }],
       structuredContent: payload,
@@ -165,7 +171,7 @@ describe('#465 structuredContent for JSON command output', () => {
     const payload = { schema: 'chrome-cdp-ex.action-result.v1', ok: false };
     const stdout = JSON.stringify(payload);
     const reply = await harness(async () => ({ code: 1, stdout, stderr: '' }))
-      .call('click', { target: 'ABC', selector: '#go', confirm: true });
+      .call('click', { target: 'ABC', selector: '#go', confirm: true, format: 'json' });
     expect(reply.result).toEqual({
       content: [{ type: 'text', text: stdout }],
       structuredContent: payload,
@@ -175,7 +181,7 @@ describe('#465 structuredContent for JSON command output', () => {
 
   it('omits structuredContent for text, arrays, schema-less objects, and malformed JSON', async () => {
     for (const stdout of ['plain text', '[1,2]', '{"ok":true}', '{"schema":', '"chrome-cdp-ex"', '{"schema":7}']) {
-      const reply = await harness(async () => ({ code: 0, stdout, stderr: '' })).call('doctor', {});
+      const reply = await harness(async () => ({ code: 0, stdout, stderr: '' })).call('doctor', { format: 'json' });
       expect(reply.result, stdout).toEqual({ content: [{ type: 'text', text: stdout }], isError: false });
     }
   });
@@ -191,6 +197,7 @@ describe('#465 screenshot tools return an image content block', () => {
         { type: 'text', text: `${path}\nScreenshot saved. DPR=1` },
         { type: 'image', data: TINY_PNG.toString('base64'), mimeType: 'image/png' },
       ],
+      structuredContent: mcpResult(0),
       isError: false,
     });
   }));
@@ -225,19 +232,16 @@ describe('#465 screenshot tools return an image content block', () => {
     });
   }));
 
-  it('attaches images for allowlisted screenshot spellings and refuses fullshot', withRuntimeDir(async runtimeDir => {
+  it('attaches images for allowlisted screenshot spellings, including fullshot', withRuntimeDir(async runtimeDir => {
     const path = join(runtimeDir, 'elshot-ABCDEF12-ref3.png');
     writeFileSync(path, TINY_PNG);
-    for (const command of ['screenshot', 'elshot']) {
+    for (const command of ['screenshot', 'elshot', 'fullshot']) {
       const reply = await harness(shotOutput(path), { runtimeDir })
         .call('run_command', { command, args: ['ABCDEF12', '@3'], confirm: true });
       expect(reply.result.content[1], command).toEqual({
         type: 'image', data: TINY_PNG.toString('base64'), mimeType: 'image/png',
       });
     }
-    const denied = await harness(shotOutput(path), { runtimeDir })
-      .call('run_command', { command: 'fullshot', args: ['ABCDEF12', '@3'], confirm: true });
-    expect(JSON.stringify(denied)).toMatch(/not allowlisted/);
   }));
 
   it('returns only text with a note when the PNG is over the inline cap', withRuntimeDir(async runtimeDir => {
@@ -343,7 +347,11 @@ describe('#465 screenshot tools return an image content block', () => {
     writeFileSync(fresh, TINY_PNG);
     const failed = await harness(async () => ({ code: 1, stdout: fresh, stderr: 'capture failed' }), { runtimeDir })
       .call('screenshot', { target: 'FRESH000' });
-    expect(failed.result).toEqual({ content: [{ type: 'text', text: `capture failed\n${fresh}` }], isError: true });
+    expect(failed.result).toEqual({
+      content: [{ type: 'text', text: `capture failed\n${fresh}` }],
+      structuredContent: mcpResult(1),
+      isError: true,
+    });
 
     const other = await harness(shotOutput(fresh), { runtimeDir }).call('doctor', {});
     expect(other.result.content.map(block => block.type)).toEqual(['text']);

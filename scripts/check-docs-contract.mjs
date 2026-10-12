@@ -4,6 +4,7 @@ import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { checkChangelogFragments, loadChangelogTexts } from './changelog-fragments.mjs';
 import { generateCommandSurfaces } from './generate-command-surfaces.mjs';
+import { nextCommandsMissingFromAllowlist } from './check-next-run-command.mjs';
 import { SURVIVOR_COMMANDS } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import {
   LOCKED_PK_BOARD,
@@ -673,6 +674,10 @@ export function runDocsContract() {
     generateCommandSurfaces({ rootDir: ROOT_DIR });
   } catch (error) {
     failures.push(error.message || String(error));
+  }
+  const missingNext = nextCommandsMissingFromAllowlist({ rootDir: ROOT_DIR });
+  if (missingNext.length > 0) {
+    failures.push(`Next hint names commands run_command does not accept: ${missingNext.join(', ')}`);
   }
   return failures;
 }

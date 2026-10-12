@@ -482,7 +482,7 @@ describe('#469 replay re-resolves the name at replay time', () => {
 describe('#469 MCP fill accepts secret instead of text', () => {
   it('maps secret to --secret NAME and refuses text plus secret', () => {
     expect(buildMcpToolCommand('fill', { target: '71DF370F', selector: '#pw', secret: 'PW', confirm: true }))
-      .toEqual(['fill', '71DF370F', '#pw', '--secret', 'PW', '--format', 'json']);
+      .toEqual(['fill', '71DF370F', '#pw', '--secret', 'PW']);
     expect(() => buildMcpToolCommand('fill', { target: '71DF370F', selector: '#pw', secret: 'PW', text: 'x', confirm: true }))
       .toThrow(/text or secret, not both/);
     expect(() => buildMcpToolCommand('fill', { target: '71DF370F', selector: '#pw', confirm: true }))

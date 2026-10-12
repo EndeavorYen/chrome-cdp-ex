@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
+import { isServedMcpTool } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 
@@ -120,6 +121,17 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
       expect(executeCli).not.toHaveBeenCalled();
     },
   );
+
+  it('refuses a tool that is mapped but not served, before RuntimeClient execution (#643)', async () => {
+    const executeCli = vi.fn();
+    const state = handlerWith(executeCli);
+    expect(isServedMcpTool('report')).toBe(false);
+    await state.handle({
+      jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'report', arguments: { session: 'latest' } },
+    });
+    expect(state.sent.at(-1).error).toEqual({ code: -32000, message: 'Unknown MCP tool: report' });
+    expect(executeCli).not.toHaveBeenCalled();
+  });
 
   it('rejects table collection before RuntimeClient execution', async () => {
     const executeCli = vi.fn();
