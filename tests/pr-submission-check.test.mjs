@@ -145,18 +145,21 @@ describe('checkHeadSha', () => {
   const head = '37bdbe0abc1234def';
 
   it('accepts cited head tokens that are prefixes of the current head', () => {
-    expect(checkHeadSha('head sha `37bdbe0`', head)).toEqual([]);
     expect(checkHeadSha('Head: 37bdbe0abc', head)).toEqual([]);
     expect(checkHeadSha('on head 37BDBE0', head)).toEqual([]);
+  });
+
+  it('ignores a head token inside code markup', () => {
+    expect(checkHeadSha('head sha `37bdbe0`', head)).toEqual([]);
     expect(checkHeadSha(`head commit \`${head}\``, head)).toEqual([]);
+    expect(checkHeadSha('head sha `37bdbe0abc1234def999`', head)).toEqual([]);
+    expect(checkHeadSha('Old head `1234abc` was rerun', '69f432f6d0ab27929488d6475fc0d7f5dfd489bb')).toEqual([]);
+    expect(checkHeadSha('In #690 (head `37bdbe0`)', '69f432f6d0ab27929488d6475fc0d7f5dfd489bb')).toEqual([]);
   });
 
   it('reports a stale head token', () => {
     expect(checkHeadSha('on head 1111111aaaa', head)).toEqual([
       'body cites head 1111111aaaa but current head is 37bdbe0abc1234def',
-    ]);
-    expect(checkHeadSha('head sha `37bdbe0abc1234def999`', head)).toEqual([
-      'body cites head 37bdbe0abc1234def999 but current head is 37bdbe0abc1234def',
     ]);
   });
 

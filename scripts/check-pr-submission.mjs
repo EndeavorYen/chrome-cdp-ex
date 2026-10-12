@@ -95,7 +95,6 @@ export function checkHeadSha(body, headSha) {
 }
 
 const CODE_GAP = '\u0000';
-const BARE_SHA = /^[0-9a-fA-F]{7,40}$/;
 
 function textOutsideQuotedCode(body) {
   return stripInlineCode(stripFencedCode(normalizeNewlines(body)));
@@ -153,13 +152,7 @@ function stripInlineCode(text) {
       index += size;
       continue;
     }
-    const raw = text.slice(index + size, closer);
-    // A backticked hex token is the citation form (`head sha \`abc1234\``), not quoted output.
-    if (BARE_SHA.test(unwrapCodeSpan(raw))) {
-      result += text.slice(index, closer + size);
-    } else {
-      result += CODE_GAP;
-    }
+    result += CODE_GAP;
     index = closer + size;
   }
   return result;
@@ -178,13 +171,6 @@ function findBacktickRun(text, from, size) {
     index += run;
   }
   return -1;
-}
-
-function unwrapCodeSpan(raw) {
-  if (raw.length >= 2 && raw.startsWith(' ') && raw.endsWith(' ') && /[^ ]/.test(raw)) {
-    return raw.slice(1, -1);
-  }
-  return raw;
 }
 
 function localPathPatterns() {
