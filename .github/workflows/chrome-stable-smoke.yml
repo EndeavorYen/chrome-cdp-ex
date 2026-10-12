@@ -1,0 +1,36 @@
+name: Chrome stable smoke
+
+on:
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-chrome-stable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Pin and bump procedure: docs/ci-chrome-stable.md
+      CHROME_VERSION: "154.0.8037.57"
+      CHROME_DEB_SHA256: "66c0645f6a19871bab2844b8537c11a0db2e7d3bea8ef85a1c7cb52a54e65a3e"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: bash scripts/ci/install-pinned-chrome.sh
+      - run: |
+          set -o pipefail
+          CDP_SMOKE_BROWSER=/opt/google/chrome/chrome \
+            CDP_SMOKE_HEADLESS=1 \
+            CDP_SMOKE_NO_SANDBOX=1 \
+            npm run smoke:live | tee smoke.log
+          if grep -F -q 'SKIP live smoke' smoke.log; then
+            echo 'live smoke skipped; a skip must not pass this job' >&2
+            exit 1
+          fi
