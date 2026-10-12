@@ -305,7 +305,7 @@ export function ipcTimeoutForRequest(request) {
 // flight, so no response is ever truncated; any later bytes (a duplicate frame)
 // were ignored before too. end() waits for a graceful half-close, which on a
 // Windows named pipe held the process ~51 ms after every reply
-// (docs/perf/2026-09-30-cli-preamble.md, local result). The daemon treats the
+// (local measurement, 2026-09-30). The daemon treats the
 // client's reset exactly like a FIN: createDaemonRequestConnection routes 'end',
 // 'close' and 'error' to the same disconnect path, after the reply write flushed.
 function closeAfterFrame(conn) {

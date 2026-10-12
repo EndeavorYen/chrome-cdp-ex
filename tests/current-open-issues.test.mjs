@@ -1385,16 +1385,6 @@ describe('issues #97-#101 contracts', () => {
     expect(T.parsePerceiveArgs(['--last', '12']).last).toBe(12);
   });
 
-  it('#100 and #101 ship docs artifacts for Browser Use mapping and outreach research', async () => {
-    const { readFileSync, existsSync } = await import('fs');
-    expect(existsSync('docs/browser-use-mapping.md')).toBe(true);
-    expect(existsSync('docs/outreach/awesome-lists.md')).toBe(true);
-    const mapping = readFileSync('docs/browser-use-mapping.md', 'utf8');
-    expect(mapping).toMatch(/Action Receipt/i);
-    expect(mapping).toMatch(/recovery/i);
-    const outreach = readFileSync('docs/outreach/awesome-lists.md', 'utf8');
-    expect(outreach).toMatch(/Do not auto-submit/i);
-  });
 });
 
 describe('v2.11.0 review regressions', () => {

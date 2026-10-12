@@ -514,7 +514,7 @@ Needs Node >= 22 (it uses the global `WebSocket`). The port is required: pass `-
 
 `job.mjs` exports `default async ({ page, args }) => result`. `page` has `ev(expr)`, `waitFor(expr, {timeoutMs, intervalMs})` (each evaluate is bounded by the time left), `pointer(selector)` (full pointer-event sequence in the page, opens menus that need `pointerdown`; works on hidden tabs, local result on headless Chrome), `waitResponse(urlPattern, {timeoutMs})` (event-driven; call it before the action, `await w.promise` after), `upload(selector, files)` (`files` must be absolute paths), `download(url, outFile, opts)` and `shot(file)`. Prints one `chrome-cdp-ex.session.v1` receipt and exits 1 on failure, including an unhandled rejection or uncaught exception in the job. Not a catalog command.
 
-Measured on one Windows machine against a self-started headless Chrome (local result, not a guarantee): 12 page evaluations in one `node session.mjs` process took about 103-106 ms wall-clock (median of 8, two runs), against about 2.9-3.3 s wall-clock for the same 12 evaluations as 12 separate `cdp eval` processes (median of 3). Data: `docs/perf/2026-09-30-session-acceptance.md` and the two `*-session-acceptance*.json` files beside it.
+Measured on one Windows machine against a self-started headless Chrome (local result, not a guarantee): 12 page evaluations in one `node session.mjs` process took about 103-106 ms wall-clock (median of 8, two runs), against about 2.9-3.3 s wall-clock for the same 12 evaluations as 12 separate `cdp eval` processes (median of 3).
 
 ### Flow (sequential pipeline with halt-on-error)
 
@@ -1768,33 +1768,6 @@ cdp controls <t> -s "#composer" --filter send --compact --format json
 ### Vite / HMR
 
 When Vite HMRs a route, `Page.frameNavigated` fires and the daemon clears its ref map automatically. The next `@ref` you try will produce the navigation-classified error. Just re-run `perceive` and continue.
-
-## Dogfood Benchmark
-
-Before making performance or adoption claims, run the live Killer Path benchmark:
-
-```bash
-npm run benchmark:killer
-npm run benchmark:mcp
-npm run benchmark:killer -- --json
-npm run benchmark:killer -- --stability-ms 1200000
-npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
-npm run benchmark:playwright -- --out playwright-raw.json
-npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
-npm run benchmark:killer -- --comparison-baselines ./baselines.json
-```
-
-It launches disposable debug browsers and measures `doctor -> open -> perceive -> act -> since-action evidence -> report`: command calls, latency, output tokens, Action Receipt coverage, recovery handoffs, stale refs, modal/frame/CSS/HMR probes, and report artifacts. `benchmark:mcp` and `benchmark:cli` run the same task id and six semantic checkpoints so route recommendations compare like with like. `benchmark:campaign` can also run Killer Path, 5000+ node large-app stress, and five distinct local real-app profiles (`dashboard`, `docs-app`, `auth-flow`, `data-table`, `canvas-heavy`) with generated and exercised trait coverage. Campaign failures exit nonzero by default; `--allow-failures` is an explicit diagnostic-only override. Local profiles are test fixtures, not external production-app evidence.
-
-The report includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires a successful run, at most 24 command calls, first useful observation within 5 seconds, golden path completion within 2 minutes, useful observation tokens at or below 3000, at least one auto-evidence action, 100% evidence coverage for every observed mutating command, 100% JSON action evidence completeness with action, target, dispatch, settle, effects deltas, outcome, and verdict, 100% executable recovery coverage for failed steps, 100% top-level `nextSteps` coverage for observed JSON handoffs, 100% `recommendation` coverage for observed JSON handoffs, 100% doctor onboarding coverage with wizard current step, golden path, and readiness checks, a report timeline, 100% `latestAction` coverage for JSON report handoffs with actions, 100% `timelineWindow` coverage for JSON report handoffs with actions, 100% JSON differentiator handoff coverage, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Do not make adoption or comparison claims from a failed gate; fix the failed criterion first.
-
-JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`. Pass `--comparison-baselines` with measured Playwright/generic-CDP baselines before publishing comparison claims; otherwise the built-in heuristic baseline is only a planning aid and must not be presented as external measurement.
-
-To replace the heuristic comparison with measured competitor runs, either pass `--comparison-baselines` a `chrome-cdp-ex.comparison-baselines.v1` file directly, or normalize one or more raw harness result files with `npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json`. Raw result files use `{"schema":"chrome-cdp-ex.raw-baseline-results.v1","source":"measured-local-baseline","runs":[{"id":"playwright","label":"Measured Playwright harness","commandCalls":24,"usefulObservationTokens":4200,"verificationCallsSaved":0,"differentiatorSuccessRate":0.5}]}`.
-
-`npm run benchmark:generic-cdp -- --out generic-cdp-raw.json` launches the same smoke page in a disposable browser and measures a naive raw-CDP path using `/json`, `Runtime.evaluate`, and WebSocket calls. You can also import an external transcript with `npm run benchmark:generic-cdp -- --from-steps steps.json --out generic-cdp-raw.json`. Feed the resulting raw file into `benchmark:baseline`, then into `benchmark:killer`, to make generic-CDP comparisons measured instead of heuristic. Measured baselines can carry capability metrics too; comparison reports surface gaps such as missing action evidence, report timelines, stale-ref recovery, or session stability so cheap-but-thin baselines do not look equivalent.
-
-`npm run benchmark:playwright -- --out playwright-raw.json` measures a Playwright Chromium path against the same smoke page when the local environment has the `playwright` package available. If Playwright is not installed in the project, use `npm run benchmark:playwright -- --from-steps playwright-steps.json --out playwright-raw.json` to normalize an external Playwright transcript without adding a dependency.
 
 ## Source
 

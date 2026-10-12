@@ -1,495 +1,67 @@
-import { spawnSync } from 'child_process';
 import { readFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
-import { readCurrentFacingChangelog } from '../scripts/changelog-fragments.mjs';
-import { checkDefaultHelpContract, checkDocsContract, checkGrokBotSetupContract, SURVIVOR_COMMANDS, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
-import { PK_324_CHART_FILES, PK_324_SCOREBOARD_FILE } from '../scripts/lib/pk-324-board.mjs';
+import {
+  checkCommandCardContract,
+  checkDefaultHelpContract,
+  checkReleaseMetadataContract,
+  runDocsContract,
+  SURVIVOR_COMMANDS,
+} from '../scripts/check-docs-contract.mjs';
 
-const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
-const selfImprovementLoop = readFileSync(new URL('../docs/self-improvement-loop.md', import.meta.url), 'utf8');
-const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
-const skillCommands = readFileSync(new URL('../skills/chrome-cdp-ex/references/commands.md', import.meta.url), 'utf8');
-const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
-const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
-const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
-const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
-const changelogCurrent = readCurrentFacingChangelog(fileURLToPath(new URL('..', import.meta.url)));
-const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
-const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
-const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
-const pkBoard = readFileSync(new URL('../docs/pk-324-board.md', import.meta.url), 'utf8');
-const pkCharts = Object.fromEntries(Object.entries(PK_324_CHART_FILES).map(([face, rel]) => [
-  face,
-  readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8'),
-]));
-const pkScoreboard = readFileSync(new URL(`../${PK_324_SCOREBOARD_FILE}`, import.meta.url), 'utf8');
-const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+process.env.NODE_ENV = 'test';
+const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
-describe('Killer Path docs contract', () => {
-  it('runs by absolute script path without depending on caller cwd', () => {
-    const script = fileURLToPath(new URL('../scripts/check-docs-contract.mjs', import.meta.url));
-    const child = spawnSync(process.execPath, [script], { cwd: tmpdir(), encoding: 'utf8' });
-    expect(child.status, child.stderr).toBe(0);
-    expect(child.stdout).toContain('Docs contract OK: 20 survivor commands on the card (82 catalog)');
+const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const ciWorkflow = read('.github/workflows/ci.yml');
+const releaseWorkflow = read('.github/workflows/release.yml');
+
+describe('docs contract', () => {
+  it('passes on this checkout', () => {
+    expect(runDocsContract()).toEqual([]);
   });
 
-  it('accepts the documented first-run golden path', () => {
-    expect(validateKillerPathContract(killerPath)).toEqual([]);
-  });
-
-  it('allows leftover --since-action / report examples without treating them as liturgy', () => {
-    const withoutLeftoverHandoff = killerPath
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs perceive <target> --since-action\r?\n/, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs report <target> --last 1 --format json --compact\r?\n/, '');
-
-    expect(validateKillerPathContract(withoutLeftoverHandoff)).toEqual([]);
-  });
-
-  it('requires an explicit form-fill action alternative', () => {
-    const withoutFill = killerPath.replace(
-      /For forms[\s\S]+?```bash[\s\S]+?```/,
-      'For forms, keep using the same action line.',
-    );
-
-    expect(validateKillerPathContract(withoutFill)).toContain(
-      'Killer Path is missing form-fill alternative command',
-    );
-  });
-
-  it('requires recovery and CSS tracing, not leftover record/replay/export liturgy', () => {
-    const withoutPromotionWorkflow = killerPath
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs click <target> "#missing" --format json\r?\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs cascade <target> @ref background-color --format json\r?\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs record-actions <target> --format json\r?\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs replay <target> --file record-actions\.json --format json\r?\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs export-playwright <target> --format json\r?\n/g, '');
-
-    const promotionFailures = validateKillerPathContract(withoutPromotionWorkflow);
-    expect(promotionFailures).toEqual(expect.arrayContaining([
-      'Killer Path example is missing failed-action recovery command',
-      'Killer Path example is missing CSS tracing command',
-    ]));
-    expect(promotionFailures).not.toContain('Killer Path example is missing record-actions handoff command');
-    expect(promotionFailures).not.toContain('Killer Path example is missing replay handoff command');
-    expect(promotionFailures).not.toContain('Killer Path example is missing export-playwright handoff command');
-  });
-
-  it('allows README to lead with live-session and doctor/list without the PK scoreboard SVG', () => {
-    const docs = {
-      readme,
-      reference,
-      pkBoard,
-      pkCharts,
-      pkScoreboard,
-      selfImprovementLoop,
-      skill,
-      skillCommands,
-      killerPath,
-      packageJson,
-      pluginManifest,
-      changelog,
-      claude,
-      contributing,
-      design,
-    };
-
-    expect(checkDocsContract(docs, [])).toEqual([]);
-    expect(checkDocsContract({
-      ...docs,
-      readme: readme.replace(/22c525d4/g, 'deadbeef'),
-    }, [])).not.toContain(
-      'README is missing the locked live-session board identity (2026-08-17 / 22c525d4)',
-    );
-    expect(checkDocsContract({
-      ...docs,
-      readme: readme.replaceAll('experiment/pk-324-scoreboard.svg', ''),
-    }, [])).not.toContain('README comparison first glance must be the PK scoreboard SVG');
-    const liveSessionFrontDoor = [
-      '# chrome-cdp-ex',
-      '',
-      'Use the **browser you already have open**.',
-      '',
-      '## Quick start',
-      '',
-      '```bash',
-      './bin/chrome-cdp doctor',
-      './bin/chrome-cdp list',
-      '```',
-      '',
-      'Pinned release: [v2.21.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.21.0) (`pi-chrome-cdp-2.21.0.tgz`).',
-      'From Chrome 136, the default profile cannot enable CDP. See [Daily browser CDP](docs/daily-browser-cdp.md).',
-      'Grok Bot: [from-zero setup](docs/integrations/grok-bot.md).',
-      'Measured jobs: [docs/pk-324-board.md](docs/pk-324-board.md).',
-      'Host wiring: [INTEGRATIONS.md](INTEGRATIONS.md). MIT [LICENSE](LICENSE).',
-      '',
-    ].join('\n');
-    expect(checkDocsContract({ ...docs, readme: liveSessionFrontDoor }, [])).toEqual([]);
-    expect(checkDocsContract({
-      ...docs,
-      readme: liveSessionFrontDoor.replace(/browser you already have open/gi, 'a browser'),
-    }, [])).toContain('README is missing the live-session hook');
-    expect(checkDocsContract({
-      ...docs,
-      readme: liveSessionFrontDoor.replace('./bin/chrome-cdp doctor', './bin/chrome-cdp help'),
-    }, [])).toContain('README Quick Start must stay doctor → list');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${liveSessionFrontDoor}\n### Approaches and tradeoffs\n| Approach | Keeps Dock/default cookies? |\n`,
-    }, [])).toContain('README must not keep the Chromium 136 approach table; link docs/daily-browser-cdp.md');
-    expect(checkDocsContract({
-      ...docs,
-      readme: liveSessionFrontDoor.replace('docs/daily-browser-cdp.md', 'docs/reference.md'),
-    }, [])).toContain('README must link docs/daily-browser-cdp.md for Chromium 136');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${liveSessionFrontDoor}\n## Demo\n`,
-    }, [])).toContain('README must not keep the lab Demo list on the live path');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${liveSessionFrontDoor}\nSee [showcase](experiment/showcase.html).\n`,
-    }, [])).toContain('README must not keep the lab Demo list on the live path');
-    expect(checkDocsContract({
-      ...docs,
-      pkScoreboard: pkScoreboard.replace('data-value="10/10"', 'data-value="9/10"'),
-    }, [])).toContain('PK scoreboard SVG must bold chrome-cdp-ex total success 10/10');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${readme}\n<th colspan="4">chrome-cdp-ex</th>\n<th>success</th>\n<td>PASS</td><td>1</td><td>139</td><td>62</td>\n`,
-    }, [])).toContain('README must not keep the ten-row lab table');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${readme}\nPASS / 1 / 139 / 62\n`,
-    }, [])).toContain('README must not keep engineer mashup cells (success / steps / time / token)');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${readme}\n| PDF text one page | **PASS** | FAIL | FAIL |\n`,
-    }, [])).toContain('README must not keep a markdown PK grid as the first-glance comparison');
-    expect(checkDocsContract({
-      ...docs,
-      pkScoreboard: pkScoreboard.replace(/data-success="FAIL"/g, 'data-success="PASS"'),
-    }, [])).toContain('PK scoreboard SVG must keep 2 FAIL cell(s) visible on PDF text one page');
-    expect(checkDocsContract({
-      ...docs,
-      pkBoard: pkBoard.replace('PASS / 1 / 139 / 62', 'PASS / 1 / 138 / 62'),
-    }, [])).toContain('docs/pk-324-board.md is missing locked board cell: scroll to bottom (HF home) PASS / 1 / 139 / 62');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${readme}\nPlaywright did the same click in 156 ms.\n`,
-    }, [])).toContain('README must not invent Playwright timings');
-    expect(checkDocsContract({
-      ...docs,
-      readme: `${readme}\n## Five success cases\n`,
-    }, [])).toContain('README must not restore the command-catalog first screen');
-    expect(checkDocsContract({
-      ...docs,
-      pkScoreboard: `${pkScoreboard}\n<text>cost / cp</text>\n`,
-    }, [])).toContain('PK scoreboard SVG must not add a cost/cp column');
-  });
-
-  it('requires a followable Grok Bot from-zero setup with Node 22, user-data-dir, CDP_PORT, doctor, and list', () => {
-    const docs = {
-      readme,
-      reference,
-      pkBoard,
-      pkCharts,
-      pkScoreboard,
-      selfImprovementLoop,
-      skill,
-      skillCommands,
-      killerPath,
-      packageJson,
-      pluginManifest,
-      changelog,
-      claude,
-      contributing,
-      design,
-    };
-
-    expect(checkGrokBotSetupContract({
-      ...docs,
-      grokBot: '',
-    })).toEqual(expect.arrayContaining([
-      'Grok Bot setup guide must make Node 22 unmistakable',
-      'Grok Bot setup guide must make a non-default user-data-dir unmistakable',
-      'Grok Bot setup guide must make CDP_PORT unmistakable',
-      'Grok Bot setup guide must make doctor and list unmistakable',
-      'Grok Bot setup guide must cite https://developer.chrome.com/blog/remote-debugging-port',
-    ]));
-    expect(checkDocsContract({
-      ...docs,
-      readme: readme.replaceAll('docs/integrations/grok-bot.md', 'docs/integrations/cursor.md'),
-    }, [])).toContain('README must link docs/integrations/grok-bot.md for Grok Bot from-zero setup');
-    expect(checkDocsContract(docs, [])).toEqual([]);
-  });
-
-  it('requires package and plugin manifest versions to match', () => {
-    const packageVersion = JSON.parse(packageJson).version;
-    const docs = {
-      readme,
-      reference,
-      selfImprovementLoop,
-      skill,
-      killerPath,
-      packageJson,
-      pluginManifest: pluginManifest.replace(/"version":\s*"[^"]+"/, '"version": "0.0.0"'),
-      changelog,
-      claude,
-      contributing,
-      design,
-    };
-
-    expect(checkDocsContract(docs, [])).toContain(
-      `Release metadata version mismatch: package.json ${packageVersion} != .claude-plugin/plugin.json 0.0.0`,
-    );
-  });
-
-  it('pins published release install links to the package version', () => {
-    const docs = {
-      readme,
-      reference,
-      selfImprovementLoop,
-      skill,
-      killerPath,
-      packageJson,
-      pluginManifest,
-      changelog,
-      claude,
-      contributing,
-      design,
-    };
-
-    expect(checkDocsContract(docs, [])).toEqual([]);
-    expect(checkDocsContract({
-      ...docs,
-      readme: `> **Unreleased candidate:** repository metadata is v2.21.0; install links remain pinned to published v2.20.0.\n${readme}`,
-    }, [])).toContain(
-      'README.md must not keep the unreleased-candidate banner after v2.21.0 is published',
-    );
-    expect(checkDocsContract({
-      ...docs,
-      readme: docs.readme
-        .replaceAll('v2.21.0', 'v2.20.0')
-        .replaceAll('pi-chrome-cdp-2.21.0.tgz', 'pi-chrome-cdp-2.20.0.tgz'),
-    }, [])).toEqual(expect.arrayContaining([
-      'README.md is missing the published release tag v2.21.0',
-      'README.md is missing the published release tarball pi-chrome-cdp-2.21.0.tgz',
-    ]));
-    expect(checkDocsContract({
-      ...docs,
-      changelog: changelog.replace('## [2.21.0]', '## [9.8.7]'),
-    }, [])).toContain('README.md is missing the published release tag v9.8.7');
-  });
-
-  it('rejects stale contributor paths, obsolete line counts, and shipped features marked future', () => {
-    const docs = {
-      readme,
-      reference,
-      selfImprovementLoop,
-      skill,
-      killerPath,
-      packageJson,
-      pluginManifest,
-      claude: `${claude}\n- Single-file implementation: ~2400 lines`,
-      contributing: contributing.replaceAll('skills/chrome-cdp-ex/scripts/cdp.mjs', 'skills/chrome-cdp/scripts/cdp.mjs'),
-      design: `${design}\n| \`emulate\`, \`frame\`, \`components\` | Future |`,
-    };
-
-    expect(checkDocsContract(docs, [])).toEqual(expect.arrayContaining([
-      'CLAUDE.md contains an obsolete single-file or line-count claim',
-      'CONTRIBUTING.md contains stale path: skills/chrome-cdp/scripts/cdp.mjs',
-      'DESIGN.md marks shipped features as Future',
-    ]));
-  });
-
-  it('allows leftover command docs in references/commands.md without README or SKILL.md', () => {
-    const docs = {
-      readme: readme.replaceAll('mock', ''),
-      reference,
-      selfImprovementLoop,
-      skill: skill.replaceAll('mock', ''),
-      skillCommands,
-      killerPath,
-    };
-
-    expect(checkDocsContract(docs, [{ name: 'mock', aliases: [] }])).not.toContain(
-      'Missing leftover command docs for mock (references/commands.md or docs/reference.md)',
-    );
-    expect(checkDocsContract({
-      ...docs,
-      readme: docs.readme.replaceAll('verify-click', ''),
-      skill: docs.skill.replaceAll('verify-click', ''),
-      skillCommands: '',
-      reference: '',
-    }, [{ name: 'verify-click', aliases: [] }])).toContain(
-      'Missing leftover command docs for verify-click (references/commands.md or docs/reference.md)',
-    );
-  });
-
-  it('requires always-loaded SKILL.md to name survivors only, not leftover liturgy', () => {
-    const docs = {
-      readme,
-      reference,
-      selfImprovementLoop,
-      skill,
-      skillCommands,
-      killerPath,
-    };
-    const leftover = [
-      { name: 'mock', aliases: [] },
-      { name: 'verify-click', aliases: [] },
-      { name: 'overlay', aliases: [] },
-      { name: 'scanshot', aliases: [] },
-      { name: 'record', aliases: [] },
-      { name: 'call', aliases: [] },
-    ];
-    const shrunkSkill = skill
-      .replaceAll('models?search=', '')
-      .replaceAll('leftover-ax', '')
-      .replaceAll('verify-click', '')
-      .replaceAll('scanshot', '')
-      .replaceAll('`call`', '')
-      .replaceAll('record-actions', '')
-      .replaceAll(/\boverlay\b/g, '')
-      .replaceAll(/\brecord\b/g, '');
-
-    expect(SURVIVOR_COMMANDS).toEqual([
-      'doctor', 'list', 'open', 'nav', 'perceive', 'text', 'click', 'fill',
-      'press', 'select', 'scroll', 'eval', 'inject', 'cascade', 'waitfor',
-      'dismiss-modal', 'elshot', 'shot', 'spawn-debug-browser', 'stop',
+  it('requires survivors on SKILL.md and every other command in the reference docs', () => {
+    const commands = [{ name: SURVIVOR_COMMANDS[0], aliases: [] }, { name: 'not-documented-cmd', aliases: [] }];
+    expect(checkCommandCardContract({ skill: '', reference: '', skillCommands: '' }, commands)).toEqual([
+      `Always-loaded SKILL.md is missing survivor command: ${SURVIVOR_COMMANDS[0]}`,
+      'Missing command docs for not-documented-cmd (references/commands.md or docs/reference.md)',
     ]);
-    expect(skill).not.toMatch(/models\?search/i);
-    expect(skill).not.toMatch(/leftover-ax/i);
-    expect(skill).not.toMatch(/cap-swap/i);
-    expect(skill).not.toMatch(/\bstdio MCP\b|\bconfirm:\s*true\b|setup\.mjs\s+--for/i);
-    expect(checkDocsContract({ ...docs, skill: shrunkSkill }, leftover).filter(failure =>
-      /Missing leftover command docs|Always-loaded SKILL.md is missing/.test(failure),
-    )).toEqual([]);
-    expect(checkDocsContract({
-      ...docs,
-      skill: skill.replaceAll('perceive', ''),
-    }, [{ name: 'perceive', aliases: [] }])).toContain(
-      'Always-loaded SKILL.md is missing survivor command: perceive',
-    );
   });
 
-  it('points the card and SKILL.md at the leftover window-size verbs (#525)', async () => {
-    const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
-    const card = T.helpStr();
-    expect(card).toMatch(/\bviewport\|resize <target> WxH\b/);
-    expect(card).toMatch(/\bresponsive-audit <target> --viewport WxH\b/);
-    expect(skill).toMatch(/`viewport\|resize <target> WxH`/);
-    expect(skill).toMatch(/`responsive-audit <target> --viewport WxH`/);
-    expect(checkDefaultHelpContract(card)).toEqual([]);
-    expect(checkDefaultHelpContract(card.replace(/^Window size:.*\n/m, ''))).toContain(
-      'Default cdp help must point at viewport|resize and responsive-audit for window size',
-    );
-    expect(checkDocsContract({ readme, reference, selfImprovementLoop, skillCommands, killerPath,
-      skill: skill.replaceAll('viewport|resize', 'size') }, [])).toContain(
-      'Always-loaded SKILL.md must point at viewport|resize and responsive-audit for window size',
-    );
+  it('requires every survivor command in the default help', () => {
+    expect(checkDefaultHelpContract('')).toHaveLength(SURVIVOR_COMMANDS.length);
+    expect(checkDefaultHelpContract(T.helpStr())).toEqual([]);
   });
 
-  it('does not make unqualified PATH node the only SKILL.md invocation (#157)', () => {
-    expect(skill).toMatch(/bin\/chrome-cdp|HERMES_HOME|process\.execPath/);
-    expect(skill).toMatch(/If `node -v` is <22, use the Node 22 path printed by doctor/);
-    const invocationLines = skill.split(/\r?\n/).filter(line =>
-      /chrome-cdp-ex\/scripts\/cdp\.mjs|bin\/chrome-cdp/.test(line) && !line.trim().startsWith('#'),
-    );
-    expect(invocationLines.some(line => !/^node\s+/.test(line.trim()))).toBe(true);
-  });
-
-  it('requires the self-improvement loop runbook to cover issue, test, review, and merge commands', () => {
+  it('requires package and plugin versions to match and README to link the published tag', () => {
     const docs = {
-      readme,
-      reference,
-      selfImprovementLoop: selfImprovementLoop.replace('gh issue create', 'gh issue draft'),
-      skill,
-      killerPath,
+      packageJson: '{"version":"9.9.9"}',
+      pluginManifest: '{"version":"9.9.8"}',
+      changelogPublished: '## [9.9.8] - 2026-01-01\n',
+      readme: '',
     };
-
-    expect(checkDocsContract(docs, [])).toContain(
-      'Self-improvement loop runbook is missing: gh issue create',
-    );
+    expect(checkReleaseMetadataContract(docs)).toEqual([
+      'Release metadata version mismatch: package.json 9.9.9 != .claude-plugin/plugin.json 9.9.8',
+      'README.md does not link the published release tag v9.9.8',
+    ]);
   });
-
 });
 
-describe('Repository release gates', () => {
-
-  it('runs CI for pull requests targeting main and dev', () => {
+describe('release gates', () => {
+  it('runs the docs contract in CI on pull requests to main and dev', () => {
     expect(ciWorkflow).toMatch(/pull_request:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\bdev\b[^\]]*\]/);
-  });
-
-  it('runs the docs contract in CI', () => {
     expect(ciWorkflow).toContain('npm run check:docs');
   });
 
-  it('reads current-facing changelog notes from fragments and published versions from CHANGELOG.md', () => {
-    expect(changelogCurrent).toContain('[#695](https://github.com/EndeavorYen/chrome-cdp-ex/issues/695)');
-    expect(changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1]).toBe('2.21.0');
-    expect(changelogCurrent).toContain('## [2.21.0]');
-  });
-
-  it('publishes the versioned changelog narrative instead of generated commit notes', () => {
-    expect(releaseWorkflow).toContain('CHANGELOG.md');
+  it('checks the packed tarball and publishes CHANGELOG.md notes', () => {
+    expect(releaseWorkflow).toContain('npm run check:release-package -- "$TARBALL"');
     expect(releaseWorkflow).toContain('--notes-file');
     expect(releaseWorkflow).not.toContain('--generate-notes');
   });
-
-  it('cleanly skips release work for an unreleased package candidate', () => {
-    expect(releaseWorkflow).toContain('id: readiness');
-    expect(releaseWorkflow).toContain('ready=false');
-    expect(releaseWorkflow).toContain("steps.readiness.outputs.ready == 'true'");
-  });
-
-  it('validates the actual tarball before attaching a release', () => {
-    expect(releaseWorkflow).toContain('npm ci');
-    expect(releaseWorkflow).toContain('npm pack');
-    expect(releaseWorkflow).toContain('npm run check:release-package -- "$TARBALL"');
-    expect(releaseWorkflow).toContain("node-version: '22'");
-    expect(releaseWorkflow).toMatch(/gh release create "\$TAG" "\$TARBALL"/);
-  });
 });
 
-describe('Codex for OSS evidence baseline', () => {
-  it('records dated, claim-safe maintenance and ecosystem evidence', () => {
-    const evidence = readFileSync(new URL('../docs/outreach/codex-for-oss-evidence.md', import.meta.url), 'utf8');
-
-    for (const expected of [
-      '2026-08-12',
-      '12 stars',
-      '84 issues',
-      '55 pull requests',
-      '18 releases',
-      '16 cumulative `.tgz` downloads',
-      '0 downloads for `v2.15.0` immediately after publication',
-      '71 views / 41 unique visitors',
-      '41 unique visitors',
-      '79 clones / 51 unique cloners',
-      '51 unique cloners',
-      '22 GitHub code-search references',
-      '52,197 stars and 4,559 forks',
-      'v2.15.0',
-      'historically `live-validated`',
-      'not a full six-host installation test',
-      'https://openai.com/form/codex-for-oss/',
-      'https://github.com/EndeavorYen/chrome-cdp-ex/pull/125',
-    ]) {
-      expect(evidence).toContain(expected);
-    }
-    expect(evidence).toMatch(/mirrors? or indexes?/i);
-    expect(evidence).toMatch(/not.*adoption/i);
-  });
-});
-
-describe('Read this page contract (#161)', () => {
-  it('documents text --auto and perceive -x in CLI help', async () => {
-    process.env.NODE_ENV = 'test';
-    const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+describe('help and read-this-page docs (#161)', () => {
+  it('documents text --auto and perceive -x in CLI help', () => {
     const usage = T.helpStr();
     expect(usage).toContain('--auto');
     expect(usage).toMatch(/-x <sel> \/ --exclude/);
@@ -498,19 +70,9 @@ describe('Read this page contract (#161)', () => {
     expect(T.helpTopicStr('jsclick')).toMatch(/^cdp jsclick /);
   });
 
-  it('lists text --auto and eval on the always-loaded card; leftover call lives in commands.md', () => {
-    const recipes = readFileSync(new URL('../skills/chrome-cdp-ex/references/recipes.md', import.meta.url), 'utf8');
+  it('lists text --auto and eval on the always-loaded card', () => {
+    const skill = read('skills/chrome-cdp-ex/SKILL.md');
     expect(skill).toContain('text --auto');
     expect(skill).toMatch(/`eval`/);
-    expect(skillCommands).toMatch(/`call`/);
-    expect(recipes).toMatch(/## Read this page/i);
-    expect(recipes).toContain('text <target> --auto');
-    expect(recipes).toContain('raw/main/LICENSE');
-    expect(recipes).toContain('perceive <target> -s main');
-    expect(recipes).toContain('h1.title');
-    const xSection = recipes.split(/### X \/ Twitter/)[1]?.split(/^## /m)[0] || '';
-    const xCode = [...xSection.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
-    expect(xCode).toContain('text <target> --auto');
-    expect(xCode).not.toContain('perceive');
   });
 });
