@@ -75,7 +75,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
 | `wait` | `wait <target> <ms>` | `read / standard` |
 | `fill` | `fill <target> <sel\|@ref> <txt\|--secret NAME> [--format json]` | `mutation / mutation` |
-| `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |
+| `select` | `select <target> <sel\|@ref> <val> [--format json]` | `mutation / mutation` |
 | `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
 | `scanshot` | `scanshot <target>` | `read / standard` |
 | `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
@@ -86,7 +86,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
 | `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|--focus\|off\|status]` | `mutation / mutation` |
-| `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
+| `upload` | `upload <target> <sel\|@ref> <paths> [--format json]` | `mutation / mutation` |
 | `text` | `text <target> [selector\|--auto]` | `read / standard` |
 | `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |

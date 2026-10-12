@@ -497,6 +497,27 @@ const parallelUploadOut = step('parallel upload blocked', () => runFailure(['bat
 assertIncludes(parallelUploadOut, 'batch --parallel:', 'parallel upload blocked');
 assertIncludes(parallelUploadOut, 'upload', 'parallel upload blocked command name');
 assertIncludes(parallelUploadOut, 'mutate shared state', 'parallel upload blocked reason');
+// #633: select and upload take the @ref perceive prints.
+const refPerceive = step('perceive refs for select and upload', () => run(['perceive', target], { timeout: 40000 }));
+function refFor(text, predicate, label) {
+  const line = text.split('\n').find(candidate => predicate(candidate) && /@\d+/.test(candidate));
+  const match = line?.match(/@(\d+)/);
+  if (!match) {
+    const sample = text.split('\n').filter(candidate => /combobox|button|textbox|Plan|avatar|file/i.test(candidate)).slice(0, 40).join('\n');
+    throw new Error(`${label} ref missing\n${sample}`);
+  }
+  return `@${match[1]}`;
+}
+const planRef = refFor(refPerceive, line => /\[combobox\]/.test(line) && /\bPlan\b/.test(line), 'combobox Plan');
+const avatarRef = refFor(refPerceive, line => /\[(?:button|textbox)\]/.test(line) && /\bSmoke avatar\b/.test(line), 'file input Smoke avatar');
+const selectRefOut = step('select by perceive ref', () => run(['select', target, planRef, 'pro']));
+assertIncludes(selectRefOut, 'Selected "Pro"', 'select @ref');
+const planValue = step('select ref value', () => run(['eval', target, 'document.querySelector("#smoke-plan").value']));
+if (planValue !== 'pro') throw new Error(`select @ref did not set #smoke-plan to pro: ${planValue}`);
+const uploadRefOut = step('upload by perceive ref', () => run(['upload', target, avatarRef, uploadFixturePath]));
+assertIncludes(uploadRefOut, 'Uploaded 1 file', 'upload @ref');
+const avatarName = step('upload ref files', () => run(['eval', target, 'document.querySelector("#smoke-avatar").files[0] && document.querySelector("#smoke-avatar").files[0].name']));
+if (avatarName !== 'upload-fixture.txt') throw new Error(`upload @ref did not set #smoke-avatar files: ${avatarName}`);
 const parallelMutatingGuards = [
   ['restore', '--json', '{}'],
   ['replay', '--json', '{"schema":"chrome-cdp-ex.record-actions.v1","actions":[]}'],

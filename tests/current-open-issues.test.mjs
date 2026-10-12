@@ -3775,7 +3775,7 @@ describe('issues #210-#217 open contracts', () => {
     expect(selectEl.value).toBe('a');
 
     await expect(T.selectStr(cdp, 'sid', '#q', 'a')).rejects.toThrow(/Not a <select>: INPUT/);
-    await expect(T.selectStr(cdp, 'sid', '', 'a')).rejects.toThrow(/CSS selector required/);
+    await expect(T.selectStr(cdp, 'sid', '', 'a')).rejects.toThrow(/CSS selector or @ref required/);
     await expect(T.selectStr(cdp, 'sid', '#s', undefined)).rejects.toThrow(/Value required/);
 
     expect(T.classifyActionFailure(new Error('No option value=zzz'), {

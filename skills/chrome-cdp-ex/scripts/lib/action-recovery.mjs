@@ -1034,7 +1034,8 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   if (
     action === 'select'
     && (
-      lower.includes('css selector required')
+      lower.includes('css selector or @ref required')
+      || lower.includes('css selector required')
       || lower.includes('value required')
       || lower.includes('not a <select>')
       || lower.includes('no option value')
@@ -1043,10 +1044,10 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return {
       ...base,
       kind: 'usage',
-      reason: 'select requires a <select> element and an existing option value.',
+      reason: 'select requires an @ref or a CSS selector for a <select> and an existing option value.',
       nextCommand: 'cdp help select',
       hints: [
-        'Pass a CSS selector for a <select> and an option value or visible label that exists.',
+        'Pass an @ref or a CSS selector for a <select> and an option value or visible label that exists.',
         'Use perceive to inspect available controls before selecting.',
       ],
     };
@@ -1072,6 +1073,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
       || lower.includes('file path')
       || lower.includes('not a readable file')
       || lower.includes('is not an <input type="file">')
+      || lower.includes('css selector or @ref for <input type="file"> required')
       || lower.includes('css selector for <input type="file"> required')
       || lower.includes('refusing to guess')
       || lower.includes('does not accept several files')
