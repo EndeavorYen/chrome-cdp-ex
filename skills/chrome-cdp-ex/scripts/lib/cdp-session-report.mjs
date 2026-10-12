@@ -8,19 +8,282 @@ import { REDACTED_VALUE, isSensitiveFieldText, redactSensitiveString, redactUrl,
 import { hasResponsiveFindings, normalizeResponsiveFindings } from './responsive-audit.mjs';
 import { MIN_SCRUB_SECRET_CHARS, secretMarker } from './secrets.mjs';
 import { buildReportRecommendation, defaultReportNextSteps, formatReportNextStepLines, formatReportRecommendationLines, normalizeReportTargetCommand } from './session-report.mjs';
+import { formatWebVitalsText } from './web-vitals.mjs';
 import { appendFileSync, lstatSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, renameSync, statSync } from 'fs';
 import { resolve } from 'path';
-import { actionDialogFields, actionDialogLines, applyActionDiagnosis, applyActionOutcome, applyActionReceipt, applyActionRecommendation, applyActionVerdict, buildActionOutcome, buildActionReceipt, buildActionVerdict, buildSettlementReceipt, compactActionText, compactObservationError, createActionResult, finalizeActionResult, formatActionResultOutput, isNetworkFailure, normalizeActionOutputOptions, normalizeConsoleDelta, normalizeExceptionDelta, normalizeNetworkDelta, numericDeltaCount, redactSensitiveArtifactValue, summarizeActionObservationEffects } from './cdp-action-result.mjs';
-import { ACTION_JSON_IDENTIFIER_KEYS, CLICKED_CONTROL_TAG_RE, DEFAULT_REPORT_ACTION_LIMIT, DEFAULT_REPORT_JSON_BYTES_MAX, DEFAULT_STALE_ARTIFACT_HOURS, DRAG_POINT_RE, GENERIC_SINCE_ACTION_HINT, HIGH_SIGNAL_ACTION_TEXT_RE, MAX_ACTION_JSON_DOM_DIFF_CHARS, MAX_ACTION_LOG_ENTRIES, MAX_ENVIRONMENT_LOG_ENTRIES, MAX_SCREENSHOT_ENTRIES, PLAYWRIGHT_ASSERTION_TEXT_ROLES, QA_SCREENSHOT_TIMEOUT_MS, REACTIVE_CLICK_ROLES, REACTIVE_CLICK_TAGS, RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS, RUNTIME_ARTIFACT_MAX_AGE_MS, RUNTIME_ARTIFACT_PATTERN, RUNTIME_DIR, RUNTIME_PRUNE_FALLBACK_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_LOG_ROTATE_BYTES, SESSION_SECRET_SCRUB, UNSCRUBBED_DAEMON_COMMANDS, daemonRequestStorage, daemonSecretStorage } from './cdp-base.mjs';
+import { actionDialogFields, actionDialogLines, applyActionDiagnosis, applyActionOutcome, applyActionReceipt, applyActionRecommendation, applyActionVerdict, buildActionOutcome, buildActionReceipt, buildActionVerdict, buildSettlementReceipt, compactActionText, compactObservationError, createActionResult, finalizeActionResult, formatActionResultOutput, formatSummaryText, isNetworkFailure, locateObservedEntries, locatedCallerLines, locatedLoc, normalizeActionOutputOptions, normalizeConsoleDelta, normalizeExceptionDelta, normalizeNetworkDelta, numericDeltaCount, redactDisplayedPage, redactNavigationEntries, redactObservedEntry, redactSensitiveArtifactValue, summarizeActionObservationEffects } from './cdp-action-result.mjs';
+import { ACTION_JSON_IDENTIFIER_KEYS, CLICKED_CONTROL_TAG_RE, DEFAULT_REPORT_ACTION_LIMIT, DEFAULT_REPORT_JSON_BYTES_MAX, DEFAULT_STALE_ARTIFACT_HOURS, DRAG_POINT_RE, GENERIC_SINCE_ACTION_HINT, HIGH_SIGNAL_ACTION_TEXT_RE, MAX_ACTION_JSON_DOM_DIFF_CHARS, MAX_ACTION_LOG_ENTRIES, MAX_ENVIRONMENT_LOG_ENTRIES, MAX_SCREENSHOT_ENTRIES, PLAYWRIGHT_ASSERTION_TEXT_ROLES, QA_SCREENSHOT_TIMEOUT_MS, REACTIVE_CLICK_ROLES, REACTIVE_CLICK_TAGS, RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS, RUNTIME_ARTIFACT_MAX_AGE_MS, RUNTIME_ARTIFACT_PATTERN, RUNTIME_DIR, RUNTIME_PRUNE_FALLBACK_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_LOG_ROTATE_BYTES, SESSION_SECRET_SCRUB, STATUS_PAGE_INFO_TIMEOUT, UNSCRUBBED_DAEMON_COMMANDS, daemonRequestStorage, daemonSecretStorage } from './cdp-base.mjs';
 import { buildQaSummaryModel, formatBytes, formatDuration, formatJson, formatQaSummaryText, parseFormatArgs } from './cdp-browser.mjs';
-import { parseFillArgs, parseNonNegativeInteger, targetPrefixForDisplay } from './cdp-cli.mjs';
-import { applyDaemonRestartNotice, listDaemonRecords, rememberTabObservation, restoreTabObservation } from './cdp-core.mjs';
+import { buildCliErrorModel, formatCliErrorRecovery, parseFillArgs, parseNonNegativeInteger, targetPrefixForDisplay } from './cdp-cli.mjs';
+import { applyDaemonRestartNotice, consoleDocumentEntries, consoleDocumentSince, displayConsoleLine, displayLocation, displayUrl, listDaemonRecords, rememberTabObservation, restoreTabObservation } from './cdp-core.mjs';
 import { isProcessAlive } from './cdp-daemon.mjs';
 import { actionDispatchFailureMessage, actionDispatchSemanticsFromModel, compactActionDiagnosisModel } from './cdp-flow.mjs';
-import { clickDispatchEffects, fillFeedbackPolicy, isNamedClickQuery, namedClickQueryName, parseDragArgs, parseScrollContainerArg, parseScrollEdge, splitScrollEdgeArgs } from './cdp-input.mjs';
-import { cdpDomains, evalStr, formatPdfViewerOutput, isPdfViewerContentType, pdfViewerHandoffModel, pdfViewerNextCommand, pdfViewerReportRecommendation } from './cdp-page.mjs';
+import { clickDispatchEffects, clickStr, fillFeedbackPolicy, isNamedClickQuery, namedClickQueryName, parseDragArgs, parseScrollContainerArg, parseScrollEdge, splitScrollEdgeArgs } from './cdp-input.mjs';
+import { assertNotPdfViewerPage, cdpDomains, collectPageHealth, createScreenshotTierState, evalStr, formatPdfViewerOutput, isHiddenTabCaptureError, isPdfViewerContentType, pdfViewerError, pdfViewerHandoffModel, pdfViewerNextCommand, pdfViewerReportRecommendation, runtimeMetricsStr, shotStr, webVitalsModelOrUnavailable } from './cdp-page.mjs';
 import { applyViewportOverride, formatClockSummary, formatNetworkMocksSummary, formatThrottleSummary } from './cdp-page-commands.mjs';
+import { perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
 
+export function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } = {}) {
+  const model = buildCliErrorModel(err, { cmd, targetPrefix });
+  const state = model.recovery.kind === 'target-closed'
+    ? 'closed'
+    : model.recovery.kind === 'daemon-disconnect'
+    ? 'daemon-disconnect'
+    : 'error';
+  return {
+    state,
+    error: model.error,
+    recovery: model.recovery,
+    nextSteps: model.nextSteps,
+  };
+}
+export async function pageInfoModel(cdp, sid, opts = {}) {
+  let title = '', url = '', contentType = '';
+  try {
+    const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
+    title = info.title;
+    url = info.url;
+    contentType = info.contentType || '';
+  } catch (e) {
+    return { title, url, contentType, diagnostic: buildTargetStatusDiagnostic(e, { targetPrefix: opts.targetPrefix }) };
+  }
+  return { title, url, contentType, diagnostic: null };
+}
+export function clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq) {
+  const cleared = {
+    console: consoleDocumentEntries(consoleBuf).length,
+    exceptions: consoleDocumentEntries(exceptionBuf).length,
+  };
+  consoleBuf.clear();
+  exceptionBuf.clear();
+  lastReadSeq.console = consoleBuf.latest();
+  lastReadSeq.exception = exceptionBuf.latest();
+  return {
+    schema: 'chrome-cdp-ex.console-baseline.v1',
+    mode: 'clear',
+    cleared,
+    message: 'Console baseline cleared (console and exception buffers)',
+  };
+}
+export function selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag) {
+  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
+  if (mode === 'all') return { mode, entries: consoleDocumentEntries(consoleBuf), exceptions: consoleDocumentEntries(exceptionBuf) };
+  if (mode === 'errors') {
+    return {
+      mode,
+      entries: consoleDocumentEntries(consoleBuf).filter(e => e.level === 'error' || e.level === 'warning'),
+      exceptions: consoleDocumentEntries(exceptionBuf),
+    };
+  }
+  return {
+    mode: 'new',
+    entries: consoleDocumentSince(consoleBuf, lastReadSeq.console),
+    exceptions: consoleDocumentSince(exceptionBuf, lastReadSeq.exception),
+  };
+}
+export function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag, located = null, { unsafeFull = false } = {}) {
+  const { mode, entries, exceptions } = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag);
+  return {
+    schema: 'chrome-cdp-ex.console.v1',
+    mode,
+    entries: entries.map(entry => redactObservedEntry(entry, located, { unsafeFull })),
+    exceptions: exceptions.map(entry => redactObservedEntry(entry, located, { unsafeFull })),
+  };
+}
+export function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, vitals = null, diagnostic = null, located = null, unsafeFull = false }) {
+  return {
+    schema: 'chrome-cdp-ex.status.v1',
+    targetId,
+    target: {
+      state: diagnostic?.state || 'connected',
+      diagnostic,
+    },
+    page: redactDisplayedPage(page, { unsafeFull }),
+    console: consoleDocumentSince(consoleBuf, lastReadSeq.console).map(entry => redactObservedEntry(entry, located, { unsafeFull })),
+    exceptions: consoleDocumentSince(exceptionBuf, lastReadSeq.exception).map(entry => redactObservedEntry(entry, located, { unsafeFull })),
+    navigation: redactNavigationEntries(navBuf.since(lastReadSeq.nav || 0), { unsafeFull }),
+    runtime,
+    vitals,
+  };
+}
+export async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq, opts = {}) {
+  const { title, url, diagnostic } = await pageInfoModel(cdp, sid, { targetPrefix: opts.targetPrefix });
+
+  const lines = [];
+  const unsafeFull = opts.unsafeFull === true;
+  lines.push(`URL: ${displayUrl(url, { unsafeFull })}`);
+  lines.push(`Title: ${title}`);
+  if (diagnostic) {
+    lines.push(`Target state: ${diagnostic.state}`);
+    lines.push(`Diagnostic: ${diagnostic.error.message}`);
+    lines.push(...formatCliErrorRecovery(diagnostic.recovery));
+    lines.push(`Next: ${diagnostic.recovery.run}`);
+  }
+
+  const navs = navBuf.all();
+  if (navs.length > 0) {
+    const last = navs[navs.length - 1];
+    const ago = Math.round((Date.now() - last.ts) / 1000);
+    lines.push(`Navigations: ${navs.length} (last ${ago}s ago)`);
+  }
+
+  // Collect the slow probes before reading the buffers (as the JSON path does), so console
+  // entries and exceptions logged during the vitals window are printed in this call.
+  let runtimeLine = null;
+  if (opts.runtime) {
+    try {
+      runtimeLine = await runtimeMetricsStr(cdp, sid);
+    } catch (e) {
+      runtimeLine = `Runtime metrics (Performance.getMetrics): unavailable (${e.message})`;
+    }
+  }
+  const vitalsText = opts.vitals ? formatWebVitalsText(await webVitalsModelOrUnavailable(cdp, sid)) : null;
+
+  // Read the buffers and snapshot how far they were read in the same synchronous step.
+  const newConsole = consoleDocumentSince(consoleBuf, lastReadSeq.console);
+  const newExceptions = consoleDocumentSince(exceptionBuf, lastReadSeq.exception);
+  // Entries logged while source maps load are not printed here, so they stay unread.
+  const readThrough = { console: consoleBuf.latest(), exception: exceptionBuf.latest() };
+  const located = await locateObservedEntries(opts.locate, newConsole.slice(-20), newExceptions.slice(-10));
+
+  if (newConsole.length > 0) {
+    lines.push(`Console (${newConsole.length} new):`);
+    for (const e of newConsole.slice(-20)) {
+      const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+      const loc = locText ? ` (${locText})` : '';
+      lines.push(`  [${e.level}] ${displayConsoleLine(e.text, e, 200, { unsafeFull })}${loc}`);
+    }
+    if (newConsole.length > 20) lines.push(`  ... and ${newConsole.length - 20} more (use 'console --all')`);
+  } else {
+    lines.push('Console: (no new entries)');
+  }
+
+  if (newExceptions.length > 0) {
+    lines.push(`Exceptions (${newExceptions.length} new):`);
+    for (const e of newExceptions.slice(-10)) {
+      const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+      const loc = locText ? ` at ${locText}` : '';
+      lines.push(`  ${displayConsoleLine(e.msg, e, 200, { unsafeFull })}${loc}`);
+    }
+  }
+
+  if (runtimeLine) lines.push(runtimeLine);
+  if (vitalsText) lines.push(vitalsText);
+
+  lastReadSeq.console = readThrough.console;
+  lastReadSeq.exception = readThrough.exception;
+
+  return lines.join('\n');
+}
+export async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag, { locate = null, unsafeFull = false } = {}) {
+  const { mode, entries, exceptions } = selectConsoleEntries(consoleBuf, exceptionBuf, lastReadSeq, flag);
+  if (mode === 'new') {
+    lastReadSeq.console = consoleBuf.latest();
+    lastReadSeq.exception = exceptionBuf.latest();
+  }
+
+  const lines = [];
+  if (entries.length === 0 && exceptions.length === 0) {
+    return mode === 'all' ? 'Console buffer is empty' : 'No new console entries';
+  }
+
+  const located = await locateObservedEntries(locate, entries, exceptions);
+  for (const e of entries) {
+    const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+    const loc = locText ? ` (${locText})` : '';
+    lines.push(`[${e.level}] ${displayConsoleLine(e.text, e, 300, { unsafeFull })}${loc}`);
+    lines.push(...locatedCallerLines(located, e, { unsafeFull }));
+  }
+  if (exceptions.length > 0) {
+    lines.push('--- Uncaught Exceptions ---');
+    for (const e of exceptions) {
+      const locText = displayLocation(locatedLoc(located, e), { unsafeFull });
+      const loc = locText ? ` at ${locText}` : '';
+      lines.push(`[exception] ${displayConsoleLine(e.msg, e, 300, { unsafeFull })}${loc}`);
+      lines.push(...locatedCallerLines(located, e, { unsafeFull }));
+    }
+  }
+  return lines.join('\n');
+}
+export async function summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
+  const targetPrefix = extra.targetPrefix || '<target>';
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
+  const expr = `
+    (function() {
+      const counts = {};
+      const renderedInteractive = ${renderedInteractiveSource()};
+      const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex]');
+      let visibleControls = 0;
+      for (const el of interactive) {
+        if (el.getAttribute('aria-hidden') === 'true' || !renderedInteractive(el)) continue;
+        visibleControls += 1;
+        const tag = el.tagName.toLowerCase();
+        const type = tag === 'input' ? 'input[' + (el.type || 'text') + ']' : tag;
+        counts[type] = (counts[type] || 0) + 1;
+      }
+      const domNodes = document.querySelectorAll('*').length;
+      let tableRows = 0;
+      for (const table of document.querySelectorAll('table')) {
+        const sourceRows = Number(table.getAttribute('data-source-rows') || table.dataset.sourceRows || 0);
+        tableRows = Math.max(tableRows, table.querySelectorAll('tr').length, Number.isFinite(sourceRows) ? sourceRows : 0);
+      }
+      const hiddenTemplateNodes = document.querySelectorAll('template *, [data-hidden-template], [data-hidden-template] *, [hidden], [hidden] *, [aria-hidden="true"], [aria-hidden="true"] *').length;
+      const focused = document.activeElement;
+      const focusDesc = focused && focused !== document.body
+        ? '<' + focused.tagName.toLowerCase() + (focused.id ? '#' + focused.id : '') + (focused.className ? '.' + focused.className.toString().split(' ')[0] : '') + '>'
+        : 'none';
+      return {
+        title: document.title,
+        url: window.location.href,
+        viewport: window.innerWidth + 'x' + window.innerHeight,
+        scrollY: Math.round(window.scrollY),
+        scrollMax: Math.round(document.documentElement.scrollHeight - window.innerHeight),
+        counts,
+        domNodes,
+        tableRows,
+        visibleControls,
+        hiddenTemplateNodes,
+        focused: focusDesc,
+      };
+    })()
+  `;
+  const result = await evalStr(cdp, sid, expr);
+  const r = JSON.parse(result);
+  const allConsole = consoleDocumentEntries(consoleBuf);
+  let errors = 0, warnings = 0;
+  for (const e of allConsole) {
+    if (e.level === 'error') errors++;
+    else if (e.level === 'warning' || e.level === 'warn') warnings++;
+  }
+  const exceptions = consoleDocumentEntries(exceptionBuf).length;
+
+  return {
+    schema: 'chrome-cdp-ex.summary.v1',
+    page: { title: r.title, url: displayUrl(r.url, { unsafeFull: extra.unsafeFull === true }) },
+    viewport: {
+      size: r.viewport,
+      scrollY: r.scrollY,
+      scrollMax: r.scrollMax,
+    },
+    interactive: r.counts,
+    counts: {
+      domNodes: r.domNodes || 0,
+      tableRows: r.tableRows || 0,
+      visibleControls: r.visibleControls || 0,
+      hiddenTemplateNodes: r.hiddenTemplateNodes || 0,
+    },
+    limits: {
+      outputTokenBudget: 1200,
+      hiddenTemplateNodesOmitted: r.hiddenTemplateNodes || 0,
+      truncated: (r.domNodes || 0) > 1000 || (r.tableRows || 0) > 100 || (r.visibleControls || 0) > 50 || (r.hiddenTemplateNodes || 0) > 0,
+    },
+    focused: r.focused,
+    console: { errors, warnings, exceptions },
+  };
+}
+export async function summaryStr(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
+  return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra));
+}
 export function normalizeRequestExpectation(pattern = '') {
   const text = String(pattern || '').trim();
   const match = text.match(/^([A-Z]+)\s+(.+)$/);
@@ -462,6 +725,92 @@ export function formatResponsiveAuditReport(model) {
   if (model.nextSteps?.[0]) lines.push(`Next: ${model.nextSteps[0]}`);
   return lines.join('\n');
 }
+export async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, exceptionBuf, args = []) {
+  const opts = parseResponsiveAuditArgs(args);
+  const targetPrefix = targetPrefixForDisplay(targetId);
+  const page = await pageInfoModel(cdp, sid, { targetPrefix });
+  if (isPdfViewerContentType(page.contentType)) {
+    throw pdfViewerError(page, { targetPrefix });
+  }
+  const originalViewport = await captureViewportSize(cdp, sid);
+  const consoleHealth = {
+    errors: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'error').length,
+    warnings: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+    exceptions: consoleDocumentEntries(exceptionBuf).length,
+  };
+  const viewports = [];
+  const errors = [];
+  // One tier state for every viewport: a capture tier that timed out is not retried per size.
+  const tierState = createScreenshotTierState();
+  let viewportRestore = null;
+  try {
+    let screenshotTimedOut = false;
+    for (const size of opts.viewports) {
+      const entry = { viewport: size };
+      try {
+        if (screenshotTimedOut) {
+          entry.error = 'skipped after previous screenshot timeout';
+          errors.push(`${size}: ${entry.error}`);
+          viewports.push(entry);
+          continue;
+        }
+        await applyViewportOverride(cdp, sid, size);
+        const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript({ maxControls: opts.maxControls }));
+        // The page reports its layout viewport (a mobile size without <meta viewport> lays
+        // out at 980px); keep the requested size as the entry's label (#452).
+        const { viewport: layoutViewport, ...metrics } = JSON.parse(metricsRaw);
+        Object.assign(entry, metrics);
+        if (layoutViewport) entry.layoutViewport = layoutViewport;
+        const shotDir = opts.outDir || session.screenshotDir || null;
+        if (opts.outDir) {
+          try { mkdirSync(opts.outDir, { recursive: true }); } catch {}
+        } else {
+          ensureSessionScreenshotDir(session);
+        }
+        const path = opts.outDir
+          ? resolve(opts.outDir, `responsive-${size.replace(/[^0-9x]/gi, 'x')}-${Date.now()}.png`)
+          : nextSessionScreenshotPath(session, `responsive-${size}`);
+        let screenshotCapture = null;
+        const shot = await shotStr(cdp, sid, path, targetId, { quiet: true, tierState, onCapture: capture => { screenshotCapture = capture; } });
+        entry.screenshot = shot.split('\n')[0];
+        if (screenshotCapture) {
+          entry.screenshotCapture = {
+            method: screenshotCapture.method,
+            retryCount: screenshotCapture.retryCount || 0,
+            sanity: screenshotCapture.sanity || null,
+          };
+        }
+        appendSessionScreenshot(session, { kind: 'responsive-audit', path: entry.screenshot, note: size });
+        if (!shotDir && !opts.outDir) {
+          // default screenshots stay under session dir outside the repo
+        }
+      } catch (e) {
+        entry.error = e.message || String(e);
+        errors.push(`${size}: ${entry.error}`);
+        // A hidden tab stays hidden for the next size too (#488).
+        if (isScreenshotTimeoutError(e) || isHiddenTabCaptureError(e)) screenshotTimedOut = true;
+      }
+      viewports.push(entry);
+    }
+    // #533: restore before the receipt is built, so the receipt can say where the viewport ended up.
+    viewportRestore = await restoreAuditViewport(cdp, sid, session, originalViewport);
+    const model = buildResponsiveAuditModel({
+      targetId,
+      viewports,
+      page: { title: page.title, url: page.url },
+      console: consoleHealth,
+      errors,
+      viewportRestore,
+    });
+    if (screenshotTimedOut) {
+      const timeoutError = errors.find(msg => isScreenshotTimeoutError({ message: msg })) || errors[0];
+      throw new Error(timeoutError);
+    }
+    return opts.format === 'json' ? formatJson(model) : formatResponsiveAuditReport(model);
+  } finally {
+    if (!viewportRestore) await restoreAuditViewport(cdp, sid, session, originalViewport);
+  }
+}
 export function buildQaPageModel({ targetId = '', page = {}, pageHealth = null, console: consoleHealth = {}, perception = null, screenshots = {}, action = null, assertions = [], errors = [] } = {}) {
   const checks = {
     page: pageHealth?.isBlank ? 'fail' : pageHealth?.status === 'indeterminate' ? 'warn' : page?.url || page?.title ? 'pass' : 'fail',
@@ -557,6 +906,132 @@ export function formatViewportRestoreLine(restore) {
   if (restore.status === 'left') return `Viewport left at ${restore.viewport} (was ${restore.original})`;
   if (restore.status === 'failed') return `Viewport restore failed: ${restore.error}`;
   return `Viewport reset to ${restore.viewport || 'unknown size'} (size before the audit unknown)`;
+}
+export async function qaPageStr({
+  cdp,
+  sid,
+  session,
+  targetId,
+  consoleBuf,
+  exceptionBuf,
+  refMap,
+  lastPerceiveStore,
+  refState,
+  actionFeedback,
+}, args = []) {
+  const qopts = parseQaArgs(args);
+  const errors = [];
+  const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
+  if (isPdfViewerContentType(page.contentType)) {
+    const targetPrefix = targetPrefixForDisplay(targetId);
+    return qopts.format === 'json'
+      ? formatJson(pdfViewerHandoffModel(page, { targetPrefix }))
+      : formatPdfViewerOutput(page, { targetPrefix });
+  }
+  const originalViewport = await captureViewportSize(cdp, sid);
+  const consoleHealth = {
+    errors: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'error').length,
+    warnings: consoleDocumentEntries(consoleBuf).filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+    exceptions: consoleDocumentEntries(exceptionBuf).length,
+  };
+  const screenshots = {};
+  let screenshotTimedOut = false;
+  try {
+    for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
+      if (!size) continue;
+      if (screenshotTimedOut) {
+        errors.push(`${kind} screenshot: skipped after previous screenshot timeout`);
+        continue;
+      }
+      try {
+        await applyViewportOverride(cdp, sid, size);
+        ensureSessionScreenshotDir(session);
+        const path = nextSessionScreenshotPath(session, kind);
+        const shot = await shotStr(cdp, sid, path, targetId, {
+          quiet: true,
+          ...qaScreenshotCaptureOptions(),
+        });
+        appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
+        screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
+      } catch (error) {
+        errors.push(`${kind} screenshot: ${error.message}`);
+        if (isScreenshotTimeoutError(error) || isHiddenTabCaptureError(error)) screenshotTimedOut = true;
+      }
+    }
+    let perception = null;
+    try {
+      const text = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+        cursorInteractive: true,
+        maxDepth: 4,
+        targetPrefix: targetPrefixForDisplay(targetId),
+      }, refState);
+      perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
+    } catch (error) {
+      perception = { captured: false, error: error.message };
+      errors.push(`perceive: ${error.message}`);
+    }
+    let action = null;
+    const assertions = [];
+    if (qopts.click) {
+      let captured = null;
+      await actionFeedback(
+        'click',
+        () => clickStr(cdp, sid, qopts.click, refMap, refState),
+        { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
+        'settle-diff',
+        null,
+        'json',
+        result => { captured = result; },
+      );
+      const textMatched = qopts.expectText
+        ? await pageContainsText(cdp, sid, qopts.expectText).catch(() => false)
+        : false;
+      action = buildSemanticInteractionModel(captured || {}, {
+        selector: qopts.click,
+        expectRequest: qopts.expectRequest,
+        expectStatus: qopts.expectStatus,
+        expectText: qopts.expectText,
+        noConsoleErrors: qopts.noConsoleErrors,
+        evidence: 'concise',
+      }, { textMatched });
+    } else {
+      if (qopts.expectText) {
+        const textMatched = await pageContainsText(cdp, sid, qopts.expectText).catch(() => false);
+        assertions.push({
+          kind: 'text',
+          expected: qopts.expectText,
+          status: textMatched ? 'pass' : 'fail',
+          message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
+        });
+      }
+      if (qopts.expectRequest) {
+        assertions.push({
+          kind: 'request',
+          expected: qopts.expectRequest,
+          status: 'fail',
+          message: '--expect-request requires --click so the command can collect action network evidence',
+        });
+      }
+    }
+    const pageHealth = await collectPageHealth(cdp, sid).catch(() => null);
+    const model = buildQaPageModel({
+      targetId,
+      page: { title: page.title, url: page.url },
+      pageHealth,
+      console: consoleHealth,
+      perception,
+      screenshots,
+      action,
+      assertions,
+      errors,
+    });
+    return formatActionWorkflowCommandOutput(model, {
+      format: qopts.format,
+      text: () => formatQaPageReport(model),
+    });
+  } finally {
+    await restoreAuditViewport(cdp, sid, session, originalViewport);
+  }
 }
 export async function pageContainsText(cdp, sid, text) {
   if (!text) return false;

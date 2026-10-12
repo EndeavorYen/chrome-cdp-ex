@@ -387,7 +387,7 @@ describe('#462 runtime artifacts are pruned and the session log rotates', () => 
 
   it('runDaemon wires the idle-tracking request handler and the deferred prune', () => {
     const source = runtimeSource();
-    const start = source.indexOf('\nasync function runDaemon(');
+    const start = source.search(/\n(?:export )?async function runDaemon\(/);
     expect(start).toBeGreaterThan(0);
     const end = source.indexOf('\n}\n', start);
     const body = source.slice(start, end);

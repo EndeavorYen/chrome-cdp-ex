@@ -1267,6 +1267,30 @@ export async function repeatStr({ run, probeCondition }, args) {
   }
   return lines.join('\n');
 }
+// --- Flow: sequential step runner ---
+// A semicolon separates steps only outside quotes (' " `). A quote opens only at
+// the start of a word: the start of a segment, or after whitespace. A quote inside
+// a word stays literal. Inside quotes a backslash is literal, except `\;`, which
+// keeps a semicolon. The opening quote always closes. Outside quotes, `\;` is a
+// literal semicolon, and a doubled backslash does not escape the next character,
+// so `\\;` still separates steps. An unquoted `\;` before a command name, alias,
+// or assert fails the flow, except inside an unquoted eval/eval64/call body.
+// That body keeps consuming segments until the next one starts with a command
+// name, alias, or assert. A body that is one wrapped quote stops at that quote.
+// The unwrapped script body is one argument, byte-exact, including an empty
+// quoted body. Wrapping quotes on that body are flow delimiters and are not
+// part of the JavaScript.
+export let flowStepHeads = null;
+export function flowStepHeadSet() {
+  if (!flowStepHeads) {
+    flowStepHeads = new Set(['assert', FOREGROUND_ACTIVATE_COMMAND]);
+    for (const command of COMMANDS) {
+      flowStepHeads.add(command.name);
+      for (const alias of command.aliases || []) flowStepHeads.add(alias);
+    }
+  }
+  return flowStepHeads;
+}
 export function firstFlowToken(segment) {
   const trimmed = String(segment || '').trim();
   if (!trimmed) return '';
@@ -1340,6 +1364,62 @@ export function unclosedFlowQuoteError(source, openIndex) {
     'Next: cdp help flow',
   ].join('\n'));
 }
+export function splitFlowSegmentsRaw(input) {
+  const segments = [];
+  let start = 0;
+  let quote = '';
+  let quoteAt = -1;
+  let atTokenStart = true;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      // A backslash does not swallow the closer. `\;` stays in this step.
+      const escaped = flowQuotedEscape(ch, input[i + 1]);
+      if (escaped.skip) {
+        i += escaped.skip;
+        continue;
+      }
+      if (ch === quote) {
+        quote = '';
+        quoteAt = -1;
+        atTokenStart = false;
+      }
+      continue;
+    }
+    // Pair from the left. `\\` is an escaped backslash, so the second slash does
+    // not escape a following semicolon: `\\;` still starts the next step.
+    if (ch === '\\' && input[i + 1] === '\\') {
+      i += 1;
+      atTokenStart = false;
+      continue;
+    }
+    if (ch === '\\' && input[i + 1] === ';') {
+      const nextWord = flowWordAt(input, i + 2);
+      if (nextWord && flowStepHeadSet().has(nextWord) && !escapedSemicolonIsScriptBody(input, start, i)) {
+        throw ambiguousEscapedSemicolonError(nextWord);
+      }
+      i += 1;
+      atTokenStart = false;
+      continue;
+    }
+    if (flowQuoteOpens(atTokenStart, ch)) {
+      quote = ch;
+      quoteAt = i;
+      atTokenStart = false;
+      continue;
+    }
+    if (ch === ';') {
+      segments.push(input.slice(start, i));
+      start = i + 1;
+      atTokenStart = true;
+      continue;
+    }
+    atTokenStart = /\s/.test(ch);
+  }
+  if (quote) throw unclosedFlowQuoteError(input, quoteAt);
+  segments.push(input.slice(start));
+  return segments;
+}
 export function decodeFlowEscapedSemicolon(segment) {
   let out = '';
   let quote = '';
@@ -1380,6 +1460,9 @@ export function decodeFlowEscapedSemicolon(segment) {
   }
   if (quote) throw unclosedFlowQuoteError(segment, quoteAt);
   return out;
+}
+export function splitFlowSegments(input) {
+  return splitFlowSegmentsRaw(input).map(decodeFlowEscapedSemicolon);
 }
 // `\;` inside quotes becomes a semicolon once. Other backslashes stay.
 // Outside quotes, decodeFlowEscapedSemicolon already turned `\;` into `;`.
@@ -1450,6 +1533,37 @@ export function scriptSegmentClosesQuote(segment) {
   const rest = trimmed.slice(head.length);
   const body = head === 'eval' ? takeEvalFlowFlags(rest).body : String(rest || '').trim();
   return wrappedFlowQuote(body);
+}
+export function mergeFlowScriptSegments(segments) {
+  const steps = [];
+  let index = 0;
+  while (index < segments.length) {
+    if (!segments[index].trim()) {
+      index++;
+      continue;
+    }
+    const head = firstFlowToken(segments[index]);
+    if (!FLOW_SCRIPT_COMMANDS.has(head)) {
+      steps.push(segments[index].trim());
+      index++;
+      continue;
+    }
+    let combined = segments[index];
+    let next = index + 1;
+    // Only an unquoted body continues. A wrapped quote already ended the body,
+    // so the next segment is the next step even when it is not a command name.
+    if (!scriptSegmentClosesQuote(segments[index])) {
+      while (next < segments.length) {
+        const piece = segments[next];
+        if (piece.trim() && flowStepHeadSet().has(firstFlowToken(piece))) break;
+        combined += `;${piece}`;
+        next++;
+      }
+    }
+    steps.push(combined.trim());
+    index = next;
+  }
+  return steps;
 }
 export function unwrapFlowScriptBody(text) {
   if (!text) return '';
@@ -1524,6 +1638,10 @@ export function parseFlowLine(line) {
   }
   const tokens = tokenizeFlowCommandLine(decoded);
   return { kind: 'command', cmd: tokens[0].value, args: commandArgsFromTokens(tokens.slice(1)) };
+}
+export function parseFlowSteps(input) {
+  if (typeof input !== 'string' || !input.trim()) return [];
+  return mergeFlowScriptSegments(splitFlowSegments(input)).map(parseFlowLine);
 }
 export function flowStepHelpLines() {
   return [
@@ -1654,6 +1772,78 @@ export async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   }
   throw new Error(`Unknown wait: "${what}". Use "dom stable", "network idle", or a millisecond count such as wait 2000.`);
 }
+export async function flowStr({ run, settle, assertCondition }, input, { format = 'text', targetId = null, throwOnFailure = false } = {}) {
+  const steps = parseFlowSteps(input);
+  if (steps.length === 0) throw new Error('flow: no steps. Example: flow <target> "click @1; wait dom stable; summary"');
+  const lines = [`Flow: ${steps.length} step(s)`];
+  const stepResults = [];
+  const finish = () => {
+    const model = buildFlowResultModel({ targetId, input, steps, stepResults });
+    const output = format === 'json' ? formatJson(model) : lines.join('\n');
+    if (throwOnFailure && model.halted) {
+      const error = new Error(output);
+      error.code = 'FLOW_HALTED';
+      throw error;
+    }
+    return output;
+  };
+  const markSkippedAfter = (startIndex) => {
+    for (let j = startIndex; j < steps.length; j++) {
+      stepResults.push(flowStepModel(steps[j], j, { skipped: true }));
+    }
+  };
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const head = step.kind === 'wait'
+      ? `[${i + 1}/${steps.length}] wait ${step.what}`
+      : step.kind === 'assert'
+      ? `[${i + 1}/${steps.length}] assert ${pageConditionDescription(step.condition)}`
+      : `[${i + 1}/${steps.length}] ${step.cmd}${step.args.length ? ' ' + step.args.join(' ') : ''}`;
+    lines.push(head);
+    try {
+      let body;
+      if (step.kind === 'wait') {
+        body = await settle(step.what);
+      } else if (step.kind === 'assert') {
+        if (typeof assertCondition !== 'function') throw new Error('flow: assertion probe is unavailable');
+        const assertion = await assertCondition(step.condition);
+        if (!assertion.matched) throw new Error(`Assertion failed: ${assertion.description}`);
+        body = `Assertion passed: ${assertion.description}`;
+      } else {
+        const r = await run(step);
+        if (!r.ok) {
+          stepResults.push(flowStepModel(step, i, {
+            ok: false,
+            result: r.result,
+            error: r.error,
+          }));
+          markSkippedAfter(i + 1);
+          lines.push(`  ✗ ${r.error}`);
+          lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
+          return finish();
+        }
+        body = r.result ?? '';
+      }
+      const stepModel = flowStepModel(step, i, { ok: true, result: body });
+      stepResults.push(stepModel);
+      const text = (body || '').toString();
+      if (text) for (const ln of text.split('\n')) lines.push('  ' + ln);
+      if (!stepModel.ok) {
+        markSkippedAfter(i + 1);
+        lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
+        return finish();
+      }
+    } catch (e) {
+      if (e?.code === 'FLOW_HALTED') throw e;
+      stepResults.push(flowStepModel(step, i, { ok: false, error: e.message }));
+      markSkippedAfter(i + 1);
+      lines.push(`  ✗ ${e.message}`);
+      lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
+      return finish();
+    }
+  }
+  return finish();
+}
 export function parseReplayArgs(args, { reader = readFileSync } = {}) {
   const fopts = parseFormatArgs((args || []).filter(a => a !== undefined && a !== null), ['text', 'json']);
   const tokens = fopts.args;
@@ -1766,6 +1956,40 @@ export function replayStepFromAction(action = {}) {
     return { skip: true, command, commandText, missing, reason: 'missing input' };
   }
   return { cmd: command[0], args: command.slice(1), command, commandText };
+}
+// #466: the steps batch/flow/repeat/replay would run, so the session policy can refuse the whole
+// command before its first step. Null when the arguments do not parse; the command reports that.
+export function policyCompositeSteps(cmd, args = []) {
+  try {
+    if (cmd === 'batch') {
+      return parseBatchArgs(args).commands.map(command => ({
+        cmd: String(command?.cmd || ''),
+        args: Array.isArray(command?.args) ? command.args.map(String) : [],
+      }));
+    }
+    if (cmd === 'flow') {
+      // wait/assert steps stay as empty entries so step numbers match the flow text.
+      return parseFlowSteps(parseFormatArgs(args, ['text', 'json']).args.join(' '))
+        .map(step => (step.kind === 'command' ? { cmd: step.cmd, args: step.args } : { cmd: '', args: [] }));
+    }
+    if (cmd === 'repeat') {
+      const opts = parseRepeatArgs(args);
+      return [{ cmd: opts.cmd, args: opts.args }];
+    }
+    if (cmd === 'replay') {
+      const { artifact } = parseReplayArgs(args);
+      const actions = [
+        ...(Array.isArray(artifact.environment) ? artifact.environment : []),
+        ...(Array.isArray(artifact.actions) ? artifact.actions : []),
+      ];
+      // Steps replay skips stay as empty entries so step numbers match the artifact.
+      return actions.map(replayStepFromAction)
+        .map(step => (!step.skip && step.cmd ? { cmd: step.cmd, args: step.args } : { cmd: '', args: [] }));
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 export function replayRecoveryNextSteps(targetId) {
   const target = targetId || '<target>';

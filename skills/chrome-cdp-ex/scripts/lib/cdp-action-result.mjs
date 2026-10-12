@@ -12,7 +12,7 @@ import { targetPrefixForDisplay } from './cdp-cli.mjs';
 import { displayLocation, displayObservedText, displayUrl, sliceAtCodePoint } from './cdp-core.mjs';
 import { ariaControlStateReceiptClause } from './cdp-input.mjs';
 import { formatPdfViewerOutput, isPdfViewerContentType, pdfViewerHandoffModel } from './cdp-page.mjs';
-import { formatPerceiveDiffOutput, frameRefFromActionTarget, isCursorRef, isRef, perceiveSnapshotOpts, resolveSinceActionPerceiveOpts } from './cdp-perceive.mjs';
+import { baselineOutputForActionTarget, formatPerceiveDiffOutput, frameRefFromActionTarget, isCursorRef, isRef, perceiveSnapshotOpts, perceiveStr, resolveSinceActionPerceiveOpts } from './cdp-perceive.mjs';
 import { commandArgsNameSecret, compactActionResultForJson, isSensitiveActionTarget, sensitiveActionValues, summarizeActionDomDiff } from './cdp-session-report.mjs';
 
 // Source-maps the entries an agent debugs from (errors, warnings, exceptions). `locate` is the
@@ -648,6 +648,108 @@ export function shouldRecaptureNavigatedBaseline(lastPerceiveStore, refState, ac
   if (lastPerceiveStore?.output == null && lastPerceiveStore?.snapshotOpts == null) return false;
   if (actionSkipsSettleBaseline(actionTarget, feedbackPolicy, observe)) return false;
   return true;
+}
+// The capture writes to its own store and ref map. Assigning session refs here
+// would let a leftover @ref from the previous daemon resolve against numbers
+// the agent never saw, and clear the daemon-start stale-ref state.
+export async function captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId) {
+  const store = { output: null, model: null, snapshotOpts: null, cards: null };
+  const opts = actionObservationPerceiveOpts(targetId);
+  const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, new Map(), store, opts, null);
+  return {
+    output: perceiveStoreDiffSource(store) ?? output,
+    snapshotOpts: store.snapshotOpts || perceiveSnapshotOpts(opts),
+  };
+}
+// One capture of the loaded document. If a main-frame navigation commits
+// while that capture is in flight, the first tree can still be the previous
+// document; take one more after the commit.
+export async function captureActionDocumentBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId, pageGeneration) {
+  const readGeneration = () => (typeof pageGeneration === 'function' ? pageGeneration() : pageGeneration);
+  const before = readGeneration();
+  let captured = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+  const after = readGeneration();
+  if (before != null && after != null && before !== after) {
+    captured = await captureFirstActionBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId);
+  }
+  return captured;
+}
+// What an action's settle step diffs against: the leftover perceive in its own
+// shape, a recaptured top-level tree when the leftover is a cards/frame view
+// (#257/#279), a fresh capture when the daemon has not perceived yet (#504),
+// or a fresh capture when that leftover tree belongs to a document the page
+// has since navigated away from (#589).
+export async function resolveActionSettleBaseline({
+  cdp, sid, consoleBuf, exceptionBuf, refMap, refState, lastPerceiveStore, targetId,
+  action, actionTarget, feedbackPolicy = 'settle-diff', observe = null, pageGeneration = null,
+}) {
+  let baselineFromTarget = baselineOutputForActionTarget(refState, perceiveStoreDiffSource(lastPerceiveStore), actionTarget);
+  let baselineSnapshotOpts = lastPerceiveStore.snapshotOpts || null;
+  if (shouldCaptureFirstActionBaseline(lastPerceiveStore, actionTarget, feedbackPolicy, observe)) {
+    let first;
+    try {
+      first = await captureActionDocumentBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId, pageGeneration);
+    } catch {
+      // A failed snapshot must not fail the action: dispatch it without a
+      // baseline, and let the receipt say the DOM change was not observed.
+      return { output: null, opts: null, captureFailed: true };
+    }
+    baselineFromTarget = first.output;
+    baselineSnapshotOpts = first.snapshotOpts;
+  } else if (shouldRecaptureNavigatedBaseline(lastPerceiveStore, refState, actionTarget, feedbackPolicy, observe)) {
+    let fresh;
+    try {
+      fresh = await captureActionDocumentBaseline(cdp, sid, consoleBuf, exceptionBuf, targetId, pageGeneration);
+    } catch {
+      // Keep the previous document's tree out of the comparison. The receipt
+      // says the baseline is stale instead of reporting a failed click.
+      return { output: null, opts: null, captureFailed: true, baselineStale: true };
+    }
+    baselineFromTarget = fresh.output;
+    baselineSnapshotOpts = fresh.snapshotOpts;
+  }
+  let settleBaseline = actionSettleBaseline(
+    baselineFromTarget,
+    baselineSnapshotOpts,
+    actionTarget,
+  );
+  if (isPdfViewerPerceiveOutput(baselineFromTarget)) {
+    actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'pdf-viewer-no-change';
+  }
+  tagScrollLeftoverSettle(
+    action,
+    actionTarget,
+    baselineFromTarget,
+    baselineSnapshotOpts,
+  );
+  if (
+    !settleBaseline.output
+    && shouldCaptureTopLevelActionSettle(
+      baselineSnapshotOpts,
+      baselineFromTarget,
+      actionTarget,
+    )
+  ) {
+    const topLevelOpts = actionObservationPerceiveOpts(targetId, {
+      ...(settleBaseline.opts || {}),
+      frameRef: null,
+    });
+    const before = await perceiveStr(
+      cdp,
+      sid,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      lastPerceiveStore,
+      topLevelOpts,
+      refState,
+    );
+    settleBaseline = {
+      output: perceiveStoreDiffSource(lastPerceiveStore) ?? before,
+      opts: perceiveSnapshotOpts(topLevelOpts),
+    };
+  }
+  return settleBaseline;
 }
 export function actionDomDiffShowsChange(domDiff) {
   const text = String(domDiff || '').trim();

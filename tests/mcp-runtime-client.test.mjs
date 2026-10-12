@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
+import { runtimeSource } from './runtime-source.mjs';
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { isServedMcpTool } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
@@ -353,7 +354,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
       scriptPath: expectedScript,
     });
 
-    const source = readFileSync(expectedScript, 'utf8');
+    const source = runtimeSource();
     expect(source).toContain('...runtimeIdentity');
     expect(source).toContain('collectDaemonMetadata({ scriptPath: runtimeIdentity.scriptPath })');
     expect(source).toContain('[runtimeIdentity.scriptPath, \'_daemon\', targetId]');

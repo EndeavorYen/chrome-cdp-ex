@@ -3,16 +3,17 @@ import { uniqueNextStepCommands } from './action-recovery.mjs';
 import { COMMAND_SURFACE } from './command-surface.mjs';
 import { resolveGitHead } from './git-head.mjs';
 import { goldenPathReadPageRecommendation } from './perception-model.mjs';
+import { distinctTargets, resolveLiveTargetBinding } from './target-binding.mjs';
 import { spawnSync } from 'child_process';
 import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, statSync, writeFileSync } from 'fs';
 import { homedir, hostname as osHostname } from 'os';
 import { dirname, resolve } from 'path';
-import { ALLOW_IN_CHROME_DAEMON_START, ALLOW_STALE_DAEMON_FLAG, BROWSER_WS_PATH, CDP_NOT_FOUND_HINT, CDP_PROFILE_UNKNOWN_HINT, DAEMON_METADATA_SCHEMA, DEFAULT_CDP_HOST, DEFAULT_DEBUG_PORT, FOLLOW_URL_FLAG, IS_WINDOWS, LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX, MIN_TARGET_PREFIX_LEN, PAGES_CACHE, RUNTIME_DIR, TAB_GROUPS_CACHE, TIMEOUT, USAGE_LOG_MAX_BYTES, WAIT_DURATION_MAX_MS, argvDebugPort, cdpProfileKey, defaultFindListeningBrowser, findListeningBrowserProcess, profileDirFromCommandLine, readProcessArgv, sleep } from './cdp-base.mjs';
+import { ALLOW_IN_CHROME_DAEMON_START, ALLOW_STALE_DAEMON_FLAG, BROWSER_WS_PATH, CDP_NOT_FOUND_HINT, CDP_PROFILE_UNKNOWN_HINT, DAEMON_METADATA_SCHEMA, DEFAULT_CDP_HOST, DEFAULT_CDP_PROBE_PORT, DEFAULT_DEBUG_PORT, FOLLOW_URL_FLAG, IS_WINDOWS, LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX, MIN_TARGET_PREFIX_LEN, PAGES_CACHE, RUNTIME_DIR, TAB_GROUPS_CACHE, TIMEOUT, USAGE_LOG_MAX_BYTES, WAIT_DURATION_MAX_MS, argvDebugPort, cdpProfileKey, defaultFindListeningBrowser, findListeningBrowserProcess, profileDirFromCommandLine, readProcessArgv, sleep } from './cdp-base.mjs';
 import { parseNonNegativeInteger, targetPrefixForDisplay } from './cdp-cli.mjs';
-import { cdpDisplayContext, emptyAliasStore, formatCdpCandidateList, inferBrowserFromExe, normalizeAliasName, normalizeAliasStore, rankCdpRelaunchCandidates, readTargetAliases, rememberLastCdpEndpoint, replayableLaunchFlags, sockPath } from './cdp-core.mjs';
-import { cdpEndpointFromWsUrl, isProcessAlive } from './cdp-daemon.mjs';
-import { checkRuntimeEnvironment, doctorRecommendationModel, reconcileRuntimeEnvironmentCheck } from './cdp-doctor.mjs';
-import { cdpDomains } from './cdp-page.mjs';
+import { cdpDisplayContext, emptyAliasStore, formatCdpCandidateList, inferBrowserFromExe, isIsolatedChromeCdpExProfileDir, isolatedOccupantAttachError, normalizeAliasName, normalizeAliasStore, rankCdpRelaunchCandidates, readLastCdpEndpoint, readTargetAliases, rememberLastCdpEndpoint, replayableLaunchFlags, resolveOccupantProfileDir, sockPath, writeTargetAliases } from './cdp-core.mjs';
+import { cdpEndpointFromWsUrl, discoverLivePagesForTargetResolution, isProcessAlive, readDaemonBinding } from './cdp-daemon.mjs';
+import { checkRuntimeEnvironment, defaultSpawnProbePorts, doctorRecommendationModel, reconcileRuntimeEnvironmentCheck } from './cdp-doctor.mjs';
+import { cdpDomains, getPages } from './cdp-page.mjs';
 import { formatCommandLine } from './cdp-session-report.mjs';
 
 // A browser's own default user-data-dir. Chrome 136+ and Edge ignore --remote-debugging-port there,
@@ -207,6 +208,44 @@ export function macCommandLineArgv(line, { exists = existsSync } = {}) {
     return `${key}=${parts.join(' ')}`;
   });
   return [...fixed, ...trailing];
+}
+// #534: broadcast's per-member gate. For each endpoint (the alias's port, else the environment), the
+// browser passes getWsUrl's CDP_ISOLATED_ONLY check once; a member must then be one of its tabs, so a
+// daemon left attached to another (daily) browser is never reused.
+export function createIsolatedMemberGate({
+  gatedWsUrl = getWsUrl,
+  listPagesFor = async (wsUrl) => {
+    const cdp = new CDP();
+    await cdp.connect(wsUrl);
+    try { return await getPages(cdp); } finally { cdp.close(); }
+  },
+  baseEnv = process.env,
+} = {}) {
+  const checked = new Map();
+  const check = (alias) => {
+    const env = aliasEnv(alias, baseEnv);
+    const key = `${env.CDP_HOST || ''}|${env.CDP_PORT || ''}`;
+    if (!checked.has(key)) {
+      const pending = (async () => {
+        const wsUrl = await gatedWsUrl({ env });
+        const pages = await listPagesFor(wsUrl);
+        return { endpoint: cdpEndpointFromWsUrl(wsUrl), ids: new Set((pages || []).map(page => page.targetId)) };
+      })();
+      // A failure is not remembered: a transient error must not fail every later member.
+      pending.catch(() => checked.delete(key));
+      checked.set(key, pending);
+    }
+    return checked.get(key);
+  };
+  const gate = async (alias, targetId) => {
+    const result = await check(alias);
+    if (!result.ids.has(targetId)) {
+      throw new Error(`CDP_ISOLATED_ONLY=1: ${targetPrefixForDisplay(targetId)} is not a tab of the checked browser at ${result.endpoint}; broadcast does not reuse its daemon.`);
+    }
+  };
+  // The environment endpoint, checked before any member: a refusal there stays a Kind: policy error.
+  gate.prime = async () => { await check(null); };
+  return gate;
 }
 export function dailyProfileRefusedError({ host, port, profile }) {
   const endpoint = `${host || DEFAULT_CDP_HOST}:${port}`;
@@ -658,6 +697,52 @@ export function takeFollowUrlFlag(cmd, args = []) {
   }
   return { followUrl: true, args: rest };
 }
+// #546: a page list taken right after location.reload() can hold two matches for one tab for a
+// moment. Discover again (up to 3 more times, 250 ms apart) before an ambiguous prefix fails.
+export async function resolvePageCommandTarget({
+  targetPrefix,
+  targetAlias = null,
+  lastSeenPages = [],
+  followUrl = false,
+  discover = livePagesForTargetCommand,
+  readBinding = readDaemonBinding,
+  onPages = () => {},
+  attempts = 4,
+  delayMs = 250,
+  wait = sleep,
+} = {}) {
+  const requestedTargetId = String(targetAlias?.targetId || targetPrefix).toUpperCase();
+  for (let attempt = 1; ; attempt++) {
+    const livePages = distinctTargets(await discover(targetAlias));
+    onPages(livePages);
+    const preliminaryIds = new Set(livePages
+      .map(page => String(page.targetId || ''))
+      .filter(id => id.toUpperCase().startsWith(requestedTargetId)));
+    const preliminaryTargetId = preliminaryIds.size === 1 ? [...preliminaryIds][0] : null;
+    const daemonBinding = preliminaryTargetId ? await readBinding(preliminaryTargetId) : null;
+    try {
+      const targetResolution = resolveLiveTargetBinding({
+        requested: targetPrefix,
+        livePages,
+        daemonBinding,
+        alias: targetAlias,
+        lastSeenPages,
+        followUrl,
+      });
+      return { livePages, targetResolution };
+    } catch (error) {
+      if (error?.code !== 'target_ambiguous' || attempt >= attempts) throw error;
+      await wait(delayMs);
+    }
+  }
+}
+export async function livePagesForTargetCommand(targetAlias, {
+  discoverPages = discoverLivePagesForTargetResolution,
+  env = process.env,
+} = {}) {
+  const discoveredPages = await discoverPages(discoverOptionsForTargetAlias(targetAlias, env));
+  return selectLivePagesForAliasResolution({ alias: targetAlias, discoveredPages });
+}
 export function bindAliasTargetFromPages(parsed = {}, livePages = []) {
   const requested = String(parsed?.targetId || '').trim();
   if (!requested) throw new Error(`${parsed?.mode || 'use'}: --target or target id is required`);
@@ -677,6 +762,43 @@ export function bindAliasTargetFromPages(parsed = {}, livePages = []) {
     throw new Error(`Live target prefix "${requested}" is ambiguous (${matches.length} matches).`);
   }
   return { targetId: requested, url: '', title: '' };
+}
+export async function bindAndSaveTargetAlias(parsed, {
+  store = readTargetAliases(),
+  discoverPages = discoverLivePagesForTargetResolution,
+  writeStore = writeTargetAliases,
+  env = process.env,
+} = {}) {
+  const attachEnv = parsed.port ? {
+    ...env,
+    CDP_PORT: String(parsed.port),
+    CDP_HOST: parsed.host || env.CDP_HOST || DEFAULT_CDP_HOST,
+  } : null;
+  let targetId = parsed.targetId;
+  let boundUrl = '';
+  let boundTitle = '';
+  try {
+    const pages = await discoverPages({
+      env: attachEnv || env,
+      pinCdpPort: Boolean(parsed.port),
+    });
+    const bound = bindAliasTargetFromPages(parsed, pages);
+    targetId = bound.targetId;
+    boundUrl = bound.url;
+    boundTitle = bound.title;
+  } catch (error) {
+    if (parsed.port) throw error;
+  }
+  const next = upsertTargetAlias(store, {
+    name: parsed.name,
+    targetId,
+    port: parsed.port,
+    host: parsed.host,
+    url: boundUrl,
+    title: boundTitle,
+  });
+  writeStore(next);
+  return next;
 }
 export function formatDaemonStartFailure({
   lastError = null,
@@ -1236,11 +1358,52 @@ export function truncateTextLines(text = '', maxLines = null) {
   if (lines.length <= maxLines) return lines.join('\n');
   return [...lines.slice(0, maxLines), `… truncated ${lines.length - maxLines} lines`].join('\n');
 }
+// Browser metadata from /json/version — set when connecting via CDP_PORT
+export let _browserInfo = null;
 // Node's fetch says only "fetch failed"; the reason (ECONNREFUSED, ...) is on `cause`.
 export function fetchFailureText(error) {
   const message = String(error?.message || error || 'unreachable');
   const code = error?.cause?.code;
   return code && !message.includes(code) ? `${message} (${code})` : message;
+}
+export async function wsUrlFromCdpHttp({
+  host,
+  port,
+  fetcher,
+  remembered,
+  rememberReachable,
+  display,
+  inspectProfileProcess,
+}) {
+  const unreachable = (cause) => {
+    const err = cdpUnreachableError({ host, port, cause, lastEndpoint: remembered, display, inspectProfileProcess });
+    err.probeCause = String(cause || 'unreachable');
+    return err;
+  };
+  let res;
+  try {
+    res = await fetcher(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+  } catch (e) {
+    throw unreachable(fetchFailureText(e));
+  }
+  if (res.ok) {
+    const info = await res.json();
+    if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
+    _browserInfo = info;
+    rememberReachable({ host, port });
+    // Extract path only — don't trust the hostname in the response (may be "localhost"
+    // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
+    const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
+    return `ws://${host}:${port}${wsPath}`;
+  }
+  // Chrome 136+ / SSH tunnel / websocket-only mode: HTTP discovery returns 404 but
+  // direct WebSocket handshake to /devtools/browser still works. Do not fall back on
+  // other HTTP failures — those usually mean a non-CDP service is bound to the port.
+  if (res.status === 404) {
+    rememberReachable({ host, port });
+    return `ws://${host}:${port}/devtools/browser`;
+  }
+  throw unreachable(`HTTP ${res.status}`);
 }
 // Where Chromium-family browsers write DevToolsActivePort. `doctor` and every attach search the same
 // list, so they cannot disagree about whether the file exists (#425).
@@ -1329,6 +1492,136 @@ export function defaultCdpEnvironmentCheck(env, cdpCheck) {
   } catch {
     return null;
   }
+}
+// #534: with CDP_ISOLATED_ONLY=1, read the attached browser's command line and refuse a daily or
+// unidentified profile. Every fresh attach (daemon start, list, open, target discovery) comes here.
+export async function getWsUrl(options = {}) {
+  const url = await discoverWsUrl(options);
+  if (!isolatedOnlyEnabled(options.env || process.env)) return url;
+  const { hostname: host, port } = new URL(url);
+  // Chrome answers Browser.getBrowserCommandLine only with --enable-automation; otherwise ask the OS.
+  const inspect = options.inspectBrowserArgv
+    || (async endpoint => (await readBrowserArgvViaCdp({ wsUrl: url, connectWebSocket: options.connectWebSocket }))
+      || readBrowserProcessArgv(endpoint));
+  const readUserAgent = options.readUserAgent || (endpoint => readCdpUserAgent({ ...endpoint, fetcher: options.fetcher }));
+  const profile = classifyBrowserProfile(await inspect({ host, port }), {
+    electron: isElectronUserAgent(await readUserAgent({ host, port })),
+  });
+  if (profile.kind === 'daily' || profile.kind === 'unknown') throw dailyProfileRefusedError({ host, port, profile });
+  return url;
+}
+export async function discoverWsUrl({
+  env = process.env,
+  fetcher = fetch,
+  lastEndpoint,
+  readLastEndpoint = readLastCdpEndpoint,
+  rememberEndpoint = rememberLastCdpEndpoint,
+  inspectOccupantProfileDir,
+  connectWebSocket,
+  inspectProfileProcess,
+  display = cdpDisplayContext(),
+  environmentCheck = cdpCheck => defaultCdpEnvironmentCheck(env, cdpCheck),
+} = {}) {
+  const host = env.CDP_HOST || DEFAULT_CDP_HOST;
+  const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
+  const rememberReachable = (record) => {
+    try { rememberEndpoint(withLiveLaunchFlags(record, { remembered, inspectProfileProcess })); } catch {}
+  };
+  const httpProbe = port => wsUrlFromCdpHttp({
+    host,
+    port,
+    fetcher,
+    remembered,
+    rememberReachable,
+    display,
+    inspectProfileProcess,
+  });
+
+  // CDP_PORT: explicit port (e.g. Electron with --remote-debugging-port=9222)
+  if (env.CDP_PORT) return httpProbe(env.CDP_PORT);
+
+  // Why each probed port failed, for the one miss diagnosis below.
+  const probed = {};
+  // A live port is attach success unless it is a leftover isolated chrome-cdp-ex profile.
+  const attachProbe = async (port) => {
+    try {
+      const url = await httpProbe(port);
+      const profileDir = await resolveOccupantProfileDir({
+        host,
+        port,
+        remembered,
+        inspectOccupantProfileDir,
+        connectWebSocket,
+      });
+      // With CDP_ISOLATED_ONLY an isolated occupant is exactly what the user asked for (#534).
+      if (!isolatedOnlyEnabled(env) && isIsolatedChromeCdpExProfileDir(profileDir)) {
+        throw isolatedOccupantAttachError({ host, port, profileDir });
+      }
+      return url;
+    } catch (error) {
+      if (error?.code === 'cdp_isolated_occupant' || error?.isolatedOccupant) throw error;
+      probed[String(port)] = error?.probeCause || error?.message || 'unreachable';
+      return null;
+    }
+  };
+
+  // Probe spawn-default 9222 (and CDP_LAST_PORT) before DevToolsActivePort / FAIL.
+  for (const candidate of defaultSpawnProbePorts(env)) {
+    const url = await attachProbe(candidate);
+    if (url) return url;
+  }
+
+  // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
+  let deadFilePort = null;
+  const portFile = devToolsActivePortCandidates({
+    home: homedir(),
+    localAppData: env.LOCALAPPDATA || process.env.LOCALAPPDATA || '',
+    portFile: env.CDP_PORT_FILE || process.env.CDP_PORT_FILE,
+  }).find(p => existsSync(p));
+  if (portFile) {
+    const lines = readFileSync(portFile, 'utf8').trim().split('\n');
+    if (lines.length < 2 || !lines[0] || !lines[1]) throw new Error(`Invalid DevToolsActivePort file: ${portFile}`);
+    const live = await answeredDevToolsActivePort({
+      host,
+      port: lines[0],
+      wsPath: lines[1],
+      profileDir: profileDirFromDevToolsActivePort(portFile),
+      fetcher,
+      rememberReachable,
+      connectWebSocket,
+    });
+    if (live.url) return live.url;
+    deadFilePort = lines[0];
+    probed[String(lines[0])] = live.miss;
+  }
+
+  // Chrome 136+ often does not write DevToolsActivePort. Probe the same HTTP
+  // path as CDP_PORT=9224, including the 404 → /devtools/browser fallback.
+  // Skip a port the file already missed: a 404 response is success for this
+  // probe, and that would hide a live remembered endpoint (#558).
+  if (!Object.hasOwn(probed, String(DEFAULT_CDP_PROBE_PORT))) {
+    try {
+      return await httpProbe(DEFAULT_CDP_PROBE_PORT);
+    } catch (error) {
+      probed[DEFAULT_CDP_PROBE_PORT] = error?.probeCause || error?.message || 'unreachable';
+    }
+  }
+
+  // Last, the endpoint this tool last reached (#425): a live browser there is attach success.
+  const rememberedPort = rememberedCdpProbePort(remembered, host, probed);
+  if (rememberedPort) {
+    const url = await attachProbe(rememberedPort);
+    if (url) return url;
+  }
+
+  const diagnosis = cdpDiscoveryMiss({ host, remembered, probed, display, inspectProfileProcess, deadFilePort });
+  const check = cdpCheckFromDiagnosis(diagnosis);
+  // Not a relaunch: the Next is whatever doctor recommends for this same check.
+  const needsDoctorRecovery = diagnosis.code === 'cdp_not_found' || diagnosis.profileInUse;
+  const recovery = needsDoctorRecovery
+    ? cdpRecoveryFromDoctor([diagnosis.profileInUse ? null : environmentCheck(check), check].filter(Boolean))
+    : null;
+  throw cdpErrorFromDiagnosis(diagnosis, { recovery });
 }
 export function parseDelayMs(value, { name = 'ms', min = 1, max = 24 * 60 * 60 * 1000 } = {}) {
   const raw = String(value ?? '').trim();

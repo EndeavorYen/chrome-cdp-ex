@@ -1130,7 +1130,7 @@ describe('daemon request server lifecycle', () => {
 
   it('wires the private artifact store to successful flush, rollback, and shutdown in production', () => {
     expect(cdpSource).toContain('  cleanup = () => {},');
-    expect(cdpSource).toContain("import { createTableArtifactStore } from './lib/table-artifacts.mjs';");
+    expect(cdpSource).toMatch(/import \{ createTableArtifactStore \} from '\.\/(?:lib\/)?table-artifacts\.mjs';/);
     expect(cdpSource).toContain("sessionId: randomBytes(16).toString('hex')");
     expect(cdpSource).toContain('cleanupSession: () => tableArtifactStore.cleanupSession()');
     expect(cdpSource).toContain('cleanup: (_request, execution) => tableArtifactStore.rollbackRequest(execution)');

@@ -6,12 +6,15 @@ import { REDACTED_VALUE, isSensitiveFieldText } from './redaction.mjs';
 import { secretMarker } from './secrets.mjs';
 import { statSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
-import { ACTIONABILITY_POLL_MS, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS, ACTION_DISABLED_NOT_SENT, ARIA_CONTROL_STATE_ATTRS, CHILD_FRAME_CLICK_RE, CLICK_DOWNLOAD_STARTED_RE, CLICK_DOWNLOAD_UNOBSERVED_RE, CLICK_EVENT_PROBE_KEY, CLICK_HREF_PROBE_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_NAVIGATION_WAIT_MS, CLICK_OPENED_TAB_RE, CLICK_OPENER_BLOCK_GRACE_MS, CLICK_OPENER_RESPOND_TIMEOUT_MS, CLICK_OPENER_TERMINATE_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS, CLICK_POPUP_NAVIGATION_CAP_MS, CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS, CLICK_STUCK_OPENER_BUDGET_MS, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_OUTCOME, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DRAG_DEFAULT_STEPS, DRAG_EVENT_PROBE_KEY, DRAG_INTERCEPT_WAIT_MS, DRAG_LATE_START_GRACE_MS, DRAG_LATE_START_SYNC_MS, DRAG_MAX_STEPS, DRAG_POINT_RE, DRAG_PRESS_HOLD_MS, DRAG_PROBE_EVENT_ORDER, DRAG_STEP_DELAY_MS, FILL_VALUE_PREVIEW_MAX, HOVER_DELIVERY_POLL_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_REVEAL_MARKER, KEY_MAP, NAMED_IN_VIEWPORT_CLICK_OUTCOME, NAMED_IN_VIEWPORT_CLICK_SELECTOR, NON_FILLABLE_INPUT_TYPES, POINTER_CLICK_SETTLE_MS, PRESS_DELIVERY_POLL_MS, PRESS_DELIVERY_WAIT_MS, PRESS_PROBE_KEY, PRESS_PROBE_MARKER, PRESS_SEARCH_SUBMIT_FLAG, PUNCT_KEY_MAP, REF_RESOLVE_TIMEOUT, SEARCH_SUBMIT_PROBE_WAIT_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_TARGET_IDS, SHIFTED_PUNCT_KEY_MAP, TEXT_SELECTOR_PREFIX_RE, TIMEOUT, sleep } from './cdp-base.mjs';
+import { actionObservationPerceiveOpts } from './cdp-action-result.mjs';
+import { ACTIONABILITY_POLL_MS, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS, ACTION_DISABLED_NOT_SENT, ARIA_CONTROL_STATE_ATTRS, CHILD_FRAME_CLICK_RE, CLICK_DOWNLOAD_STARTED_RE, CLICK_DOWNLOAD_UNOBSERVED_RE, CLICK_EVENT_PROBE_KEY, CLICK_HREF_PROBE_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_NAVIGATION_WAIT_MS, CLICK_OPENED_TAB_RE, CLICK_OPENER_BLOCK_GRACE_MS, CLICK_OPENER_RESPOND_TIMEOUT_MS, CLICK_OPENER_TERMINATE_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS, CLICK_POPUP_NAVIGATION_CAP_MS, CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS, CLICK_STUCK_OPENER_BUDGET_MS, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_OUTCOME, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DRAG_DEFAULT_STEPS, DRAG_EVENT_PROBE_KEY, DRAG_INTERCEPT_WAIT_MS, DRAG_LATE_START_GRACE_MS, DRAG_LATE_START_SYNC_MS, DRAG_MAX_STEPS, DRAG_POINT_RE, DRAG_PRESS_HOLD_MS, DRAG_PROBE_EVENT_ORDER, DRAG_STEP_DELAY_MS, FILL_VALUE_PREVIEW_MAX, HOVER_DELIVERY_POLL_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_REVEAL_MARKER, KEY_MAP, NAMED_IN_VIEWPORT_CLICK_OUTCOME, NAMED_IN_VIEWPORT_CLICK_SELECTOR, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, NON_FILLABLE_INPUT_TYPES, POINTER_CLICK_SETTLE_MS, PRESS_DELIVERY_POLL_MS, PRESS_DELIVERY_WAIT_MS, PRESS_PROBE_KEY, PRESS_PROBE_MARKER, PRESS_SEARCH_SUBMIT_FLAG, PUNCT_KEY_MAP, REF_RESOLVE_TIMEOUT, SEARCH_SUBMIT_PROBE_WAIT_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_TARGET_IDS, SHIFTED_PUNCT_KEY_MAP, TEXT_SELECTOR_PREFIX_RE, TIMEOUT, sleep } from './cdp-base.mjs';
 import { isBlankPageUrl, parseCompactFormatArgs } from './cdp-browser.mjs';
 import { parseNonNegativeInteger, targetPrefixForDisplay } from './cdp-cli.mjs';
-import { shellQuoteCliArg } from './cdp-core.mjs';
+import { cutDocumentConsoleBuffersAt, documentConsoleCutSeq, shellQuoteCliArg } from './cdp-core.mjs';
+import { navigationCancelledError, reloadObservationBuffers, reloadStr } from './cdp-flow.mjs';
 import { cdpDomains, evalStr, getPages, navigationDestinationMatches, runtimeExceptionMessage } from './cdp-page.mjs';
-import { clickPointHitFunctionSource, clickableBoxHelpersSource, formatUnknownRefError, frameScopedBackendNode, frameViewportOffset, invalidateRefMapping, isCursorRef, isRef, isSearchListingHref, isStaleRefError, linkFrameNamePageExpression, linkTargetPageExpression, parseElshotArgs, parseFrameRef, resolveCursorRef, resolveRef, resolveRefNode, resolveRefRectNoScroll, scrollSettledRectFunctionDeclaration, searchListingHelpersSource, searchListingSelector, trustedRefPresenceFunctionDeclaration } from './cdp-perceive.mjs';
+import { clearObservationBuffers } from './cdp-page-commands.mjs';
+import { clickPointHitFunctionSource, clickableBoxHelpersSource, discardHoverIdleBaseline, formatUnknownRefError, frameScopedBackendNode, frameViewportOffset, hoverRecaptureShowsChange, invalidateRefMapping, invalidateSessionRefs, isCursorRef, isRef, isSearchListingHref, isStaleRefError, linkFrameNamePageExpression, linkTargetPageExpression, parseElshotArgs, parseFrameRef, perceiveStr, resolveCursorRef, resolveRef, resolveRefNode, resolveRefRectNoScroll, scrollSettledRectFunctionDeclaration, searchListingHelpersSource, searchListingSelector, trustedRefPresenceFunctionDeclaration } from './cdp-perceive.mjs';
 import { clickDownloadBrowser, isSensitiveActionTarget } from './cdp-session-report.mjs';
 
 // The daemon keeps the working directory of the CLI that started it; send the file absolute (#526).
@@ -3741,6 +3744,92 @@ export async function dragStr(cdp, sid, options, refMap, refState, state = null)
   }
   return formatDragReceipt({ from, to, fromInput: opts.from, toInput: opts.to, sent, counts });
 }
+export async function dispatchHoverWithLeftoverPolicy({
+  cdp,
+  sid,
+  selector,
+  refMap,
+  refState,
+  consoleBuf,
+  exceptionBuf,
+  lastPerceiveStore,
+  targetId,
+  nextCommand = null,
+} = {}) {
+  const dispatch = () => hoverStr(cdp, sid, selector, refMap, refState);
+  if (hoverFeedbackPolicy(nextCommand) === 'report-only') {
+    return dispatch();
+  }
+  let text;
+  await rememberHoverSettleBaseline(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    refState,
+    targetId,
+    async () => {
+      text = await dispatch();
+    },
+  );
+  return text;
+}
+export async function rememberHoverSettleBaseline(
+  cdp,
+  sid,
+  consoleBuf,
+  exceptionBuf,
+  refMap,
+  lastPerceiveStore,
+  refState,
+  targetId,
+  dispatchHover = null,
+) {
+  // Hover mutates live DOM (tooltips, :hover text) but historically printed a
+  // one-liner and left last-perceive stale. Recapture default AX so the next
+  // mutator does not steal hover's delta (#286). Snapshot settle-shape AX
+  // before mouseMoved — leftover perceive -C -d 8 is a different line-set
+  // than default recapture even when both still say hover:0, so that leftover
+  // must not be the KEEP baseline. After dispatch, recapture immediately; if
+  // the same shape already changed, KEEP. If it is still idle, discard
+  // unconditionally (#291). Do not sit waitForHoverDomChange /
+  // HOVER_MUTATION_TIMEOUT_MS: Chrome 151 mouseenter can land after that
+  // window, and discard already keeps the next no-op scroll honest. Do not
+  // emit ActionResult. Do not lengthen waitForSettle. Do not wait for the
+  // compositor mouseMoved ack. hoverStr confirms :hover before it returns;
+  // this recapture stays immediate and does not add another wait.
+  const settleOpts = actionObservationPerceiveOpts(targetId);
+  await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    settleOpts,
+    refState,
+  );
+  const before = lastPerceiveStore.output;
+  if (typeof dispatchHover === 'function') {
+    await dispatchHover();
+  }
+  await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    settleOpts,
+    refState,
+  );
+  if (hoverRecaptureShowsChange(before, lastPerceiveStore.output)) {
+    return;
+  }
+  discardHoverIdleBaseline(lastPerceiveStore);
+}
 export async function waitForStr(cdp, sid, args, refMap, refState) {
   // Shared polling loop
   async function poll(jsExpr, formatResult, interval, timeoutMs, label) {
@@ -4532,4 +4621,34 @@ export async function selectStr(cdp, sid, selector, value, opts = {}, refMap, re
   if (!r.ok && r.disabled) throw actionDisabledError('select', { ...r.disabled, waited: r.waited, waitedMs: r.waitedMs }, selector);
   if (!r.ok) throw new Error(actionabilityMissMessage(r.error, r));
   return `Selected "${r.text}"${formatActionabilityWaitNote(r)}`;
+}
+export async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, navigationCancelWatch = null }) {
+  const buffers = reloadObservationBuffers(session, consoleBuf, exceptionBuf);
+  const consoleBefore = typeof consoleBuf?.latest === 'function' ? consoleBuf.latest() : 0;
+  const exceptionBefore = typeof exceptionBuf?.latest === 'function' ? exceptionBuf.latest() : 0;
+  const consoleCutBefore = documentConsoleCutSeq(buffers.console);
+  const exceptionCutBefore = documentConsoleCutSeq(buffers.exception);
+  const reloadResult = await reloadStr(cdp, sessionId);
+  // Checked before clearing buffers or refs: a cancelled reload left the page as it was.
+  const cancelledBy = navigationCancelWatch
+    ? await navigationCancelWatch({ awaitMs: NAVIGATION_CANCEL_EVIDENCE_WAIT_MS })
+    : null;
+  if (cancelledBy) throw navigationCancelledError('reload', cancelledBy);
+  // #610: the main-frame commit already cut console and exception reads at that
+  // document. Clearing those buffers after the load event dropped exceptions
+  // thrown while the new document loaded, and cutting again here would move
+  // the cut past those same entries. Navigation and network reads are not cut
+  // that way, so those buffers are still cleared. The cleared netlog is saved
+  // so a later daemon does not bring the pre-reload requests back.
+  clearObservationBuffers({ navBuf, netReqBuf, pendingReqs, networkStatusByRequest, session });
+  const consoleCutMoved = documentConsoleCutSeq(buffers.console) !== consoleCutBefore;
+  const exceptionCutMoved = documentConsoleCutSeq(buffers.exception) !== exceptionCutBefore;
+  if (!consoleCutMoved || !exceptionCutMoved) {
+    cutDocumentConsoleBuffersAt(buffers, {
+      ...(consoleCutMoved ? {} : { console: consoleBefore }),
+      ...(exceptionCutMoved ? {} : { exception: exceptionBefore }),
+    });
+  }
+  if (session) invalidateSessionRefs(session, 'navigation', { cutDocument: false });
+  return reloadResult;
 }
