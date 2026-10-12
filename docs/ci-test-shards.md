@@ -8,6 +8,8 @@ npm test -- --shard=N/3
 
 Only the Linux `test` job is sharded. `test-windows` and `coverage` still run the full suite in one job each, but because they set `CI` they skip the quarantined timing tests too; `test-quarantined` runs those on both ubuntu-latest and windows-latest (see below). `lint` and `docs` are unchanged.
 
+On pull requests, CI runs the three Linux shards, `test-windows`, `lint`, and `docs`. `coverage` and `test-quarantined` run only on pushes to `main`, so they do not add to PR wait time.
+
 ## Quarantine
 
 `tests/quarantine.mjs` exports `QUARANTINE` and `quarantined(issue)`.
