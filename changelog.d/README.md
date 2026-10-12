@@ -20,4 +20,6 @@ Fragments that share a section are concatenated. Filenames sort by raw byte orde
 
 `npm run check:changelog` validates every fragment. `npm run check:docs` runs that check. `npm run changelog:fold` with an empty fragment list exits 0 and leaves `CHANGELOG.md` unchanged.
 
-Before tagging, run `npm run changelog:fold`, then move the `## [Unreleased]` notes into the new version heading. The release workflow reads that version section from `CHANGELOG.md` and does not fold fragments itself.
+Every other entry in this directory must be a file named `<slug>.md` (`slug` matches `^[a-z0-9]+(-[a-z0-9]+)*$`, extension `.md` in lowercase). `fix.txt`, `fix.MD`, `fix.markdown`, `Bad_Name.md`, and subdirectories fail `npm run check:changelog` and `npm run changelog:fold`, which print that filename.
+
+Before tagging, run `npm run changelog:fold`, then move the `## [Unreleased]` notes into the new version heading. The release workflow reads that version section from `CHANGELOG.md` and does not fold fragments itself. If a fragment is still present once `## [<version>]` exists for the `package.json` version, `npm run check:release-package` fails and tells you to run `npm run changelog:fold` before tagging. The release workflow runs that check only when it would publish a new tag (`v<version>` is not already present), so a later push does not fail.

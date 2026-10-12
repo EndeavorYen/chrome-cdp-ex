@@ -3,10 +3,13 @@
 import { readdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { unfoldedFragmentsBlockRelease } from './check-release-package.mjs';
 
 const defaultRoot = fileURLToPath(new URL('..', import.meta.url));
-const FRAGMENT_README = 'README.md';
+const IGNORED_FRAGMENT_NAMES = new Set(['README.md', '.gitkeep']);
+const FRAGMENT_FILENAME = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
 const REPO_COMPARE = 'https://github.com/EndeavorYen/chrome-cdp-ex/compare';
+const USAGE = 'Usage: node scripts/changelog-fragments.mjs [--check|--fold|--print|--release]';
 
 export function normalizeNewlines(text) {
   return String(text).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -28,8 +31,23 @@ export function sectionOrderFromChangelog(changelogText) {
   return seen;
 }
 
-function isFragmentName(name) {
-  return name.endsWith('.md') && name !== FRAGMENT_README && !name.startsWith('.');
+function asFragmentEntry(entry) {
+  if (typeof entry === 'string') return { name: entry, kind: 'file' };
+  const name = entry.name;
+  if (typeof entry.isDirectory === 'function' && entry.isDirectory()) return { name, kind: 'directory' };
+  if (typeof entry.isFile === 'function' && entry.isFile()) return { name, kind: 'file' };
+  if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) return { name, kind: 'file' };
+  return { name, kind: 'other' };
+}
+
+function readFragmentEntries(dir, readDirectory) {
+  return readDirectory(dir, { withFileTypes: true }).map(asFragmentEntry);
+}
+
+function fragmentNameError(entry) {
+  if (IGNORED_FRAGMENT_NAMES.has(entry.name)) return '';
+  if (entry.kind === 'file' && FRAGMENT_FILENAME.test(entry.name)) return '';
+  return `${entry.name}: changelog fragment must be named <slug>.md`;
 }
 
 function trimEdgeBlankLines(lines) {
@@ -129,23 +147,30 @@ export function inspectFragments(dir, changelogText, {
   const knownSections = sectionOrderFromChangelog(changelogText);
   const errors = [];
   const fragments = [];
-  let names;
+  let entries;
   try {
-    names = readDirectory(dir);
+    entries = readFragmentEntries(dir, readDirectory);
   } catch (error) {
     if (error?.code === 'ENOENT') return { fragments, errors, knownSections };
     throw error;
   }
-  for (const filename of names.filter(isFragmentName).sort(compareByteOrder)) {
+  entries.sort((left, right) => compareByteOrder(left.name, right.name));
+  for (const entry of entries) {
+    const nameError = fragmentNameError(entry);
+    if (IGNORED_FRAGMENT_NAMES.has(entry.name)) continue;
+    if (nameError) {
+      errors.push(nameError);
+      continue;
+    }
     let text;
     try {
-      text = readFile(join(dir, filename), 'utf8');
+      text = readFile(join(dir, entry.name), 'utf8');
     } catch (error) {
-      errors.push(`${filename}: ${error.code || 'unreadable'}`);
+      errors.push(`${entry.name}: ${error.code || 'unreadable'}`);
       continue;
     }
     try {
-      fragments.push(parseFragment(text, { filename, knownSections }));
+      fragments.push(parseFragment(text, { filename: entry.name, knownSections }));
     } catch (error) {
       errors.push(error.message);
     }
@@ -277,12 +302,133 @@ function assemble(changelogText, fragments, { version, date } = {}) {
   return { block: '## [Unreleased]\n', folded };
 }
 
-export function foldFragments(changelogText, fragments = [], options = {}) {
-  return assemble(changelogText, fragments, options).folded;
+function splitChangelogLines(normalized) {
+  const endsWithNewline = normalized.endsWith('\n');
+  const lines = normalized.split('\n');
+  if (endsWithNewline) lines.pop();
+  return { lines, endsWithNewline };
 }
 
-export function renderUnreleased(changelogText, fragments = [], options = {}) {
-  return assemble(changelogText, fragments, { ...options, version: undefined, date: undefined }).block;
+function joinChangelogLines(lines, endsWithNewline) {
+  const text = lines.join('\n');
+  return endsWithNewline ? `${text}\n` : text;
+}
+
+function restoreNewlines(original, lfText) {
+  const body = original.startsWith('\uFEFF') ? original.slice(1) : original;
+  const withoutCrlf = body.replace(/\r\n/g, '');
+  const crlfOnly = body.includes('\r\n') && !withoutCrlf.includes('\n') && !withoutCrlf.includes('\r');
+  const restored = crlfOnly ? lfText.replace(/\n/g, '\r\n') : lfText;
+  return original.startsWith('\uFEFF') ? `\uFEFF${restored}` : restored;
+}
+
+function findUnreleasedRange(lines) {
+  const start = lines.findIndex(line => /^## \[Unreleased\][^\n]*$/.test(line));
+  if (start === -1) throw new Error('CHANGELOG.md is missing ## [Unreleased]');
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^## \[/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return { start, end };
+}
+
+function unreleasedSectionSpans(lines, start, end) {
+  const sections = [];
+  for (let index = start + 1; index < end; index += 1) {
+    const header = /^### (.+?)\s*$/.exec(lines[index]);
+    if (!header) continue;
+    let contentEnd = index + 1;
+    while (contentEnd < end && !/^### /.test(lines[contentEnd])) contentEnd += 1;
+    sections.push({ title: header[1], heading: index, contentEnd });
+    index = contentEnd - 1;
+  }
+  return sections;
+}
+
+function bulletsToLines(bullets) {
+  const lines = [];
+  for (let index = 0; index < bullets.length; index += 1) {
+    if (index > 0) lines.push('');
+    lines.push(...String(bullets[index]).split('\n'));
+  }
+  return lines;
+}
+
+function newSectionIndex(title, sections, canonical, end) {
+  const position = canonical.indexOf(title);
+  for (const section of sections) {
+    const existing = canonical.indexOf(section.title);
+    if (position !== -1 && (existing === -1 || existing > position)) return section.heading;
+  }
+  return end;
+}
+
+// Insert fragment bullets into the existing Unreleased text. Existing lines stay
+// in order; new bullets are appended after a section's current text, and a
+// missing section is added at its canonical heading position.
+function insertFragmentBullets(changelogText, fragments) {
+  if (!fragments?.length) return String(changelogText);
+  const normalized = normalizeNewlines(changelogText);
+  const { lines, endsWithNewline } = splitChangelogLines(normalized);
+  const range = findUnreleasedRange(lines);
+  const sections = unreleasedSectionSpans(lines, range.start, range.end);
+  const canonical = sectionOrderFromChangelog(normalized);
+  for (const fragment of fragments) {
+    for (const section of fragment.sections) {
+      if (!canonical.includes(section.title)) {
+        throw new Error(`${fragment.filename}: unknown section ${section.title}`);
+      }
+    }
+  }
+  const grouped = new Map();
+  const sorted = [...fragments].sort((left, right) => compareByteOrder(left.filename, right.filename));
+  for (const fragment of sorted) {
+    for (const section of fragment.sections) {
+      const bucket = grouped.get(section.title) || [];
+      bucket.push(...section.bullets);
+      grouped.set(section.title, bucket);
+    }
+  }
+  const ops = [];
+  for (const [title, bullets] of grouped) {
+    const block = bulletsToLines(bullets);
+    const existing = sections.find(section => section.title === title);
+    const order = canonical.indexOf(title);
+    if (existing) {
+      const inserted = [];
+      if (lines[existing.contentEnd - 1] !== '') inserted.push('');
+      inserted.push(...block);
+      if (existing.contentEnd < lines.length && inserted.at(-1) !== '') inserted.push('');
+      ops.push({ index: existing.contentEnd, lines: inserted, order });
+      continue;
+    }
+    const inserted = [`### ${title}`, '', ...block];
+    const index = newSectionIndex(title, sections, canonical, range.end);
+    if (index > 0 && lines[index - 1] !== '') inserted.unshift('');
+    if (inserted.at(-1) !== '') inserted.push('');
+    ops.push({ index, lines: inserted, order });
+  }
+  ops.sort((left, right) => left.index - right.index || left.order - right.order);
+  for (let index = ops.length - 1; index >= 0; index -= 1) {
+    lines.splice(ops[index].index, 0, ...ops[index].lines);
+  }
+  return restoreNewlines(changelogText, joinChangelogLines(lines, endsWithNewline));
+}
+
+export function foldFragments(changelogText, fragments = [], options = {}) {
+  if (options.version) return assemble(changelogText, fragments, options).folded;
+  return insertFragmentBullets(changelogText, fragments);
+}
+
+export function renderUnreleased(changelogText, fragments = []) {
+  const folded = normalizeNewlines(insertFragmentBullets(changelogText, fragments));
+  const { lines } = splitChangelogLines(folded);
+  const { start, end } = findUnreleasedRange(lines);
+  const block = lines.slice(start, end).join('\n');
+  return block.endsWith('\n') ? block : `${block}\n`;
 }
 
 function foldOrError(changelogText, fragments) {
@@ -333,6 +479,39 @@ function writeStderr(stderr, text) {
   else if (stderr && typeof stderr.write === 'function') stderr.write(text);
 }
 
+function releaseFoldErrors(rootDir, readFile, readDirectory) {
+  let version = '';
+  try {
+    const parsed = JSON.parse(readFile(join(rootDir, 'package.json'), 'utf8'));
+    version = parsed.version;
+  } catch (error) {
+    return [`package.json cannot be read: ${error.code || 'unreadable'}`];
+  }
+  let changelogText = '';
+  try {
+    changelogText = readFile(join(rootDir, 'CHANGELOG.md'), 'utf8');
+  } catch (error) {
+    return [`CHANGELOG.md cannot be read: ${error.code || 'unreadable'}`];
+  }
+  let names = [];
+  try {
+    names = readFragmentEntries(join(rootDir, 'changelog.d'), readDirectory).map(entry => entry.name);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  return unfoldedFragmentsBlockRelease({ version, changelogText, fragmentNames: names });
+}
+
+function pendingFragmentEntries(fragmentDir, readDirectory) {
+  try {
+    return readFragmentEntries(fragmentDir, readDirectory)
+      .filter(entry => !IGNORED_FRAGMENT_NAMES.has(entry.name));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
 export function runChangelogFragments(args, {
   rootDir = defaultRoot,
   stdout = process.stdout,
@@ -342,36 +521,51 @@ export function runChangelogFragments(args, {
   writeFile = writeFileSync,
   removeFile = unlinkSync,
 } = {}) {
-  if (args.length !== 1 || !['--check', '--fold', '--print'].includes(args[0])) {
-    throw new Error('Usage: node scripts/changelog-fragments.mjs [--check|--fold|--print]');
+  const allowed = new Set(['--check', '--fold', '--print', '--release']);
+  if (args.length === 0 || args.some(arg => !allowed.has(arg)) || new Set(args).size !== args.length) {
+    throw new Error(USAGE);
+  }
+  const release = args.includes('--release');
+  const modes = args.filter(arg => arg !== '--release');
+  if (modes.length > 1 || (release && modes.some(mode => mode !== '--check')) || (!release && modes.length !== 1)) {
+    throw new Error(USAGE);
   }
   const changelogPath = join(rootDir, 'CHANGELOG.md');
   const fragmentDir = join(rootDir, 'changelog.d');
-  let published = '';
+  if (release && modes.length === 0) {
+    const errors = releaseFoldErrors(rootDir, readFile, readDirectory);
+    if (errors.length) {
+      writeStderr(stderr, `${errors.join('\n')}\n`);
+      return 1;
+    }
+    writeStdout(stdout, 'Changelog release fold OK\n');
+    return 0;
+  }
+  const mode = modes[0];
+  let publishedRaw = '';
   try {
-    published = normalizeNewlines(readFile(changelogPath, 'utf8'));
+    publishedRaw = readFile(changelogPath, 'utf8');
   } catch (error) {
-    if (args[0] === '--fold') {
-      let names = [];
-      try {
-        names = readDirectory(fragmentDir).filter(isFragmentName);
-      } catch (dirError) {
-        if (dirError?.code === 'ENOENT') return 0;
-        throw dirError;
+    if (mode === '--fold') {
+      const pending = pendingFragmentEntries(fragmentDir, readDirectory);
+      if (!pending.length) return 0;
+      const invalid = pending.map(fragmentNameError).filter(Boolean);
+      if (invalid.length) {
+        writeStderr(stderr, `${invalid.join('\n')}\n`);
+        return 1;
       }
-      if (!names.length) return 0;
     }
     writeStderr(stderr, `CHANGELOG.md cannot be read: ${error.code || 'unreadable'}\n`);
     return 1;
   }
-  const inspected = inspectFragments(fragmentDir, published, { readDirectory, readFile });
+  const inspected = inspectFragments(fragmentDir, normalizeNewlines(publishedRaw), { readDirectory, readFile });
   if (inspected.errors.length) {
     writeStderr(stderr, `${inspected.errors.join('\n')}\n`);
     return 1;
   }
-  if (args[0] === '--print') {
+  if (mode === '--print') {
     try {
-      writeStdout(stdout, renderUnreleased(published, inspected.fragments));
+      writeStdout(stdout, renderUnreleased(publishedRaw, inspected.fragments));
     } catch (error) {
       writeStderr(stderr, `${error.message}\n`);
       return 1;
@@ -379,12 +573,12 @@ export function runChangelogFragments(args, {
     return 0;
   }
   if (inspected.fragments.length) {
-    const folded = foldOrError(published, inspected.fragments);
+    const folded = foldOrError(publishedRaw, inspected.fragments);
     if (folded.error) {
       writeStderr(stderr, `${folded.error}\n`);
       return 1;
     }
-    if (args[0] === '--fold') {
+    if (mode === '--fold') {
       writeFile(changelogPath, folded.folded);
       for (const fragment of inspected.fragments) {
         removeFile(join(fragmentDir, fragment.filename));
@@ -393,7 +587,14 @@ export function runChangelogFragments(args, {
       return 0;
     }
   }
-  if (args[0] === '--check') {
+  if (mode === '--check') {
+    if (release) {
+      const errors = releaseFoldErrors(rootDir, readFile, readDirectory);
+      if (errors.length) {
+        writeStderr(stderr, `${errors.join('\n')}\n`);
+        return 1;
+      }
+    }
     writeStdout(stdout, `Changelog fragments OK: ${inspected.fragments.length}\n`);
   }
   return 0;

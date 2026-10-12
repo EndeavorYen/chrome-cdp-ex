@@ -26,7 +26,7 @@
     "changelog:fold": "node scripts/changelog-fragments.mjs --fold",
     "check:command-surfaces": "node scripts/generate-command-surfaces.mjs",
     "check:host-validation": "node scripts/check-host-validation.mjs",
-    "check:release-package": "node scripts/check-release-package.mjs",
+    "check:release-package": "node scripts/changelog-fragments.mjs --release && node scripts/check-release-package.mjs",
     "check:contracts": "node scripts/check-public-contracts.mjs --version 2.21.0",
     "setup": "node scripts/setup.mjs",
     "smoke:live": "node scripts/live-smoke.mjs",

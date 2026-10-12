@@ -94,6 +94,24 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs',
 ];
 
+const RELEASE_FRAGMENT_KEEP = new Set(['README.md', '.gitkeep']);
+
+// Pure: pending changelog.d entries plus the package version's heading means the
+// tag would ship without those notes. README.md and .gitkeep are not fragments.
+export function unfoldedFragmentsBlockRelease({ version, changelogText, fragmentNames } = {}) {
+  const pending = [];
+  for (const name of fragmentNames || []) {
+    const filename = String(name);
+    if (!RELEASE_FRAGMENT_KEEP.has(filename)) pending.push(filename);
+  }
+  if (!pending.length) return [];
+  const text = String(changelogText || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const escaped = String(version || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!escaped || !new RegExp(`^## \\[${escaped}\\]`, 'm').test(text)) return [];
+  pending.sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+  return [`${pending.join(', ')}: run npm run changelog:fold before tagging`];
+}
+
 export function validateReleaseEntries(entries) {
   const available = new Set(entries);
   return REQUIRED_RELEASE_ENTRIES.filter(entry => !available.has(entry));
