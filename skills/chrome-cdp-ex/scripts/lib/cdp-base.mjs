@@ -7,7 +7,10 @@ import { existsSync, readFileSync, readdirSync, readlinkSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { tmpdir } from 'os';
 import { posix as posixPath, resolve, win32 as win32Path } from 'path';
+import { fileURLToPath } from 'url';
 
+// The CLI entry point (scripts/cdp.mjs). This line lives in lib/cdp-base.mjs, one level down.
+export const CDP_SCRIPT_PATH = fileURLToPath(new URL('../cdp.mjs', import.meta.url));
 export const TIMEOUT = 15000;
 export const SCREENSHOT_TIMEOUT = 30000;
 export const QA_SCREENSHOT_TIMEOUT_MS = 2000;

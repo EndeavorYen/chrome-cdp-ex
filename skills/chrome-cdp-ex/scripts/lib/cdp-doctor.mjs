@@ -2,21 +2,58 @@
 import { actionTargetCommandPrefix } from './action-recovery.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './browser-paths.mjs';
 import { ASK_HUMAN_FIRST_LINE, formatNextLine } from './next-line.mjs';
-import { NODE22_MISSING_HINT } from './node-runtime.mjs';
-import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { NODE22_MISSING_HINT, discoverNode22, formatNodeRerunCommand, nodeMajor } from './node-runtime.mjs';
+import { spawn, spawnSync } from 'child_process';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import net from 'net';
 import { homedir } from 'os';
 import { resolve, win32 as win32Path } from 'path';
-import { BACKGROUND_THROTTLE_FLAGS, CHROMIUM_VERSION_DIR_RE, DAILY_BROWSER_APP_NAMES, DEFAULT_CDP_HOST, DEFAULT_CDP_PROBE_PORT, DEFAULT_DEBUG_PORT, DEFAULT_PROFILE_REMOTE_DEBUGGING_BLOCKED_MAJOR, DEFAULT_SPAWN_READY_TIMEOUT_MS, DISMISS_MODAL_ESCAPE_CHECKS, DISMISS_MODAL_ESCAPE_CHECK_MS, DOCTOR_LIST_TARGET_PLACEHOLDER, IS_WINDOWS, OCCLUDED_WINDOWS_FLAG, SPAWN_ALIVE_WAIT_CAP_MS, SPAWN_DEBUG_BROWSER_FLAGS, SPAWN_DEBUG_BROWSER_NOTES, cdpProfileKey, pathApiForPlatform, pathApiForRoot, profileDirFromCommandLine, sleep } from './cdp-base.mjs';
-import { browserWebSocketOpens, cdpCheckFromDiagnosis, cdpDiscoveryMiss, cdpUnreachableDiagnosis, classifyBrowserProfile, describeBrowserProfile, devToolsActivePortCandidates, fetchFailureText, formatDuration, formatJson, getDisplayPrefixLength, isElectronUserAgent, listDaemonSockets, parseFormatArgs, profileDirFromDevToolsActivePort, rankPageTargets, readBrowserProcessArgv, readCdpUserAgent, rememberedCdpProbePort, selectPageTarget, withLiveLaunchFlags } from './cdp-browser.mjs';
+import { BACKGROUND_THROTTLE_FLAGS, CDP_SCRIPT_PATH, CHROMIUM_VERSION_DIR_RE, DAILY_BROWSER_APP_NAMES, DEFAULT_CDP_HOST, DEFAULT_CDP_PROBE_PORT, DEFAULT_DEBUG_PORT, DEFAULT_PROFILE_REMOTE_DEBUGGING_BLOCKED_MAJOR, DEFAULT_SPAWN_READY_TIMEOUT_MS, DISMISS_MODAL_ESCAPE_CHECKS, DISMISS_MODAL_ESCAPE_CHECK_MS, DOCTOR_LIST_TARGET_PLACEHOLDER, IS_WINDOWS, OCCLUDED_WINDOWS_FLAG, SPAWN_ALIVE_WAIT_CAP_MS, SPAWN_DEBUG_BROWSER_FLAGS, SPAWN_DEBUG_BROWSER_NOTES, SPAWN_DEBUG_BROWSER_VIA, cdpProfileKey, pathApiForPlatform, pathApiForRoot, profileDirFromCommandLine, sleep } from './cdp-base.mjs';
+import { CDP, browserWebSocketOpens, cdpCheckFromDiagnosis, cdpDiscoveryMiss, cdpUnreachableDiagnosis, classifyBrowserProfile, describeBrowserProfile, devToolsActivePortCandidates, fetchFailureText, formatDuration, formatJson, getDisplayPrefixLength, isElectronUserAgent, listDaemonSockets, parseFormatArgs, profileDirFromDevToolsActivePort, rankPageTargets, readBrowserProcessArgv, readCdpUserAgent, rememberedCdpProbePort, selectPageTarget, withLiveLaunchFlags, wsUrlFromCdpHttp } from './cdp-browser.mjs';
 import { parseNonNegativeInteger } from './cdp-cli.mjs';
-import { cdpDisplayContext, explicitBackgroundChoice, formatCdpCandidateList, inspectCdpOccupantProfileDirViaCdp, isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir, isolatedOccupantAsk, isolatedOccupantCdpCheck, readLastCdpEndpoint, rememberLastCdpEndpoint, resolveOccupantProfileDir, shellQuoteCliArg } from './cdp-core.mjs';
-import { doctorCliPrefix } from './cdp-flow.mjs';
+import { cdpDisplayContext, explicitBackgroundChoice, formatCdpCandidateList, inspectCdpOccupantProfileDirViaCdp, isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir, isolatedOccupantAsk, isolatedOccupantAttachError, isolatedOccupantCdpCheck, readLastCdpEndpoint, rememberLastCdpEndpoint, replayableLaunchFlags, resolveOccupantProfileDir, shellQuoteCliArg } from './cdp-core.mjs';
+import { checkSkillSymlink, doctorCliPrefix } from './cdp-flow.mjs';
 import { pressStr } from './cdp-input.mjs';
 import { cdpDomains, evalStr } from './cdp-page.mjs';
 import { isRef, parseFrameRef, resolveRefRectNoScroll } from './cdp-perceive.mjs';
 
+// --- Doctor: one-call diagnostics ---
+export function checkNode(version = process.version, opts = {}) {
+  const major = nodeMajor(version);
+  if (major >= 22) return { status: 'OK', label: 'Node', detail: `${version} (>= 22)` };
+  const cdpScriptPath = opts.cdpScriptPath || CDP_SCRIPT_PATH;
+  const found = typeof opts.discover === 'function'
+    ? opts.discover()
+    : discoverNode22({
+      home: opts.home,
+      env: opts.env,
+      fs: opts.fs,
+      spawnSync: opts.spawnSync,
+      execPath: opts.execPath || process.execPath,
+      execVersion: version,
+      timeout: opts.timeout,
+    });
+  if (found?.binary) {
+    const rerunCommand = formatNodeRerunCommand(found.binary, cdpScriptPath, 'doctor');
+    return {
+      status: 'WARN',
+      severity: 'advisory',
+      label: 'Node',
+      detail: `${version} (runtime) ; Node 22 found at ${found.binary}`,
+      hint: `Rerun: ${rerunCommand}`,
+      recommendedBinary: found.binary,
+      recommendedVersion: found.version,
+      cdpScriptPath,
+      rerunCommand,
+    };
+  }
+  return {
+    status: 'FAIL',
+    label: 'Node',
+    detail: `${version} (need >= 22)`,
+    hint: NODE22_MISSING_HINT,
+  };
+}
 export function checkDaemonSockets({ list = listDaemonSockets } = {}) {
   const daemons = list();
   if (!daemons || daemons.length === 0) {
@@ -1131,6 +1168,60 @@ export function formatDoctorOutput(checks, { format = 'text' } = {}) {
   if (format === 'json') return formatJson(buildDoctorModel(checks));
   return formatDoctorReport(checks);
 }
+export async function runDoctorChecks(opts = {}) {
+  const safeLstat = (p) => { try { return lstatSync(p); } catch { return null; } };
+  const fs = opts.fs || { existsSync, lstatSync: safeLstat, readdirSync };
+  const checks = [];
+  checks.push(checkNode(opts.nodeVersion, {
+    home: opts.home,
+    env: opts.env,
+    fs,
+    spawnSync: opts.spawnSync,
+    execPath: opts.execPath,
+    cdpScriptPath: opts.cdpScriptPath,
+    discover: opts.discoverNode22,
+  }));
+  checks.push(checkSkillSymlink({ home: opts.home, env: opts.env, fs }));
+  checks.push(checkDaemonSockets({ list: opts.listDaemons }));
+  checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
+  checks.push(checkRuntimeEnvironment({ platform: opts.platform, env: opts.env, fs }));
+  const cdp = await checkCdpReachability({
+    env: opts.env,
+    fetcher: opts.fetcher,
+    host: opts.host,
+    lastEndpoint: opts.lastEndpoint,
+    readLastEndpoint: opts.readLastEndpoint,
+    connectWebSocket: opts.connectWebSocket,
+    inspectOccupantProfileDir: opts.inspectOccupantProfileDir,
+    inspectProfileProcess: opts.inspectProfileProcess,
+    display: opts.display || cdpDisplayContext({ platform: opts.platform, env: opts.env }),
+    home: opts.home,
+    existsSync: fs.existsSync,
+  });
+  checks[4] = reconcileRuntimeEnvironmentCheck(checks[4], cdp);
+  checks.push(cdp);
+  const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  checks.push(tabs);
+  const daemons = checks.find(c => c.label === 'Daemons');
+  const reconciled = reconcileCdpWithLiveDaemons(cdp, daemons, {
+    prefix: doctorCliPrefix(checks.find(c => c.label === 'Node')),
+  });
+  const cdpIndex = checks.findIndex(c => c.label === 'CDP');
+  if (cdpIndex >= 0) checks[cdpIndex] = reconciled;
+  checks.push(checkBrowserPermission({
+    daemons,
+    tabs,
+    cdp: reconciled,
+    environment: checks.find(c => c.label === 'Environment'),
+  }));
+  checks.push(await checkBrowserProfile({
+    cdp: reconciled,
+    // An injected fetcher means a stubbed endpoint: do not look up a real process on that port.
+    inspectBrowserArgv: opts.inspectBrowserArgv || (opts.fetcher ? async () => null : undefined),
+    readUserAgent: endpoint => readCdpUserAgent({ ...endpoint, fetcher: opts.fetcher || fetch }),
+  }));
+  return checks;
+}
 // #534: an advisory check, never blocking. WARN only when the attached browser runs a daily profile.
 export async function checkBrowserProfile({ cdp = null, inspectBrowserArgv, readUserAgent } = {}) {
   if (cdp?.status !== 'OK' || !cdp.port) {
@@ -1157,6 +1248,10 @@ export async function checkBrowserProfile({ cdp = null, inspectBrowserArgv, read
     profileKind: profile.kind,
     profileDir: profile.profileDir,
   };
+}
+export async function doctorStr(opts = {}) {
+  const checks = await runDoctorChecks(opts);
+  return formatDoctorOutput(checks, { format: opts.format || 'text' });
 }
 // ---------------------------------------------------------------------------
 // spawn-debug-browser: launch a browser with --remote-debugging-port using the
@@ -1394,6 +1489,15 @@ export async function minimizeWindowsForTargets(cdp, targetIds = []) {
     }
   }
   return { minimized, errors };
+}
+export async function minimizeBrowserWindows({ host = DEFAULT_CDP_HOST, port, targetIds = [], fetcher = fetch } = {}) {
+  const cdp = new CDP();
+  try {
+    await cdp.connect(await wsUrlFromCdpHttp({ host, port, fetcher, remembered: null, rememberReachable: () => {} }));
+    return await minimizeWindowsForTargets(cdp, targetIds);
+  } finally {
+    try { cdp.close(); } catch {}
+  }
 }
 export function pickSpawnedTarget(pages = [], url = null) {
   if (!pages.length) return null;
@@ -1842,6 +1946,174 @@ export async function probeTcpPort({ host = DEFAULT_CDP_HOST, port, timeoutMs = 
       else finish(reject, new Error(`spawn-debug-browser: could not probe ${host}:${port} (${error?.message || error}).`));
     });
   });
+}
+export async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
+  const platform = deps.platform || process.platform;
+  const fs = deps.fs || { existsSync, mkdirSync, readdirSync, readFileSync };
+  const launcher = deps.spawn || spawn;
+  const probePort = deps.probeTcpPort || probeTcpPort;
+  const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
+  const listTargets = deps.listSpawnedDebugTargets || listSpawnedDebugTargets;
+  const fetcher = deps.fetcher || fetch;
+  const opts = parseSpawnDebugBrowserArgs(args, env, { platform });
+  if (opts.helpRequested) {
+    const err = new Error('spawn-debug-browser: help requested');
+    err.code = 'help_requested';
+    err.helpTopic = 'spawn-debug-browser';
+    throw err;
+  }
+  const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
+  const portState = await probePort({ host: plan.host, port: plan.port });
+  if (portState?.occupied) {
+    const readiness = await waitForCdp({
+      port: plan.port,
+      host: plan.host,
+      timeoutMs: Math.min(plan.waitMs || DEFAULT_SPAWN_READY_TIMEOUT_MS, 2000),
+      fetcher,
+    });
+    if (!readiness.ok) {
+      throw new Error(`spawn-debug-browser: port ${plan.port} is already in use on ${plan.host}. Choose another port with --port <N>.`);
+    }
+    if (opts.dailyProfile) {
+      const occupantProfileDir = await resolveOccupantProfileDir({
+        host: plan.host,
+        port: plan.port,
+        inspectOccupantProfileDir: deps.inspectOccupantProfileDir,
+        connectWebSocket: deps.connectWebSocket,
+      });
+      if (isIsolatedChromeCdpExProfileDir(occupantProfileDir)) {
+        throw isolatedOccupantAttachError({
+          host: plan.host,
+          port: plan.port,
+          profileDir: occupantProfileDir,
+        });
+      }
+    }
+    const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
+    const target = pickSpawnedTarget(pages, plan.url);
+    const model = buildSpawnDebugBrowserModel(plan, readiness, { attached: true, target });
+    if (opts.format !== 'json') {
+      const text = formatSpawnDebugBrowserOutput(model, { format: 'text' })
+        .replace('  Executable: (see profile)', `  Executable: ${plan.exe}`);
+      return text;
+    }
+    return formatSpawnDebugBrowserOutput(model, { format: 'json' });
+  }
+  // Tests inject chromiumMajorVersion when they need 136+ behavior. Do not
+  // probe the real browser binary (this machine is already Edge 136+).
+  const chromiumMajor = Object.hasOwn(deps, 'chromiumMajorVersion')
+    ? deps.chromiumMajorVersion
+    : (process.env.NODE_ENV === 'test' && !Object.hasOwn(deps, 'spawnSyncFn')
+      ? null
+      : detectChromiumMajorVersion(plan.exe, {
+        fs,
+        platform,
+        spawnSyncFn: deps.spawnSyncFn || spawnSync,
+      }));
+  if (
+    opts.dailyProfile
+    && isDefaultBrowserProfileDir(plan, { platform, env })
+    && defaultProfileIgnoresRemoteDebugging(chromiumMajor)
+  ) {
+    throw new Error(formatDailyDefaultProfileCdpFailure(plan, '', { refusedMajor: chromiumMajor }));
+  }
+  if (opts.dailyProfile) {
+    const locked = typeof deps.isProfileLocked === 'function'
+      ? deps.isProfileLocked(plan.profileDir)
+      : defaultIsProfileLocked(plan.profileDir, fs);
+    if (locked) {
+      const quitter = deps.quitBrowser || defaultQuitBrowser;
+      await quitter(plan, { platform, fs });
+    }
+  }
+  if (!opts.dailyProfile) {
+    const remembered = typeof deps.readLastCdpEndpoint === 'function'
+      ? deps.readLastCdpEndpoint()
+      : (process.env.NODE_ENV === 'test' ? null : readLastCdpEndpoint());
+    const livePort = await liveOtherProfilePort(plan, {
+      fetcher,
+      remembered,
+      fs,
+      inspectOccupantProfileDir: deps.inspectOccupantProfileDir,
+      connectWebSocket: deps.connectWebSocket,
+      readProcessArgv: deps.readBrowserProcessArgv
+        || (process.env.NODE_ENV === 'test' ? null : readBrowserProcessArgv),
+    });
+    if (livePort) throw profileInUseSpawnError(plan, { livePort });
+  }
+  let child = null;
+  let output = null;
+  let readiness = null;
+  let retriedExistingSessionHandoff = false;
+  for (;;) {
+    try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
+    child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    output = captureSpawnOutput(child);
+    readiness = await waitForCdp({
+      port: plan.port,
+      host: plan.host,
+      timeoutMs: plan.waitMs,
+      child,
+      output,
+      fetcher,
+    });
+    const handoffText = spawnOutputHandoffText(output, readiness);
+    if (opts.dailyProfile && isExistingBrowserSessionHandoff(handoffText)) {
+      if (!retriedExistingSessionHandoff) {
+        retriedExistingSessionHandoff = true;
+        const quitter = deps.quitBrowser || defaultQuitBrowser;
+        await quitter(plan, { platform, fs });
+        continue;
+      }
+      throw new Error(formatDailyDefaultProfileCdpFailure(plan, handoffText));
+    }
+    if (!opts.dailyProfile && readinessIsProfileHandoff(output, readiness)) {
+      throw profileInUseSpawnError(plan);
+    }
+    break;
+  }
+  if (!readiness.ok) {
+    const failText = spawnOutputHandoffText(output, readiness);
+    if (opts.dailyProfile && isDefaultBrowserProfileDir(plan, { platform, env })) {
+      throw new Error(formatDailyDefaultProfileCdpFailure(plan, failText));
+    }
+    throw new Error(formatSpawnDebugBrowserReadinessFailure(plan, readiness));
+  }
+  child.stdout?.unref?.();
+  child.stderr?.unref?.();
+  child.unref?.();
+  const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
+  const target = pickSpawnedTarget(pages, plan.url);
+  if (plan.background && !plan.headless && pages.length) {
+    const minimize = deps.minimizeBrowserWindows || minimizeBrowserWindows;
+    try {
+      await minimize({ host: plan.host, port: plan.port, targetIds: pages.map(page => page.targetId) });
+    } catch {}
+  }
+  const remember = deps.rememberLastCdpEndpoint || rememberLastCdpEndpoint;
+  try {
+    remember({
+      host: plan.host,
+      port: plan.port,
+      profileDir: plan.profileDir,
+      exe: plan.exe,
+      browser: plan.browser,
+      // #426: relaunch-same-profile replays these (headless, no-sandbox, ...).
+      launchFlags: replayableLaunchFlags(plan.args),
+      // #416: recovery suggests the spawn command only for profiles this command created.
+      // A --daily-profile spawn is not reproducible through --profile-dir, so it stays untagged
+      // and recovery keeps the raw browser line for it.
+      ...(plan.dailyProfile ? {} : { via: SPAWN_DEBUG_BROWSER_VIA }),
+    });
+  } catch {}
+  const model = buildSpawnDebugBrowserModel(plan, readiness, { child, target });
+  // Prefer executable path in text mode for operators.
+  if (opts.format !== 'json') {
+    const text = formatSpawnDebugBrowserOutput(model, { format: 'text' })
+      .replace('  Executable: (see profile)', `  Executable: ${plan.exe}`);
+    return text;
+  }
+  return formatSpawnDebugBrowserOutput(model, { format: 'json' });
 }
 export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false } = {}) {
   const targetJson = JSON.stringify(targetPoint && ['input', 'x', 'y', 'descriptor'].reduce((snapshot, key) => { const property = Object.getOwnPropertyDescriptor(targetPoint, key); if (property && Object.hasOwn(property, 'value')) snapshot[key] = property.value; return snapshot; }, Object.create(null))); return `(function() {

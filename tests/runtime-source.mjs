@@ -17,6 +17,7 @@ export const RUNTIME_SOURCE_FILES = Object.freeze([
   'lib/cdp-doctor.mjs',
   'lib/cdp-daemon.mjs',
   'lib/cdp-cli.mjs',
+  'lib/cdp-main.mjs',
 ]);
 
 export function runtimeSources() {
@@ -26,6 +27,10 @@ export function runtimeSources() {
   }));
 }
 
+// The `export` prefix the split added is dropped, so text checks see declarations as they
+// were written in the single file (`\nfunction name(`).
 export function runtimeSource() {
-  return runtimeSources().map(source => source.text).join('\n');
+  return runtimeSources()
+    .map(source => source.text.replace(/^export (?=(?:async )?function|const |let |class )/gm, ''))
+    .join('\n');
 }

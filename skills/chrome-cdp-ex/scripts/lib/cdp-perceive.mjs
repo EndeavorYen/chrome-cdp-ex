@@ -1,14 +1,25 @@
 // Moved from cdp.mjs without changes (#688). cdp.mjs is the entry point and re-exports for tests.
 import { isTimeoutError } from './action-recovery.mjs';
+import { buildCardsModel, formatCardsJson, formatCardsText } from './cards-model.mjs';
 import { createPerceptionModel } from './perception-model.mjs';
 
-import { actionDomDiffShowsChange, countTypeaheadLabels, extractTypeaheadLabels } from './cdp-action-result.mjs';
-import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE } from './cdp-base.mjs';
-import { formatJson, parseFormatArgs, takeUnsafeFullArg } from './cdp-browser.mjs';
-import { displayUrl } from './cdp-core.mjs';
+import { actionDomDiffShowsChange, countTypeaheadLabels, extractTypeaheadLabels, pdfViewerPerceiveResult, perceiveStoreDiffSource, rememberPerceiveDiffSource } from './cdp-action-result.mjs';
+import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, sleep } from './cdp-base.mjs';
+import { formatJson, isBlankPageUrl, parseFormatArgs, takeUnsafeFullArg } from './cdp-browser.mjs';
+import { consoleDocumentEntries, cutDocumentConsoleBuffers, displayUrl } from './cdp-core.mjs';
 import { actionabilityFunctionSource } from './cdp-input.mjs';
-import { cdpDomains, evalStr, formatAxNode, isPriorityPerceiveTextLine, orderedAxChildren, runtimeExceptionMessage, shouldShowAxNode } from './cdp-page.mjs';
+import { cdpDomains, evalStr, formatAxNode, formatPdfViewerOutput, getPages, isPdfViewerContentType, isPriorityPerceiveTextLine, orderedAxChildren, pdfViewerHandoffModelFromOutput, runtimeExceptionMessage, shouldShowAxNode } from './cdp-page.mjs';
 
+export function invalidateSessionRefs(session, reason, options = {}) {
+  session.refs.map.clear();
+  if (session.refs.frameRefs instanceof Map) session.refs.frameRefs.clear();
+  if (session.refs.frameLastOutputs instanceof Map) session.refs.frameLastOutputs.clear();
+  session.refs.invalidatedAt = Date.now();
+  session.refs.invalidationReason = reason;
+  session.refGeneration += 1;
+  // #610: reload must not move this cut after the new document's load errors.
+  if (reason === 'navigation' && options.cutDocument !== false) cutDocumentConsoleBuffers(session.buffers);
+}
 export function axPropertyValue(node, name) {
   const want = String(name || '').toLowerCase();
   for (const prop of node?.properties || []) {
@@ -3240,6 +3251,348 @@ ${visibleControlsCollectorSource()}
       });
     })()`;
 }
+export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  const {
+    diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
+    interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
+    keepRefs = false, keepTypeahead = false, last = null, adaptive = false, sinceAction = false, diffBaseline = null,
+    frameRef = null, cards = false, verbose = false,
+  } = opts;
+  if (lastPerceiveStore && typeof lastPerceiveStore === 'object') lastPerceiveStore.outputTruncated = false;
+  const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
+  const frame = frameContext?.frame || null;
+  const frameExecutionContextId = frame ? await createFrameExecutionContext(cdp, sid, frame.id) : null;
+  if (frame && (scopeSelector || excludeSelector)) {
+    throw new Error('perceive --frame does not yet support --selector/--exclude; run frame-scoped perceive first, then use the listed @fN:M refs.');
+  }
+
+  const pdfProbeContext = frameExecutionContextId != null
+    ? { contextId: frameExecutionContextId }
+    : { timeoutMs: STATUS_PAGE_INFO_TIMEOUT };
+  // --cards and -s previously skipped the PDF gate and treated the empty
+  // embedder as a normal HTML/cards page. Probe before AX / scoped DOM queries.
+  if (cards || scopeSelector) {
+    try {
+      const probe = JSON.parse(await evalStr(
+        cdp,
+        sid,
+        'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })',
+        false,
+        pdfProbeContext,
+      ));
+      if (isPdfViewerContentType(probe.contentType)) {
+        const output = formatPdfViewerOutput(probe, { targetPrefix: opts.targetPrefix, unsafeFull: opts.unsafeFull === true });
+        return pdfViewerPerceiveResult(lastPerceiveStore, opts, output);
+      }
+    } catch (error) {
+      if (error?.code === 'pdf_viewer') throw error;
+    }
+  }
+
+  // Get AX tree nodes and page metadata + layout map in parallel
+  // Hoist DOM.getDocument so scope and exclude can share it
+  const needsDocument = !frame && (scopeSelector || excludeSelector);
+  const docRootPromise = needsDocument ? cdpDomains(cdp).DOM.getDocument( {}, sid) : null;
+  let scopeBackendNodeIds = null;
+  const axPromise = frame
+    ? cdpDomains(cdp).Accessibility.getFullAXTree( { frameId: frame.id }, sid)
+    : scopeSelector
+    ? (async () => {
+        const { root } = await docRootPromise;
+        const { nodeId } = await cdpDomains(cdp).DOM.querySelector( { nodeId: root.nodeId, selector: scopeSelector }, sid);
+        if (!nodeId) throw new Error(`Scope selector not found: ${scopeSelector}`);
+        const { node } = await cdpDomains(cdp).DOM.describeNode( { nodeId, depth: -1, pierce: true }, sid);
+        scopeBackendNodeIds = collectDomBackendNodeIds(node);
+        return cdpDomains(cdp).Accessibility.getFullAXTree( {}, sid);
+      })()
+    : cdpDomains(cdp).Accessibility.getFullAXTree( {}, sid);
+  const [axResult, metaJson] = await Promise.all([
+    axPromise,
+    evalStr(cdp, sid, perceivePageScript(cursorInteractive), false, frameExecutionContextId != null ? { contextId: frameExecutionContextId } : {})
+  ]);
+
+  const meta = JSON.parse(metaJson);
+
+  if (isPdfViewerContentType(meta.contentType)) {
+    const output = formatPdfViewerOutput(meta, { targetPrefix: opts.targetPrefix, unsafeFull: opts.unsafeFull === true });
+    return pdfViewerPerceiveResult(lastPerceiveStore, opts, output);
+  }
+
+  // Console health
+  const allConsole = consoleDocumentEntries(consoleBuf);
+  let errors = 0, warnings = 0;
+  for (const e of allConsole) {
+    if (e.level === 'error') errors++;
+    else if (e.level === 'warning' || e.level === 'warn') warnings++;
+  }
+  const exceptions = consoleDocumentEntries(exceptionBuf).length;
+
+  // Exclude filtering: remove AX subtrees rooted at excluded DOM nodes
+  let axNodes = axResult.nodes;
+  if (scopeBackendNodeIds) {
+    axNodes = filterAxNodesToBackendSubtree(axNodes, scopeBackendNodeIds);
+  }
+  if (excludeSelector) {
+    const { root } = await docRootPromise;
+    const excludedBackendNodeIds = new Set();
+    const describedNodesByBackendId = new Map();
+    const exNodes = await cdpDomains(cdp).DOM.querySelectorAll( { nodeId: root.nodeId, selector: excludeSelector }, sid);
+    if (exNodes.nodeIds) {
+      const results = await Promise.allSettled(
+        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid, depth: -1, pierce: true }, sid))
+      );
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value.node?.backendNodeId) {
+          excludedBackendNodeIds.add(r.value.node.backendNodeId);
+          describedNodesByBackendId.set(r.value.node.backendNodeId, r.value.node);
+        }
+      }
+    }
+    axNodes = filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId);
+  }
+
+  const typeaheadFilter = omitTypeaheadListboxNodes(axNodes, {
+    keepTypeahead,
+    selector: scopeSelector,
+    focusedDesc: meta.focused,
+  });
+  axNodes = typeaheadFilter.nodes;
+
+  if (frame) {
+    const listed = await listDomInteractiveControls(cdp, sid, {
+      contextId: frameExecutionContextId,
+    });
+    if (shouldSynthesizeMissingFrameInteractives(frame, axNodes, listed)) {
+      const extras = await collectDomInteractiveControls(cdp, sid, {
+        contextId: frameExecutionContextId,
+        listed,
+      });
+      if (extras.length) axNodes = mergeMissingDomInteractiveAxNodes(axNodes, extras);
+    }
+  }
+
+  const activeRefMap = frame ? new Map() : refMap;
+  if (cards) {
+    const model = buildCardsModel(axNodes, meta, activeRefMap, {
+      last,
+      targetPrefix: opts.targetPrefix,
+      previousCards: lastPerceiveStore.cards?.cards,
+      previousScrollY: lastPerceiveStore.cards?.scrollY,
+    });
+    if (frame) {
+      storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
+      for (const card of model.cards || []) {
+        if (typeof card.ref === 'string' && /^@\d+$/.test(card.ref)) {
+          card.ref = `${frame.ref}:${card.ref.slice(1)}`;
+        }
+      }
+    }
+    const output = opts.format === 'json' ? formatCardsJson(model) : formatCardsText(model);
+    lastPerceiveStore.output = output;
+    lastPerceiveStore.cards = model;
+    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
+    if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
+    if (refState && typeof refState === 'object') {
+      refState.lastPerceiveText = output;
+      refState.generation = (refState.generation || 0) + 1;
+      refState.lastPerceiveAt = Date.now();
+      refState.invalidationReason = null;
+    }
+    return output;
+  }
+  const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, {
+    maxDepth,
+    interactiveOnly,
+    keepRefs,
+    last,
+    adaptive,
+    cursorInteractive,
+    // --since-action / --diff print added and removed lines only. Rebuilding
+    // @1..@N would point a remembered @N at a different node (#642).
+    preserveRefs: shouldPreservePerceiveRefs(opts),
+    consoleErrors: errors + exceptions,
+    targetPrefix: opts.targetPrefix || '<target>',
+  });
+  let treeLines = builtTree.treeLines;
+  const { refNodeIds, hiddenTextLines } = builtTree;
+  if (frame) storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
+
+  // === Batch-resolve @ref bounding rects (parallel, non-scrolling) ===
+  // Now also returns `position` (computed style) so fixed/sticky elements get
+  // a clear annotation — agents previously saw negative document-relative Ys
+  // and assumed elements were off-screen.
+  const refRects = new Map(); // ref number → {x, y, w, h, position?}
+  const frameOffset = frame
+    ? await frameViewportOffset(cdp, sid, {
+        ...frame,
+        frameRef: frame.ref,
+        frameId: frame.id,
+        frames: frameContext.frames,
+      })
+    : { x: 0, y: 0 };
+  if (frame && (frameOffset.x || frameOffset.y)) {
+    if (Array.isArray(meta.cursorInteractives)) {
+      meta.cursorInteractives = meta.cursorInteractives.map(item => offsetCursorInteractiveItem(item, frameOffset));
+    }
+    if (Array.isArray(meta.visibleControls)) {
+      meta.visibleControls = meta.visibleControls.map(control => (
+        control?.rect ? { ...control, rect: offsetCssRect(control.rect, frameOffset) } : control
+      ));
+    }
+  }
+  if (refNodeIds.length > 0) {
+    const results = await Promise.allSettled(refNodeIds.map(async ({ ref, backendDOMNodeId }) => {
+      const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId: backendDOMNodeId }, sid);
+      const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
+        objectId: object.objectId,
+        functionDeclaration: `function() {
+          const r = this.getBoundingClientRect();
+          const cs = (typeof getComputedStyle === 'function') ? getComputedStyle(this) : null;
+          return {
+            x: Math.round(r.x),
+            y: Math.round(r.y),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            position: cs ? cs.position : '',
+          };
+        }`,
+        returnByValue: true,
+      }, sid);
+      const rect = res.result.value || {};
+      if (frame) {
+        rect.x = (Number(rect.x) || 0) + frameOffset.x;
+        rect.y = (Number(rect.y) || 0) + frameOffset.y;
+      }
+      return { ref, rect };
+    }));
+    for (const r of results) {
+      if (r.status === 'fulfilled') refRects.set(r.value.ref, r.value.rect);
+    }
+  }
+
+  // Inject @ref coordinates into treeLines (top-level viewport CSS pixels; same space as clickxy)
+  for (let i = 0; i < treeLines.length; i++) {
+    const m = treeLines[i].match(/@(\d+)$/);
+    if (m) {
+      const rect = refRects.get(parseInt(m[1]));
+      if (rect) treeLines[i] += `  ${formatRefRect(rect)}`;
+    }
+  }
+  if (frame) treeLines = qualifyFrameRefsInLines(treeLines, frame.ref);
+
+  // === Cursor-interactive @c refs (capped AFTER body; last/adaptive apply here) ===
+  const cursorLimit = perceiveCursorSurfaceLimit({
+    last,
+    adaptive,
+    lineCount: treeLines.length,
+    consoleErrors: errors + exceptions,
+    interactiveCount: refNodeIds.length + (meta.cursorInteractives?.length || 0) + (meta.visibleControls?.length || 0),
+    hasPriorityText: treeLines.some(ln => isPriorityPerceiveTextLine(ln)),
+  });
+  let cRefCounter = 0;
+  let outputTruncated = false;
+  if (cursorInteractive && meta.cursorInteractives?.length > 0) {
+    const ranked = rankPerceiveCursorItems(meta.cursorInteractives, item => item.text || item.sel);
+    const capped = ranked.slice(0, cursorLimit);
+    if (ranked.length > capped.length) outputTruncated = true;
+    treeLines.push('');
+    treeLines.push(`[Cursor-interactive elements] (non-ARIA clickable)${ranked.length > capped.length ? ' (truncated)' : ''}`);
+    for (const ci of capped) {
+      cRefCounter++;
+      refMap.set(`c${cRefCounter}`, ci);
+      treeLines.push(`  [clickable] ${ci.text || ci.sel}  @c${cRefCounter}  (${ci.x},${ci.y} ${ci.w}×${ci.h})`);
+    }
+  }
+  if (cursorInteractive && meta.visibleControls?.length > 0) {
+    const refAnns = refAnnotationsFromTreeLines(treeLines);
+    const axIdentities = axIdentityByRefMap(axNodes, activeRefMap);
+    const ranked = rankPerceiveCursorItems(
+      meta.visibleControls.map(control => attachRefToVisibleControl(control, refAnns, axIdentities)),
+      item => item.label || item.ariaLabel || item.text || item.title,
+    );
+    const formatted = ranked.map(control => `  ${formatVisibleControlLine(control)}`);
+    const listed = verbose ? formatted : dedupeRepeatedLines(formatted, treeLines);
+    const capped = listed.slice(0, cursorLimit);
+    const pageTruncated = Boolean(meta.visibleControlsTruncated);
+    if (pageTruncated || listed.length > capped.length) outputTruncated = true;
+    treeLines.push('');
+    treeLines.push(formatVisibleControlsHeader({
+      shown: capped.length,
+      collected: listed.length,
+      pageTruncated,
+    }));
+    for (const line of capped) treeLines.push(line);
+  }
+  if (lastPerceiveStore && typeof lastPerceiveStore === 'object') lastPerceiveStore.outputTruncated = outputTruncated;
+
+  // === Assemble output ===
+  const lines = [];
+  const unsafeFull = opts.unsafeFull === true;
+  lines.push(`Page: ${meta.title} — ${displayUrl(meta.url, { unsafeFull })}`);
+  if (frame) {
+    const label = frame.name || '(anonymous)';
+    const url = displayUrl(frame.url || frame.unreachableUrl || '(no url)', { unsafeFull });
+    lines.push(`Frame: ${frame.ref} ${label} ${frame.id} ${url}`);
+  }
+
+  const scrollPct = meta.scrollMax > 0 ? Math.round(meta.scrollY / meta.scrollMax * 100) : 0;
+  lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${meta.focused}`);
+  if (typeaheadFilter.omitted) lines.push(TYPEAHEAD_OMITTED_NOTICE);
+
+  const countParts = Object.entries(meta.counts).map(([k, v]) => `${v} ${k}`);
+  lines.push(`Interactive: ${countParts.length > 0 ? countParts.join(', ') : 'none'}`);
+
+  const healthParts = [];
+  if (errors > 0) healthParts.push(`${errors} error${errors > 1 ? 's' : ''}`);
+  if (warnings > 0) healthParts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
+  if (exceptions > 0) healthParts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
+  lines.push(`Console: ${healthParts.length > 0 ? healthParts.join(', ') : 'clean'}`);
+  // Coordinate hint — top-level viewport CSS pixels match clickxy/Input events.
+  // Fixed/sticky elements include a "fixed"/"sticky" tag so agents do not
+  // misread negative scroll-relative Ys as off-screen.
+  lines.push(formatPerceiveCoordsLine(verbose));
+
+  lines.push('');
+  lines.push(...treeLines);
+
+  const output = lines.join('\n');
+
+  const markPerceived = () => {
+    lastPerceiveStore.output = output;
+    rememberPerceiveDiffSource(lastPerceiveStore, output, hiddenTextLines);
+    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
+    if (frame) rememberFramePerceiveOutput(refState, frame.ref, perceiveStoreDiffSource(lastPerceiveStore));
+    // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
+    if (refState && typeof refState === 'object') {
+      refState.lastPerceiveText = output;
+      refState.generation = (refState.generation || 0) + 1;
+      refState.lastPerceiveAt = Date.now();
+      refState.invalidationReason = null;
+    }
+  };
+
+  if (sinceAction) {
+    markPerceived();
+    if (!diffBaseline) {
+      return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
+    }
+    return formatPerceiveDiffOutput(diffBaseline, perceiveStoreDiffSource(lastPerceiveStore), { mode: 'since-action' });
+  }
+
+  // Diff mode: compare with previous perceive output.
+  if (diffMode && lastPerceiveStore.output) {
+    const previousOutput = perceiveStoreDiffSource(lastPerceiveStore);
+    markPerceived();
+    return formatPerceiveDiffOutput(previousOutput, perceiveStoreDiffSource(lastPerceiveStore));
+  }
+
+  markPerceived();
+  // Hint when perceive returns many interactive elements without exclude
+  if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
+    return output + `\n\n${perceiveInteractiveNoiseHint(refNodeIds.length)}`;
+  }
+  return output;
+}
 export function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>', opts = {}) {
   const lines = String(output || '').split('\n');
   const header = parsePerceiveHeader(output);
@@ -3276,6 +3629,77 @@ export function perceptionModelFromText(output, refState = {}, targetPrefix = '<
       truncated: output.includes('truncated') || opts.outputTruncated === true,
       ...(opts.last ? { lastTextRows: opts.last, outputTokenBudget: opts.last * 80 } : {}),
     },
+  });
+}
+export async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts, refState);
+  if (String(output || '').includes('chrome-cdp-ex.pdf-viewer.v1')) {
+    return pdfViewerHandoffModelFromOutput(output, opts.targetPrefix || '<target>');
+  }
+  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>', {
+    ...opts,
+    outputTruncated: lastPerceiveStore?.outputTruncated === true,
+  });
+}
+export async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  const mode = opts.sinceAction ? 'since-action' : 'diff';
+  const baseline = opts.sinceAction ? opts.diffBaseline : perceiveStoreDiffSource(lastPerceiveStore);
+  const printedOutput = await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    {
+      ...opts,
+      sinceAction: false,
+      diff: false,
+      diffBaseline: null,
+      // The flags above are cleared so this call stores the full tree. They are
+      // also what keeps a surviving @ref (#642); pass that decision through.
+      preserveRefs: shouldPreservePerceiveRefs(opts),
+    },
+    refState
+  );
+  const currentOutput = perceiveStoreDiffSource(lastPerceiveStore) ?? printedOutput;
+  if (!baseline) {
+    const header = parsePerceiveHeader(currentOutput);
+    const target = opts.targetPrefix || '<target>';
+    const nextSteps = [
+      `cdp perceive ${target} -C -d 8`,
+      `cdp report ${target} --format json`,
+    ];
+    return {
+      schema: 'chrome-cdp-ex.perceive-diff.v1',
+      mode,
+      baselineAvailable: false,
+      ...header,
+      summary: {
+        changed: null,
+        removed: 0,
+        added: 0,
+        textRemoved: 0,
+        textAdded: 0,
+      },
+      removed: [],
+      added: [],
+      removedOmitted: 0,
+      addedOmitted: 0,
+      textRemovedSamples: [],
+      textAddedSamples: [],
+      recommendation: buildPerceiveDiffRecommendation({
+        mode,
+        changed: null,
+        baselineAvailable: false,
+        nextSteps,
+      }),
+      nextSteps,
+    };
+  }
+  return buildPerceiveDiffModel(baseline, currentOutput, {
+    mode,
+    targetPrefix: opts.targetPrefix || '',
   });
 }
 // Element screenshot: targeted capture of a specific element by CSS selector or @ref
@@ -3341,4 +3765,68 @@ export function parseElshotArgs(args = []) {
     filePath: positionals[1]?.value || null,
     fileIndex: positionals[1]?.index ?? -1,
   };
+}
+export function perceiveReadinessRecovery(target) {
+  return {
+    kind: 'loading',
+    strategy: 'retry-perceive',
+    run: `cdp perceive ${target} -C -d 8`,
+    reason: 'Target metadata advertises an HTTP(S) page, but the renderer stayed blank through bounded readiness sampling. Retry perceive without navigating.',
+  };
+}
+export const PERCEIVE_READINESS_DELAYS_MS = Object.freeze([0, 250, 500, 1000]);
+export async function readPerceiveTargetMetadata(cdp, targetId) {
+  const pages = await getPages(cdp);
+  return pages.find(page => page.targetId === targetId) || null;
+}
+export async function readPerceiveDocumentState(cdp, sid) {
+  const value = await evalStr(
+    cdp,
+    sid,
+    'JSON.stringify({ url: window.location.href, readyState: document.readyState })',
+    false,
+    { timeoutMs: STATUS_PAGE_INFO_TIMEOUT },
+  );
+  const state = JSON.parse(value);
+  return {
+    url: String(state?.url || ''),
+    readyState: String(state?.readyState || 'unknown'),
+  };
+}
+export async function ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops = {} }) {
+  const readTargetMetadata = ops.readPerceiveTargetMetadata || readPerceiveTargetMetadata;
+  const readDocumentState = ops.readPerceiveDocumentState || readPerceiveDocumentState;
+  const sampleDelaysMs = ops.perceiveReadinessDelaysMs || PERCEIVE_READINESS_DELAYS_MS;
+  const wait = ops.sleep || sleep;
+  const now = ops.now || Date.now;
+  let target;
+  try {
+    target = await readTargetMetadata(cdp, targetId);
+  } catch {
+    return;
+  }
+  const advertisedUrl = String(target?.url || '').trim();
+  if (!/^https?:\/\//i.test(advertisedUrl)) return;
+
+  const delays = Array.isArray(sampleDelaysMs) && sampleDelaysMs.length
+    ? sampleDelaysMs
+    : PERCEIVE_READINESS_DELAYS_MS;
+  const startedAt = now();
+  let observed = { url: '', readyState: 'unknown' };
+  for (let index = 0; index < delays.length; index++) {
+    const delayMs = Math.max(0, Number(delays[index]) || 0);
+    if (delayMs > 0) await wait(delayMs);
+    observed = await readDocumentState(cdp, sessionId);
+    if (!isBlankPageUrl(observed?.url)) return;
+  }
+
+  const observedUrl = String(observed?.url || '');
+  const readyState = String(observed?.readyState || 'unknown');
+  throw new Error(
+    'perceive: target/document readiness mismatch; ' +
+    `targetId=${targetId}; requestedTargetId=${targetId}; resolvedTargetId=${targetId}; ` +
+    `boundTargetId=${targetId}; advertisedUrl=${advertisedUrl}; observedUrl=${observedUrl}; ` +
+    `readyState=${readyState}; attempts=${delays.length}/${delays.length}; elapsedMs=${Math.max(0, now() - startedAt)}. ` +
+    'The target metadata advertises a loaded HTTP(S) page while its renderer is still blank; retry the same perceive command.'
+  );
 }

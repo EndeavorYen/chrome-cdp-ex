@@ -8,18 +8,18 @@ import { redactUrl } from './redaction.mjs';
 import { screenshotHealthScript, unavailableScreenshotSanity } from './screenshot-health.mjs';
 import { distinctTargets } from './target-binding.mjs';
 import { buildWebVitalsModel, buildWebVitalsUnavailable, webVitalsPageScript } from './web-vitals.mjs';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { compactRedactedText } from './cdp-action-result.mjs';
-import { CDP_DOMAIN_CLIENTS, DIFF_SHOT_LABEL_CHARS, DIFF_SHOT_LABEL_SOURCE_CHARS, DIFF_SHOT_REGION_CELL_PX, DIFF_SHOT_REGION_LIMIT, DIFF_SHOT_REGION_MIN_PIXELS, DIFF_SHOT_SPILL_PX, DIFF_SHOT_STRIP_PX, HIDDEN_TAB_CAPTURE_TIMEOUT_MS, HIDDEN_TAB_ERROR_CODE, INTERACTIVE_ROLES, NAVIGATION_TIMEOUT, NAV_DOCUMENT_PROBE_EXPR, NAV_DOCUMENT_PROBE_INTERVAL_MS, PERCEIVE_PRIORITY_TEXT_RE, SCREENSHOT_TIER_LABELS, SCREENSHOT_TIMEOUT, STATUS_PAGE_INFO_TIMEOUT, STATUS_VITALS_TIMEOUT, TIMEOUT, sleep } from './cdp-base.mjs';
+import { CDP_DOMAIN_CLIENTS, DIFF_SHOT_LABEL_CHARS, DIFF_SHOT_LABEL_SOURCE_CHARS, DIFF_SHOT_REGION_CELL_PX, DIFF_SHOT_REGION_LIMIT, DIFF_SHOT_REGION_MIN_PIXELS, DIFF_SHOT_SPILL_PX, DIFF_SHOT_STRIP_PX, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, FULLSHOT_TIMEOUT_MS, HIDDEN_TAB_CAPTURE_TIMEOUT_MS, HIDDEN_TAB_ERROR_CODE, INTERACTIVE_ROLES, NAVIGATION_TIMEOUT, NAV_DOCUMENT_PROBE_EXPR, NAV_DOCUMENT_PROBE_INTERVAL_MS, PERCEIVE_PRIORITY_TEXT_RE, RUNTIME_DIR, SCREENSHOT_TIER_LABELS, SCREENSHOT_TIMEOUT, STATUS_PAGE_INFO_TIMEOUT, STATUS_VITALS_TIMEOUT, TIMEOUT, sleep } from './cdp-base.mjs';
 import { aliasesForTarget, formatJson, getDisplayPrefixLength, isBlankPageUrl, pageTargetScore, parseFormatArgs, rankPageTargets, takeUnsafeFullArg } from './cdp-browser.mjs';
 import { targetPrefixForDisplay } from './cdp-cli.mjs';
 import { displayUrl } from './cdp-core.mjs';
 import { enableDaemonDomains } from './cdp-daemon.mjs';
-import { rememberSessionTarget } from './cdp-input.mjs';
-import { parseTextArgs } from './cdp-page-commands.mjs';
-import { axNodeAccessibleName, axPropertyValue, validateUrl } from './cdp-perceive.mjs';
-import { ensureSessionScreenshotDir, sessionScreenshotDir } from './cdp-session-report.mjs';
+import { assertScreenshotOutputDirectory, documentScrollToJs, getDpr, probePageVisibility, rememberSessionTarget, writeScreenshotFile } from './cdp-input.mjs';
+import { fullshotFitsViewport, parseTextArgs } from './cdp-page-commands.mjs';
+import { axNodeAccessibleName, axPropertyValue, elementScreenshotClip, elshotReceiptLabel, elshotRefLabel, formatElshotReceipt, isRef, resolveRef, validateUrl } from './cdp-perceive.mjs';
+import { appendSessionScreenshot, diffShotScreenshotCaptureOptions, ensureSessionScreenshotDir, isScreenshotTimeoutError, sessionScreenshotDir } from './cdp-session-report.mjs';
 
 export function cdpDomains(cdp) {
   let clients = CDP_DOMAIN_CLIENTS.get(cdp);
@@ -818,6 +818,22 @@ export async function emulateStr(cdp, sid, session, args = [], { targetPrefix = 
   });
   return opts.format === 'json' ? formatJson(model) : formatEmulateText(model);
 }
+// ---------------------------------------------------------------------------
+// Screenshot with multi-tier fallback (handles Electron CDP limitations)
+// ---------------------------------------------------------------------------
+// Tier 1: Page.captureScreenshot (standard)
+// Tier 2: Page.captureScreenshot with fromSurface:false (view-based capture)
+// Tier 3: Page.startScreencast single-frame grab (different rendering pipeline)
+//
+// Every command starts at tier 1, the same call a raw CDP client makes (#452). A
+// multi-capture command (scanshot) passes one `hooks.tierState` to all its captures so
+// a tier that timed out is skipped for the rest of that command only. A tier
+// remembered for the daemon's whole life let one transient timeout route every later
+// capture to fromSurface:false, which Electron on Windows cannot serve (PrintWindow).
+// `getScreenshotTier` reports the tier the last default capture reached.
+export let _lastScreenshotTier = 1;
+export function resetScreenshotTier() { _lastScreenshotTier = 1; }
+export function getScreenshotTier() { return _lastScreenshotTier; }
 export function createScreenshotTierState() { return { tier: 1 }; }
 // Clip / captureBeyondViewport timeouts are a different Chrome code path and must
 // not make a multi-capture command skip its viewport tiers.
@@ -874,6 +890,8 @@ export async function waitForScreenshotPaint(cdp, sid) {
     await sleep(32);
   }
 }
+export let _backgroundCaptureGuard = false;
+export function setBackgroundCaptureGuard(on) { _backgroundCaptureGuard = on === true; }
 export function hiddenTabCaptureError(cause = null) {
   const error = new Error(
     `Tab is hidden (document.visibilityState=hidden): Chrome rendered no frame for it within ${HIDDEN_TAB_CAPTURE_TIMEOUT_MS} ms. `
@@ -938,6 +956,105 @@ export async function captureHiddenTabFrame(cdp, sid, params, hooks, inspectFram
   };
   return { ...captured, retryCount: 0, sanity: await inspectFrame(captured) };
 }
+// Returns capture data plus bounded method/retry diagnostics.
+// `params` is passed to Page.captureScreenshot (format, clip, etc.).
+export async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {}) {
+  const inspectFrame = hooks.inspectFrame
+    || (frame => inspectScreenshotFrame(cdp, sid, frame.data, { clip: params.clip || null }));
+  if (_backgroundCaptureGuard && await probePageVisibility(cdp, sid) === 'hidden') {
+    return captureHiddenTabFrame(cdp, sid, params, hooks, inspectFrame);
+  }
+  const waitForPaint = hooks.waitForPaint || (() => waitForScreenshotPaint(cdp, sid));
+  const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
+    ? hooks.timeoutMs
+    : SCREENSHOT_TIMEOUT;
+  const skipSanityRetry = hooks.skipSanityRetry === true;
+  const viewportCapture = screenshotCaptureUsesSessionTier(params);
+  const tierState = viewportCapture && hooks.tierState ? hooks.tierState : null;
+  const noteTier = tier => { if (viewportCapture && !tierState) _lastScreenshotTier = tier; };
+  const attempts = [];
+  // A timeout skips that tier for the rest of a multi-capture command; a capture
+  // failure only moves this capture on to the next pipeline.
+  const recordFailure = (tier, err) => {
+    const timedOut = String(err?.message || '').startsWith('Timeout:');
+    if (!timedOut && !isScreenshotCaptureFailure(err)) throw err;
+    if (timedOut && hooks.failFastOnTimeout === true) throw err;
+    attempts.push({ tier, timedOut, message: String(err?.message || err).slice(0, 200) });
+    if (timedOut && tierState && tierState.tier <= tier) tierState.tier = tier + 1;
+  };
+  const startTier = tierState ? tierState.tier : 1;
+  let captured;
+  // Tier 1: standard captureScreenshot
+  if (startTier <= 1) {
+    try {
+      const result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
+      captured = { data: result.data, fallback: false, method: 'captureScreenshot', tier: 1 };
+    } catch (err) {
+      recordFailure(1, err);
+    }
+  }
+
+  // Tier 2: captureScreenshot with fromSurface:false (captures from view, not compositor)
+  if (!captured && startTier <= 2) {
+    try {
+      const result = await cdpDomains(cdp).Page.captureScreenshot(
+        { ...params, fromSurface: false }, sid, timeoutMs);
+      captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false', tier: 2 };
+    } catch (err) {
+      recordFailure(2, err);
+    }
+  }
+
+  // Tier 3: screencast single-frame grab. A screencast frame is always the whole
+  // viewport, so a clipped capture (elshot, fullshot) never falls back to it.
+  if (!captured) {
+    if (params.clip != null) throw screenshotFailureError(attempts);
+    if (startTier > 3) {
+      attempts.push({ tier: 3, timedOut: true, message: 'skipped: timed out earlier in this command' });
+      throw screenshotFailureError(attempts);
+    }
+    try {
+      const data = await screencastFallback(cdp, sid, timeoutMs);
+      captured = { data, fallback: true, method: 'screencast', tier: 3 };
+    } catch (err) {
+      const message = String(err?.message || err);
+      const timedOut = /timeout|timed out/i.test(message);
+      // A protocol failure (target closed, detached) is not a capture-pipeline verdict.
+      if (!timedOut && !isScreenshotCaptureFailure(err)) throw err;
+      attempts.push({ tier: 3, timedOut, message: message.slice(0, 200) });
+      if (timedOut && tierState) tierState.tier = 4;
+      noteTier(3);
+      throw screenshotFailureError(attempts);
+    }
+  }
+  noteTier(captured.tier);
+  if (attempts.length) captured.attempts = attempts;
+
+  const firstFrameSanity = await inspectFrame(captured);
+  if (skipSanityRetry || !firstFrameSanity?.retry || captured.method !== 'captureScreenshot') {
+    return { ...captured, retryCount: 0, sanity: firstFrameSanity };
+  }
+
+  await waitForPaint();
+  let retry;
+  try {
+    retry = await cdpDomains(cdp).Page.captureScreenshot( { ...params, fromSurface: false }, sid, timeoutMs);
+  } catch (error) {
+    throw new Error(`Screenshot alternate capture failed: ${error?.message || String(error)}`);
+  }
+  const sanity = await inspectFrame({ data: retry.data, method: 'captureScreenshot-fromSurface-false' });
+  if (sanity?.retry) {
+    throw new Error(`Screenshot alternate capture still failed sanity check (${sanity.reason || 'contradictory-frame'}).`);
+  }
+  return {
+    data: retry.data,
+    fallback: true,
+    method: 'captureScreenshot-fromSurface-false',
+    retryCount: 1,
+    sanity,
+    firstFrameSanity,
+  };
+}
 // Parse `shot` arguments. Returns { filePath, quiet, verbose }.
 // Recognised flags: --quiet (only the saved path), --verbose (full DPR guidance).
 // Default (no flags): saved path on the first line, then a brief DPR note —
@@ -966,6 +1083,61 @@ export function formatScreenshotCaptureDiagnostics(capture = {}) {
   if (retryCount) {
     const reason = firstFrameSanity?.reason || sanity?.reason || 'unknown';
     lines.push(`(screenshot retry=${retryCount} method=${method} reason=${reason})`);
+  }
+  return lines.join('\n');
+}
+export async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
+  let filePath = null;
+  let opts = { quiet: false, verbose: false, onCapture: null, timeoutMs: null, skipSanityRetry: false, tierState: null };
+  if (filePathOrOpts && typeof filePathOrOpts === 'object' && !Array.isArray(filePathOrOpts)) {
+    filePath = filePathOrOpts.filePath || null;
+    opts = {
+      quiet: !!filePathOrOpts.quiet,
+      verbose: !!filePathOrOpts.verbose,
+      onCapture: filePathOrOpts.onCapture || null,
+      timeoutMs: filePathOrOpts.timeoutMs,
+      skipSanityRetry: filePathOrOpts.skipSanityRetry === true,
+      tierState: filePathOrOpts.tierState || null,
+    };
+  } else {
+    filePath = filePathOrOpts || null;
+    if (maybeOpts && typeof maybeOpts === 'object') {
+      opts = {
+        quiet: !!maybeOpts.quiet,
+        verbose: !!maybeOpts.verbose,
+        onCapture: maybeOpts.onCapture || null,
+        timeoutMs: maybeOpts.timeoutMs,
+        skipSanityRetry: maybeOpts.skipSanityRetry === true,
+        tierState: maybeOpts.tierState || null,
+      };
+    }
+  }
+  // Fail before capture: a missing directory is a caller-path mistake, not a browser failure (#577).
+  if (filePath) assertScreenshotOutputDirectory(filePath, 'shot');
+  const dpr = await getDpr(cdp, sid);
+  const captureHooks = { skipSanityRetry: opts.skipSanityRetry, tierState: opts.tierState };
+  if (Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0) captureHooks.timeoutMs = opts.timeoutMs;
+  const capture = await captureScreenshot(cdp, sid, { format: 'png' }, captureHooks);
+  const { data } = capture;
+  opts.onCapture?.(capture);
+  const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
+  writeScreenshotFile(out, data, 'shot');
+
+  // Default output: saved path FIRST so scripts grabbing `head -1` get a clean
+  // path. Verbose adds full coordinate-mapping tutorial. Quiet hides hints.
+  const lines = [out];
+  const diagnostics = formatScreenshotCaptureDiagnostics(capture);
+  if (diagnostics) lines.push(diagnostics);
+  if (opts.quiet) return lines.join('\n');
+  // Default: short DPR hint after the path. (`shot ... --verbose` for the long form.)
+  lines.push(`Screenshot saved. DPR=${dpr}${dpr !== 1 ? ` (CSS px = image px / ${dpr})` : ''}`);
+  if (opts.verbose) {
+    lines.push(`Coordinate mapping:`);
+    lines.push(`  Screenshot pixels → CSS pixels (for CDP Input events): divide by ${dpr}`);
+    lines.push(`  e.g. screenshot point (${Math.round(100 * dpr)}, ${Math.round(200 * dpr)}) → CSS (100, 200) → use clickxy <target> 100 200`);
+    if (dpr !== 1) {
+      lines.push(`  On this ${dpr}x display: CSS px = screenshot px / ${dpr} ≈ screenshot px × ${Math.round(100/dpr)/100}`);
+    }
   }
   return lines.join('\n');
 }
@@ -1345,6 +1517,85 @@ export function nextDiffShotArtifactPaths(session) {
     currentPath: resolve(dir, `diff-shot-current-${padded}.png`),
     diffPath: resolve(dir, `diff-shot-diff-${padded}.png`),
   };
+}
+export async function diffShotStr(cdp, sid, session, opts = {}) {
+  let shot;
+  try {
+    shot = await captureScreenshot(cdp, sid, { format: 'png' }, diffShotScreenshotCaptureOptions());
+  } catch (error) {
+    if (isScreenshotTimeoutError(error)) {
+      throw new Error('diff-shot: screenshot capture timed out; comparison is untrusted');
+    }
+    throw error;
+  }
+  if (shot.fallback === true) {
+    throw new Error(`diff-shot: screenshot capture ${screenshotFallbackReason(shot)}; comparison is untrusted`);
+  }
+  const targetId = session.targetId;
+  const reset = opts.reset || !session.diffShot?.baselineData;
+  const paths = nextDiffShotArtifactPaths(session);
+  if (reset) {
+    writeFileSync(paths.baselinePath, Buffer.from(shot.data, 'base64'), { mode: 0o600 });
+    session.diffShot = {
+      ...(session.diffShot || {}),
+      baselineData: shot.data,
+      baselinePath: paths.baselinePath,
+    };
+    appendSessionScreenshot(session, { kind: 'diff-shot-baseline', path: paths.baselinePath, note: opts.reset ? 'reset baseline' : 'baseline' });
+    const model = {
+      schema: 'chrome-cdp-ex.diff-shot.v1',
+      targetId,
+      baselineCaptured: true,
+      baselinePath: paths.baselinePath,
+      currentPath: paths.baselinePath,
+      diffPath: null,
+      changedPixels: 0,
+      totalPixels: 0,
+      changedRatio: 0,
+      thresholdRatio: opts.thresholdRatio || 0,
+      exceedsThreshold: false,
+      advancedBaseline: true,
+      fallback: shot.fallback === true,
+    };
+    return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
+  }
+
+  writeFileSync(paths.currentPath, Buffer.from(shot.data, 'base64'), { mode: 0o600 });
+  const compareRaw = await evalStr(cdp, sid, diffShotCompareScript(session.diffShot.baselineData, shot.data));
+  const compare = JSON.parse(compareRaw);
+  writeFileSync(paths.diffPath, Buffer.from(compare.diffPngBase64, 'base64'), { mode: 0o600 });
+  appendSessionScreenshot(session, { kind: 'diff-shot-current', path: paths.currentPath, note: 'current capture' });
+  appendSessionScreenshot(session, { kind: 'diff-shot-diff', path: paths.diffPath, note: 'pixel diff' });
+  const priorBaselinePath = session.diffShot.baselinePath;
+  const advancedBaseline = !opts.keepBaseline;
+  if (advancedBaseline) {
+    session.diffShot.baselineData = shot.data;
+    session.diffShot.baselinePath = paths.currentPath;
+  }
+  const model = {
+    schema: 'chrome-cdp-ex.diff-shot.v1',
+    targetId,
+    baselineCaptured: false,
+    baselinePath: priorBaselinePath,
+    currentPath: paths.currentPath,
+    diffPath: paths.diffPath,
+    width: compare.width,
+    height: compare.height,
+    baselineWidth: compare.baselineWidth,
+    baselineHeight: compare.baselineHeight,
+    currentWidth: compare.currentWidth,
+    currentHeight: compare.currentHeight,
+    changedPixels: compare.changedPixels,
+    totalPixels: compare.totalPixels,
+    changedRatio: compare.changedRatio,
+    regions: (Array.isArray(compare.regions) ? compare.regions : []).map(diffShotReceiptRegion),
+    regionCount: Number(compare.regionCount) || 0,
+    thresholdRatio: opts.thresholdRatio || 0,
+    exceedsThreshold: compare.changedRatio > Number(opts.thresholdRatio || 0),
+    advancedBaseline,
+    fallback: shot.fallback === true,
+  };
+  return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
 }
 export async function htmlStr(cdp, sid, selectorOrArgs, extra = {}) {
   // Share selector/root resolution rules with text where practical.
@@ -1839,4 +2090,242 @@ export function parseConsoleArgs(args = []) {
     throw new Error(`console: unknown option ${flag}. Supported options: --all, --errors, --clear, --unsafe-full, --format text|json.`);
   }
   return { mode: modes.get(flag), format: fopts.format, unsafeFull: lifted.unsafeFull };
+}
+export async function elshotStr(cdp, sid, selector, targetId, refMap, refState, filePath = null) {
+  if (!selector) throw new Error('CSS selector or @ref required');
+  if (filePath) assertScreenshotOutputDirectory(filePath, 'elshot');
+  if (isRef(selector)) {
+    const r = await resolveRef(cdp, sid, refMap, selector, refState);
+    const label = await elshotRefLabel(cdp, sid, refMap, selector, refState);
+    await sleep(100);
+    const scroll = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ x: window.scrollX, y: window.scrollY })'));
+    const clip = elementScreenshotClip(r, scroll);
+    const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png', clip });
+    const prefix = (targetId || 'unknown').slice(0, 8);
+    const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
+    writeScreenshotFile(out, data, 'elshot');
+    return formatElshotReceipt(`<${r.tag}> "${elshotReceiptLabel(label)}" (${selector})`, {
+      w: r.w,
+      h: r.h,
+      fallback,
+      path: out,
+    });
+  }
+  // Scroll element into view and get its bounding rect
+  const expr = `
+    (function() {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      const rect = el.getBoundingClientRect();
+      return {
+        ok: true,
+        x: rect.x, y: rect.y, w: rect.width, h: rect.height,
+        scrollX: window.scrollX, scrollY: window.scrollY,
+        tag: el.tagName, id: el.id,
+        text: (el.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80)
+      };
+    })()
+  `;
+  const result = await evalStr(cdp, sid, expr);
+  const r = JSON.parse(result);
+  if (!r.ok) throw new Error(r.error);
+
+  // The rect and scroll offset come from the same instant, so their sum is the element's
+  // document position even if a smooth scroll is still running.
+  const clip = elementScreenshotClip(r, { x: r.scrollX, y: r.scrollY });
+
+  await sleep(100); // let scroll settle
+
+  const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png', clip });
+
+  const prefix = (targetId || 'unknown').slice(0, 8);
+  const selSafe = selector.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 30);
+  const out = filePath || resolve(RUNTIME_DIR, `elshot-${prefix}-${selSafe}.png`);
+  writeScreenshotFile(out, data, 'elshot');
+
+  const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${elshotReceiptLabel(r.text)}"`;
+  return formatElshotReceipt(desc, { w: r.w, h: r.h, clip, fallback, path: out });
+}
+export async function fullshotStr(cdp, sid, filePath, targetId) {
+  if (filePath) assertScreenshotOutputDirectory(filePath, 'fullshot');
+  const targetPrefix = targetPrefixForDisplay(targetId);
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
+  const dpr = await getDpr(cdp, sid);
+  const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
+  const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
+  const height = metrics.cssContentSize?.height || metrics.contentSize?.height || 800;
+  let viewport = null;
+  try {
+    viewport = JSON.parse(await evalStr(
+      cdp,
+      sid,
+      'JSON.stringify({w:window.innerWidth,h:window.innerHeight})',
+    ));
+  } catch {}
+  const fitsViewport = fullshotFitsViewport({ width, height }, viewport);
+  const params = fitsViewport
+    ? { format: 'png' }
+    : {
+        format: 'png',
+        captureBeyondViewport: true,
+        clip: { x: 0, y: 0, width, height, scale: 1 },
+      };
+  const hooks = fitsViewport
+    ? {}
+    : {
+        timeoutMs: FULLSHOT_TIMEOUT_MS,
+        skipSanityRetry: true,
+        failFastOnTimeout: true,
+      };
+
+  let capture;
+  try {
+    capture = await captureScreenshot(cdp, sid, params, hooks);
+  } catch (error) {
+    if (isScreenshotTimeoutError(error)) {
+      throw new Error('fullshot: full-page capture timed out; screenshot is untrusted');
+    }
+    throw error;
+  }
+  if (!fitsViewport && capture.fallback === true) {
+    throw new Error(`fullshot: full-page capture ${screenshotFallbackReason(capture)}; screenshot is untrusted`);
+  }
+
+  const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
+  writeScreenshotFile(out, capture.data, 'fullshot');
+
+  const diagnostics = formatScreenshotCaptureDiagnostics(capture);
+  const fb = diagnostics ? ` ${diagnostics}` : '';
+  return `${out}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}${fb}\nNote: large pages produce tiny text. Use 'scanshot' for readable segmented capture.`;
+}
+export async function scanshotStr(cdp, sid, targetId) {
+  // Get viewport and page dimensions
+  const dims = await evalStr(cdp, sid, `JSON.stringify({
+    vw: window.innerWidth, vh: window.innerHeight,
+    scrollH: document.documentElement.scrollHeight,
+    scrollY: Math.round(window.scrollY)
+  })`);
+  const { vw, vh, scrollH, scrollY: originalY } = JSON.parse(dims);
+
+  // Calculate segments (overlap by 10% to avoid cutting content at boundaries)
+  const overlap = Math.round(vh * 0.1);
+  const step = vh - overlap;
+  const segments = [];
+  for (let y = 0; y < scrollH; y += step) {
+    segments.push(y);
+  }
+  // If the last segment is tiny (< 30% viewport), replace it with a
+  // bottom-aligned capture so no content is clipped
+  if (segments.length > 1) {
+    const lastY = segments[segments.length - 1];
+    const lastH = scrollH - lastY;
+    if (lastH < vh * 0.3) {
+      segments.pop();
+      // Scroll the last capture so the viewport's bottom edge aligns with page bottom
+      const bottomY = Math.max(0, scrollH - vh);
+      if (bottomY > segments[segments.length - 1]) {
+        segments.push(bottomY);
+      }
+    }
+  }
+
+  const files = [];
+  const prefix = (targetId || 'unknown').slice(0, 8);
+
+  let usedFallback = false;
+  const offTarget = new Map();
+  // One tier state for all segments: a tier that timed out is not retried per segment.
+  const tierState = createScreenshotTierState();
+  for (let i = 0; i < segments.length; i++) {
+    const y = segments[i];
+    // Scroll to segment
+    await evalStr(cdp, sid, documentScrollToJs(y));
+    await sleep(150); // let rendering settle
+    // Read back where the page actually is: a page that overrides or animates scrolling would
+    // otherwise yield images of the wrong slice that look like a successful capture.
+    const landed = JSON.parse(await evalStr(cdp, sid, `JSON.stringify({
+      y: Math.round(window.scrollY),
+      max: Math.max(0, Math.round((Number(${DOCUMENT_SCROLLER_JS}.scrollHeight) || 0) - window.innerHeight)),
+    })`));
+    const expectedY = Math.min(y, Number(landed.max) || 0);
+    if (Math.abs(Number(landed.y) - expectedY) > DOCUMENT_SCROLL_EDGE_TOLERANCE_PX) {
+      offTarget.set(i, { landedY: landed.y, expectedY });
+    }
+
+    const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' }, { tierState });
+    if (fallback) usedFallback = true;
+    const out = resolve(RUNTIME_DIR, `scanshot-${prefix}-${i + 1}.png`);
+    writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
+    files.push(out);
+  }
+
+  // Restore original scroll position
+  await evalStr(cdp, sid, documentScrollToJs(originalY));
+
+  const lines = [`Captured ${files.length} segment(s) of ${vw}x${vh} viewport (page height: ${scrollH}px)`];
+  if (usedFallback) lines.push('(screenshot fallback — Page.captureScreenshot timed out)');
+  for (let i = 0; i < files.length; i++) {
+    const miss = offTarget.get(i);
+    lines.push(`  [${i + 1}/${files.length}] ${files[i]}${miss ? ` (landed at y=${miss.landedY}, expected y=${miss.expectedY})` : ''}`);
+  }
+  if (offTarget.size) {
+    lines.push(`Warning: ${offTarget.size} of ${files.length} segment(s) did not land on their scroll offset (±${DOCUMENT_SCROLL_EDGE_TOLERANCE_PX}px), so those images do not show the expected slice. The page may override or animate scrolling; use fullshot for a single full-page capture.`);
+  }
+  lines.push(`Use the Read tool to view each segment image.`);
+  return lines.join('\n');
+}
+export async function annotshotStr(cdp, sid, targetId, refMap) {
+  if (refMap.size === 0) throw new Error('No refs available. Run "perceive" first.');
+
+  // Resolve all refs in parallel to get bounding rects
+  const refEntries = [...refMap.entries()];
+  const settled = await Promise.allSettled(refEntries.map(async ([num, backendNodeId]) => {
+    const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid);
+    const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
+      objectId: object.objectId,
+      functionDeclaration: `function() { const r = this.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }`,
+      returnByValue: true,
+    }, sid);
+    return { num, ...result.result.value };
+  }));
+  const entries = settled.filter(s => s.status === 'fulfilled').map(s => s.value);
+
+  // Inject overlay + draw labels + screenshot + cleanup in try/finally
+  await evalStr(cdp, sid, `(function() {
+    const overlay = document.createElement('div');
+    overlay.id = '__cdp_annot_overlay__';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483647;';
+    document.body.appendChild(overlay);
+  })()`);
+
+  try {
+    await evalStr(cdp, sid, `(function() {
+      const overlay = document.getElementById('__cdp_annot_overlay__');
+      if (!overlay) return;
+      const entries = ${JSON.stringify(entries)};
+      for (const e of entries) {
+        const box = document.createElement('div');
+        box.style.cssText = 'position:fixed;border:2px solid red;pointer-events:none;' +
+          'left:' + e.x + 'px;top:' + e.y + 'px;width:' + e.w + 'px;height:' + e.h + 'px;';
+        const label = document.createElement('span');
+        label.textContent = '@' + e.num;
+        label.style.cssText = 'position:absolute;top:-16px;left:0;background:red;color:white;font:bold 11px monospace;padding:1px 3px;border-radius:2px;line-height:14px;';
+        box.appendChild(label);
+        overlay.appendChild(box);
+      }
+    })()`);
+
+    await sleep(100);
+
+    const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' });
+    const prefix = (targetId || 'unknown').slice(0, 8);
+    const out = resolve(RUNTIME_DIR, `annotshot-${prefix}.png`);
+    writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
+
+    const fb = fallback ? ' (fallback)' : '';
+    return `${out}\nAnnotated screenshot with ${entries.length} ref labels. Use refs (@1, @2...) from perceive output to identify elements.${fb}`;
+  } finally {
+    await evalStr(cdp, sid, `(function() { const el = document.getElementById('__cdp_annot_overlay__'); if (el) el.remove(); })()`).catch(() => {});
+  }
 }

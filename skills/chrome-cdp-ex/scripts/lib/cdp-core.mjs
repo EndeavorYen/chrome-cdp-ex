@@ -2331,3 +2331,32 @@ export function formatCdpRelaunchCommand(lastEndpoint, { port, display } = {}) {
     ...flags.map(shellQuoteCliArg),
   ].join(' ');
 }
+// #594: a main-frame navigation cuts console and exception reads to the document
+// that just committed. The ring still holds earlier entries so an action delta
+// can report a throw that landed after its baseline and before the commit.
+export const documentCutSeqs = new WeakMap();
+export function consoleDocumentEntries(buf) {
+  if (typeof buf?.since === 'function' && documentCutSeqs.has(buf)) return buf.since(documentCutSeqs.get(buf) || 0);
+  if (typeof buf?.all === 'function') return buf.all();
+  return [];
+}
+export function consoleDocumentSince(buf, seq) {
+  if (typeof buf?.since !== 'function') return [];
+  const cut = documentCutSeqs.has(buf) ? Number(documentCutSeqs.get(buf)) || 0 : 0;
+  return buf.since(Math.max(Number(seq) || 0, cut));
+}
+export function cutDocumentConsoleBuffers(buffers) {
+  if (!buffers) return;
+  for (const buf of [buffers.console, buffers.exception]) {
+    if (typeof buf?.latest === 'function') documentCutSeqs.set(buf, buf.latest());
+  }
+}
+export function documentConsoleCutSeq(buf) {
+  if (!buf || !documentCutSeqs.has(buf)) return null;
+  return documentCutSeqs.get(buf);
+}
+export function cutDocumentConsoleBuffersAt(buffers, seqs = {}) {
+  if (!buffers) return;
+  if (buffers.console && seqs.console != null) documentCutSeqs.set(buffers.console, seqs.console);
+  if (buffers.exception && seqs.exception != null) documentCutSeqs.set(buffers.exception, seqs.exception);
+}
