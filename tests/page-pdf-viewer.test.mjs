@@ -1416,12 +1416,14 @@ describe('issues #255-#257 leftover contracts', () => {
   it('#256 PDF fullshot fail-fasts as pdf-viewer.v1 without poisoning later shot', async () => {
     T.resetScreenshotTier();
     const cdp = pdfPageCdp();
-    await expect(T.fullshotStr(cdp, 'sid', '/tmp/pdf-full.png', PDF_TARGET_ID))
+    // An existing directory: fullshot checks the output directory before it reads the page.
+    const outPath = join(tmpdir(), 'pdf-full.png');
+    await expect(T.fullshotStr(cdp, 'sid', outPath, PDF_TARGET_ID))
       .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
 
     let thrown;
     try {
-      await T.fullshotStr(cdp, 'sid', '/tmp/pdf-full.png', PDF_TARGET_ID);
+      await T.fullshotStr(cdp, 'sid', outPath, PDF_TARGET_ID);
     } catch (error) {
       thrown = error;
     }
