@@ -343,6 +343,46 @@ describe('doctorWizardSummary', () => {
 });
 
 describe('formatDoctorReport', () => {
+  it('when nothing answers, names the inspect toggle first, CDP_PORT, and a spawn without logins', async () => {
+    const requested = [];
+    const fetcher = async (url) => {
+      requested.push(String(url));
+      const error = new Error('connect ECONNREFUSED');
+      error.code = 'ECONNREFUSED';
+      throw error;
+    };
+    const cdp = await checkCdpReachability({
+      env: {},
+      fetcher,
+      home: '/tmp/chrome-cdp-ex-no-devtools-home',
+      existsSync: () => false,
+      lastEndpoint: null,
+    });
+    expect(cdp.status).toBe('FAIL');
+    expect(cdp.detail).toMatch(/nothing answered on 127\.0\.0\.1:9222, 9224/);
+    expect(requested.some(url => url.includes(':9222/'))).toBe(true);
+    expect(requested.some(url => url.includes(':9224/'))).toBe(true);
+
+    const out = formatDoctorReport([
+      { status: 'OK', label: 'Node', detail: 'v22.22.0 (>= 22)' },
+      cdp,
+    ]);
+    expect(out).toMatch(/^First: chrome:\/\/inspect\/#remote-debugging$/m);
+    expect(out).toContain('Or set CDP_PORT=<port> for Electron or a browser started with its own port.');
+    expect(out).toContain("The spawn suggestion is a profile without the user's logins.");
+    const nextLines = out.split('\n').filter(line => line.startsWith('Next:'));
+    expect(nextLines).toEqual([expect.stringMatching(/^Next: cdp spawn-debug-browser \S+/)]);
+    expect(nextLines[0]).not.toMatch(/chrome:\/\/inspect|CDP_PORT/);
+    const inspectAt = out.indexOf('First: chrome://inspect/#remote-debugging');
+    const portAt = out.indexOf('CDP_PORT=<port>');
+    const loginsAt = out.indexOf("profile without the user's logins");
+    const nextAt = out.indexOf('\nNext:');
+    expect(inspectAt).toBeGreaterThanOrEqual(0);
+    expect(inspectAt).toBeLessThan(portAt);
+    expect(portAt).toBeLessThan(loginsAt);
+    expect(loginsAt).toBeLessThan(nextAt);
+  });
+
   it('prints Node, CDP, and spawn-with-ask when CDP is down', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22.10.0' },

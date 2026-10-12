@@ -35,8 +35,8 @@ Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DIS
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-3. Unprefixed `doctor` probes `127.0.0.1:9222` before FAIL. If a **live tab daemon** already exists (Electron or a previous `perceive`), that session is usable — next probe is `cdp perceive <prefix>` or `CDP_PORT=<port> cdp doctor` / `cdp list`. Do not occupy 9222, including when 9222 is a leftover isolated occupant. If the **daily** debug browser is already on 9222, set `CDP_PORT=9222` and continue with `list`. A leftover isolated `chrome-cdp-ex-*` profile on 9222 is not daily attach success — if no tab daemon is live, next probe is the persistent daily dir (ask first); do not kill the occupant without asking. If 9222 is empty **and no tab daemon is live**, enable debug on the persistent daily dir (ask first). Isolated `spawn-debug-browser` is fallback only and is not the daily profile. `spawn-debug-browser --help` must not launch a browser.
-4. Prefer `--daily-profile` over `chrome://inspect/#remote-debugging` as the first human step. Use inspect only when the daily profile is unknown or `--daily-profile` cannot attach.
+3. Unprefixed `doctor` probes `127.0.0.1:9222` before FAIL. If a **live tab daemon** already exists (Electron or a previous `perceive`), that session is usable — next probe is `cdp perceive <prefix>` or `CDP_PORT=<port> cdp doctor` / `cdp list`. Do not occupy 9222, including when 9222 is a leftover isolated occupant. If a debug browser is already on 9222, set `CDP_PORT=9222` and continue with `list`. A leftover isolated `chrome-cdp-ex-*` profile on 9222 is not the user's session — if no tab daemon is live, do not kill the occupant without asking. If 9222 is empty **and no tab daemon is live**, the first human step is `chrome://inspect/#remote-debugging` (Edge: `edge://inspect`) in the browser already open. That keeps the logged-in session. `spawn-debug-browser`, `--daily-profile`, and an isolated profile are fallbacks: each is a profile without the user's logins. Ask first. `spawn-debug-browser --help` must not launch a browser.
+4. The first human step is `chrome://inspect/#remote-debugging` (Edge: `edge://inspect`). It keeps the logged-in session, including the default profile. `--daily-profile`, `spawn-debug-browser`, and an isolated profile are fallbacks and are profiles without the user's logins; ask first. From Chrome 136, `--remote-debugging-port` is ignored on the default user-data-dir, so `--daily-profile` does not quit and relaunch that browser. The inspect toggle still enables CDP there.
 5. For an explicit port, set `CDP_PORT=<port>`:
 
 ```bash
@@ -65,7 +65,7 @@ Chrome must be started by the user on Windows, with remote debugging enabled via
 
 ## spawn-debug-browser
 
-Primary empty-port path: enable debug on the daily browser profile (logged-in tabs). Isolated spawn is fallback only and is not the daily profile. Follow doctor's `preferredBrowser` (macOS default HTTP handler when Edge/Chrome/Brave; not hardcoded chrome or edge):
+Fallback after `chrome://inspect/#remote-debugging` (Edge: `edge://inspect`), and only with consent. `spawn-debug-browser`, `--daily-profile`, and an isolated profile are profiles without the user's logins. Follow doctor's `preferredBrowser` (macOS default HTTP handler when Edge/Chrome/Brave; not hardcoded chrome or edge):
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser --help
@@ -73,7 +73,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser <preferredBrowser>
 node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser <preferredBrowser> --port 9222 --url https://example.com
 ```
 
-`--help` / unknown flags print help and must not launch a browser. `--daily-profile` uses the browser's default user-data-dir. `Opening in existing browser session` / `在現有的瀏覽器工作階段中開啟` is failure, not attach success. Chrome 136+ / Edge ignore `--remote-debugging-port` on the default user-data-dir, so `--daily-profile` does not quit+relaunch that same default profile as if 9222 would come up. Isolated mode launches a separate user-data-dir (fallback only, not the daily profile; cookies will not transfer). In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.
+`--help` / unknown flags print help and must not launch a browser. `--daily-profile` uses the browser's default user-data-dir. `Opening in existing browser session` / `在現有的瀏覽器工作階段中開啟` is failure, not attach success. Chrome 136+ / Edge ignore `--remote-debugging-port` on the default user-data-dir, so `--daily-profile` does not quit+relaunch that same default profile as if 9222 would come up. Isolated mode launches a separate user-data-dir (a profile without the user's logins; cookies will not transfer). In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.
 
 ## Clicks and keys do nothing (hidden tab)
 

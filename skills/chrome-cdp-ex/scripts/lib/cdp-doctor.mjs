@@ -1067,10 +1067,18 @@ export function formatDoctorReport(checks) {
   const command = recommendation.run || recommendation.after || `${prefix} list`;
   // #534: say so when the attached browser runs a daily profile; quiet otherwise.
   const profile = model.checks.find(c => c.label === 'Profile' && c.status === 'WARN');
+  // Nothing answered on the probe ports: the logged-in session is the inspect toggle.
+  // Next stays one spawn command, and that spawn is a profile without those logins (#635).
+  const nothingAnswered = /nothing answered/i.test(cdp?.detail || '')
+    && !cdp?.liveTabSession
+    && /\bspawn-debug-browser\b/.test(command);
   return [
     `Node: ${node?.detail || 'unknown'}`,
     `CDP: ${cdp?.detail || 'unknown'}`,
     profile ? `Profile: ${profile.detail}` : null,
+    nothingAnswered ? 'First: chrome://inspect/#remote-debugging' : null,
+    nothingAnswered ? 'Or set CDP_PORT=<port> for Electron or a browser started with its own port.' : null,
+    nothingAnswered ? "The spawn suggestion is a profile without the user's logins." : null,
     !recommendation.run && recommendation.ask ? recommendation.ask : null,
     recommendation.consentRequired && recommendation.run ? ASK_HUMAN_FIRST_LINE : null,
     formatNextLine(command),
