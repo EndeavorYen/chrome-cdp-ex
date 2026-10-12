@@ -22159,12 +22159,42 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state, secretName })}${waitNote}`;
 }
 
+// An @ref names one node (#633). Apply it on that node; there is no selector to wait for.
+async function selectByRef(cdp, sid, selector, wanted, refMap, refState) {
+  const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+  const evaluated = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId,
+    functionDeclaration: `function() {
+      ${actionabilityFunctionSource()}
+      const el = this;
+      if (!el || el.tagName !== 'SELECT') return { ok: false, error: 'Not a <select>: ' + (el && el.tagName ? el.tagName : '?') };
+      const disabled = actionDisabledReason(el, false);
+      if (disabled) return { ok: false, disabled: { tag: el.tagName, text: actionLabel(el), reason: disabled, matches: 1 } };
+      const wanted = ${JSON.stringify(wanted)};
+      const match = Array.from(el.options).find(opt => opt.value === wanted || String(opt.textContent || '').trim() === wanted);
+      if (!match) return { ok: false, error: 'No option value=' + wanted };
+      match.selected = true;
+      el.value = match.value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, text: String(match.textContent || '').trim() || match.value || wanted };
+    }`,
+    returnByValue: true,
+  }, sid);
+  if (evaluated.exceptionDetails) throw new Error(runtimeExceptionMessage(evaluated.exceptionDetails));
+  const r = evaluated.result?.value || {};
+  if (!r.ok && r.disabled) throw actionDisabledError('select', r.disabled, selector);
+  if (!r.ok) throw new Error(actionabilityMissMessage(r.error, r));
+  return `Selected "${r.text}"`;
+}
+
 // The selector first waits up to `opts.waitMs` for an attached, enabled element (#468). Visibility is
 // not required: select sets the value in the page, and custom dropdowns often hide the native <select>.
-async function selectStr(cdp, sid, selector, value, opts = {}) {
+async function selectStr(cdp, sid, selector, value, opts = {}, refMap, refState) {
   if (!selector) throw new Error('CSS selector required');
   if (value == null || String(value) === '') throw new Error('Value required');
   const wanted = String(value);
+  if (isRef(selector)) return selectByRef(cdp, sid, selector, wanted, refMap, refState);
   const waitMs = normalizeActionabilityWaitMs(opts.waitMs);
   const expr = `
     (async function() {
@@ -24350,10 +24380,112 @@ function assertReadableUploadFiles(filePaths) {
   return files;
 }
 
-async function uploadStr(cdp, sid, selector, filePaths) {
+function describedNodeAttribute(node, name) {
+  const attrs = node?.attributes || [];
+  const index = attrs.indexOf(name);
+  return index === -1 ? undefined : attrs[index + 1];
+}
+
+function describedNodeIsFileInput(node) {
+  return node?.nodeName === 'INPUT' && describedNodeAttribute(node, 'type') === 'file';
+}
+
+// The ref's node, or the one file input it wraps or labels. Perceive shows a file input as a
+// [button]; that button can be the input itself or a control inside its shadow root.
+function uploadFileInputLocatorDeclaration() {
+  return `function() {
+    const isFile = (node) => !!(node && node.nodeType === 1 && String(node.tagName || '').toUpperCase() === 'INPUT' && String(node.type || '').toLowerCase() === 'file');
+    if (isFile(this)) return this;
+    const found = [];
+    const push = (node) => { if (isFile(node) && found.indexOf(node) === -1) found.push(node); };
+    const tag = String(this.tagName || '').toUpperCase();
+    if (tag === 'LABEL') push(this.control);
+    if (typeof this.querySelectorAll === 'function') {
+      const wrapped = this.querySelectorAll('input[type="file"]');
+      for (let i = 0; i < wrapped.length; i++) push(wrapped[i]);
+    }
+    if (tag === 'LABEL' && this.ownerDocument && typeof this.ownerDocument.querySelectorAll === 'function') {
+      const labeled = this.ownerDocument.querySelectorAll('input[type="file"]');
+      for (let i = 0; i < labeled.length; i++) {
+        const labels = labeled[i] && labeled[i].labels;
+        if (!labels) continue;
+        for (let j = 0; j < labels.length; j++) if (labels[j] === this) push(labeled[i]);
+      }
+    }
+    if (found.length === 1) return found[0];
+    if (found.length > 1) return null;
+    let host = null;
+    try {
+      const root = typeof this.getRootNode === 'function' ? this.getRootNode() : null;
+      host = root && root.host;
+    } catch (e) { host = null; }
+    return isFile(host) ? host : null;
+  }`;
+}
+
+async function readUploadedFilesFromObject(cdp, sid, objectId) {
+  try {
+    const evaluated = await cdpDomains(cdp).Runtime.callFunctionOn({
+      objectId,
+      functionDeclaration: `function() {
+        if (!this || !this.files) return null;
+        return [...this.files].map(file => ({ name: file.name, size: file.size }));
+      }`,
+      returnByValue: true,
+    }, sid);
+    if (evaluated.exceptionDetails) return null;
+    const value = evaluated.result?.value;
+    return Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function assertUploadedFilesMatch(selector, files, seen) {
+  if (!seen) return;
+  const sent = files.map(file => `${basename(file)}:${statSync(file).size}`);
+  const got = seen.map(file => `${file.name}:${file.size}`);
+  if (sent.length !== got.length || sent.some((entry, i) => entry !== got[i])) {
+    throw new Error(`upload: the page reports [${got.join(', ')}] but [${sent.join(', ')}] was sent to ${selector}`);
+  }
+}
+
+// A @ref names one node, so the #403 multi-match scan does not apply. Read the files back from
+// the resolved input, not through querySelector.
+async function uploadByRef(cdp, sid, selector, files, refMap, refState) {
+  const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+  let described = await cdpDomains(cdp).DOM.describeNode({ objectId }, sid);
+  let fileObjectId = objectId;
+  let node = described.node;
+  if (!describedNodeIsFileInput(node)) {
+    const located = await cdpDomains(cdp).Runtime.callFunctionOn({
+      objectId,
+      functionDeclaration: uploadFileInputLocatorDeclaration(),
+      returnByValue: false,
+    }, sid);
+    if (located.exceptionDetails) throw new Error(runtimeExceptionMessage(located.exceptionDetails));
+    fileObjectId = located.result?.objectId;
+    if (!fileObjectId) throw new Error('Element is not an <input type="file">');
+    described = await cdpDomains(cdp).DOM.describeNode({ objectId: fileObjectId }, sid);
+    node = described.node;
+    if (!describedNodeIsFileInput(node)) throw new Error('Element is not an <input type="file">');
+  }
+  if (!(node.attributes || []).includes('multiple') && files.length > 1) {
+    throw new Error(`upload: ${selector} does not accept several files (no \`multiple\`); pass one file`);
+  }
+  const params = { files };
+  if (node.backendNodeId != null) params.backendNodeId = node.backendNodeId;
+  else params.objectId = fileObjectId;
+  await cdpDomains(cdp).DOM.setFileInputFiles(params, sid);
+  assertUploadedFilesMatch(selector, files, await readUploadedFilesFromObject(cdp, sid, fileObjectId));
+  return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}`;
+}
+
+async function uploadStr(cdp, sid, selector, filePaths, refMap, refState) {
   if (!selector) throw new Error('CSS selector for <input type="file"> required');
   if (!filePaths) throw new Error('File path(s) required (comma-separated for multiple)');
   const files = assertReadableUploadFiles(filePaths);
+  if (isRef(selector)) return uploadByRef(cdp, sid, selector, files, refMap, refState);
   const { root } = await cdpDomains(cdp).DOM.getDocument( {}, sid);
   const { nodeId } = await cdpDomains(cdp).DOM.querySelector( { nodeId: root.nodeId, selector }, sid);
   if (!nodeId) throw new Error('Element not found: ' + selector);
@@ -24372,14 +24504,7 @@ async function uploadStr(cdp, sid, selector, filePaths) {
     throw new Error(`upload: ${selector} does not accept several files (no \`multiple\`); pass one file`);
   }
   await cdpDomains(cdp).DOM.setFileInputFiles( { files, nodeId }, sid);
-  const seen = await readUploadedFiles(cdp, sid, selector);
-  if (seen) {
-    const sent = files.map(file => `${basename(file)}:${statSync(file).size}`);
-    const got = seen.map(file => `${file.name}:${file.size}`);
-    if (sent.length !== got.length || sent.some((entry, i) => entry !== got[i])) {
-      throw new Error(`upload: the page reports [${got.join(', ')}] but [${sent.join(', ')}] was sent to ${selector}`);
-    }
-  }
+  assertUploadedFilesMatch(selector, files, await readUploadedFiles(cdp, sid, selector));
   return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}`;
 }
 
@@ -25874,7 +25999,7 @@ async function recordStr(cdp, sid, args, refs) {
           actionText = await fillStr(cdp, sid, opts.actionArgs[0], opts.actionArgs.length > 1 ? opts.actionArgs.slice(1).join(' ') : null, refs);
         }
       }
-      else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
+      else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], {}, refs);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
       else if (opts.action === 'scroll') {
         const scrollArgs = normalizeScrollArgs(opts.actionArgs);
@@ -31506,7 +31631,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     select: async args => {
       const wait = parseActionabilityWaitArgs(args, 'select');
       const fopts = parseCompactFormatArgs(wait.args, ['text', 'json']);
-      const value = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1], { waitMs: wait.waitMs }), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      const value = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1], { waitMs: wait.waitMs }, refMap, refState), { input: fopts.args[0], resolvedBy: isRef(fopts.args[0]) ? 'ref' : 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     throttle: async args => commandResult(
@@ -31525,14 +31650,14 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         'upload',
         async () => {
           try {
-            return await uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]);
+            return await uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1], refMap, refState);
           } catch (error) {
             throw redactExternalInputActionError(error, 'upload', fopts.args);
           }
         },
         {
           input: fopts.args[0],
-          resolvedBy: 'selector',
+          resolvedBy: isRef(fopts.args[0]) ? 'ref' : 'selector',
           label: fopts.args[0] || '',
           commandArgs: [fopts.args[0], '<redacted>'],
           redacted: ['commandArgs'],
