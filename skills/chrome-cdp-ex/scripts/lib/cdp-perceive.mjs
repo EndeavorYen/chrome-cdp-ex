@@ -4,7 +4,7 @@ import { buildCardsModel, formatCardsJson, formatCardsText } from './cards-model
 import { createPerceptionModel } from './perception-model.mjs';
 
 import { actionDomDiffShowsChange, countTypeaheadLabels, extractTypeaheadLabels, pdfViewerPerceiveResult, perceiveStoreDiffSource, rememberPerceiveDiffSource } from './cdp-action-result.mjs';
-import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, sleep } from './cdp-base.mjs';
+import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, fileUrlRefusedMessage, sleep } from './cdp-base.mjs';
 import { formatJson, isBlankPageUrl, parseFormatArgs, takeUnsafeFullArg } from './cdp-browser.mjs';
 import { consoleDocumentEntries, cutDocumentConsoleBuffers, displayUrl } from './cdp-core.mjs';
 import { actionabilityFunctionSource } from './cdp-input.mjs';
@@ -1116,6 +1116,7 @@ export function discardHoverIdleBaseline(lastPerceiveStore) {
 export function validateUrl(url) {
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error(`Invalid URL: ${url}`); }
+  if (parsed.protocol === 'file:') throw new Error(fileUrlRefusedMessage(url));
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Only http/https URLs allowed, got: ${parsed.protocol}`);
   }

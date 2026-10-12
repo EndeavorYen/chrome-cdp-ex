@@ -10,7 +10,7 @@ import { assertSecretName } from './secrets.mjs';
 import { policyRecovery } from './session-policy.mjs';
 import { parseTableArgs, parseTableContinuationToken } from './table-contract.mjs';
 import { createHash } from 'crypto';
-import { ALLOW_STALE_DAEMON_FLAG, COMMANDS, DEFAULT_OPEN_ATTACH_TIMEOUT_MS, DEFAULT_OPEN_READY_TIMEOUT_MS, HALT_TRAILER_RE, HIDDEN_TAB_RERUN_COMMANDS, OPEN_CREATED_TARGET_URL, STEP_HEADER_RE, TIMEOUT, USAGE, sleep } from './cdp-base.mjs';
+import { ALLOW_STALE_DAEMON_FLAG, COMMANDS, DEFAULT_OPEN_ATTACH_TIMEOUT_MS, DEFAULT_OPEN_READY_TIMEOUT_MS, FILE_URL_HTTP_SERVER, HALT_TRAILER_RE, HIDDEN_TAB_RERUN_COMMANDS, OPEN_CREATED_TARGET_URL, STEP_HEADER_RE, TIMEOUT, USAGE, isFileUrlRefusalMessage, sleep } from './cdp-base.mjs';
 import { CDP, discoverWsUrl, formatDuration, formatJson, isBlankPageUrl, parseCompactFormatArgs, parseFormatArgs } from './cdp-browser.mjs';
 import { explicitBackgroundChoice, isBackgroundMode, shellQuoteCliArg, tokenizeCommandLine } from './cdp-core.mjs';
 import { connectToSocket, sendCommand } from './cdp-daemon.mjs';
@@ -691,6 +691,15 @@ export function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', pl
   // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refusals (Kind: policy) and bad policy variables.
   const sessionPolicyRecovery = policyRecovery(message, { targetPrefix });
   if (sessionPolicyRecovery) return sessionPolicyRecovery;
+  // #587: file: is refused on purpose. The Next command serves that file's folder.
+  if (isFileUrlRefusalMessage(message)) {
+    return {
+      kind: 'usage',
+      strategy: 'serve-file-over-http',
+      run: FILE_URL_HTTP_SERVER,
+      reason: 'file: URLs are refused on purpose. Run the server in the file\'s folder, then open the http URL named in the error.',
+    };
+  }
   // #534: CDP_ISOLATED_ONLY refused a daily or unidentified profile; start an isolated browser instead.
   if (err?.code === 'daily_profile_refused') {
     const browser = err.profile?.browser || 'chrome';
