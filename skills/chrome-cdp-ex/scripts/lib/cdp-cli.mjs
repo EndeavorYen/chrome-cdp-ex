@@ -12,11 +12,11 @@ import { parseTableArgs, parseTableContinuationToken } from './table-contract.mj
 import { createHash } from 'crypto';
 import { ALLOW_STALE_DAEMON_FLAG, COMMANDS, DEFAULT_OPEN_ATTACH_TIMEOUT_MS, DEFAULT_OPEN_READY_TIMEOUT_MS, FILE_URL_HTTP_SERVER, HALT_TRAILER_RE, HIDDEN_TAB_RERUN_COMMANDS, OPEN_CREATED_TARGET_URL, STEP_HEADER_RE, TIMEOUT, USAGE, isFileUrlRefusalMessage, sleep } from './cdp-base.mjs';
 import { CDP, discoverWsUrl, formatDuration, formatJson, isBlankPageUrl, parseCompactFormatArgs, parseFormatArgs } from './cdp-browser.mjs';
-import { explicitBackgroundChoice, isBackgroundMode, shellQuoteCliArg, tokenizeCommandLine } from './cdp-core.mjs';
+import { explicitBackgroundChoice, isBackgroundMode, shellQuoteCliArg, tokenizeCommandLine, tokenizeFlowCommandLine } from './cdp-core.mjs';
 import { connectToSocket, sendCommand } from './cdp-daemon.mjs';
 import { fdLimitRecovery, isolatedSpawnProfileDir, spawnDebugBrowserHelpDetails } from './cdp-doctor.mjs';
 import { classifyCommandResultSemantics, commandCatalogName, commandMeta, flowStepHelpLines, maybeParseJson, splitFlowSegmentsRaw } from './cdp-flow.mjs';
-import { absolutizeArtifactFileArgs, absolutizeElshotFileArg, absolutizeFullshotArgs, absolutizeResponsiveAuditArgs, absolutizeShotArgs, absolutizeUploadArgs, callerPayloadIndexes, canonicalCallerCommand, clickFeedbackPolicy, isNamedClickQuery, namedClickActionTarget, parseActionabilityWaitArgs, pressHelpLines, rejoinRewrittenCommand, replaceCallerPayload, sameArgList } from './cdp-input.mjs';
+import { absolutizeArtifactFileArgs, absolutizeElshotFileArg, absolutizeFullshotArgs, absolutizeResponsiveAuditArgs, absolutizeShotArgs, absolutizeUploadArgs, assertClosedClickTarget, callerPayloadIndexes, canonicalCallerCommand, clickFeedbackPolicy, namedClickActionTarget, parseActionabilityWaitArgs, pressHelpLines, rejoinRewrittenCommand, replaceCallerPayload, sameArgList } from './cdp-input.mjs';
 import { cdpDomains, evalScopeHelpLines, isHiddenTabCaptureError, runtimeExceptionMessage } from './cdp-page.mjs';
 import { absolutizeNetlogOutArg } from './cdp-page-commands.mjs';
 import { perceiveReadinessRecovery } from './cdp-perceive.mjs';
@@ -34,7 +34,13 @@ export function rewriteFlowInput(input, cwd, depth) {
   const next = steps.map(step => {
     const trimmed = step.trim();
     if (!trimmed) return step;
-    const tokens = tokenizeCommandLine(trimmed);
+    // Backticks are flow quotes. A tokenize error stays in the step so the real parser reports it.
+    let tokens;
+    try {
+      tokens = tokenizeFlowCommandLine(trimmed);
+    } catch {
+      return step;
+    }
     if (!tokens.length) return step;
     const head = tokens[0].value;
     if (head === 'wait' || head === 'assert') return step;
@@ -73,23 +79,40 @@ export function rewriteBatchInput(input, cwd, depth) {
   }
   const segments = text.split('|');
   let changed = false;
-  const next = segments.map(segment => {
+  const next = [];
+  for (const segment of segments) {
     const trimmedSegment = segment.trim();
-    if (!trimmedSegment) return segment;
-    const tokens = tokenizeCommandLine(trimmedSegment);
-    if (!tokens.length) return segment;
+    if (!trimmedSegment) {
+      next.push(segment);
+      continue;
+    }
+    // `|` is already split. A quote error belongs to parseBatchArgs, not this rewrite.
+    let tokens;
+    try {
+      tokens = tokenizeCommandLine(trimmedSegment);
+    } catch {
+      return input;
+    }
+    if (!tokens.length) {
+      next.push(segment);
+      continue;
+    }
     const head = tokens[0].value;
     const args = tokens.slice(1).map(token => token.value);
     let rewritten;
     try {
       rewritten = rewriteCallerCommandArgs(head, args, cwd, depth + 1);
     } catch {
-      return segment;
+      next.push(segment);
+      continue;
     }
-    if (sameArgList(rewritten, args)) return segment;
+    if (sameArgList(rewritten, args)) {
+      next.push(segment);
+      continue;
+    }
     changed = true;
-    return rejoinRewrittenCommand(head, rewritten);
-  });
+    next.push(rejoinRewrittenCommand(head, rewritten));
+  }
   return changed ? next.join('|') : input;
 }
 export function absolutizeFlowArgs(args, cwd, depth) {
@@ -366,6 +389,7 @@ export function parseClickArgs(args = []) {
     positional.push(token);
   }
   if (js && pointer) throw new Error('click: --pointer and --js are alternatives; use one');
+  assertClosedClickTarget(positional[0] || '');
   return {
     format: fopts.format,
     compact: fopts.compact,
@@ -385,8 +409,8 @@ export function createClickCommandHandler({ actionFeedback, click, jsClick, poin
   return async ({ args }) => {
     const parsed = parseClickArgs(args);
     const selector = parsed.selector;
-    const named = isNamedClickQuery(selector);
-    const useJs = parsed.js || (named && !parsed.pointer);
+    // A plain label goes through click(), which hit-tests. --js is the hit-test bypass.
+    const useJs = parsed.js;
     const baseArgs = parsed.pointer ? ['--pointer', selector] : parsed.js ? ['--js', selector] : [selector];
     const target = namedClickActionTarget(selector, {
       commandArgs: parsed.download ? [...baseArgs, '--expect-download'] : baseArgs,

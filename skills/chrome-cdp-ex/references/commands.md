@@ -498,7 +498,7 @@ scripts/cdp.mjs batch <target> --compact 'click @7 | console --errors'   # one l
 
 Executes multiple commands in a single IPC call. Default output is a JSON array of results. Any failed step exits non-zero, including `--format json` `chrome-cdp-ex.batch.v1` handoffs with `counts.failed > 0`. Unknown inner commands recover with `cdp help`, not `cdp status`.
 
-- **Pipe syntax**: commands separated by `|`, args separated by spaces. Auto-detected when input doesn't start with `[`.
+- **Pipe syntax**: commands separated by `|`, args separated by spaces. Auto-detected when input doesn't start with `[`. `|` always splits batch steps, including inside quotes. An unclosed quote in a batch step is an error; it used to be kept as literal text. A value that contains `|` belongs in `flow`, or the steps need different quoting.
 - **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive or mutate action/session state (`click`, `fill`, `upload`, `scroll`, `nav`, `perceive`, etc.); use sequential `batch` or `flow` for those.
 - **`--plain`**: human-readable per-step output. Each step gets a `[i/N] cmd args` header followed by indented result text. Use when an agent doesn't need to parse the result programmatically.
 - **`--compact`**: one line per step (`[i] cmd: <first line of result>`). Useful for quick visual scans.
@@ -535,7 +535,7 @@ A semicolon separates flow steps only outside quotes (`'`, `"`, or `` ` ``). A q
   - `wait network idle` — wait until pending XHR/Fetch/Document requests drain; timeout fails with the pending count.
 - `eval`, `eval64`, and `call` take one script body. Wrapping quotes around that body are flow delimiters, not JavaScript. Spaces, newlines, and tabs in that body stay byte-for-byte. Inside those quotes, a backslash is literal, except `\;`, which keeps a semicolon, and the opening quote always closes. An unquoted body continues across semicolons until the next segment starts with a command name, alias, or `assert`. Quote the body, or write `\;`, when a statement after a semicolon starts with one of those words (`text`, `key`, `summary`, and the rest of `cdp help`). That `\;` form is only for the unquoted script body. In any other step, an unquoted `\;` before one of those words is a usage error (`Kind: usage`, `Next: cdp help flow`).
 - Use `flow` for short pipelines that read top-to-bottom or need ordered failure handoff; use `batch` when you need parallelism or multiple independent command results.
-- A quoted word in a `flow` or `batch` step is one argument, and the quote characters are not part of the value. `fill #note " "` types one space; `fill #note "hello world"` types `hello world`. Quotes inside a token that is not itself quoted stay, so `click input[name="q"]` is still one selector. A quoted word that starts with `-` is text (`"--secret"`), while an unquoted `--secret NAME` stays the secret flag. A pipe inside quotes is still a batch separator. A semicolon inside quotes does not start another flow step. A direct `fill` argument is not quote-stripped. In `flow`, a backtick-quoted word in a non-script step is one argument with the backticks removed. `batch` leaves the backtick characters in the value and still splits on whitespace inside them. A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain. An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary.
+- A quoted word in a `flow` or `batch` step is one argument, and the quote characters are not part of the value. `fill #note " "` types one space; `fill #note "hello world"` types `hello world`. Quotes inside a token that is not itself quoted stay, so `click input[name="q"]` is still one selector. A quoted word that starts with `-` is text (`"--secret"`), while an unquoted `--secret NAME` stays the secret flag. A pipe inside quotes is still a batch separator: `|` always splits batch steps. An unclosed quote in a batch step is an error; it used to be kept as literal text. A value that contains `|` belongs in `flow`, or the steps need different quoting. A semicolon inside quotes does not start another flow step. A direct `fill` argument is not quote-stripped. In `flow`, a backtick-quoted word in a non-script step is one argument with the backticks removed. `batch` leaves the backtick characters in the value and still splits on whitespace inside them. A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain. An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary.
 
 ### Doctor / readiness check
 
@@ -636,8 +636,8 @@ scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
 scripts/cdp.mjs nav     <target> <url> [--compact] [--format json] # URL+title; --compact is one line
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
-scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; one-step jsclick, skinny URL
-scripts/cdp.mjs click   <target> "text=Save" [--format json]  # Playwright-style alias for the named form (exact visible text)
+scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; hit-tests, then one-step jsclick, skinny URL
+scripts/cdp.mjs click   <target> "text=Save" [--format json]  # alias for the named form (exact visible text)
 scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path; scrollIntoView if off-screen
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
@@ -1393,17 +1393,20 @@ associated `<label>` with a positive in-viewport box is used instead. Otherwise 
 and the click exits 1 with `Kind: no-click-box` (`dispatched: false`) and one Next,
 `cdp jsclick <target> <sel>`. `clickxy` is an explicit point and is unchanged.
 
-A named query (`click` / `jsclick` `"Browse 1M+ applications"`) is the one-step
-jsclick path: no `perceive -C -d 8`, unique off-screen names `scrollIntoView`
-then click, skinny URL receipt (Scroll before/after when it scrolled).
+A named query (`click` `"Save profile"` or `"Browse 1M+ applications"`, any script) hit-tests
+the click point, then takes the one-step jsclick path: no `perceive -C -d 8`, unique off-screen
+names `scrollIntoView` then click, skinny URL receipt (Scroll before/after when it scrolled).
+A covered label, including `text=`, sends nothing and exits 1 with `Kind: covered`. `jsclick`
+and `click --js` skip that hit test.
 
-`text=Save`, `text="Save changes"`, and `text='Save'` are aliases for that named
-form. The match is the same exact, whitespace-normalised match on a button or
-link's `aria-label` or visible text; unquoted `text=` is not Playwright's
-case-insensitive substring match. Use `text=` to force a name lookup for a single
-word that would otherwise parse as a CSS tag selector (`text=Save` vs `Save`). A
-miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
-`Kind: selector`, and Next `perceive -C -d 8` for an `@ref`.
+`text=button`, `text="Save changes"`, and `text='Save'` are aliases for that named
+form. The match prefers the exact visible text or `aria-label`, then a whitespace-normalised
+fallback; unquoted `text=` is not Playwright's case-insensitive substring match. Use `text=`
+to force a name when the word is an HTML tag (`text=button` vs `button`). A word that is not
+a tag, such as `Save`, is already a label. A real selector (`#form #delete`, `div span`, `nav a`)
+stays a selector. A miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
+`Kind: selector`, and Next `perceive -C -d 8` for an `@ref`. An unclosed quote in the target
+is an error.
 
 When a successful one-line receipt has no diagnosis-specific Next, it points at the same tab: `perceive
 <target> --since-action` after an in-page action, `perceive <target> -C -d 8`
@@ -1503,8 +1506,8 @@ target. A natively disabled control gets no such hint: the browser does not deli
 An `@ref` is checked for disabled without waiting (also when its scroll settle timed out); its Next is
 `perceive`. The check happens in the same evaluation that scrolls the target into view, so the page may
 have scrolled even though no input was sent. A selector that matches nothing after the wait still fails
-as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `text=` clicks,
-`click --js` and `click --pointer` do not wait. A target with a zero-size box (a collapsed input that
+as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `text=` clicks
+hit-test and do not actionability-wait. `click --js` and `click --pointer` do not wait. A target with a zero-size box (a collapsed input that
 grows on focus, `display: contents`) waits the full 2 s for visibility before it is acted on as before;
 pass `--wait-ms 0` to skip that. `--wait-ms` is a flag on these commands, so the 81-command surface, the
 public synopsis and the MCP tool schemas are unchanged; MCP `click` and `fill` use the 2 s default.

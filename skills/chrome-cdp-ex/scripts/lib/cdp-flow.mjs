@@ -1088,11 +1088,22 @@ export function parseBatchArgs(args = []) {
     try { commands = JSON.parse(input); } catch { throw new Error('batch: invalid JSON array'); }
     if (!Array.isArray(commands)) throw new Error('batch argument must be a JSON array');
   } else {
-    commands = input.split('|').map(segment => {
-      const tokens = tokenizeCommandLine(segment.trim());
-      if (!tokens.length) return { cmd: '', args: [] };
-      return { cmd: tokens[0].value, args: commandArgsFromTokens(tokens.slice(1)) };
-    }).filter(c => c.cmd);
+    // `|` always splits a batch step, including inside quotes. Splitting first used to
+    // leave an unclosed quote as literal text; that is now an error from the tokenizer.
+    const segments = input.split('|');
+    try {
+      commands = segments.map(segment => {
+        const tokens = tokenizeCommandLine(segment.trim());
+        if (!tokens.length) return { cmd: '', args: [] };
+        return { cmd: tokens[0].value, args: commandArgsFromTokens(tokens.slice(1)) };
+      }).filter(c => c.cmd);
+    } catch (error) {
+      const message = String(error?.message || '');
+      if (segments.length > 1 && message.startsWith('unclosed quote')) {
+        throw new Error(`batch: | separates batch steps, including inside quotes. Use flow for a value that contains |, or quote the steps differently. ${message}`);
+      }
+      throw error;
+    }
   }
   return {
     commands,

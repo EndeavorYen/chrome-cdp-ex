@@ -2113,7 +2113,7 @@ export function shellQuoteCliArg(value) {
 // #615: flow and batch split on whitespace, so a quoted phrase was stored with the
 // quote characters still in the value (`fill #note " "` became quote-space-quote).
 // A quote starts a word only at a word boundary. Quotes inside a CSS token stay.
-// An unmatched quote is kept as literal text through the next whitespace.
+// An unmatched quote is an error (#641), not a silently truncated word.
 // The default quote set is " and '. Flow passes backticks too; batch does not.
 export function tokenizeCommandLine(input, quoteChars = '"\'') {
   const text = String(input ?? '');
@@ -2137,15 +2137,8 @@ export function tokenizeCommandLine(input, quoteChars = '"\'') {
         cursor += 1;
       }
       if (!closed) {
-        let raw = '';
-        let end = index;
-        while (end < text.length && !/\s/.test(text[end])) {
-          raw += text[end];
-          end += 1;
-        }
-        tokens.push({ value: raw, quoted: false });
-        index = end;
-        continue;
+        const example = quote === '"' ? "'abc'" : quote === "'" ? '"abc"' : '"hello"';
+        throw new Error(`unclosed quote: ${quote} has no closing ${quote}. Close it, for example ${example}.`);
       }
       tokens.push({ value, quoted: true });
       index = cursor;

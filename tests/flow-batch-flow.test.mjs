@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createMockCDP } from './mock-cdp.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const { absolutizeBatchArgs, absolutizeFlowArgs } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-cli.mjs');
 const { formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs } = T;
 
 // =========================================================================
@@ -221,6 +222,44 @@ describe('parseBatchArgs', () => {
 
   it('does not add action JSON format to read-only commands', () => {
     expect(autoActionJsonArgs('summary', [], true)).toEqual([]);
+  });
+
+  it('says | separates batch steps when a quoted value contains a pipe', () => {
+    const step = 'eval "a|b"';
+    expect(absolutizeBatchArgs([step], '/tmp/caller')).toEqual([step]);
+    let message = '';
+    try {
+      parseBatchArgs([step]);
+    } catch (error) {
+      message = error.message;
+    }
+    expect(message).toMatch(/\| separates batch steps/);
+    expect(message).toMatch(/Use flow/);
+    expect(message).toMatch(/quote the steps differently/);
+    expect(message).toMatch(/unclosed quote/);
+    let plain = '';
+    try {
+      parseBatchArgs(['click "abc']);
+    } catch (error) {
+      plain = error.message;
+    }
+    expect(plain).toMatch(/unclosed quote/);
+    expect(plain).not.toMatch(/separates batch steps/);
+  });
+});
+
+describe('absolutizeFlowArgs backtick quotes', () => {
+  it('keeps eval `a \'b` and fill #q `it \'x` unchanged in meaning', () => {
+    const cases = [
+      { step: "eval `a 'b`", args: ["a 'b"] },
+      { step: "fill #q `it 'x`", args: ['#q', "it 'x"] },
+    ];
+    for (const { step, args } of cases) {
+      const before = parseFlowSteps(step);
+      const out = absolutizeFlowArgs([step], '/tmp/caller');
+      expect(parseFlowSteps(out[0])).toEqual(before);
+      expect(before).toEqual([{ kind: 'command', cmd: before[0].cmd, args }]);
+    }
   });
 });
 

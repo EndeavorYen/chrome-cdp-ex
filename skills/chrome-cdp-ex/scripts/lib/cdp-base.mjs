@@ -622,10 +622,9 @@ export const CLICK_DOWNLOAD_UNOBSERVED_RE = /no download event was observed/;
 export const NAMED_IN_VIEWPORT_CLICK_OUTCOME = 'named-in-viewport-click';
 export const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="button"]';
 // #427: Playwright-style `text=Save`, `text="Save"`, and `text='Save'` are aliases for the
-// named form `click <target> "Save"`: the same exact, whitespace-normalised match against a
-// button or link's aria-label or visible text. Unquoted `text=` is not Playwright's
-// case-insensitive substring match. `text=` also forces a name lookup for a single word
-// that would otherwise parse as a CSS tag selector (`text=Save` vs `Save`).
+// named form. The match prefers the exact visible text or aria-label, then a
+// whitespace-normalised fallback. Unquoted `text=` is not Playwright's case-insensitive
+// substring match. `text=` also forces a name when the word is an HTML tag (`text=button` vs `button`).
 export const TEXT_SELECTOR_PREFIX_RE = /^text=/i;
 // Pointer-sequence click (#412): menus built on Radix / Headless UI open on pointerdown, so neither the mouse path
 // (dropped on a hidden tab, "no-input-events") nor HTMLElement.click() opens them. This dispatches
@@ -1457,8 +1456,8 @@ Usage: cdp <command> [args]
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --accept-dialog: accept a native confirm, prompt, or beforeunload this click opens (default is dismiss; Kind: native-dialog)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
-                                    name: accessible name; one-step jsclick, skinny URL receipt
-                                    text=Name / text="Name": same exact visible-name match (not Playwright substring)
+                                    name: accessible name, including a multi-word label; hit-tests, then one-step jsclick, skinny URL receipt
+                                    text=Name / text="Name": same visible-name match; text= forces a name when the word is an HTML tag (text=button vs button)
 {{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
                                     name: accessible name; scrollIntoView if off-screen, no perceive dump
