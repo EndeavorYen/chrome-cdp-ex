@@ -2115,6 +2115,42 @@ export async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   }
   return formatSpawnDebugBrowserOutput(model, { format: 'json' });
 }
+// #629: an ancestor behind a fixed layer is the layer's own shell only when the layer is the
+// sole rendered child on every step from that ancestor down to the layer. Each page script
+// inlines this helper (the scripts are strings evaluated in the page). Keep the one copy.
+function soleRenderedChainSource() {
+  return `function soleRenderedChain(ancestor, el) {
+      if (typeof getComputedStyle !== 'function' || !el || !ancestor) return true;
+      const skipTag = { script: 1, style: 1, template: 1, head: 1, link: 1, meta: 1, noscript: 1 };
+      function renderedSibling(node) {
+        if (!node || (node.nodeType && node.nodeType !== 1)) return false;
+        const tag = String(node.tagName || '').toLowerCase();
+        if (skipTag[tag]) return false;
+        let cs = null;
+        try { cs = getComputedStyle(node); } catch (err) { return false; }
+        if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return false;
+        if (typeof node.getBoundingClientRect !== 'function') return true;
+        let box = null;
+        try { box = node.getBoundingClientRect(); } catch (err) { return false; }
+        if (!box || !(box.width > 0) || !(box.height > 0)) return false;
+        return true;
+      }
+      let node = el;
+      for (let guard = 0; node && node !== ancestor && guard < 64; guard++) {
+        let parent = null;
+        try { parent = node.parentElement; } catch (err) { return true; }
+        if (!parent) return true;
+        let kids = null;
+        try { kids = parent.children; } catch (err) { return true; }
+        if (!kids || typeof kids.length !== 'number') return true;
+        for (let i = 0; i < kids.length; i++) {
+          if (kids[i] !== node && renderedSibling(kids[i])) return false;
+        }
+        node = parent;
+      }
+      return true;
+    }`;
+}
 export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false } = {}) {
   const targetJson = JSON.stringify(targetPoint && ['input', 'x', 'y', 'descriptor'].reduce((snapshot, key) => { const property = Object.getOwnPropertyDescriptor(targetPoint, key); if (property && Object.hasOwn(property, 'value')) snapshot[key] = property.value; return snapshot; }, Object.create(null))); return `(function() {
     const targetPoint = ${targetJson};
@@ -2175,7 +2211,10 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
       };
     }
     // A viewport-sized fixed element is a cover only when something it does not contain is behind
-    // it. elementsFromPoint skips pointer-events:none. Without that API, keep the rect check.
+    // it. An ancestor in that stack (html/body on a short page) is not foreign when el is the
+    // sole rendered child from that ancestor down to el; any other rendered sibling makes the
+    // ancestor a cover. elementsFromPoint skips pointer-events:none. Without that API, keep the rect check.
+    ${soleRenderedChainSource()}
     function coversForeignContent(el) {
       if (typeof document.elementsFromPoint !== 'function') return true;
       const box = el.getBoundingClientRect();
@@ -2190,7 +2229,7 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
         if (node === el) { seenEl = true; continue; }
         if (!seenEl) continue;
         if (typeof el.contains === 'function' && el.contains(node)) continue;
-        if (node && typeof node.contains === 'function' && node.contains(el)) continue;
+        if (node && typeof node.contains === 'function' && node.contains(el) && soleRenderedChain(node, el)) continue;
         return true;
       }
       return false;
@@ -2366,6 +2405,7 @@ export function dialogVisibleFunctionSource() {
 export function dismissModalScript() {
   return `(function() {
     ${dialogVisibleFunctionSource()}
+    ${soleRenderedChainSource()}
     // #653: only a control whose job is to close counts. Accept words (OK, 確認, Continue) and labels
     // that merely contain a close word ("Cancel subscription", "Book") are the user's decision.
     // A Chinese close label is the whole string: 關閉 or 取消, optionally followed by 對話框, 視窗,
@@ -2443,7 +2483,9 @@ export function dismissModalScript() {
           || (r.left <= 8 && r.top <= 8 && r.right >= layoutW - 8 && r.bottom >= layoutH - 8);
         if (!coversViewport) continue;
         // #629: a fixed app shell contains the page. It is not a cover unless a non-descendant
-        // sits behind it. elementFromPoint / elementsFromPoint skip pointer-events:none.
+        // sits behind it. An ancestor behind the centre counts only when el is not the sole
+        // rendered child from that ancestor down to el (a sibling panel is a backdrop).
+        // elementFromPoint / elementsFromPoint skip pointer-events:none.
         if (typeof document.elementsFromPoint === 'function') {
           const cx = Math.min(Math.max(r.left + r.width / 2, 0), Math.max(vw - 1, 0));
           const cy = Math.min(Math.max(r.top + r.height / 2, 0), Math.max(vh - 1, 0));
@@ -2457,7 +2499,7 @@ export function dismissModalScript() {
               if (node === el) { seenEl = true; continue; }
               if (!seenEl) continue;
               if (typeof el.contains === 'function' && el.contains(node)) continue;
-              if (node && typeof node.contains === 'function' && node.contains(el)) continue;
+              if (node && typeof node.contains === 'function' && node.contains(el) && soleRenderedChain(node, el)) continue;
               foreign = true;
               break;
             }
