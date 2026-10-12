@@ -52,7 +52,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test -- ${{ matrix.os == 'windows-latest' && '--maxWorkers=2' || '' }} tests/issue-503-quoted-secret-tail.test.mjs tests/issue-511-escaped-json-and-netlog-bodies.test.mjs tests/issue-518-linear-timing-helper.test.mjs
+      - run: npm test -- ${{ matrix.os == 'windows-latest' && '--maxWorkers=2' || '' }} tests/core-quoted-secret-tail.test.mjs tests/page-escaped-json-and-netlog-bodies.test.mjs tests/tooling-linear-timing-helper.test.mjs
         env:
           CDP_RUN_QUARANTINED: "1"
 

@@ -778,7 +778,7 @@ export const DAILY_BROWSER_APP_NAMES = {
     brave: 'Brave Browser',
   },
 };
-// Documentation for `help spawn-debug-browser` (#398). tests/cdp.test.mjs keeps this table and the
+// Documentation for `help spawn-debug-browser` (#398). tests/cli-commands.test.mjs keeps this table and the
 // parser below in step: every parser flag must be listed and every listed flag must parse.
 export const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--port', '-p'], arg: 'N', text: 'CDP port (default 9222).' },

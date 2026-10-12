@@ -25,8 +25,8 @@ describe('#645 vitest runtime dir cleanup', () => {
     const before = new Set(runtimeDirNames(temp));
     const result = spawnSync(process.execPath, [
       'scripts/run-vitest.mjs',
-      'tests/issue-645-endpoint-record-writer.test.mjs',
-      'tests/runtime-dir-isolation.test.mjs',
+      'tests/tooling-endpoint-record-writer.test.mjs',
+      'tests/tooling-runtime-dir-isolation.test.mjs',
       '--no-file-parallelism',
     ], {
       encoding: 'utf8',
