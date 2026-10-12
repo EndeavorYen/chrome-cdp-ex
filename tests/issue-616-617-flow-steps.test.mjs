@@ -10,6 +10,9 @@ const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const SPLIT_RULE = 'A semicolon separates flow steps only outside quotes';
 const QUOTE_RULE = 'A quote opens only at the start of a word';
 const BACKSLASH_RULE = 'Inside quotes, a backslash is literal';
+const BACKTICK_VALUE_RULE = 'A backtick-quoted word in a non-script step is one argument with the backticks removed';
+const WRAP_RULE = 'A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain';
+const UNQUOTED_RULE = 'An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary';
 const QUOTED_BODY = "const s = 'a  b';\n\ts";
 const SINGLE_QUOTED_BODY = 'const s = "a  b";\n\ts';
 const UNQUOTED_BODY = 'const  s = 1;\n\treturn s';
@@ -375,6 +378,76 @@ describe('flow script and quote splitting (#617)', () => {
   });
 });
 
+const TEXT_EDGE_LINES = [
+  "#form #delete",
+  "\"#form #delete\"",
+  "'#form #delete'",
+  "a  b   c",
+  "O'Brien",
+  "\"O'Brien\"",
+  "it's \"quoted\" and 'single'",
+  "tab\tseparated",
+  "trailing space ",
+  " leading space",
+  "a != b",
+  "\\\"escaped\\\"",
+  "emoji 🙂 and 中文 引號「」",
+];
+
+function quoteKindForEdge(line) {
+  return ['"', "'", '`'].find(ch => !line.includes(ch));
+}
+
+describe('text edge round-trip (#617)', () => {
+  it.each(TEXT_EDGE_LINES)('round-trips %j through quoted eval, fill, and type, and keeps summary', (line) => {
+    const quote = quoteKindForEdge(line);
+    const wrapped = quote + line + quote;
+    const evalSteps = T.parseFlowSteps(`eval ${wrapped}; summary`);
+    expect(evalSteps).toEqual([
+      { kind: 'command', cmd: 'eval', args: [line] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    const fillSteps = T.parseFlowSteps(`fill #x ${wrapped}; summary`);
+    expect(fillSteps).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#x', line] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    const typeSteps = T.parseFlowSteps(`type ${wrapped}; summary`);
+    expect(typeSteps).toEqual([
+      { kind: 'command', cmd: 'type', args: [line] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+  });
+
+  it('keeps a backtick-quoted non-script value byte-exact, including backslashes', () => {
+    expect(T.parseFlowSteps('fill #p `C:\\a\\b`; summary')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'C:\\a\\b'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('type `a\\;b`; summary')).toEqual([
+      { kind: 'command', cmd: 'type', args: ['a;b'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('fill #p `a  b`; click @1')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'a  b'] },
+      { kind: 'command', cmd: 'click', args: ['@1'] },
+    ]);
+    expect(T.parseFlowSteps('fill #x `it\'s "quoted"`; summary')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#x', 'it\'s "quoted"'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('assert text `"O\'Brien"`')).toEqual([
+      { kind: 'assert', condition: { kind: 'text', value: '"O\'Brien"' } },
+    ]);
+  });
+
+  it('does not treat a backtick as a quote in batch', () => {
+    expect(T.parseBatchArgs(['fill #p `hello world`']).commands).toEqual([
+      { cmd: 'fill', args: ['#p', '`hello', 'world`'] },
+    ]);
+  });
+});
+
 describe('flow step rule documentation (#616 #617)', () => {
   it('documents the split rule and millisecond wait in help and docs', () => {
     const help = T.helpTopicStr('flow');
@@ -385,6 +458,9 @@ describe('flow step rule documentation (#616 #617)', () => {
       expect(text).toContain(SPLIT_RULE);
       expect(text).toContain(QUOTE_RULE);
       expect(text).toContain(BACKSLASH_RULE);
+      expect(text).toContain(BACKTICK_VALUE_RULE);
+      expect(text).toContain(WRAP_RULE);
+      expect(text).toContain(UNQUOTED_RULE);
       expect(text).toContain('wait 2000');
       expect(text).toContain('fill #p "C:\\a\\"; summary');
     }

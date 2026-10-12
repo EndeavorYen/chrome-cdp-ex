@@ -267,7 +267,12 @@ byte-for-byte. An unquoted body continues across semicolons until the next
 segment starts with a command name, alias, or `assert`. Quote that body, or
 write `\;`, when the next statement starts with one of those words. An unclosed
 quote fails the flow before any step runs. A leading apostrophe opens a quote,
-so `'twas` is an unclosed quote. `cdp help flow` prints this rule.
+so `'twas` is an unclosed quote.
+A backtick-quoted word in a non-script step is one argument with the backticks removed.
+The characters inside stay byte-for-byte. A backslash inside those quotes is literal, except `\;`, which keeps a semicolon.
+A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain.
+An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary.
+`cdp help flow` prints this rule.
 
 Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.

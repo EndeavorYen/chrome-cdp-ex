@@ -2630,7 +2630,8 @@ function shellQuoteCliArg(value) {
 // quote characters still in the value (`fill #note " "` became quote-space-quote).
 // A quote starts a word only at a word boundary. Quotes inside a CSS token stay.
 // An unmatched quote is kept as literal text through the next whitespace.
-function tokenizeCommandLine(input) {
+// The default quote set is " and '. Flow passes backticks too; batch does not.
+function tokenizeCommandLine(input, quoteChars = '"\'') {
   const text = String(input ?? '');
   const tokens = [];
   let index = 0;
@@ -2638,7 +2639,7 @@ function tokenizeCommandLine(input) {
     while (index < text.length && /\s/.test(text[index])) index += 1;
     if (index >= text.length) break;
     const quote = text[index];
-    if (quote === '"' || quote === "'") {
+    if (quoteChars.includes(quote)) {
       let cursor = index + 1;
       let value = '';
       let closed = false;
@@ -2674,6 +2675,15 @@ function tokenizeCommandLine(input) {
     tokens.push({ value: raw, quoted: false });
   }
   return tokens;
+}
+
+// Flow already treats a backtick as a step quote. In a non-script step that word
+// is one argument with the backticks removed. Contents stay byte-exact:
+// decodeQuotedFlowSemicolon has already turned `\;` into a semicolon, and every
+// other backslash stays. Batch and standalone commands keep the default quote
+// set, so a backtick there is still literal text.
+function tokenizeFlowCommandLine(input) {
+  return tokenizeCommandLine(input, '"\'`');
 }
 
 // A quoted word that looks like a flag is text. `--` ends flag parsing for fill.
@@ -27187,11 +27197,12 @@ function parseFlowLine(line) {
   if (FLOW_SCRIPT_COMMANDS.has(head)) {
     return { kind: 'command', cmd: head, args: scriptCommandArgs(head, trimmed.slice(head.length)) };
   }
-  // Non-script steps use tokenizeCommandLine, which keeps a backslash inside quotes.
-  // Flow's only inside-quote exception, `\;`, is decoded first so the value is a semicolon.
+  // Non-script steps use tokenizeFlowCommandLine. `\;` inside quotes is already a
+  // semicolon. Any other backslash stays, and a backtick-quoted word is one
+  // argument with the backticks removed. Batch still uses tokenizeCommandLine.
   const decoded = decodeQuotedFlowSemicolon(trimmed);
   if (head === 'wait') {
-    const parts = tokenizeCommandLine(decoded).map(token => token.value);
+    const parts = tokenizeFlowCommandLine(decoded).map(token => token.value);
     const what = parts.slice(1).join(' ').toLowerCase();
     if (what === 'dom stable' || what === 'network idle') return { kind: 'wait', what };
     // `cdp wait <ms>` is a real command. Flow used to send every wait to the settle helper.
@@ -27199,9 +27210,11 @@ function parseFlowLine(line) {
     return { kind: 'wait', what };
   }
   if (head === 'assert') {
-    const parts = tokenizeCommandLine(decoded).map(token => token.value);
+    const parts = tokenizeFlowCommandLine(decoded).map(token => token.value);
     const assertionKind = parts[1];
-    const value = parts.slice(2).join(' ').replace(/^(['"`])(.*)\1$/, '$2');
+    // Quotes are already removed. A second strip would eat quotes that are part
+    // of the value, such as assert text `"O'Brien"`.
+    const value = parts.slice(2).join(' ');
     const kinds = {
       selector: 'selector-exists',
       'selector-missing': 'selector-missing',
@@ -27212,7 +27225,7 @@ function parseFlowLine(line) {
     }
     return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
   }
-  const tokens = tokenizeCommandLine(decoded);
+  const tokens = tokenizeFlowCommandLine(decoded);
   return { kind: 'command', cmd: tokens[0].value, args: commandArgsFromTokens(tokens.slice(1)) };
 }
 
@@ -27235,6 +27248,9 @@ function flowStepHelpLines() {
     'An unquoted script body continues across semicolons until the next segment starts with a command name, alias, or assert.',
     'Quote that body, or write \\;, when a statement after a semicolon starts with one of those words.',
     'An unclosed quote fails the flow before any step runs. A leading apostrophe opens a quote, so \'twas is an unclosed quote.',
+    'A backtick-quoted word in a non-script step is one argument with the backticks removed. The characters inside stay byte-for-byte. A backslash inside those quotes is literal, except \\; which keeps a semicolon.',
+    'A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain.',
+    'An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary.',
   ];
 }
 
@@ -33270,6 +33286,7 @@ Usage: cdp <command> [args]
                                     A semicolon separates flow steps only outside quotes (' " \`).
                                     A quote opens only at the start of a word. Inside quotes, a backslash is literal, except \\; which keeps a semicolon. The opening quote always closes.
                                     An unquoted \\; before a command name fails unless it is an unquoted eval, eval64, or call body. Quote a trailing backslash: fill #p "C:\\a\\"; summary.
+                                    A backtick-quoted word in a non-script step is one argument with the backticks removed. A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain. An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary.
                                     Assertions: "assert selector <css>", "assert selector-missing <css>", "assert text <value>".
                                     Halts and exits non-zero on the first failing step; JSON preserves chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait 2000; eval const x = 1; x; summary"

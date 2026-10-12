@@ -81,9 +81,10 @@ describe('Phase 6 command-surface characterization', () => {
     // perceive --verbose is one help line on that same catalog.
     // #616: the flow summary names millisecond waits and the outside-quotes semicolon rule.
     // #622: a quote opens only at the start of a word.
-    expect(Buffer.byteLength(catalogHelp)).toBe(30101);
+    // Backtick-quoted non-script values, and the wrap rule for whitespace and quotes.
+    expect(Buffer.byteLength(catalogHelp)).toBe(30417);
     expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
-      .toBe('sha256:60df6da53376849a3377b7be9e1eced44871d24584f964e4ec2f0294944af6e2');
+      .toBe('sha256:f5dc8f65045f024377550b3f82688be270bab9034339b78af1fee678f8a44030');
     expect(catalogHelp).toMatch(/\.\n$/);
     const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
