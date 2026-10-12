@@ -302,6 +302,90 @@ describe('changelog fragments', () => {
     })).toThrow(/empty-section\.md: section Bug Fixes has no bullets/);
   });
 
+  it('rejects a fragment that is only a section heading', () => {
+    const sources = ['### Bug Fixes\n', '### Bug Fixes\n\n\n'];
+    for (const source of sources) {
+      expect(() => parseFragment(source, {
+        filename: 'only-heading.md',
+        knownSections: ['Features', 'Bug Fixes'],
+      })).toThrow(/only-heading\.md: section Bug Fixes has no bullets/);
+
+      const dir = tempRoot();
+      const before = readFileSync(join(dir, 'CHANGELOG.md'), 'utf8');
+      writeFileSync(join(dir, 'changelog.d', 'only-heading.md'), source);
+      let stderr = '';
+      expect(runChangelogFragments(['--check'], {
+        rootDir: dir,
+        stdout: () => {},
+        stderr: (chunk) => { stderr += chunk; },
+      })).toBe(1);
+      expect(stderr).toMatch(/only-heading\.md: section Bug Fixes has no bullets/);
+      expect(readFileSync(join(dir, 'CHANGELOG.md'), 'utf8')).toBe(before);
+      expect(readFileSync(join(dir, 'changelog.d', 'only-heading.md'), 'utf8')).toBe(source);
+    }
+  });
+
+  it('does not leave repeated blank lines after fold', () => {
+    const released = [
+      '## [1.0.0] (2020-01-01)',
+      '',
+      '### Performance',
+      '',
+      '* old perf',
+      '',
+      '### Features',
+      '',
+      '* old feat',
+      '',
+      '### Bug Fixes',
+      '',
+      '* old fix',
+      '',
+    ].join('\n');
+    const cases = [
+      ['empty unreleased', `# Changelog\n\n## [Unreleased]\n\n\n${released}`],
+      ['empty unreleased with no spacer', `# Changelog\n\n## [Unreleased]\n${released}`],
+      ['new section inserted', [
+        '# Changelog',
+        '',
+        '## [Unreleased]',
+        '',
+        '### Bug Fixes',
+        '',
+        '* kept',
+        released,
+      ].join('\n')],
+    ];
+    const fragments = {
+      'b-perf.md': '### Performance\n\n* fast\n\n\n',
+      'a-feat.md': '### Features\n\n* shiny\n\n',
+      'c-fix.md': '### Bug Fixes\n\n* patched\n\n\n\n',
+    };
+    for (const [name, changelog] of cases) {
+      const dir = tempRoot();
+      writeFileSync(join(dir, 'CHANGELOG.md'), changelog);
+      for (const [filename, body] of Object.entries(fragments)) {
+        writeFileSync(join(dir, 'changelog.d', filename), body);
+      }
+      let stderr = '';
+      expect(runChangelogFragments(['--fold'], {
+        rootDir: dir,
+        stdout: () => {},
+        stderr: (chunk) => { stderr += chunk; },
+      })).toBe(0);
+      expect(stderr).toBe('');
+      const folded = readFileSync(join(dir, 'CHANGELOG.md'), 'utf8');
+      const normalized = folded.replace(/\r\n/g, '\n');
+      const unreleased = normalized.slice(normalized.indexOf('## [Unreleased]'), normalized.indexOf('\n## [1.0.0]'));
+      expect({ name, repeated: normalized.includes('\n\n\n') }).toEqual({ name, repeated: false });
+      expect(unreleased).toContain('### Performance\n\n* fast');
+      expect(unreleased).toContain('### Features\n\n* shiny');
+      expect(unreleased).toContain('* patched');
+      expect(unreleased).not.toContain('## [1.0.0]');
+      expect(() => readFileSync(join(dir, 'changelog.d', 'a-feat.md'))).toThrow();
+    }
+  });
+
   it('does not insert a blank line between adjacent existing bullets', () => {
     const changelog = [
       '# Changelog',

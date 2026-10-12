@@ -366,6 +366,20 @@ function newSectionIndex(title, sections, canonical, end) {
   return end;
 }
 
+// A new section adds a blank line on both sides. Several sections on the same
+// line, or an empty Unreleased block, would otherwise stack those blanks.
+function collapseRepeatedBlankLines(lines, start, end) {
+  let index = start + 1;
+  while (index < end) {
+    if (lines[index] === '' && lines[index - 1] === '') {
+      lines.splice(index, 1);
+      end -= 1;
+      continue;
+    }
+    index += 1;
+  }
+}
+
 // Insert fragment bullets into the existing Unreleased text. Existing lines stay
 // in order; new bullets are appended after a section's current text, and a
 // missing section is added at its canonical heading position.
@@ -412,9 +426,12 @@ function insertFragmentBullets(changelogText, fragments) {
     ops.push({ index, lines: inserted, order });
   }
   ops.sort((left, right) => left.index - right.index || left.order - right.order);
+  let addedLines = 0;
   for (let index = ops.length - 1; index >= 0; index -= 1) {
     lines.splice(ops[index].index, 0, ...ops[index].lines);
+    addedLines += ops[index].lines.length;
   }
+  collapseRepeatedBlankLines(lines, range.start, range.end + addedLines);
   return restoreNewlines(changelogText, joinChangelogLines(lines, endsWithNewline));
 }
 
