@@ -86,7 +86,7 @@ Campaign failures exit nonzero by default; use `--allow-failures` only when you 
 
 Review the diff against the project's existing conventions. Prioritize real blockers: wrong issue scope, missing acceptance coverage, misleading benchmark evidence, token regressions, fragile live-browser behavior, or docs that make commands unrepeatable.
 
-For release-facing documentation changes, click through or inspect every public link added to the README, verify the tarball/download path points at this repository's GitHub Release, and regenerate the benchmark proof image whenever `experiment/benchmark.html` changes its visible numbers.
+For release-facing documentation changes, click through or inspect every public link added to the README, verify the tarball/download path points at this repository's GitHub Release, and regenerate the benchmark proof image whenever `experiment/benchmark.html` changes its visible numbers. Before a release tag, run `npm run changelog:fold` so notes in `changelog.d/` are in `CHANGELOG.md`. The release workflow reads the version section of that file and does not fold fragments.
 
 ```bash
 gh pr create --base main --head <branch> --title "..." --body "..."

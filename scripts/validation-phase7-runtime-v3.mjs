@@ -5,7 +5,7 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
-import { buildRuntimeDispatchInventory } from './runtime-dispatch-inventory.mjs';
+import { buildRuntimeDispatchInventory, omitSourcePositions } from './runtime-dispatch-inventory.mjs';
 import {
   commandResult,
   createCommandRegistry,
@@ -293,7 +293,7 @@ export async function proveRuntimeV3InjectedFailures() {
   const source = readFileSync(sourcePath, 'utf8');
   const fixture = JSON.parse(readFileSync(inventoryPath, 'utf8'));
   const actualInventory = buildRuntimeDispatchInventory(source);
-  if (!exact(actualInventory, fixture)) throw new Error('runtime dispatch inventory is stale');
+  if (!exact(omitSourcePositions(actualInventory), fixture)) throw new Error('runtime dispatch inventory is stale');
   const inventory = {
     commands: actualInventory.counts.commands,
     application: actualInventory.counts.applicationCommands,

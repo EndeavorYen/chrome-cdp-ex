@@ -1,11 +1,15 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { readCurrentFacingChangelog } from '../scripts/changelog-fragments.mjs';
+
+const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const files = {
   commands: readFileSync(new URL('../skills/chrome-cdp-ex/references/commands.md', import.meta.url), 'utf8'),
   reference: readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8'),
   readme: readFileSync(new URL('../README.md', import.meta.url), 'utf8'),
-  changelog: readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8'),
+  changelog: readCurrentFacingChangelog(rootDir),
   skill: readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8'),
 };
 

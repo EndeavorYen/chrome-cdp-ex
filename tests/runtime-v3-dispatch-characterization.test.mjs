@@ -1,7 +1,7 @@
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { describe, expect, it } from 'vitest';
 
-import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inventory.mjs';
+import { buildRuntimeDispatchInventory, omitSourcePositions } from '../scripts/runtime-dispatch-inventory.mjs';
 import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import {
   fixture,
@@ -17,7 +17,12 @@ import {
 describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUILD_TIMEOUT }, () => {
   it('freezes the exact 82-command daemon/CLI ownership graph and deletion allowlist', async () => {
     await yieldToEventLoop();
-    expect(buildRuntimeDispatchInventory(source)).toEqual(fixture);
+    const inventory = buildRuntimeDispatchInventory(source);
+    expect(inventory.mainSpine).toMatchObject({ line: expect.any(Number), endLine: expect.any(Number) });
+    expect(fixture.mainSpine.line).toBeUndefined();
+    expect(fixture.daemonGroups[0].line).toBeUndefined();
+    expect(fixture.recursiveEdges[0].line).toBeUndefined();
+    expect(omitSourcePositions(inventory)).toEqual(fixture);
     expect(fixture).toMatchObject({
       schema: 'chrome-cdp-ex.runtime-dispatch.v1',
       productVersion: packageVersion,
@@ -94,10 +99,10 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
 
   it('fails closed on route and execution cardinality drift', async () => {
     await yieldToEventLoop();
-    expect(buildRuntimeDispatchInventory(source.replace(
+    expect(omitSourcePositions(buildRuntimeDispatchInventory(source.replace(
       'if (!sameStringArray(builderNames, expectedNames)) {',
       'if (false && !sameStringArray(builderNames, expectedNames)) {',
-    ))).not.toEqual(fixture);
+    )))).not.toEqual(fixture);
     await yieldToEventLoop();
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "case 'meta': {",
@@ -125,10 +130,10 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
     ))).toThrow(/workflow capability batch must call handleCommand exactly once/);
     await yieldToEventLoop();
     try {
-      expect(buildRuntimeDispatchInventory(source.replace(
+      expect(omitSourcePositions(buildRuntimeDispatchInventory(source.replace(
         "case 'stop': return { ok: true, result: '', stopAfter: true };",
         "case 'report': {\n          const route = await executeDaemonApplicationRoute({ cmd: 'report', args, targetBound: Boolean(targetId) }, applicationDispatcher);\n          result = route.result;\n          break;\n        }\n        case 'stop': return { ok: true, result: '', stopAfter: true };",
-      ))).not.toEqual(fixture);
+      )))).not.toEqual(fixture);
     } catch (error) {
       expect(error.message).toMatch(/duplicate daemon route labels: report/);
     }
@@ -146,13 +151,20 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
 
   it('keeps check mode read-only and rejects stale fixture/source drift', async () => {
     await yieldToEventLoop();
-    const result = spawnSync(process.execPath, [scriptPath, '--check'], {
-      cwd: rootDir,
-      encoding: 'utf8',
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [scriptPath, '--check'], { cwd: rootDir });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('Runtime dispatch OK: 82 commands, 6 daemon groups');
-  });
+  }, MULTI_BUILD_TIMEOUT);
 
   it('keeps the complete policy-class distribution visible before deletion', () => {
     expect(Object.fromEntries(Object.entries(Object.groupBy(

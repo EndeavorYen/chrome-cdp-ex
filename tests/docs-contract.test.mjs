@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
+import { readCurrentFacingChangelog } from '../scripts/changelog-fragments.mjs';
 import { checkDefaultHelpContract, checkDocsContract, checkGrokBotSetupContract, SURVIVOR_COMMANDS, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
 import { PK_324_CHART_FILES, PK_324_SCOREBOARD_FILE } from '../scripts/lib/pk-324-board.mjs';
 
@@ -15,6 +16,7 @@ const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', impor
 const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
 const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
+const changelogCurrent = readCurrentFacingChangelog(fileURLToPath(new URL('..', import.meta.url)));
 const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
 const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
 const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
@@ -511,6 +513,12 @@ describe('Repository release gates', () => {
 
   it('runs the docs contract in CI', () => {
     expect(ciWorkflow).toContain('npm run check:docs');
+  });
+
+  it('reads current-facing changelog notes from fragments and published versions from CHANGELOG.md', () => {
+    expect(changelogCurrent).toContain('[#695](https://github.com/EndeavorYen/chrome-cdp-ex/issues/695)');
+    expect(changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1]).toBe('2.21.0');
+    expect(changelogCurrent).toContain('## [2.21.0]');
   });
 
   it('publishes the versioned changelog narrative instead of generated commit notes', () => {
