@@ -24,11 +24,23 @@ jobs:
       - run: npm ci
       - run: npm test -- --shard=${{ matrix.shard }}/3
 
-  # Quarantined wall-clock tests. CI is set, so CDP_RUN_QUARANTINED=1 opts them back in.
-  # A flake stays visible and does not fail the workflow.
+  # Quarantined wall-clock tests. CI is set on the Linux shards, test-windows, and
+  # coverage, so those jobs skip the listed tests. #687 was seen on windows-latest,
+  # so this job runs on both runners. CDP_RUN_QUARANTINED=1 opts them back in.
+  # A flake stays visible and does not fail the workflow. Windows uses Git Bash and
+  # --maxWorkers=2, matching test-windows.
   test-quarantined:
-    runs-on: ubuntu-latest
+    name: test-quarantined (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        # PowerShell is the Windows default. Git Bash matches test-windows.
+        shell: bash
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -36,7 +48,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test -- tests/issue-503-quoted-secret-tail.test.mjs tests/issue-511-escaped-json-and-netlog-bodies.test.mjs tests/issue-518-linear-timing-helper.test.mjs
+      - run: npm test -- ${{ matrix.os == 'windows-latest' && '--maxWorkers=2' || '' }} tests/issue-503-quoted-secret-tail.test.mjs tests/issue-511-escaped-json-and-netlog-bodies.test.mjs tests/issue-518-linear-timing-helper.test.mjs
         env:
           CDP_RUN_QUARANTINED: "1"
 

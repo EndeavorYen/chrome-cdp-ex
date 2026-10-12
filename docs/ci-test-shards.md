@@ -12,7 +12,7 @@ npm test -- --shard=N/3
 
 `tests/quarantine.mjs` exports `QUARANTINE` and `quarantined(issue)`.
 
-`quarantined(issue)` is true when `CI` is truthy and `CDP_RUN_QUARANTINED` is not `1`. The Linux shards run with `CI` set, so listed tests skip there. The `test-quarantined` job (`ubuntu-latest`, `continue-on-error: true`) runs only the quarantined files with `CDP_RUN_QUARANTINED=1`. A flake stays visible and does not fail the workflow.
+`quarantined(issue)` is true when `CI` is truthy and `CDP_RUN_QUARANTINED` is not `1`. The quarantine also applies to `test-windows` and `coverage` (both set `CI`), so listed tests skip there as well as on the Linux shards. The non-blocking `test-quarantined` job runs on both Linux and Windows (`ubuntu-latest` and `windows-latest`, `fail-fast: false`, `continue-on-error: true`). It runs only the quarantined files with `CDP_RUN_QUARANTINED=1`. On Windows it uses Git Bash and `--maxWorkers=2`, matching `test-windows`. #687 was seen on `windows-latest`. A flake stays visible and does not fail the workflow.
 
 Each entry is `{ issue, file, test }`. `issue` is an open issue that tracks the flake.
 
@@ -24,7 +24,7 @@ To quarantine a test:
 
 To unquarantine, remove the entry and the `skipIf` wrapper in the same change.
 
-`tests/quarantine.test.mjs` checks that every entry's file exists and contains `skipIf(quarantined(<issue>))`, and that the number of `skipIf(quarantined(...))` calls under `tests/*.test.mjs` equals `QUARANTINE.length`. A new skip without an entry, or an entry without a skip, fails that test.
+`tests/quarantine.test.mjs` checks that every entry's file exists and that the test-name string literal immediately after `skipIf(quarantined(<issue>))` equals that entry's `test` name, and that every `skipIf(quarantined(...))` call under `tests/*.test.mjs` is listed with the same issue and file. An entry whose name does not follow a matching call, or a call whose name is not listed, fails that test.
 
 ## Run a shard locally
 
@@ -32,7 +32,7 @@ To unquarantine, remove the entry and the `skipIf` wrapper in the same change.
 CI=1 npm test -- --shard=1/3
 ```
 
-`CI=1` skips quarantined tests, matching the Linux shards. Use `2/3` or `3/3` for the other shards. To run the quarantined files locally:
+`CI=1` skips quarantined tests, matching the Linux shards, `test-windows`, and `coverage`. Use `2/3` or `3/3` for the other shards. To run the quarantined files locally:
 
 ```bash
 CDP_RUN_QUARANTINED=1 npm test -- tests/issue-503-quoted-secret-tail.test.mjs tests/issue-511-escaped-json-and-netlog-bodies.test.mjs tests/issue-518-linear-timing-helper.test.mjs
