@@ -7,11 +7,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-gray" alt="MIT License"></a>
 </p>
 <p>
-  <a href="experiment/attach-beam-hero.mp4"><img src="experiment/attach-beam-hero-poster.png" alt="Attach to the Chrome tab you already have open — cookies stay, not a fresh Playwright, zero runtime npm deps" width="720"></a>
+  <a href="https://github.com/EndeavorYen/chrome-cdp-ex/raw/main/experiment/attach-beam-hero.mp4"><img src="https://github.com/EndeavorYen/chrome-cdp-ex/raw/main/experiment/attach-beam-hero-poster.png" alt="Attach to the Chrome tab you already have open — cookies stay, not a fresh Playwright, zero runtime npm deps" width="720"></a>
 </p>
 <p>
-  <strong><a href="experiment/attach-beam-hero.mp4">Watch the 15-second Attach Beam hero.</a></strong>
-  · <a href="experiment/codex-killer-path-demo.mp4">60s Codex path demo</a>
+  <strong><a href="https://github.com/EndeavorYen/chrome-cdp-ex/raw/main/experiment/attach-beam-hero.mp4">Watch the 15-second Attach Beam hero.</a></strong>
+  · <a href="https://github.com/EndeavorYen/chrome-cdp-ex/raw/main/experiment/codex-killer-path-demo.mp4">60s Codex path demo</a>
 </p>
 </div>
 
@@ -75,7 +75,7 @@ cd chrome-cdp-ex
 
 </details>
 
-[SKILL.md](skills/chrome-cdp-ex/SKILL.md) · [docs/reference.md](docs/reference.md) · [docs/pk-324-board.md](docs/pk-324-board.md) · [INTEGRATIONS.md](INTEGRATIONS.md) · [Grok Bot from-zero](docs/integrations/grok-bot.md)
+[SKILL.md](skills/chrome-cdp-ex/SKILL.md) · [docs/reference.md](docs/reference.md) · [INTEGRATIONS.md](INTEGRATIONS.md) · [Grok Bot from-zero](docs/integrations/grok-bot.md)
 
 ## What it does
 

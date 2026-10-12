@@ -1,6 +1,6 @@
 # chrome-cdp-ex Reference
 
-> **TL;DR** — This is the technical reference for `chrome-cdp-ex`: command map, action evidence behavior, browser setup, Electron/WSL2 notes, and benchmark rules. Start with the README when you want the product story.
+> **TL;DR** — This is the technical reference for `chrome-cdp-ex`: command map, action evidence behavior, browser setup, Electron/WSL2 notes, and the output-size measurement. Start with the README when you want the product story.
 
 ## Command Map
 

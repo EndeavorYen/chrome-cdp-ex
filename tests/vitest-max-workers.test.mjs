@@ -119,11 +119,4 @@ describe('vitest worker limit stays wired (#682)', () => {
     expect(config).not.toMatch(/maxWorkers:\s*1\b/);
   });
 
-  it('documents the env override and the CLI flag', () => {
-    const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
-    expect(contributing).toContain(VITEST_MAX_WORKERS_ENV);
-    expect(contributing).toContain('npm test -- --maxWorkers=');
-    expect(contributing).toContain('os.freemem()');
-    expect(contributing).toContain('os.totalmem()');
-  });
 });

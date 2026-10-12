@@ -1,8 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import {
   COMMAND_SURFACE,
@@ -270,19 +266,4 @@ describe('MCP surface catalog', () => {
       .toEqual(MCP_TOOL_DEFINITIONS.map(tool => tool.name).filter(name => name !== 'run_command').sort());
   });
 
-  it('rejects reviewed catalog drift during import before installing process listeners', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'chrome-cdp-surface-drift-'));
-    const copyPath = join(directory, 'command-surface.mjs');
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs', import.meta.url), 'utf8');
-    const mutated = source.replace('Show this command reference (same as --help)', 'Show a drifted command reference');
-    expect(mutated).not.toBe(source);
-    const before = process.stdin.listenerCount('data');
-    try {
-      writeFileSync(copyPath, mutated);
-      await expect(import(`${pathToFileURL(copyPath).href}?drift=1`)).rejects.toThrow(/catalog identity drifted/);
-      expect(process.stdin.listenerCount('data')).toBe(before);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
 });

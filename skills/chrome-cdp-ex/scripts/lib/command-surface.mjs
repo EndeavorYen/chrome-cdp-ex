@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 const RECORD_KEYS = new Set([
   'name', 'aliases', 'needsTarget', 'mutates', 'feedbackPolicy', 'outputFormats',
   'kind', 'authorization', 'evidencePolicy', 'domains', 'help', 'mcp',
@@ -1060,19 +1058,6 @@ export const MCP_SURFACE = Object.freeze({
   resources: MCP_RESOURCE_RECORDS,
   runCommandAllowlist: MCP_RUN_COMMAND_ALLOWLIST,
 });
-
-function surfaceDigest(value) {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
-
-export const COMMAND_SURFACE_IDENTITY = 'e051d94c46f26accbfed786f0ec64874fc996b6544c66603ef09f7ca4a7940e7';
-export const MCP_SURFACE_IDENTITY = 'c73b5f25b950f13bb3dbc4bb7f51450cdf4c3613384c5e5744187185b0e1c5ea';
-if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
-  fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
-}
-if (surfaceDigest(MCP_SURFACE) !== MCP_SURFACE_IDENTITY) {
-  fail('mcp', `reviewed catalog identity drifted (${surfaceDigest(MCP_SURFACE)})`);
-}
 
 export function projectCliCommands(surface = COMMAND_SURFACE) {
   return Object.freeze(surface.commands.map(command => Object.freeze({

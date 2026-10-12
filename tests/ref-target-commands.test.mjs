@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { parse } from 'acorn';
+import { parse } from 'espree';
 import { describe, expect, it } from 'vitest';
 
 import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';

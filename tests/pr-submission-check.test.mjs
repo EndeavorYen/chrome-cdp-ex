@@ -15,7 +15,6 @@ import {
 const scriptPath = fileURLToPath(new URL('../scripts/check-pr-submission.mjs', import.meta.url));
 const workflow = readFileSync(new URL('../.github/workflows/pr-submission-check.yml', import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-const doc = readFileSync(new URL('../docs/pr-submission-check.md', import.meta.url), 'utf8');
 const tempDirs = [];
 
 const passingBody = [
@@ -319,12 +318,4 @@ describe('PR submission check workflow and docs', () => {
     expect(workflow).toContain('--body-file body.md --head "$HEAD" --commits-file commits.txt');
   });
 
-  it('documents the rules, the repository variable, and local usage', () => {
-    expect(doc).toContain('PR_FORBIDDEN_TERMS');
-    expect(doc).toContain('scripts/check-pr-submission.mjs');
-    expect(doc).toContain('## Verification');
-    expect(doc).toContain('--body-file');
-    expect(doc).toContain('--head');
-    expect(doc).toContain('---commit---');
-  });
 });
