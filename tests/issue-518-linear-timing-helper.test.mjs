@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { quarantined } from './quarantine.mjs';
 
 const { linearTimeFailure, scalingRatioCalls, scalingRatioCapStop } = await import('./linear-timing-helpers.mjs');
 
@@ -25,7 +26,7 @@ describe('#518 scalingRatio', () => {
     expect(failure).toBeNull();
   }, 30_000);
 
-  it('catches a quadratic scan', () => {
+  it.skipIf(quarantined(687))('catches a quadratic scan', () => {
     // 4096 chars can finish under the 15 ms noise floor on a fast Windows runner.
     // linearTimeAllows then treats the scan as noise and returns null. 8000 chars
     // is the size the Windows quadratic check already measures.
@@ -34,7 +35,9 @@ describe('#518 scalingRatio', () => {
       platform: 'win32',
       capMs: 5000,
     });
-    expect(failure ?? 'quadratic scan was accepted').toMatch(/^ratio /);
+    // toMatch throws TypeError when the value is not a string (#687).
+    expect(failure).not.toBeNull();
+    expect(failure).toMatch(/^ratio /);
   }, 30_000);
 
   it('pairs every small run with a large run', () => {
