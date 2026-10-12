@@ -1,0 +1,32 @@
+name: PR submission check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-submission-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Check pull request submission
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_FORBIDDEN_TERMS: ${{ vars.PR_FORBIDDEN_TERMS }}
+        run: |
+          printf '%s' "$PR_BODY" > body.md
+          git log --format='%B%n---commit---' "$BASE..$HEAD" > commits.txt
+          node scripts/check-pr-submission.mjs --body-file body.md --head "$HEAD" --commits-file commits.txt
