@@ -17,7 +17,7 @@ Helper: `.cursor/skills/verify-chrome-cdp-ex/helpers/drive-once.sh`.
 ## Launch / Teardown
 
 - Unit tests do not need a browser.
-- `.cursor/skills/verify-chrome-cdp-ex/helpers/drive-once.sh [repo] [evidence-dir]` starts an isolated headless Chrome (`CDP_VERIFY_PORT`, default 9444, temporary profile) and a local http server (`CDP_VERIFY_HTTP_PORT`, default 41744), then tears both down. `repo` defaults to `git rev-parse --show-toplevel`.
+- `.cursor/skills/verify-chrome-cdp-ex/helpers/drive-once.sh [repo] [evidence-dir]` starts an isolated headless Chrome (`CDP_VERIFY_PORT`, default 9444, temporary profile) and a local http server (`CDP_VERIFY_HTTP_PORT`, default 41744), then tears both down. `repo` defaults to `git rev-parse --show-toplevel`. `CDP_VERIFY_NO_ONCLICK=1` writes the page button without the `onclick` attribute (reverse check: the click fails with `click-no-change` and `CDP_VERIFY_NO_ONCLICK=1 drive-once.sh` exits non-zero).
 - Ready when `curl -s http://127.0.0.1:9444/json/version` responds. Use the port you set.
 - The script sets `CDP_ISOLATED_ONLY=1`. Do not attach to a daily browser. If the port is taken, change `CDP_VERIFY_PORT`.
 
@@ -36,7 +36,7 @@ Read-only. Run this first when something looks wrong.
 | Docs contract | `npm run check:docs` | exit 0 and prints `Docs contract OK` |
 | Changelog fragments | `npm run check:changelog` | exit 0 |
 | Live smoke | `npm run smoke:live` | exit 0 and no `FAIL` line |
-| User path | `.cursor/skills/verify-chrome-cdp-ex/helpers/drive-once.sh` | every `[exit N]` in the transcript is 0 |
+| User path | `.cursor/skills/verify-chrome-cdp-ex/helpers/drive-once.sh` | `drive-once.sh` exits 0 |
 
 `AGENTS.md` "Verify before pushing" is the gate: `npm test`, `npm run lint`, `npm run check:docs`. `npm run check:docs` already checks changelog fragments. On a small machine, `npm test -- --maxWorkers=2`. A single area can start with `npx vitest run tests/<area>-*.test.mjs`. CI also runs Windows and `smoke:live`. Run `npm run smoke:live` locally only when attach, perceive, or act code changed and a browser is installed.
 
@@ -81,6 +81,6 @@ Drift checks (read-only):
 1. Every `npm` script in the test-steps table exists in `package.json`.
 2. The push gate above matches `AGENTS.md` "Verify before pushing".
 3. Every command under `Sub-features` in `features/` is in the Survivors list in `skills/chrome-cdp-ex/SKILL.md`.
-4. `.cursor/skills/verify-chrome-cdp-ex/helpers/drive-once.sh` finishes with every step `[exit 0]`.
+4. `.cursor/skills/verify-chrome-cdp-ex/helpers/drive-once.sh` exits 0. The reverse check `CDP_VERIFY_NO_ONCLICK=1 drive-once.sh` exits non-zero.
 
 When the product and this map disagree, a stale doc is a map edit and a product regression is an issue. Do not hide a regression in the skill. The outcome is one of: clean, changed, blocked.

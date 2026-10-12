@@ -19,9 +19,15 @@ export CDP_RUNTIME_DIR="${PROF}/runtime"
 mkdir -p "$CDP_RUNTIME_DIR"
 
 PAGE="${PROF}/page.html"
-cat >"$PAGE" <<'H'
+if [[ "${CDP_VERIFY_NO_ONCLICK:-}" == "1" ]]; then
+  cat >"$PAGE" <<'H'
+<!doctype html><title>verify</title><button id=b aria-pressed=false>Toggle me</button><p id=o>idle</p>
+H
+else
+  cat >"$PAGE" <<'H'
 <!doctype html><title>verify</title><button id=b aria-pressed=false onclick="this.setAttribute('aria-pressed','true');document.getElementById('o').textContent='clicked'">Toggle me</button><p id=o>idle</p>
 H
+fi
 
 HPORT="${CDP_VERIFY_HTTP_PORT:-41744}"
 ( cd "$PROF" && exec python3 -m http.server --bind 127.0.0.1 "$HPORT" ) >"$EV/http.log" 2>&1 &
@@ -78,13 +84,20 @@ cd "$REPO"
 export CDP_PORT="$PORT"
 export CDP_ISOLATED_ONLY=1
 
+fails=0
 run() {
   echo "\$ chrome-cdp $*" | tee -a "$EV/transcript.txt"
-  ./bin/chrome-cdp "$@" >>"$EV/transcript.txt" 2>&1
+  local out rc
+  out="$(mktemp)"
+  ./bin/chrome-cdp "$@" >"$out" 2>&1
   rc=$?
+  cat "$out" >>"$EV/transcript.txt"
+  tail -n 2 "$out"
+  rm -f "$out"
   echo "[exit ${rc}]" | tee -a "$EV/transcript.txt"
-  tail -n 3 "$EV/transcript.txt" | head -n 2
-  return 0
+  if [[ "$rc" -ne 0 ]]; then
+    fails=$((fails + 1))
+  fi
 }
 
 run doctor
@@ -92,8 +105,16 @@ run doctor
 run open "http://127.0.0.1:${HPORT}/page.html"
 T="$(./bin/chrome-cdp list 2>/dev/null | grep -i verify | awk '{print $1}' | head -n 1)"
 echo "target=${T}" | tee -a "$EV/transcript.txt"
+if [[ -z "$T" ]]; then
+  fails=$((fails + 1))
+fi
 run perceive "$T" -C -d 8
 run click "$T" "#b"
 run eval "$T" "document.getElementById('o').textContent + ' ' + document.getElementById('b').getAttribute('aria-pressed')"
 run shot "$T" "$EV/after-click.png"
 echo "evidence: ${EV}"
+echo "failed steps: ${fails}"
+if [[ "$fails" -gt 0 ]]; then
+  exit 1
+fi
+exit 0
