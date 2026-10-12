@@ -18352,27 +18352,40 @@ async function openerStillResponds(cdp, sid) {
 }
 
 // The browser process still knows the committed URL when the renderer does not answer.
-async function openerPageUrl(cdp, sid) {
+function openerPageUrl(pages, sid) {
   const openerId = SESSION_TARGET_IDS.get(sid) || '';
   if (!openerId) return '';
-  const pages = await boundedPageTargets(cdp, 500);
   const page = (pages || []).find(info => info.targetId === openerId);
   return String(page?.url || '');
+}
+
+// A popup this tab opened that is still on its initial document (empty URL or
+// about:blank). That popup is what holds the opener in #677.
+function openerHoldingPopup(pages, sid) {
+  const openerId = SESSION_TARGET_IDS.get(sid) || '';
+  if (!openerId) return null;
+  return (pages || []).find(info => info.openerId === openerId
+    && info.targetId !== openerId
+    && isBlankPageUrl(info.url)) || null;
 }
 
 // A tab a previous popup already stuck does not answer Runtime.evaluate. The click
 // baseline (15s), the form-control snapshot (15s), and the locator
 // (TIMEOUT + the 2s actionability wait = 17s) would each wait that out and the
-// command would exit Kind: timeout. Probe first. Terminate once. If it still
-// does not answer, the receipt is opener-blocked.
-// 400 + 1000 + 400 + 500 = 2300, under the live test's 20s budget.
+// command would exit Kind: timeout. Probe first. A page in a long task also
+// misses the probe, and terminating it would abort the page's own script, so
+// terminate only when a popup this tab opened is still on its initial document.
+// If the tab still does not answer after that, the receipt is opener-blocked.
+// 400 + 500 + 1000 + 400 = 2300, under the live test's 20s budget.
 async function stuckOpenerBeforeClick(cdp, sid) {
   if (await openerProbe(cdp, sid) !== 'timeout') return null;
+  const pages = await boundedPageTargets(cdp, 500);
+  if (!openerHoldingPopup(pages, sid)) return null;
   await releaseBlockedOpener(cdp, sid);
   if (await openerProbe(cdp, sid) !== 'timeout') return null;
   return {
     targetId: SESSION_TARGET_IDS.get(sid) || '',
-    pageUrl: await openerPageUrl(cdp, sid),
+    pageUrl: openerPageUrl(pages, sid),
   };
 }
 

@@ -887,7 +887,10 @@ describe('#639 click that opens a tab with window.open', () => {
         }
         if (method === 'Target.getTargets') {
           return Promise.resolve({
-            targetInfos: [{ targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' }],
+            targetInfos: [
+              { targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' },
+              { targetId: 'POPUP', type: 'page', url: '', title: '', openerId: TAB_ID },
+            ],
           });
         }
         if (method === 'Runtime.evaluate') {
@@ -920,6 +923,36 @@ describe('#639 click that opens a tab with window.open', () => {
     expect(cli).not.toMatch(/Kind: timeout/);
     expect(cli).not.toMatch(/cdp status/);
   }, 10000);
+
+  it('does not terminate a busy tab that has no popup on its initial document', async () => {
+    T.rememberSessionTarget('sid', TAB_ID);
+    let terminated = false;
+    const cdp = {
+      send(method, params = {}, _sessionId, timeoutMs) {
+        if (method === 'Runtime.evaluate' && String(params.expression || '').trim() === '1') {
+          // A long task on the page: the probe misses its 400 ms window.
+          return new Promise((_resolve, reject) => {
+            setTimeout(() => reject(new Error('Timeout: Runtime.evaluate')), timeoutMs || 15000);
+          });
+        }
+        if (method === 'Runtime.terminateExecution') {
+          terminated = true;
+          return Promise.resolve({});
+        }
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: [
+              { targetId: TAB_ID, type: 'page', url: PAGE, title: 'Host' },
+              { targetId: 'OTHER', type: 'page', url: 'https://example.test/', title: 'Other', openerId: TAB_ID },
+            ],
+          });
+        }
+        return Promise.resolve({});
+      },
+    };
+    expect(await T.stuckOpenerBeforeClick(cdp, 'sid')).toBeNull();
+    expect(terminated).toBe(false);
+  });
 
   it('still fail-closes a button whose click changes nothing and opens no tab', async () => {
     const err = await T.runActionWithFeedback({
