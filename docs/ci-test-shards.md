@@ -6,7 +6,7 @@ The Linux `test` job runs the suite as three parallel shards. `fail-fast` is fal
 npm test -- --shard=N/3
 ```
 
-`test-windows`, `lint`, `docs`, and `coverage` are unchanged. `coverage` still runs the full suite in one job.
+Only the Linux `test` job is sharded. `test-windows` and `coverage` still run the full suite in one job each, but because they set `CI` they skip the quarantined timing tests too; `test-quarantined` runs those on both ubuntu-latest and windows-latest (see below). `lint` and `docs` are unchanged.
 
 ## Quarantine
 
