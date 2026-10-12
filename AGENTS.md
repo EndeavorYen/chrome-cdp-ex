@@ -8,8 +8,9 @@ chrome-cdp-ex lets an agent use the user's running Chrome (or an Electron app) t
 
 | Path | What |
 |---|---|
-| `skills/chrome-cdp-ex/scripts/cdp.mjs` | CLI and per-tab daemon. Commands are `<name>Str(cdp, sid, ...)` functions registered in `COMMANDS`. |
-| `skills/chrome-cdp-ex/scripts/lib/` | Focused helpers: recovery, receipts, perception, MCP adapter, `command-surface.mjs` (command catalog). |
+| `skills/chrome-cdp-ex/scripts/cdp.mjs` | Entry point: `main`, `executeCdpCli`, `runDaemon` (per-tab daemon), and the `__test__` re-exports. |
+| `skills/chrome-cdp-ex/scripts/lib/cdp-*.mjs` | The runtime split out of `cdp.mjs` (`cdp-domains` and `cdp-session` are the older CDP transport helpers): `cdp-base` (constants and pure helpers), `cdp-core` (daemon lifecycle, tab environment), `cdp-browser` (browser discovery, targets, tab groups), `cdp-page` (shots, diff-shot, nav), `cdp-action-result` (action outcome and diagnosis), `cdp-session-report` (QA, reports, record export), `cdp-perceive` (refs and perceive), `cdp-input` (click, press, scroll, hover, drag, fill, select), `cdp-page-commands` (components, cookies, netlog, mock, upload, text, table), `cdp-flow` (inject, record, cascade, batch, flow, replay), `cdp-doctor` (doctor, spawn-debug-browser, overlay), `cdp-daemon` (daemon server), `cdp-cli` (help, argument parsing, CLI errors). Commands are `<name>Str(cdp, sid, ...)` functions registered in `COMMANDS`. |
+| `skills/chrome-cdp-ex/scripts/lib/` (other files) | Focused helpers: recovery, receipts, perception model, MCP adapter, `command-surface.mjs` (command catalog). |
 | `skills/chrome-cdp-ex/scripts/mcp-server.mjs` | stdio MCP server; maps tools to the same CLI commands. |
 | `skills/chrome-cdp-ex/SKILL.md` | Always-loaded agent card. Exhaustive command docs: `skills/chrome-cdp-ex/references/`, `docs/reference.md`. |
 | `tests/` | Vitest. `scripts/live-smoke.mjs` drives a real browser. |

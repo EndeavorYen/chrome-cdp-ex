@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { EventEmitter } from 'events';
 import { buildTableSamplerExpression } from '../skills/chrome-cdp-ex/scripts/lib/table-sampler.mjs';
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
@@ -14554,7 +14555,7 @@ describe('waitForStr --selector-stable', () => {
 
 describe('spawn-debug-browser topic help (#398)', () => {
   const { parseSpawnDebugBrowserArgs, helpTopicStr, SPAWN_DEBUG_BROWSER_FLAGS } = T;
-  const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+  const source = runtimeSource();
   const parserBody = source.slice(
     source.indexOf('function parseSpawnDebugBrowserArgs'),
     source.indexOf('async function listSpawnedDebugTargets'),

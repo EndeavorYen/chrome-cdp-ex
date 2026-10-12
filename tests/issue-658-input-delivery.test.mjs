@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 import { classifyActionFailure, formatActionFailure } from '../skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -249,7 +250,7 @@ describe('#658 dismissed dialog stays native-dialog on click, fill, and press', 
   });
 
   it('the dispatch catch and the command catch both prefer the dismissed dialog', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const source = runtimeSource();
     const feedback = source.slice(
       source.indexOf('async function actionFeedback('),
       source.indexOf('const applicationRegistry = applicationPreflight.registry'),

@@ -1,15 +1,18 @@
-import { readFileSync } from 'node:fs';
 import { parse } from 'espree';
 import { describe, expect, it } from 'vitest';
 
 import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
+import { runtimeSources } from './runtime-source.mjs';
 
 // Second "command ignores @ref" bug, after fill (#633 was select and upload).
 // The inventory is derived from command synopses. A new selector-taking command
 // that does not resolve @ref fails this file without anyone extending a list.
 
-const CDP_SOURCE = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
-const CDP_AST = parse(CDP_SOURCE, { ecmaVersion: 'latest', sourceType: 'module' });
+// One program from cdp.mjs and the modules split out of it; each file is parsed on its own.
+const CDP_AST = {
+  type: 'Program',
+  body: runtimeSources().flatMap(source => parse(source.text, { ecmaVersion: 'latest', sourceType: 'module' }).body),
+};
 
 const RESOLVERS = new Set(['isRef', 'resolveRefNode', 'resolveRef']);
 

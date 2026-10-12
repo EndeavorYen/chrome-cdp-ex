@@ -1,10 +1,11 @@
 import { EventEmitter } from 'events';
-import { readFileSync } from 'fs';
+
 import { describe, expect, it, vi } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const OWN_SOCKET = { dev: 1, ino: 42 };
-const cdpSource = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+const cdpSource = runtimeSource();
 
 function connection({ holdWrite = false } = {}) {
   const conn = new EventEmitter();

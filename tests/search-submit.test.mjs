@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildMcpToolCommand } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -388,9 +389,9 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
   });
 
   it('awaits sequential-batch work before clearing lookahead so fillFeedbackPolicy can run after the daemon yield', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const src = readFileSync(fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url)), 'utf8');
+
+
+    const src = runtimeSource();
     expect(src).toMatch(/async function runWithBatchLookahead[\s\S]*?return await run\(\)/);
     expect(src).toMatch(/const runOne = command => runWithBatchLookahead\(\s*session,\s*command\.nextCommand/);
     expect(src).not.toMatch(/try \{\s*return handleCommand\(\{/);
@@ -604,9 +605,9 @@ describe('issue #339 skip typeahead listing probe wait after report-only fill', 
   });
 
   it('press after report-only fill passes the filled query into the listing probe, not a 1500 ms poll', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const src = readFileSync(fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url)), 'utf8');
+
+
+    const src = runtimeSource();
     expect(src).toMatch(/session\.searchSubmitQuery = parsed\.text/);
     expect(src).toMatch(/waitForSearchSubmitProbe\(\s*cdp,\s*sessionId,\s*\{\s*filledQuery/);
     expect(src).toMatch(/plan\.mode === 'probe-after-fill'/);

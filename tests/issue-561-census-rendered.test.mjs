@@ -1,11 +1,12 @@
-import { readFileSync } from 'node:fs';
+
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
-const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+const source = runtimeSource();
 
 function control({ rects = 1, visibility = 'visible' } = {}) {
   return { getClientRects: () => Array.from({ length: rects }), _visibility: visibility };

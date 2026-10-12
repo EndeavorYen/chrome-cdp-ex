@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -226,7 +227,7 @@ describe('#594 console and exception lists follow the current document', () => {
   });
 
   it('wires the cut through the main-frame navigation ref invalidation', () => {
-    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const src = runtimeSource();
     expect(src).toMatch(/function invalidateSessionRefs\(session, reason, options = \{\}\) \{[\s\S]*reason === 'navigation' && options\.cutDocument !== false[\s\S]*cutDocumentConsoleBuffers\(session\.buffers\)/);
     expect(src).toMatch(/Page\.frameNavigated[\s\S]{0,500}if \(!params\.frame\.parentId\)[\s\S]*invalidateSessionRefs\(session, 'navigation'\)/);
     expect(src).not.toMatch(/consoleBuf\.all\(\)|exceptionBuf\.all\(\)/);
