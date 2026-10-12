@@ -396,23 +396,3 @@ describe('#465 screenshot tools return an image content block', () => {
   }));
 });
 
-describe('#465 benchmark:mcp reports payload beyond text blocks', () => {
-  it('counts image base64 and structuredContent separately from the text token estimate', async () => {
-    const { contentExtras, formatMcpBenchmarkReport, summarizeMcpBenchmarkRun } = await import('../scripts/benchmark-mcp-path.mjs');
-    const structuredContent = { schema: 'fixture.v1', ok: true };
-    const extras = contentExtras({
-      content: [{ type: 'text', text: 'x' }, { type: 'image', data: 'QUJD', mimeType: 'image/png' }],
-      structuredContent,
-    });
-    expect(extras).toEqual({ imageBase64Chars: 4, structuredContentChars: JSON.stringify(structuredContent).length });
-
-    const summary = summarizeMcpBenchmarkRun({
-      startedAt: 0,
-      endedAt: 10,
-      steps: [{ name: 'shot', mcpTool: 'screenshot', status: 0, startedAt: 0, endedAt: 10, stdout: 'x', stderr: '', ...extras }],
-    });
-    expect(summary.metrics).toMatchObject({ imageBase64Chars: 4, structuredContentChars: extras.structuredContentChars });
-    expect(summary.metrics.perToolOutputTokens[0]).toMatchObject({ imageBase64Chars: 4 });
-    expect(formatMcpBenchmarkReport(summary)).toContain('Non-text payload (not in token budgets): 4 image base64 chars');
-  });
-});

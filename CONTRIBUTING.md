@@ -49,8 +49,6 @@ Put a new note in `changelog.d/<slug>.md`. `slug` is lowercase words separated b
 
 Before a release tag, run `npm run changelog:fold`. It merges the fragments into `## [Unreleased]` and deletes the fragment files. Move those notes into the new version heading. The release workflow reads that version section from `CHANGELOG.md` and does not fold fragments.
 
-`docs/contracts/` for the current package version holds `runtime-dispatch.v1.json`. That fixture records commands, owners, and digests, and it omits source line numbers. A line move leaves it unchanged. Run `node scripts/runtime-dispatch-inventory.mjs --write` only when a command, owner, or digest changes, then review the diff. `node scripts/runtime-dispatch-inventory.mjs --check` reports real drift. Published fixtures for older versions stay as they were released.
-
 ## Testing
 
 Default local gate for ordinary and `musk/live-path` merges:
@@ -64,8 +62,6 @@ npm run check:docs    # command, release, and contributor documentation contract
 `npm test` limits Vitest's forks workers from free and total memory (`os.freemem()` and `os.totalmem()`), with a floor of 1, so a small or busy machine does not keep the CPU default and run out of memory. On a large idle machine the count stays at Vitest's non-watch cap, `max(cpuCount - 1, 1)`. Pin a count with `CHROME_CDP_EX_VITEST_MAX_WORKERS` (an integer from 1 to 64) or with `npm test -- --maxWorkers=<n>`. The CLI flag wins over the env var and the memory formula.
 
 When attach, perceive, or act code changes and a supported browser is installed, also run `npm run smoke:live`. It skips if no supported browser is available. Manual testing with a real Chrome/Edge instance still helps because many CDP behaviors cannot be unit tested; the live smoke starts an isolated profile, exercises long-session workflows, and cleans up its temporary state.
-
-Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Those scripts may remain in `scripts/` and `validation/` as optional historical harnesses; they are not contributor merge instructions.
 
 ## License
 

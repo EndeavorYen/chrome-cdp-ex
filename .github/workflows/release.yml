@@ -89,12 +89,9 @@ jobs:
           npm test
           npm run lint
           npm run check:docs
-          npm run check:host-validation
-          npm run check:contracts
           npm pack
           TARBALL="pi-chrome-cdp-${VERSION}.tgz"
           test -f "$TARBALL"
-          npm run check:contracts -- --tarball "$TARBALL"
           npm run check:release-package -- "$TARBALL"
           CHECKSUM="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
           {

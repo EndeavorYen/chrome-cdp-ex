@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,10 +26,13 @@ describe('#676 interrupted vitest removes the run runtime directory', () => {
   it.each(['SIGINT', 'SIGTERM'])(
     'removes the directory when %s hits a Vitest-style re-entrant exit',
     signal => {
-      const out = join(tmpdir(), `chrome-cdp-ex-676-${signal}-${process.pid}`);
+      // The probe lists new chrome-cdp-ex-vitest-* entries in its temp dir. A private
+      // temp dir keeps directories made by concurrent test files out of that list.
+      const temp = mkdtempSync(join(tmpdir(), 'c676-'));
+      const out = join(temp, 'probe-out');
       const result = spawnSync(process.execPath, [probe, signal], {
         encoding: 'utf8',
-        env: { ...process.env, CHROME_CDP_EX_SIGNAL_PROBE_OUT: out },
+        env: { ...process.env, TMPDIR: temp, TMP: temp, TEMP: temp, CHROME_CDP_EX_SIGNAL_PROBE_OUT: out },
         timeout: 30_000,
       });
       try {
@@ -37,15 +40,10 @@ describe('#676 interrupted vitest removes the run runtime directory', () => {
         const names = existsSync(out) ? readFileSync(out, 'utf8').split('\n').filter(Boolean) : [];
         expect(names.length, 'config did not create a run directory').toBeGreaterThan(0);
         for (const name of names) {
-          expect(existsSync(join(tmpdir(), name)), `${signal} left ${name}`).toBe(false);
+          expect(existsSync(join(temp, name)), `${signal} left ${name}`).toBe(false);
         }
       } finally {
-        if (existsSync(out)) {
-          for (const name of readFileSync(out, 'utf8').split('\n').filter(Boolean)) {
-            rmSync(join(tmpdir(), name), { recursive: true, force: true });
-          }
-        }
-        rmSync(out, { force: true });
+        rmSync(temp, { recursive: true, force: true });
       }
     },
   );

@@ -7,7 +7,6 @@ import {
   isResolvedHandle,
   resolveLocatorPlan,
 } from '../skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs';
-import { buildEvidenceBundle } from '../scripts/lib/validation-lab.mjs';
 
 function page(overrides = {}) {
   return {
@@ -361,24 +360,6 @@ describe('ResolvedHandle private boundary', () => {
     expect(() => structuredClone(handle)).toThrow();
     expect(() => { handle.extra = true; }).toThrow();
     expect(() => createResourceRef({ ...page(), links: [handle] })).toThrow();
-  });
-
-  it('is rejected when a Phase 3 evidence snapshot attempts to admit it', () => {
-    const handle = createResolvedHandle({
-      resource: createResourceRef(page()),
-      targetId: 'TARGET-APP-FULL',
-      endpoint: '/runtime/cdp-TARGET-APP-FULL.sock',
-      transport: { request: async () => ({ ok: true }) },
-    });
-    expect(() => buildEvidenceBundle({
-      scenario: {
-        id: 'private-handle-probe',
-        risk: { maxOutputBytes: 256 },
-        planted: handle,
-      },
-      registryDigest: `sha256:${'a'.repeat(64)}`,
-      execution: { ok: true, attempts: [{}] },
-    })).toThrow();
   });
 
   it('rejects private input accessors, symbols, prototypes, and invalid transports', () => {

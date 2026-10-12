@@ -53,7 +53,6 @@ Key design decisions:
 - Keep JSON outputs versioned. Concise defaults, honest results, opt-in bulk or sensitive detail, and executable recovery or next steps are defined once in [`AGENTS.md`](AGENTS.md) `## Product goals`.
 - Update `USAGE`, `SKILL.md`, `docs/reference.md`, tests, and MCP definitions when the public surface changes
 - Add changelog notes as `changelog.d/<slug>.md` fragments. Leave existing `## [Unreleased]` entries in `CHANGELOG.md`. Run `npm run changelog:fold` before a release tag.
-- The current `runtime-dispatch.v1.json` omits source line numbers. Run `node scripts/runtime-dispatch-inventory.mjs --write` only when a command, owner, or digest changes.
 
 ## Verification
 
@@ -71,6 +70,6 @@ When attach, perceive, or act code changes and a supported browser exists, also 
 npm run smoke:live
 ```
 
-`npm run smoke:live` skips if no supported browser is installed, or if its port (`CDP_SMOKE_PORT`, default 9333) already has a CDP endpoint. On hosts with only a Playwright Chromium, run it with `CDP_SMOKE_BROWSER=<chrome path>`; add `CDP_SMOKE_NO_SANDBOX=1` where the kernel blocks Chromium's sandbox (Ubuntu AppArmor). Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Those scripts may remain in `scripts/` and `validation/` as optional historical harnesses.
+`npm run smoke:live` skips if no supported browser is installed, or if its port (`CDP_SMOKE_PORT`, default 9333) already has a CDP endpoint. On hosts with only a Playwright Chromium, run it with `CDP_SMOKE_BROWSER=<chrome path>`; add `CDP_SMOKE_NO_SANDBOX=1` where the kernel blocks Chromium's sandbox (Ubuntu AppArmor).
 
 This repository publishes via GitHub Releases, not the npm registry.

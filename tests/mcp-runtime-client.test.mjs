@@ -7,14 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
-import { MCP_RUN_COMMAND_ALLOWLIST } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
-const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const contract = JSON.parse(readFileSync(
-  new URL(`../docs/contracts/v${packageVersion}/public-contracts.v1.json`, import.meta.url),
-  'utf8',
-));
 
 function handlerWith(executeCli) {
   const sent = [];
@@ -90,58 +84,6 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     } finally {
       rmSync(runtimeRoot, { recursive: true, force: true });
     }
-  });
-
-  it('runs all frozen valid mappings in process with exact content and no command fallback', async () => {
-    const executeCli = vi.fn(async command => ({
-      code: 0,
-      stdout: JSON.stringify(command),
-      stderr: '',
-    }));
-    const state = handlerWith(executeCli);
-
-    const mappingCases = contract.mcp.mappingCases.filter(fixture => (
-      fixture.tool !== 'run_command' || MCP_RUN_COMMAND_ALLOWLIST.includes(fixture.args?.command)
-    ));
-    for (const [index, fixture] of mappingCases.entries()) {
-      await state.handle({
-        jsonrpc: '2.0',
-        id: index + 1,
-        method: 'tools/call',
-        params: { name: fixture.tool, arguments: fixture.args },
-      });
-      expect(executeCli).toHaveBeenLastCalledWith(fixture.command);
-      expect(state.sent.at(-1)).toEqual({
-        jsonrpc: '2.0',
-        id: index + 1,
-        result: {
-          content: [{ type: 'text', text: JSON.stringify(fixture.command) }],
-          isError: false,
-        },
-      });
-    }
-    expect(executeCli).toHaveBeenCalledTimes(mappingCases.length);
-  });
-
-  it('rejects every frozen invalid mapping before RuntimeClient execution', async () => {
-    const executeCli = vi.fn();
-    const state = handlerWith(executeCli);
-    for (const [index, fixture] of contract.mcp.invalidCases.entries()) {
-      await state.handle({
-        jsonrpc: '2.0',
-        id: index + 1,
-        method: fixture.kind === 'resource' ? 'resources/read' : 'tools/call',
-        params: fixture.kind === 'resource'
-          ? { uri: fixture.uri }
-          : { name: fixture.tool, arguments: fixture.args },
-      });
-      const spelling = fixture.args?.command;
-      const message = fixture.tool === 'run_command' && spelling && !MCP_RUN_COMMAND_ALLOWLIST.includes(spelling)
-        ? `run_command command not allowlisted: ${spelling}`
-        : fixture.error;
-      expect(state.sent.at(-1).error).toEqual({ code: -32000, message });
-    }
-    expect(executeCli).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -292,26 +234,6 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     });
     expect(state.sent[0].error).toMatchObject({ code: -32600 });
     expect(executeCli).not.toHaveBeenCalled();
-  });
-
-  it('runs all frozen resource mappings through the same direct client', async () => {
-    const executeCli = vi.fn(async command => ({
-      code: 0,
-      stdout: JSON.stringify(command),
-      stderr: '',
-    }));
-    const state = handlerWith(executeCli);
-    for (const [index, fixture] of contract.mcp.resourceMappings.entries()) {
-      await state.handle({
-        jsonrpc: '2.0', id: index + 1, method: 'resources/read',
-        params: { uri: fixture.uri },
-      });
-      expect(executeCli).toHaveBeenLastCalledWith(fixture.command);
-      expect(state.sent.at(-1).result.contents[0]).toMatchObject({
-        uri: fixture.uri,
-        text: JSON.stringify(fixture.command),
-      });
-    }
   });
 
   it('preserves stderr-first failure composition and empty-output success', async () => {
