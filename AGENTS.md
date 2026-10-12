@@ -38,7 +38,7 @@ Order when they conflict: effective > easy for agents > efficient.
 ## Tests
 
 - Red before green: add the failing case first, in the existing test file for that behavior. Create a new file only for a new area. Do not name files after issue numbers.
-- Test behavior, not source layout. No AST or text checks of `cdp.mjs`.
+- Test behavior, not source layout: no line numbers, digests, inventories, or checks that a named function calls another. A source scan is fine only when it guards a product property (for example, every `Next:` command is runnable through MCP).
 - A test that needs a browser uses `describe.skipIf(!browser)`; the unit suite must pass with no browser installed.
 - Keep `npm test` fast. On a small machine, use `npm test -- --maxWorkers=2` or run the touched files with `npx vitest run <files>`; CI runs the full suite.
 
