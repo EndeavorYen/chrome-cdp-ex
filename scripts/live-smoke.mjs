@@ -525,6 +525,8 @@ const togglePerceive = step('aria toggle pressed on tree', () => run(['perceive'
 assertIncludes(togglePerceive, 'Smoke toggle pressed=true', 'aria toggle tree');
 const stillOut = step('click aria toggle that does not change', () => runFailure(['click', target, '#smoke-toggle-still']));
 assertIncludes(stillOut, 'click-no-change', 'unchanged aria toggle fails closed');
+// The toggles sit at the bottom of the page. Later no-change checks start from the top.
+step('scroll back after aria toggles', () => run(['eval', target, 'window.scrollTo(0, 0); window.scrollY']));
 const parallelMutatingGuards = [
   ['restore', '--json', '{}'],
   ['replay', '--json', '{"schema":"chrome-cdp-ex.record-actions.v1","actions":[]}'],
