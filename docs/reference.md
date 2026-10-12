@@ -251,6 +251,8 @@ A quote opens only at the start of a word (the start of a step, or after
 whitespace). A quote inside a word stays literal, so `O'Brien` and `don't` do
 not start a quote. `type don't; summary` and `eval don't; summary` are two
 steps. `eval "don't; summary"` is one step. `\;` is a literal semicolon.
+A doubled backslash does not escape that semicolon, so `\\;` still starts the
+next step and both backslashes stay in the previous step.
 `eval`, `eval64`, and `call` take one script body: wrapping quotes are flow
 delimiters, not JavaScript, and spaces, newlines, and tabs in that body stay
 byte-for-byte. An unquoted body continues across semicolons until the next

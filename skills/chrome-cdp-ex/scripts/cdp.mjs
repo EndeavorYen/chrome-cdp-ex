@@ -26860,11 +26860,13 @@ async function repeatStr({ run, probeCondition }, args) {
 // --- Flow: sequential step runner ---
 // A semicolon separates steps only outside quotes (' " `). A quote opens only at
 // the start of a word: the start of a segment, or after whitespace. A quote inside
-// a word stays literal. \; outside quotes is a literal semicolon. eval/eval64/call
-// then keep consuming segments until the next segment starts with a command name,
-// alias, or assert, so a script's own semicolons stay in that one step. The
-// unwrapped script body is one argument, byte-exact. Wrapping quotes on that body
-// are flow delimiters and are not part of the JavaScript.
+// a word stays literal. \; outside quotes is a literal semicolon. A doubled
+// backslash does not escape the next character, so \\; still separates steps.
+// An unquoted eval/eval64/call body keeps consuming segments until the next one
+// starts with a command name, alias, or assert. A body that is one wrapped quote
+// stops at that quote. The unwrapped script body is one argument, byte-exact,
+// including an empty quoted body. Wrapping quotes on that body are flow delimiters
+// and are not part of the JavaScript.
 let flowStepHeads = null;
 
 function flowStepHeadSet() {
@@ -26912,6 +26914,13 @@ function splitFlowSegmentsRaw(input) {
       }
       continue;
     }
+    // Pair from the left. `\\` is an escaped backslash, so the second slash does
+    // not escape a following semicolon: `\\;` still starts the next step.
+    if (ch === '\\' && input[i + 1] === '\\') {
+      i += 1;
+      atTokenStart = false;
+      continue;
+    }
     if (ch === '\\' && input[i + 1] === ';') {
       i += 1;
       atTokenStart = false;
@@ -26954,6 +26963,12 @@ function decodeFlowEscapedSemicolon(segment) {
       }
       continue;
     }
+    if (ch === '\\' && segment[i + 1] === '\\') {
+      out += '\\\\';
+      i += 1;
+      atTokenStart = false;
+      continue;
+    }
     if (ch === '\\' && segment[i + 1] === ';') {
       out += ';';
       i += 1;
@@ -26976,6 +26991,43 @@ function splitFlowSegments(input) {
   return splitFlowSegmentsRaw(input).map(decodeFlowEscapedSemicolon);
 }
 
+function takeEvalFlowFlags(rest) {
+  const args = [];
+  let body = String(rest || '').trim();
+  while (body) {
+    const match = /^(--fire-and-forget|--faf|--raw|--b64|-b)(?:\s+([\s\S]*))?$/.exec(body);
+    if (!match) break;
+    args.push(match[1]);
+    body = String(match[2] || '').trim();
+    if (match[1] === '--b64' || match[1] === '-b') break;
+  }
+  return { args, body };
+}
+
+function wrappedFlowQuote(text) {
+  if (!text) return false;
+  const opener = text[0];
+  if (opener !== '"' && opener !== "'" && opener !== '`') return false;
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] === '\\') {
+      if (i + 1 >= text.length) return false;
+      i += 1;
+      continue;
+    }
+    if (text[i] === opener) return i === text.length - 1;
+  }
+  return false;
+}
+
+function scriptSegmentClosesQuote(segment) {
+  const trimmed = String(segment || '').trim();
+  const head = firstFlowToken(trimmed);
+  if (!FLOW_SCRIPT_COMMANDS.has(head)) return false;
+  const rest = trimmed.slice(head.length);
+  const body = head === 'eval' ? takeEvalFlowFlags(rest).body : String(rest || '').trim();
+  return wrappedFlowQuote(body);
+}
+
 function mergeFlowScriptSegments(segments) {
   const steps = [];
   let index = 0;
@@ -26992,11 +27044,15 @@ function mergeFlowScriptSegments(segments) {
     }
     let combined = segments[index];
     let next = index + 1;
-    while (next < segments.length) {
-      const piece = segments[next];
-      if (piece.trim() && flowStepHeadSet().has(firstFlowToken(piece))) break;
-      combined += `;${piece}`;
-      next++;
+    // Only an unquoted body continues. A wrapped quote already ended the body,
+    // so the next segment is the next step even when it is not a command name.
+    if (!scriptSegmentClosesQuote(segments[index])) {
+      while (next < segments.length) {
+        const piece = segments[next];
+        if (piece.trim() && flowStepHeadSet().has(firstFlowToken(piece))) break;
+        combined += `;${piece}`;
+        next++;
+      }
     }
     steps.push(combined.trim());
     index = next;
@@ -27028,23 +27084,11 @@ function unwrapFlowScriptBody(text) {
 }
 
 function scriptCommandArgs(cmd, body) {
-  const args = [];
-  let rest = String(body || '').trim();
-  if (cmd === 'eval') {
-    while (rest) {
-      const match = /^(--fire-and-forget|--faf|--raw|--b64|-b)(?:\s+([\s\S]*))?$/.exec(rest);
-      if (!match) break;
-      args.push(match[1]);
-      rest = String(match[2] || '').trim();
-      if (match[1] === '--b64' || match[1] === '-b') break;
-    }
-  }
-  if (!rest) return args;
-  const text = unwrapFlowScriptBody(rest);
-  if (!text) return args;
-  // One argument. Splitting on whitespace would change literals such as 'a  b'.
-  args.push(text);
-  return args;
+  const taken = cmd === 'eval' ? takeEvalFlowFlags(body) : { args: [], body: String(body || '').trim() };
+  if (!taken.body) return taken.args;
+  // One argument, including "". Splitting on whitespace would change literals such as 'a  b'.
+  taken.args.push(unwrapFlowScriptBody(taken.body));
+  return taken.args;
 }
 
 function parseFlowLine(line) {
@@ -27089,7 +27133,7 @@ function flowStepHelpLines() {
   return [
     'A semicolon separates flow steps only outside quotes. Quotes are single quotes, double quotes, or backticks.',
     'A quote opens only at the start of a word (the start of a step, or after whitespace). A quote inside a word stays literal.',
-    'A backslash-semicolon (\\;) is a literal semicolon and does not start a step.',
+    'A backslash-semicolon (\\;) is a literal semicolon and does not start a step. A doubled backslash does not escape that semicolon, so \\\\; still starts a step and both backslashes stay in the previous step.',
     'wait <milliseconds> is the standalone wait command, for example wait 2000.',
     'wait dom stable and wait network idle still wait for the page and fail the flow on timeout.',
     'eval, eval64, and call take one script body. Wrapping quotes around that body are flow delimiters, not JavaScript.',

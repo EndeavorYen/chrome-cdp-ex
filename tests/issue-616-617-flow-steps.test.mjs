@@ -203,6 +203,78 @@ describe('flow script and quote splitting (#617)', () => {
     ]);
   });
 
+  it('keeps an empty quoted script body as one argument', () => {
+    expect(T.parseFlowSteps('eval ""')).toEqual([
+      { kind: 'command', cmd: 'eval', args: [''] },
+    ]);
+    expect(T.parseFlowSteps("eval ''")).toEqual([
+      { kind: 'command', cmd: 'eval', args: [''] },
+    ]);
+    expect(T.parseFlowSteps('eval ``')).toEqual([
+      { kind: 'command', cmd: 'eval', args: [''] },
+    ]);
+    expect(T.parseFlowSteps('eval --raw ""')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['--raw', ''] },
+    ]);
+    expect(T.parseFlowSteps('eval --faf ""')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['--faf', ''] },
+    ]);
+    expect(T.parseFlowSteps('eval --b64 ""')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['--b64', ''] },
+    ]);
+    expect(T.parseFlowSteps('eval64 ""')).toEqual([
+      { kind: 'command', cmd: 'eval64', args: [''] },
+    ]);
+    expect(T.parseFlowSteps('call ""')).toEqual([
+      { kind: 'command', cmd: 'call', args: [''] },
+    ]);
+    expect(T.parseFlowSteps('eval ""; zznotacommand')).toEqual([
+      { kind: 'command', cmd: 'eval', args: [''] },
+      { kind: 'command', cmd: 'zznotacommand', args: [] },
+    ]);
+  });
+
+  it('does not append later text to a script body that is already one quoted string', () => {
+    expect(T.parseFlowSteps('eval "const x = 1"; x')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['const x = 1'] },
+      { kind: 'command', cmd: 'x', args: [] },
+    ]);
+    expect(T.parseFlowSteps('eval "const x = 1; x"; zznotacommand')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['const x = 1; x'] },
+      { kind: 'command', cmd: 'zznotacommand', args: [] },
+    ]);
+    expect(T.parseFlowSteps('eval --raw "const x = 1"; x + 2')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['--raw', 'const x = 1'] },
+      { kind: 'command', cmd: 'x', args: ['+', '2'] },
+    ]);
+    expect(T.parseFlowSteps('eval64 "YQ=="; zznotacommand')).toEqual([
+      { kind: 'command', cmd: 'eval64', args: ['YQ=='] },
+      { kind: 'command', cmd: 'zznotacommand', args: [] },
+    ]);
+    expect(T.parseFlowSteps('call "async () => 1"; summary')).toEqual([
+      { kind: 'command', cmd: 'call', args: ['async () => 1'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+  });
+
+  it('does not let a doubled backslash escape the following semicolon', () => {
+    expect(T.parseFlowSteps('eval const x = 1\\\\; summary')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['const x = 1\\\\'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('eval const x = 1\\\\\\; summary')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['const x = 1\\\\; summary'] },
+    ]);
+    expect(T.parseFlowSteps('fill #p C:\\a\\\\; click @1')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'C:\\a\\\\'] },
+      { kind: 'command', cmd: 'click', args: ['@1'] },
+    ]);
+    expect(T.parseFlowSteps('eval "a\\\\;b"; summary')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['a\\;b'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+  });
+
   it('rejects an unclosed quote before any step runs', () => {
     expect(() => T.parseFlowSteps('eval "const x = 1; x')).toThrow(/unclosed quote/);
     const recovery = T.buildCliErrorRecovery('flow: unclosed quote in steps', { cmd: 'flow' });
