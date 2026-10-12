@@ -166,6 +166,79 @@ describe('checkHeadSha', () => {
   });
 });
 
+describe('quoted output and path placeholders', () => {
+  const head = 'c2621dc788cb3fc5f4a5723b3e89612e2d8dd2f9';
+  const pr692Body = readFileSync(new URL('./fixtures/pr-submission/pr-692-body.md', import.meta.url), 'utf8');
+  const textEdges = readFileSync(new URL('./fixtures/pr-submission/text-edges.txt', import.meta.url), 'utf8');
+
+  it('accepts the pr-692 body for every body check', () => {
+    expect(checkVerification(pr692Body)).toEqual([]);
+    expect(checkForbiddenText(pr692Body)).toEqual([]);
+    expect(checkHeadSha(pr692Body, head)).toEqual([]);
+  });
+
+  it('rejects a stale head citation outside code', () => {
+    expect(checkHeadSha('Verified on head sha c2621dc', head)).toEqual([]);
+    expect(checkHeadSha('head: c2621dc', head)).toEqual([]);
+    expect(checkHeadSha('Verified on head sha 37bdbe0', head)).toEqual([
+      `body cites head 37bdbe0 but current head is ${head}`,
+    ]);
+    expect(checkHeadSha('head: 37bdbe0', head)).toEqual([
+      `body cites head 37bdbe0 but current head is ${head}`,
+    ]);
+  });
+
+  it('ignores a stale head citation inside a fence or a quoted span', () => {
+    const fenced = [
+      '```',
+      'Verified on head sha 37bdbe0',
+      '```',
+      '~~~',
+      'head: 37bdbe0',
+      '~~~',
+      'Verified on head sha',
+      '```',
+      '37bdbe0',
+      '```',
+    ].join('\n');
+    expect(checkHeadSha(fenced, head)).toEqual([]);
+    expect(checkHeadSha('example `FAIL head-sha: body cites head 37bdbe0 but current head is 1111…`', head)).toEqual([]);
+    expect(checkHeadSha('Verified on head sha `example output` 37bdbe0', head)).toEqual([]);
+  });
+
+  it('flags a home path inside a fenced block', () => {
+    expect(checkForbiddenText('```\n/home/alice/project/x\n```')).toEqual([
+      'path /home/alice/project/x',
+    ]);
+    expect(checkForbiddenText('~~~\n/home/alice/project/x\n~~~')).toEqual([
+      'path /home/alice/project/x',
+    ]);
+    expect(checkForbiddenText('log `/home/alice/project/x`')).toEqual([
+      'path /home/alice/project/x',
+    ]);
+  });
+
+  it('accepts every non-empty text-edges line', () => {
+    const lines = textEdges.split('\n').filter(line => line !== '');
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(checkForbiddenText(line), JSON.stringify(line)).toEqual([]);
+      expect(checkHeadSha(line, head), JSON.stringify(line)).toEqual([]);
+    }
+  });
+
+  it('does not flag placeholder paths', () => {
+    expect(checkForbiddenText('~/…')).toEqual([]);
+    expect(checkForbiddenText('/home/<name>/')).toEqual([]);
+    expect(checkForbiddenText('/home/<name>/...')).toEqual([]);
+    expect(checkForbiddenText('home/user dirs')).toEqual([]);
+    expect(checkForbiddenText('/Users/<name>/proj')).toEqual([]);
+    expect(checkForbiddenText('/root/…')).toEqual([]);
+    expect(checkForbiddenText('/workspace/…')).toEqual([]);
+    expect(checkForbiddenText('C:\\Users\\<name>\\file')).toEqual([]);
+  });
+});
+
 describe('PR submission check CLI', () => {
   it('exits 0 when the submission passes', () => {
     const bodyFile = writeTemp('body.md', passingBody);

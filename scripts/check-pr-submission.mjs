@@ -77,7 +77,7 @@ export function checkCoAuthors(commitMessages) {
 }
 
 export function checkHeadSha(body, headSha) {
-  const text = String(body ?? '');
+  const text = textOutsideQuotedCode(body);
   const head = String(headSha ?? '');
   const headLower = head.toLowerCase();
   const citation = /\bhead\b(?:\s+(?:sha|commit))?(?:[\s:`])*([0-9a-f]{7,40})\b/gi;
@@ -94,14 +94,107 @@ export function checkHeadSha(body, headSha) {
   return problems;
 }
 
+const CODE_GAP = '\u0000';
+const BARE_SHA = /^[0-9a-fA-F]{7,40}$/;
+
+function textOutsideQuotedCode(body) {
+  return stripInlineCode(stripFencedCode(normalizeNewlines(body)));
+}
+
+function stripFencedCode(text) {
+  const lines = text.split('\n');
+  const kept = [];
+  let index = 0;
+  while (index < lines.length) {
+    const open = openingFence(lines[index]);
+    if (!open) {
+      kept.push(lines[index]);
+      index += 1;
+      continue;
+    }
+    index += 1;
+    while (index < lines.length && !closingFence(lines[index], open)) index += 1;
+    if (index < lines.length) index += 1;
+    kept.push(CODE_GAP);
+  }
+  return kept.join('\n');
+}
+
+function openingFence(line) {
+  const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+  if (!match) return null;
+  const marker = match[2];
+  const info = match[3];
+  if (marker[0] === '`' && info.includes('`')) return null;
+  return { char: marker[0], size: marker.length };
+}
+
+function closingFence(line, open) {
+  const match = /^( {0,3})(`{3,}|~{3,})[ \t]*$/.exec(line);
+  if (!match) return false;
+  const marker = match[2];
+  return marker[0] === open.char && marker.length >= open.size;
+}
+
+function stripInlineCode(text) {
+  let result = '';
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] !== '`') {
+      result += text[index];
+      index += 1;
+      continue;
+    }
+    let size = 0;
+    while (index + size < text.length && text[index + size] === '`') size += 1;
+    const closer = findBacktickRun(text, index + size, size);
+    if (closer === -1) {
+      result += text.slice(index, index + size);
+      index += size;
+      continue;
+    }
+    const raw = text.slice(index + size, closer);
+    // A backticked hex token is the citation form (`head sha \`abc1234\``), not quoted output.
+    if (BARE_SHA.test(unwrapCodeSpan(raw))) {
+      result += text.slice(index, closer + size);
+    } else {
+      result += CODE_GAP;
+    }
+    index = closer + size;
+  }
+  return result;
+}
+
+function findBacktickRun(text, from, size) {
+  let index = from;
+  while (index < text.length) {
+    if (text[index] !== '`') {
+      index += 1;
+      continue;
+    }
+    let run = 0;
+    while (index + run < text.length && text[index + run] === '`') run += 1;
+    if (run === size) return index;
+    index += run;
+  }
+  return -1;
+}
+
+function unwrapCodeSpan(raw) {
+  if (raw.length >= 2 && raw.startsWith(' ') && raw.endsWith(' ') && /[^ ]/.test(raw)) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
 function localPathPatterns() {
   return [
-    /\/home\/[^/\s]+\/\S+/g,
-    /\/Users\/[^/\s]+\/\S+/g,
-    /\/root\/\S+/g,
-    /\/workspace\/\S+/g,
-    /C:\\Users\\[^\\\s]+\\\S+/gi,
-    /~\/[^\s/]\S*/g,
+    /\/home\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]\S*/g,
+    /\/Users\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]\S*/g,
+    /\/root\/[A-Za-z0-9_.-]\S*/g,
+    /\/workspace\/[A-Za-z0-9_.-]\S*/g,
+    /C:\\Users\\[A-Za-z0-9_.-]+\\[A-Za-z0-9_.-]\S*/gi,
+    /~\/[A-Za-z0-9_.-]\S*/g,
   ];
 }
 
