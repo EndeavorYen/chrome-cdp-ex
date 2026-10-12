@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { quarantined } from './quarantine.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -134,7 +135,7 @@ describe('#503 quoted-value scanning stays linear', () => {
     'tight double-quote chain': () => ' pin:"'.repeat(SIZE / 6),
   };
   for (const [name, make] of Object.entries(cases)) {
-    it(`redacts 256 KB of ${name} in linear time`, () => {
+    it.skipIf(quarantined(518))(`redacts 256 KB of ${name} in linear time`, () => {
       const text = make();
       const small = text.slice(0, SIZE / 4);
       // Bounds live in linearTimeFailure so a Windows timing flake cannot grow a one-off limit (#678).

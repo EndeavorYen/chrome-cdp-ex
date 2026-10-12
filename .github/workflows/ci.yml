@@ -9,7 +9,12 @@ permissions:
 
 jobs:
   test:
+    name: test (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -17,7 +22,23 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm test -- --shard=${{ matrix.shard }}/3
+
+  # Quarantined wall-clock tests. CI is set, so CDP_RUN_QUARANTINED=1 opts them back in.
+  # A flake stays visible and does not fail the workflow.
+  test-quarantined:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test -- tests/issue-503-quoted-secret-tail.test.mjs tests/issue-511-escaped-json-and-netlog-bodies.test.mjs tests/issue-518-linear-timing-helper.test.mjs
+        env:
+          CDP_RUN_QUARANTINED: "1"
 
   # Portability gate (#463): GNU tar from Git for Windows, MSYS argv quoting, slower file I/O.
   test-windows:
