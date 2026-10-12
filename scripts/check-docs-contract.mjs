@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { checkChangelogFragments, loadChangelogTexts } from './changelog-fragments.mjs';
 import { generateCommandSurfaces } from './generate-command-surfaces.mjs';
 import { SURVIVOR_COMMANDS } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import {
@@ -141,7 +142,10 @@ function checkReleaseMetadataContract(docs) {
     failures.push(`Release metadata version mismatch: package.json ${packageModel.version} != .claude-plugin/plugin.json ${pluginModel.version}`);
   }
   const version = packageModel.version;
-  const publishedVersion = docs.changelog?.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1] || null;
+  const publishedChangelog = Object.hasOwn(docs, 'changelogPublished')
+    ? docs.changelogPublished
+    : docs.changelog;
+  const publishedVersion = publishedChangelog?.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1] || null;
   if (!publishedVersion) {
     failures.push('CHANGELOG.md is missing the latest published semantic version');
     return failures;
@@ -644,6 +648,7 @@ function readDocs() {
   for (const [face, rel] of Object.entries(PK_324_CHART_FILES)) {
     pkCharts[face] = readOptional(rel);
   }
+  const changelogTexts = loadChangelogTexts(ROOT_DIR);
   return {
     readme: read('README.md'),
     reference: read('docs/reference.md'),
@@ -656,7 +661,8 @@ function readDocs() {
     killerPath: read('docs/examples/killer-path.md'),
     packageJson: read('package.json'),
     pluginManifest: read('.claude-plugin/plugin.json'),
-    changelog: read('CHANGELOG.md'),
+    changelogPublished: changelogTexts.published,
+    changelog: changelogTexts.current,
     claude: read('CLAUDE.md'),
     contributing: read('CONTRIBUTING.md'),
     design: read('DESIGN.md'),
@@ -665,6 +671,7 @@ function readDocs() {
 
 export function runDocsContract() {
   const failures = checkDocsContract(readDocs(), T.COMMANDS);
+  failures.push(...checkChangelogFragments(ROOT_DIR));
   try {
     generateCommandSurfaces({ rootDir: ROOT_DIR });
   } catch (error) {

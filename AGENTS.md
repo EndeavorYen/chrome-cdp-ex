@@ -52,3 +52,9 @@ npm run check:docs
 When attach, perceive, or act code changes and a supported browser exists, also run `npm run smoke:live`.
 
 Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Do not police npm registry publish as an agent process for this repository.
+
+## Changelog and dispatch fixture
+
+Add unreleased notes as `changelog.d/<slug>.md` (`###` headings and `* ` bullets). Leave existing `## [Unreleased]` entries in `CHANGELOG.md`. Before a release tag, run `npm run changelog:fold` so the release workflow can read the version section from `CHANGELOG.md`.
+
+The current `runtime-dispatch.v1.json` omits source line numbers. A line move leaves it unchanged. Run `node scripts/runtime-dispatch-inventory.mjs --write` only when a command, owner, or digest changes.

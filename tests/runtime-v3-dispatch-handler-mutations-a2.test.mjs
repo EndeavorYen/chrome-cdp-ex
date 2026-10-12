@@ -9,8 +9,8 @@ import {
 describe('Runtime v3 handler wiring characterization A2', () => {
   it.each([
     source.replace(
-      "? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true })",
-      "? await actionFeedback('fill', () => selectStr(cdp, sessionId, parsed.selector, parsed.text)",
+      'fill: applicationPreflight.handlerBuilders.fill(actionCapabilities),',
+      'fill: applicationPreflight.handlerBuilders.select(actionCapabilities),',
     ),
     source.replace(
       "const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];",

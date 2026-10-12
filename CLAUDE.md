@@ -52,6 +52,8 @@ Key design decisions:
 - Register commands in `COMMANDS`; `NEEDS_TARGET` is derived from that registry
 - Keep JSON outputs versioned. Concise defaults, honest results, opt-in bulk or sensitive detail, and executable recovery or next steps are defined once in [`AGENTS.md`](AGENTS.md) `## Product goals`.
 - Update `USAGE`, `SKILL.md`, `docs/reference.md`, tests, and MCP definitions when the public surface changes
+- Add changelog notes as `changelog.d/<slug>.md` fragments. Leave existing `## [Unreleased]` entries in `CHANGELOG.md`. Run `npm run changelog:fold` before a release tag.
+- The current `runtime-dispatch.v1.json` omits source line numbers. Run `node scripts/runtime-dispatch-inventory.mjs --write` only when a command, owner, or digest changes.
 
 ## Verification
 

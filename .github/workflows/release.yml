@@ -54,6 +54,9 @@ jobs:
           node-version: '22'
           cache: npm
 
+      # Release notes are the version section of CHANGELOG.md. Run
+      # `npm run changelog:fold` before tagging so changelog.d fragments are
+      # already in that file. This workflow reads CHANGELOG.md and does not fold.
       - name: Extract release notes from changelog
         if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         env:
