@@ -136,7 +136,9 @@ point, the covering element and its position, and, when the target was scrolled 
 If it is a dialog, close it (`cdp dismiss-modal <target>`) and click again. Next is `cdp overlay <target> <sel>`
 when the first fixed or sticky layer that does not contain the target and can receive pointer events covers most
 of the viewport: look at that blocker before clicking through it. A `pointer-events: none` shell around a small
-toast, and a fixed app shell that contains the target, are not that layer. If it is small page layout such as a
+toast, and a fixed app shell that contains the target, are not that layer. `overlay` does not name that shell
+either: the cover is the element at the hit point that does not contain the target, such as an absolutely
+positioned popover. If it is small page layout such as a
 fixed sidebar, sticky header, toast, or bottom strip (common in narrow headless windows), use
 `cdp click <target> <sel> --js`, or widen the window with `cdp viewport`. The hints still name `--js` for that
 layout case.

@@ -351,6 +351,39 @@ describe('#601 a full-screen fixed cover recovers through overlay', () => {
     expect(result.value.hit.dialog).not.toBe(true);
   });
 
+  it('names the absolute popover and does not report the fixed shell that contains the button', async () => {
+    const page = layout((dom, { body, main, button }) => {
+      const shell = dom.el('div', {
+        id: 'app',
+        parent: body,
+        position: 'fixed',
+        rect: { x: 0, y: 0, width: VIEWPORT.width, height: VIEWPORT.height },
+      });
+      main._parent = shell;
+      button._parent = main;
+      const popover = dom.el('div', {
+        className: 'popover',
+        text: 'Account menu',
+        parent: shell,
+        position: 'absolute',
+        rect: { x: 100, y: 100, width: 220, height: 120 },
+      });
+      return { hit: popover, shell };
+    });
+    const result = await coveredClick(page);
+    expect(result.value.hit).toMatchObject({
+      covered: true,
+      by: '<DIV.popover> "Account menu"',
+      within: null,
+      dialog: false,
+    });
+    expect(result.value.hit.large).not.toBe(true);
+    expect(result.err.message).toContain('<DIV.popover> "Account menu"');
+    expect(result.err.message).not.toContain('#app');
+    expect(result.failure.nextCommand).toBe(`cdp click ${PREFIX} "#submit" --js`);
+    expect(result.printed).not.toMatch(/overlay|dismiss-modal/);
+  });
+
   it('still classifies the previous click sentence and a covered drag', () => {
     const legacy = new Error('click point (5, 5) of <BUTTON> "Element not found timeout" is covered by <DIV.toast> "unknown ref". The mouse click was not sent: it would land on the covering element.');
     expect(classifyActionFailure(legacy, { action: 'click', target: { targetId: FULL_ID, input: '#x' } }).kind).toBe('covered');
