@@ -26952,10 +26952,32 @@ function ambiguousEscapedSemicolonError(nextWord) {
   ].join('\n'));
 }
 
+// Name the opener and a spelling that parses. A leading apostrophe is the
+// opener, so 'twas is closed by switching quote kind: type "'twas".
+function unclosedFlowQuoteError(source, openIndex) {
+  const text = String(source || '');
+  const quote = text[openIndex] || '';
+  const rawExcerpt = text.length <= 48
+    ? text
+    : text.slice(Math.max(0, openIndex - 10), Math.min(text.length, openIndex + 18));
+  const excerpt = rawExcerpt.replace(/\s+/g, ' ');
+  const example = quote === "'"
+    ? 'type "\'twas"'
+    : quote === '"'
+      ? "fill #p 'abc'"
+      : 'type "hello"';
+  return new Error([
+    `flow: unclosed quote in steps: ${quote} opened at index ${openIndex} (${excerpt}). Close it, or use a different quote kind, e.g. ${example}`,
+    'Kind: usage',
+    'Next: cdp help flow',
+  ].join('\n'));
+}
+
 function splitFlowSegmentsRaw(input) {
   const segments = [];
   let start = 0;
   let quote = '';
+  let quoteAt = -1;
   let atTokenStart = true;
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
@@ -26968,6 +26990,7 @@ function splitFlowSegmentsRaw(input) {
       }
       if (ch === quote) {
         quote = '';
+        quoteAt = -1;
         atTokenStart = false;
       }
       continue;
@@ -26990,6 +27013,7 @@ function splitFlowSegmentsRaw(input) {
     }
     if (flowQuoteOpens(atTokenStart, ch)) {
       quote = ch;
+      quoteAt = i;
       atTokenStart = false;
       continue;
     }
@@ -27001,7 +27025,7 @@ function splitFlowSegmentsRaw(input) {
     }
     atTokenStart = /\s/.test(ch);
   }
-  if (quote) throw new Error('flow: unclosed quote in steps');
+  if (quote) throw unclosedFlowQuoteError(input, quoteAt);
   segments.push(input.slice(start));
   return segments;
 }
@@ -27009,6 +27033,7 @@ function splitFlowSegmentsRaw(input) {
 function decodeFlowEscapedSemicolon(segment) {
   let out = '';
   let quote = '';
+  let quoteAt = -1;
   let atTokenStart = true;
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
@@ -27017,6 +27042,7 @@ function decodeFlowEscapedSemicolon(segment) {
       out += ch;
       if (ch === quote) {
         quote = '';
+        quoteAt = -1;
         atTokenStart = false;
       }
       continue;
@@ -27035,13 +27061,14 @@ function decodeFlowEscapedSemicolon(segment) {
     }
     if (flowQuoteOpens(atTokenStart, ch)) {
       quote = ch;
+      quoteAt = i;
       atTokenStart = false;
     } else {
       atTokenStart = /\s/.test(ch);
     }
     out += ch;
   }
-  if (quote) throw new Error('flow: unclosed quote in steps');
+  if (quote) throw unclosedFlowQuoteError(segment, quoteAt);
   return out;
 }
 
@@ -27054,6 +27081,7 @@ function splitFlowSegments(input) {
 function decodeQuotedFlowSemicolon(segment) {
   let out = '';
   let quote = '';
+  let quoteAt = -1;
   let atTokenStart = true;
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
@@ -27067,19 +27095,21 @@ function decodeQuotedFlowSemicolon(segment) {
       out += ch;
       if (ch === quote) {
         quote = '';
+        quoteAt = -1;
         atTokenStart = false;
       }
       continue;
     }
     if (flowQuoteOpens(atTokenStart, ch)) {
       quote = ch;
+      quoteAt = i;
       atTokenStart = false;
     } else {
       atTokenStart = /\s/.test(ch);
     }
     out += ch;
   }
-  if (quote) throw new Error('flow: unclosed quote in steps');
+  if (quote) throw unclosedFlowQuoteError(segment, quoteAt);
   return out;
 }
 
@@ -27179,7 +27209,7 @@ function unwrapFlowScriptBody(text) {
     }
     decoded += ch;
   }
-  throw new Error('flow: unclosed quote in steps');
+  throw unclosedFlowQuoteError(text, 0);
 }
 
 function scriptCommandArgs(cmd, body) {
@@ -34769,7 +34799,7 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       kind: 'usage',
       strategy: 'show-help',
       run: 'cdp help flow',
-      reason: 'A flow quote or escape was not closed, so the step boundary is ambiguous. Close it, or run cdp help flow.',
+      reason: 'Close the quote, or use a different quote kind, for example type "\'twas".',
     };
   }
   if (lower.includes('batch --parallel:')) {

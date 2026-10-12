@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+* In `flow`, an unclosed quote now fails before any step. An unquoted `\;` directly before a command name, alias, or `assert` is a usage error; quote the value instead (`fill #p "C:\a\"; summary`). A backslash inside quotes is literal, except `\;`, which keeps a semicolon. A backtick-quoted word in a non-script step drops the backticks ([#616](https://github.com/EndeavorYen/chrome-cdp-ex/issues/616), [#617](https://github.com/EndeavorYen/chrome-cdp-ex/issues/617)).
+
 ### Performance
 
 * `bin/chrome-cdp` on Node 22 runs `cdp.mjs` in this process and turns on Node's module compile cache before that import. A warm call skips the extra Node process and recompiles less of the CLI. Stdout, stderr, exit codes, and the Node before 22 re-exec path stay the same. Daemon `scriptPath` stays `cdp.mjs`. An unwritable cache, or a Node build without `module.enableCompileCache`, continues without a message ([#600](https://github.com/EndeavorYen/chrome-cdp-ex/issues/600)).

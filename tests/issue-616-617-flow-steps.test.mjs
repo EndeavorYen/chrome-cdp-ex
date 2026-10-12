@@ -82,6 +82,18 @@ describe('flow millisecond wait (#616)', () => {
     expect(out).toContain('wait duration must be at least 1ms');
     expect(out).not.toContain('Unknown wait');
   });
+
+  it('names the fix for an unknown flow wait', async () => {
+    const error = await T.settleFlow(null, null, 'paint idle').then(() => null, caught => caught);
+    expect(error.message).toBe(
+      'Unknown wait: "paint idle". Use "dom stable", "network idle", or a millisecond count such as wait 2000.',
+    );
+    const text = T.formatCliError(error, { cmd: 'flow' });
+    expect(text.startsWith('Error: Unknown wait: "paint idle". Use "dom stable", "network idle", or a millisecond count such as wait 2000.')).toBe(true);
+    expect(text).toMatch(/^\s*Kind: usage$/m);
+    expect(text.endsWith('Next: cdp help flow')).toBe(true);
+    expect(text).not.toMatch(/Next:.*\(Kind:/);
+  });
 });
 
 describe('flow script and quote splitting (#617)', () => {
@@ -281,14 +293,59 @@ describe('flow script and quote splitting (#617)', () => {
     ]);
   });
 
-  it('rejects an unclosed quote before any step runs', () => {
+  it('rejects an unclosed quote before any step runs and names how to close it', async () => {
     expect(() => T.parseFlowSteps('eval "const x = 1; x')).toThrow(/unclosed quote/);
     // A leading apostrophe opens a quote, so this word is not the literal 'twas.
     expect(() => T.parseFlowSteps("'twas")).toThrow(/unclosed quote/);
-    expect(() => T.parseFlowSteps("type 'twas")).toThrow(/unclosed quote/);
-    const recovery = T.buildCliErrorRecovery('flow: unclosed quote in steps', { cmd: 'flow' });
+
+    let apostrophe;
+    try {
+      T.parseFlowSteps("type 'twas");
+    } catch (caught) {
+      apostrophe = caught;
+    }
+    expect(apostrophe.message).toContain('flow: unclosed quote in steps');
+    expect(apostrophe.message).toContain("' opened at index 5");
+    expect(apostrophe.message).toContain('Close it, or use a different quote kind, e.g. type "\'twas"');
+    expect(apostrophe.message.endsWith('Kind: usage\nNext: cdp help flow')).toBe(true);
+    const apostropheText = T.formatCliError(apostrophe, { cmd: 'flow' });
+    expect(apostropheText.startsWith('Error: flow: unclosed quote in steps')).toBe(true);
+    expect(apostropheText).toMatch(/^Kind: usage$/m);
+    expect(apostropheText.endsWith('Next: cdp help flow')).toBe(true);
+    expect(apostropheText).not.toMatch(/Next:.*\(Kind:/);
+
+    let doubled;
+    try {
+      T.parseFlowSteps('fill #p "abc');
+    } catch (caught) {
+      doubled = caught;
+    }
+    expect(doubled.message).toContain('" opened at index 8');
+    expect(doubled.message).toContain('Close it, or use a different quote kind, e.g. fill #p \'abc\'');
+
+    let backtick;
+    try {
+      T.parseFlowSteps('type `hello');
+    } catch (caught) {
+      backtick = caught;
+    }
+    expect(backtick.message).toContain('` opened at index 5');
+    expect(backtick.message).toContain('Close it, or use a different quote kind, e.g. type "hello"');
+
+    const recovery = T.buildCliErrorRecovery(apostrophe.message, { cmd: 'flow' });
     expect(recovery.kind).toBe('usage');
     expect(recovery.run).toBe('cdp help flow');
+    expect(recovery.reason).toContain('type "\'twas"');
+
+    const seen = [];
+    await expect(T.flowStr({
+      run: async (step) => {
+        seen.push(step);
+        return { ok: true, result: 'ok' };
+      },
+      settle: async () => 'settled',
+    }, "type 'twas")).rejects.toThrow(/unclosed quote/);
+    expect(seen).toEqual([]);
   });
 
   it('keeps Windows backslashes inside quotes and rejects an unquoted \\; before a command', async () => {
