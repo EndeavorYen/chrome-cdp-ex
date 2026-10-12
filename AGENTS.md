@@ -27,6 +27,8 @@ Order when they conflict: effective > easy for agents > efficient.
 ## What to work on
 
 - Fix what the user's agents hit in real use first. A self-found edge case goes to the backlog unless it causes a false success.
+- Pick issues by label: `priority: p1`, then `p2`, then `p3`. An issue labeled `needs design` gets `/git-plan-issue` first, not code.
+- Before writing code, reproduce the issue on current `origin/main`. If it no longer reproduces, comment with what you ran and close it.
 - One issue per PR. Keep the diff small. At most 2 of your PRs open at once.
 - Do not add process: no new fixtures that every PR must update, digests, inventories, benchmark harnesses, or tests that check doc wording.
 
