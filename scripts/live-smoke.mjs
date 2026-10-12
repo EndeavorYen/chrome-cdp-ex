@@ -518,6 +518,13 @@ const uploadRefOut = step('upload by perceive ref', () => run(['upload', target,
 assertIncludes(uploadRefOut, 'Uploaded 1 file', 'upload @ref');
 const avatarName = step('upload ref files', () => run(['eval', target, 'document.querySelector("#smoke-avatar").files[0] && document.querySelector("#smoke-avatar").files[0].name']));
 if (avatarName !== 'upload-fixture.txt') throw new Error(`upload @ref did not set #smoke-avatar files: ${avatarName}`);
+// #664: a click whose only effect is the control's own aria state is a reaction.
+const toggleOut = step('click aria toggle', () => run(['click', target, '#smoke-toggle']));
+assertIncludes(toggleOut, 'aria-pressed false → true', 'aria toggle receipt');
+const togglePerceive = step('aria toggle pressed on tree', () => run(['perceive', target, '-C', '-d', '8'], { timeout: 40000 }));
+assertIncludes(togglePerceive, 'Smoke toggle pressed=true', 'aria toggle tree');
+const stillOut = step('click aria toggle that does not change', () => runFailure(['click', target, '#smoke-toggle-still']));
+assertIncludes(stillOut, 'click-no-change', 'unchanged aria toggle fails closed');
 const parallelMutatingGuards = [
   ['restore', '--json', '{}'],
   ['replay', '--json', '{"schema":"chrome-cdp-ex.record-actions.v1","actions":[]}'],

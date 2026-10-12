@@ -99,6 +99,8 @@
       </select>
     </label>
     <label>Smoke avatar <input id="smoke-avatar" type="file" aria-label="Smoke avatar"></label>
+    <button id="smoke-toggle" type="button" aria-pressed="false" onclick="this.setAttribute('aria-pressed', String(this.getAttribute('aria-pressed') !== 'true'))">Smoke toggle</button>
+    <button id="smoke-toggle-still" type="button" aria-pressed="false">Smoke still toggle</button>
   </main>
   <aside class="sidebar">
     <button id="character">角色 (C)</button>
