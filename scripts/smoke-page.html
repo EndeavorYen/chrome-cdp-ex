@@ -50,6 +50,8 @@
     <button id="combat">Run combat</button>
     <button id="diagnostic">Run diagnostic</button>
     <button id="noop">No visible change</button>
+    <button id="smoke-toggle" type="button" aria-pressed="false" onclick="this.setAttribute('aria-pressed', String(this.getAttribute('aria-pressed') !== 'true'))">Smoke toggle</button>
+    <button id="smoke-toggle-still" type="button" aria-pressed="false">Smoke still toggle</button>
     <button id="loop-attack">Loop attack</button>
     <p id="loop-status">loop:0</p>
     <label>Upload evidence <input id="upload-file" aria-label="upload evidence" type="file"></label>
@@ -99,8 +101,6 @@
       </select>
     </label>
     <label>Smoke avatar <input id="smoke-avatar" type="file" aria-label="Smoke avatar"></label>
-    <button id="smoke-toggle" type="button" aria-pressed="false" onclick="this.setAttribute('aria-pressed', String(this.getAttribute('aria-pressed') !== 'true'))">Smoke toggle</button>
-    <button id="smoke-toggle-still" type="button" aria-pressed="false">Smoke still toggle</button>
   </main>
   <aside class="sidebar">
     <button id="character">角色 (C)</button>
