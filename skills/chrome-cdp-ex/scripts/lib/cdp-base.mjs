@@ -114,6 +114,32 @@ export const MAX_ENVIRONMENT_LOG_ENTRIES = 100;
 export const MAX_SCREENSHOT_ENTRIES = 100;
 export const MAX_NETWORK_MOCK_HITS = 50;
 export const IS_WINDOWS = process.platform === 'win32';
+// #587: file: stays refused. Serve the file's folder, then open the page over http.
+export const FILE_URL_HTTP_SERVER = 'python -m http.server --protocol HTTP/1.1 --bind 127.0.0.1 8000';
+
+function fileUrlServedHttpUrl(url) {
+  const fallback = 'http://127.0.0.1:8000/<filename>';
+  let parsed;
+  try { parsed = new URL(String(url)); } catch { return fallback; }
+  if (parsed.protocol !== 'file:') return fallback;
+  let pathname = parsed.pathname || '';
+  try { pathname = decodeURIComponent(pathname); } catch { /* keep the raw path */ }
+  // A trailing slash names a directory, so the file name is not known.
+  if (pathname.endsWith('/')) return fallback;
+  const base = pathname.split('/').pop() || '';
+  if (!base || base === '.' || base === '..' || /^[A-Za-z]:$/.test(base)) return fallback;
+  return `http://127.0.0.1:8000/${encodeURIComponent(base)}`;
+}
+
+export function fileUrlRefusedMessage(url) {
+  return `file: URLs are refused on purpose. Only http/https URLs allowed, got: file:. Run \`${FILE_URL_HTTP_SERVER}\` in the file's folder, then open ${fileUrlServedHttpUrl(url)}`;
+}
+
+export function isFileUrlRefusalMessage(message) {
+  const text = String(message || '');
+  return /file: URLs are refused on purpose/i.test(text)
+    || /only http\/https urls allowed, got: file:/i.test(text);
+}
 export function pathApiForPlatform(platform = process.platform) {
   return platform === 'win32' ? win32Path : posixPath;
 }

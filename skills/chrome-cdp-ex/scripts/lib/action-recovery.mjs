@@ -1,3 +1,4 @@
+import { FILE_URL_HTTP_SERVER, isFileUrlRefusalMessage } from './cdp-base.mjs';
 import { classifyPolicyMessage } from './session-policy.mjs';
 
 export function isTimeoutError(err, methods = []) {
@@ -596,6 +597,20 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
       hints: policy.navigated
         ? [`Go back with \`cdp back ${targetId}\`, or nav to an allowed origin, before acting on the page.`]
         : ['Use a command or origin the policy allows, or ask the user to change it. Do not work around it with eval or evalraw.'],
+    };
+  }
+
+  // #587: file: is refused on purpose. usage rethrows so the CLI recovery owns the text.
+  if (isFileUrlRefusalMessage(originalMessage)) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'file: URLs are refused on purpose. Serve the file from its folder, then open the http URL named in the error.',
+      nextCommand: FILE_URL_HTTP_SERVER,
+      hints: [
+        `Run \`${FILE_URL_HTTP_SERVER}\` in the file's folder.`,
+        'Open the http URL named in the error. Do not retry the file: URL.',
+      ],
     };
   }
 
