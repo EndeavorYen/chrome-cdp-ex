@@ -243,7 +243,36 @@ preserving the failed step and recovery handoff. `--continue` is the explicit
 override for independent iterations and still reports accurate success/failure
 counts. `wait dom stable` and `wait network idle` also fail the flow on timeout;
 their diagnostics identify the timed-out condition and pending request count
-when applicable.
+when applicable. `wait 2000` is the standalone `wait` command and runs inside
+`flow` the same way.
+
+A semicolon separates flow steps only outside quotes (`'`, `"`, or `` ` ``).
+A quote opens only at the start of a word (the start of a step, or after
+whitespace). A quote inside a word stays literal, so `O'Brien` and `don't` do
+not start a quote. `type don't; summary` and `eval don't; summary` are two
+steps. `eval "don't; summary"` is one step. `\;` is a literal semicolon.
+A doubled backslash does not escape that semicolon, so `\\;` still starts the
+next step and both backslashes stay in the previous step.
+Inside quotes, a backslash is literal, except `\;`, which keeps a semicolon.
+The opening quote always closes. Put a quote in the value by wrapping that
+step in another kind of quote. `fill #p "C:\a\"; summary` is two steps and the
+value is `C:\a\`. `"a\;b"` is the value `a;b`. An unquoted `\;` before a
+command name, alias, or `assert` fails the flow before any step runs, except
+inside an unquoted `eval`, `eval64`, or `call` body. Quote the value to keep a
+trailing backslash and start the next step, for example
+`fill #p "C:\a\"; summary`.
+`eval`, `eval64`, and `call` take one script body: wrapping quotes are flow
+delimiters, not JavaScript, and spaces, newlines, and tabs in that body stay
+byte-for-byte. An unquoted body continues across semicolons until the next
+segment starts with a command name, alias, or `assert`. Quote that body, or
+write `\;`, when the next statement starts with one of those words. An unclosed
+quote fails the flow before any step runs. A leading apostrophe opens a quote,
+so `'twas` is an unclosed quote.
+A backtick-quoted word in a non-script step is one argument with the backticks removed.
+The characters inside stay byte-for-byte. A backslash inside those quotes is literal, except `\;`, which keeps a semicolon.
+A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain.
+An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary.
+`cdp help flow` prints this rule.
 
 Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.
