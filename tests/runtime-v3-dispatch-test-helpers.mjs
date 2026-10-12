@@ -3,7 +3,7 @@ import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { expect } from 'vitest';
 
-import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inventory.mjs';
+import { buildRuntimeDispatchInventory, omitSourcePositions } from '../scripts/runtime-dispatch-inventory.mjs';
 
 export const rootDir = fileURLToPath(new URL('..', import.meta.url));
 export const source = readFileSync(join(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs'), 'utf8');
@@ -57,11 +57,22 @@ export function yieldToEventLoop() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
+// A builder rejection is drift. A successful build must differ once source positions are removed.
+export function capturePositionFreeInventory(load) {
+  try {
+    return { ok: true, inventory: omitSourcePositions(load()) };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
 export async function expectInventoryDrift(mutation) {
   await yieldToEventLoop();
-  try {
-    expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
-  } catch (error) {
-    expect(error).toBeInstanceOf(Error);
+  expect(mutation, 'mutation missed its source needle').not.toBe(source);
+  const captured = capturePositionFreeInventory(() => buildRuntimeDispatchInventory(mutation));
+  if (!captured.ok) {
+    expect(captured.error).toBeInstanceOf(Error);
+    return;
   }
+  expect(captured.inventory).not.toEqual(fixture);
 }

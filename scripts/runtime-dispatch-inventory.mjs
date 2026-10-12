@@ -1560,6 +1560,30 @@ function collectTablePolicyAuthority(source, {
   };
 }
 
+const SOURCE_POSITION_KEYS = new Set([
+  'line',
+  'endLine',
+  'column',
+  'endColumn',
+  'startLine',
+  'startColumn',
+]);
+
+export function omitSourcePositions(value) {
+  if (Array.isArray(value)) return value.map(omitSourcePositions);
+  if (!value || typeof value !== 'object') return value;
+  const rendered = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (SOURCE_POSITION_KEYS.has(key)) continue;
+    rendered[key] = omitSourcePositions(child);
+  }
+  return rendered;
+}
+
+export function renderRuntimeDispatchFixture(inventory) {
+  return `${JSON.stringify(omitSourcePositions(inventory), null, 2)}\n`;
+}
+
 export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'utf8'), {
   commandApplicationSource = readFileSync(commandApplicationPath, 'utf8'),
   commandSurface = COMMAND_SURFACE,
@@ -1735,7 +1759,7 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
 
 function main(args) {
   const inventory = buildRuntimeDispatchInventory();
-  const rendered = `${JSON.stringify(inventory, null, 2)}\n`;
+  const rendered = renderRuntimeDispatchFixture(inventory);
   if (args.length === 1 && args[0] === '--write') {
     writeFileSync(fixturePath, rendered, { mode: 0o600 });
     process.stdout.write(`Wrote ${fixturePath}\n`);

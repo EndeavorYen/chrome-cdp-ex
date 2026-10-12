@@ -29,7 +29,10 @@ jobs:
           TAG: ${{ steps.version.outputs.version }}
         run: |
           VERSION="${TAG#v}"
-          if grep -Fq "## [$VERSION](" CHANGELOG.md; then
+          # `## [version](`, `## [version] (date)`, or a bare `## [version]` line.
+          if grep -Fq "## [$VERSION](" CHANGELOG.md \
+            || grep -Fq "## [$VERSION] " CHANGELOG.md \
+            || grep -Fxq "## [$VERSION]" CHANGELOG.md; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -48,12 +51,20 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Only when this push would publish a new tag: notes still in changelog.d would be left out.
+      - name: Check changelog fragments are folded
+        if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
+        run: node scripts/changelog-fragments.mjs --release
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         with:
           node-version: '22'
           cache: npm
 
+      # Release notes are the version section of CHANGELOG.md. Run
+      # `npm run changelog:fold` before tagging so changelog.d fragments are
+      # already in that file. This workflow reads CHANGELOG.md and does not fold.
       - name: Extract release notes from changelog
         if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         env:

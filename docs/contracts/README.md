@@ -19,11 +19,15 @@ representative mappings, package metadata, and the actual tar entry inventory.
 
 The current `runtime-dispatch.v1.json` separately owns the Phase 7 pre-deletion
 characterization of CLI, daemon protocol, application-handler, and legacy
-daemon routing. It is exact to the reviewed source tree; changing a branch
-digest or route label requires explicit fixture review before deletion. In a
-source checkout, run `node scripts/runtime-dispatch-inventory.mjs --check`; the
-checker is development tooling and is intentionally excluded from release
+daemon routing. It records commands, owners, and source digests, and it omits
+source positions, so a line move does not change the file. Changing a command,
+owner, branch digest, or route label requires
+`node scripts/runtime-dispatch-inventory.mjs --write` and explicit review.
+In a source checkout, run `node scripts/runtime-dispatch-inventory.mjs --check`;
+the checker is development tooling and is intentionally excluded from release
 packages while the reviewed fixture is shipped with the other contracts.
+`npm test` runs that check. Published fixtures for older versions stay
+byte-for-byte historical records.
 
 ## Canonicalization
 

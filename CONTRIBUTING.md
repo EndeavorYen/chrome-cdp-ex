@@ -43,6 +43,14 @@ New commands normally touch these surfaces:
 - Redact secrets by default. Full state or large payloads require an explicit unsafe/verbose flag.
 - Mutating commands must expose action evidence, settlement semantics, and recovery guidance.
 
+## Changelog entries
+
+Put a new note in `changelog.d/<slug>.md`. `slug` is lowercase words separated by hyphens. Use one or more `###` headings that already appear in `CHANGELOG.md` (`Performance`, `Features`, `Bug Fixes`, and the other headings in that file). Under each heading, write `* ` bullets. `npm run check:docs` validates the fragments. Entries already in `## [Unreleased]` stay in `CHANGELOG.md`.
+
+Before a release tag, run `npm run changelog:fold`. It merges the fragments into `## [Unreleased]` and deletes the fragment files. Move those notes into the new version heading. The release workflow reads that version section from `CHANGELOG.md` and does not fold fragments.
+
+`docs/contracts/` for the current package version holds `runtime-dispatch.v1.json`. That fixture records commands, owners, and digests, and it omits source line numbers. A line move leaves it unchanged. Run `node scripts/runtime-dispatch-inventory.mjs --write` only when a command, owner, or digest changes, then review the diff. `node scripts/runtime-dispatch-inventory.mjs --check` reports real drift. Published fixtures for older versions stay as they were released.
+
 ## Testing
 
 Default local gate for ordinary and `musk/live-path` merges:
