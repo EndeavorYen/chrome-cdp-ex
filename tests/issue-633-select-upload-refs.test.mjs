@@ -68,7 +68,8 @@ function fakeRefPage(entries) {
       if (method === 'Runtime.callFunctionOn') {
         const fn = String(params.functionDeclaration || '');
         if (fn.includes('connectedGetter')) {
-          return Promise.resolve({ result: { type: 'object', value: { connected: true } } });
+          const node = byObjectId.get(params.objectId);
+          return Promise.resolve({ result: { type: 'object', value: { connected: !node?.detached } } });
         }
         let value;
         try {
@@ -108,14 +109,27 @@ function planSelect() {
   }, 101, 'obj-select');
 }
 
-function fileInput(backendNodeId, objectId) {
+function fileInput(backendNodeId, objectId, extra = {}) {
   return bindNode({
     tagName: 'INPUT',
     type: 'file',
     attributes: ['type', 'file'],
     files: [],
     labels: [],
+    multiple: false,
+    ...extra,
   }, backendNodeId, objectId);
+}
+
+function locatorCalls(calls) {
+  return calls.filter(call => call.method === 'Runtime.callFunctionOn'
+    && String(call.params.functionDeclaration || '').includes('input[type="file"]'));
+}
+
+function cdpThatMustNotBeCalled() {
+  return {
+    send() { throw new Error('ref resolution must fail before CDP'); },
+  };
 }
 
 describe('select and upload accept perceive @refs (#633)', () => {
@@ -260,5 +274,162 @@ describe('select and upload accept perceive @refs (#633)', () => {
       action: 'upload',
       target: { targetId: 'ABC123', input: '@1' },
     })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help upload' });
+  });
+
+  it('uploads <input name="type" type="file"> by the type attribute, not the name value', async () => {
+    const input = fileInput(221, 'obj-name-type', {
+      attributes: ['name', 'type', 'type', 'file'],
+      name: 'type',
+    });
+    const { cdp, calls } = fakeRefPage([input]);
+    await expect(T.uploadStr(cdp, 'sid', '@1', uploadFile(), new Map([[1, input.backendNodeId]]), {}))
+      .resolves.toMatch(/^Uploaded 1 file\(s\) to @1: /);
+    expect(locatorCalls(calls)).toEqual([]);
+    expect(calls.find(call => call.method === 'DOM.setFileInputFiles').params.backendNodeId).toBe(input.backendNodeId);
+  });
+
+  it('uploads an input whose type attribute is FILE', async () => {
+    const input = fileInput(222, 'obj-type-file', { attributes: ['type', 'FILE'] });
+    const { cdp, calls } = fakeRefPage([input]);
+    await expect(T.uploadStr(cdp, 'sid', '@1', uploadFile(), new Map([[1, input.backendNodeId]]), {}))
+      .resolves.toMatch(/^Uploaded 1 file\(s\) to @1: /);
+    expect(locatorCalls(calls)).toEqual([]);
+    expect(calls.find(call => call.method === 'DOM.setFileInputFiles').params.backendNodeId).toBe(input.backendNodeId);
+  });
+
+  it('rejects two files when name="multiple" and the IDL multiple flag is false', async () => {
+    const input = fileInput(223, 'obj-name-multiple', {
+      attributes: ['name', 'multiple', 'type', 'file'],
+      name: 'multiple',
+      multiple: false,
+    });
+    const files = [uploadFile('one.txt'), uploadFile('two.txt')].join(',');
+    const { cdp, calls } = fakeRefPage([input]);
+    const error = await T.uploadStr(cdp, 'sid', '@1', files, new Map([[1, input.backendNodeId]]), {}).catch(e => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('does not accept several files');
+    expect(calls.map(call => call.method)).not.toContain('DOM.setFileInputFiles');
+  });
+
+  it('uploads two files when only the IDL multiple flag is set', async () => {
+    const input = fileInput(224, 'obj-idl-multiple', { attributes: ['type', 'file'], multiple: true });
+    const one = uploadFile('one.txt');
+    const two = uploadFile('two.txt');
+    const { cdp, calls } = fakeRefPage([input]);
+    await expect(T.uploadStr(cdp, 'sid', '@1', `${one},${two}`, new Map([[1, input.backendNodeId]]), {}))
+      .resolves.toMatch(/^Uploaded 2 file\(s\) to @1: /);
+    expect(input.files.map(file => file.name)).toEqual(['one.txt', 'two.txt']);
+    expect(calls.some(call => call.method === 'Runtime.callFunctionOn'
+      && String(call.params.functionDeclaration).includes('this.multiple'))).toBe(true);
+  });
+
+  it('trusts the locator IDL type when describeNode attributes do not say type=file', async () => {
+    const input = fileInput(225, 'obj-idl-only', { attributes: ['id', 'avatar'], id: 'avatar' });
+    const wrap = bindNode({
+      tagName: 'DIV',
+      querySelectorAll(sel) { return sel === 'input[type="file"]' ? [input] : []; },
+      getRootNode() { return {}; },
+    }, 226, 'obj-idl-wrap');
+    const { cdp, calls } = fakeRefPage([input, wrap]);
+    await expect(T.uploadStr(cdp, 'sid', '@6', uploadFile(), new Map([[6, wrap.backendNodeId]]), {}))
+      .resolves.toMatch(/^Uploaded 1 file\(s\) to @6: /);
+    expect(locatorCalls(calls)).toHaveLength(1);
+    expect(calls.find(call => call.method === 'DOM.setFileInputFiles').params.backendNodeId).toBe(input.backendNodeId);
+  });
+
+  it('refuses to guess when one label wraps two file inputs', async () => {
+    const host = fileInput(231, 'obj-shadow-host');
+    const first = fileInput(232, 'obj-under-a');
+    const second = fileInput(233, 'obj-under-b');
+    const label = bindNode({
+      tagName: 'LABEL',
+      control: null,
+      querySelectorAll(sel) { return sel === 'input[type="file"]' ? [first, second] : []; },
+      ownerDocument: { querySelectorAll() { return []; } },
+      getRootNode() { return { host }; },
+    }, 234, 'obj-two-label');
+    const { cdp, calls } = fakeRefPage([host, first, second, label]);
+    const error = await T.uploadStr(cdp, 'sid', '@5', uploadFile(), new Map([[5, label.backendNodeId]]), {}).catch(e => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('refusing to guess');
+    expect(error.message).toContain('"@5"');
+    expect(error.message).toContain('matches 2');
+    expect(error.message).not.toBe('Element is not an <input type="file">');
+    expect(calls.map(call => call.method)).not.toContain('DOM.setFileInputFiles');
+    expect(host.files).toEqual([]);
+  });
+
+  it('reports a stale @ref for select and upload after a DOM invalidation', async () => {
+    const state = { invalidationReason: 'dom-mutation', generation: 4 };
+    const cdp = cdpThatMustNotBeCalled();
+    const selectError = await T.selectStr(cdp, 'sid', '@8', 'pro', {}, new Map(), state).catch(e => e);
+    expect(selectError).toBeInstanceOf(Error);
+    expect(selectError.code).toBe('CDP_STALE_REF');
+    expect(selectError.message).toMatch(/@8 is stale: the DOM changed after the last perceive/);
+    const uploadError = await T.uploadStr(cdp, 'sid', '@8', uploadFile(), new Map(), state).catch(e => e);
+    expect(uploadError).toBeInstanceOf(Error);
+    expect(uploadError.code).toBe('CDP_STALE_REF');
+    expect(uploadError.message).toMatch(/@8 is stale: the DOM changed after the last perceive/);
+  });
+
+  it('reports an unknown @ref for select and upload', async () => {
+    const state = { invalidationReason: null, generation: 4 };
+    const cdp = cdpThatMustNotBeCalled();
+    const selectError = await T.selectStr(cdp, 'sid', '@8', 'pro', {}, new Map(), state).catch(e => e);
+    expect(selectError).toBeInstanceOf(Error);
+    expect(selectError.message).toMatch(/Unknown ref: @8/);
+    expect(selectError.message).not.toMatch(/Not a <select>/);
+    const uploadError = await T.uploadStr(cdp, 'sid', '@8', uploadFile(), new Map(), state).catch(e => e);
+    expect(uploadError).toBeInstanceOf(Error);
+    expect(uploadError.message).toMatch(/Unknown ref: @8/);
+    expect(uploadError.message).not.toMatch(/not an <input type="file">/);
+  });
+
+  it('reports a detached @ref as stale for select and upload', async () => {
+    const el = planSelect();
+    el.detached = true;
+    const selectPage = fakeRefPage([el]);
+    const selectError = await T.selectStr(
+      selectPage.cdp, 'sid', '@1', 'pro', {}, new Map([[1, el.backendNodeId]]), { generation: 2 },
+    ).catch(e => e);
+    expect(selectError.code).toBe('CDP_STALE_REF');
+    expect(selectError.message).toMatch(/@1 is stale: the DOM changed after the last perceive/);
+    expect(el.value).toBe('free');
+
+    const input = fileInput(241, 'obj-detached', { detached: true });
+    const uploadPage = fakeRefPage([input]);
+    const uploadError = await T.uploadStr(
+      uploadPage.cdp, 'sid', '@1', uploadFile(), new Map([[1, input.backendNodeId]]), { generation: 2 },
+    ).catch(e => e);
+    expect(uploadError.code).toBe('CDP_STALE_REF');
+    expect(uploadError.message).toMatch(/@1 is stale: the DOM changed after the last perceive/);
+    expect(uploadPage.calls.map(call => call.method)).not.toContain('DOM.setFileInputFiles');
+  });
+
+  it('resolves an @fN:M frame ref for select and upload in that frame', async () => {
+    const el = planSelect();
+    const selectPage = fakeRefPage([el]);
+    const selectState = {
+      generation: 2,
+      frameRefs: new Map([['@f2', { frameId: 'child-frame', refs: new Map([[4, el.backendNodeId]]) }]]),
+    };
+    await expect(T.selectStr(selectPage.cdp, 'sid', '@f2:4', 'pro', {}, new Map(), selectState)).resolves.toBe('Selected "Pro"');
+    expect(el.value).toBe('pro');
+    const selectWorlds = selectPage.calls.filter(call => call.method === 'Page.createIsolatedWorld');
+    expect(selectWorlds.length).toBeGreaterThan(0);
+    expect(selectWorlds.every(call => call.params.frameId === 'child-frame')).toBe(true);
+
+    const input = fileInput(251, 'obj-frame-file');
+    const uploadPage = fakeRefPage([input]);
+    const uploadState = {
+      generation: 2,
+      frameRefs: new Map([['@f2', { frameId: 'child-frame', refs: new Map([[4, input.backendNodeId]]) }]]),
+    };
+    await expect(T.uploadStr(uploadPage.cdp, 'sid', '@f2:4', uploadFile(), new Map(), uploadState))
+      .resolves.toMatch(/^Uploaded 1 file\(s\) to @f2:4: /);
+    const uploadWorlds = uploadPage.calls.filter(call => call.method === 'Page.createIsolatedWorld');
+    expect(uploadWorlds.length).toBeGreaterThan(0);
+    expect(uploadWorlds.every(call => call.params.frameId === 'child-frame')).toBe(true);
+    expect(uploadPage.calls.find(call => call.method === 'DOM.setFileInputFiles').params.backendNodeId).toBe(input.backendNodeId);
   });
 });

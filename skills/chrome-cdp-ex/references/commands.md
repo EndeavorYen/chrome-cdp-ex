@@ -232,7 +232,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
 | `wait` | `wait <target> <ms>` | `read / standard` |
 | `fill` | `fill <target> <sel\|@ref> <txt\|--secret NAME> [--format json]` | `mutation / mutation` |
-| `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |
+| `select` | `select <target> <sel\|@ref> <val> [--format json]` | `mutation / mutation` |
 | `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
 | `scanshot` | `scanshot <target>` | `read / standard` |
 | `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
@@ -243,7 +243,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
 | `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|--focus\|off\|status]` | `mutation / mutation` |
-| `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
+| `upload` | `upload <target> <sel\|@ref> <paths> [--format json]` | `mutation / mutation` |
 | `text` | `text <target> [selector\|--auto]` | `read / standard` |
 | `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |
@@ -658,7 +658,7 @@ scripts/cdp.mjs wait    <target> 30000                 # agent-safe delay; use i
 scripts/cdp.mjs fill    <target> <sel|@ref> <text> [--format json] # clear field + type text
 scripts/cdp.mjs fill    <target> --react <sel|@ref> <text> [--format json] # React-controlled input value setter + input/change events
 scripts/cdp.mjs fill    <target> <sel|@ref> --secret NAME [--format json] # type $CDP_SECRET_NAME; output shows <secret:NAME>
-scripts/cdp.mjs select  <target> <selector> <value> [--format json] # select option (auto-returns perceive diff)
+scripts/cdp.mjs select  <target> <sel|@ref> <value> [--format json] # select option (auto-returns perceive diff)
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
 scripts/cdp.mjs components <target> [--depth N]     # bounded/redacted React/Vue tree
 scripts/cdp.mjs components <target> @3 --max-chars 8000 --format json # React fiber target
@@ -672,7 +672,7 @@ scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; di
 scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (alias: resize; e.g. 375x812)
 scripts/cdp.mjs emulate <target> dark|light|off        # prefers-color-scheme / reduced-motion media features
 scripts/cdp.mjs emulate <target> --focus               # background tab behaves as focused: hasFocus() true, focus events fire (off clears it)
-scripts/cdp.mjs upload  <target> <selector> <paths> [--format json] # upload file(s) to input[type=file]
+scripts/cdp.mjs upload  <target> <sel|@ref> <paths> [--format json] # upload file(s) to input[type=file]
 scripts/cdp.mjs back    <target>                       # navigate back in browser history
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history
 scripts/cdp.mjs reload  <target>                       # reload current page
