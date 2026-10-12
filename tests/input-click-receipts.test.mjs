@@ -145,8 +145,9 @@ describe('#427 Playwright text= selector is an alias for the visible-text form',
     expect(T.isNamedClickQuery('text="Save changes"')).toBe(true);
     expect(T.isNamedClickQuery("text='Save'")).toBe(true);
     expect(T.isNamedClickQuery('text=Save')).toBe(true);
-    // A bare single word is still a CSS tag selector; text= is the way to force a name.
-    expect(T.isNamedClickQuery('Save')).toBe(false);
+    // A word that is not an HTML tag is a label. text= forces a name for a real tag.
+    expect(T.isNamedClickQuery('Save')).toBe(true);
+    expect(T.isNamedClickQuery('button')).toBe(false);
     expect(T.namedClickQueryName('text="Save changes"')).toBe('Save changes');
     expect(T.namedClickQueryName(`text=${BUTTON_NAME}`)).toBe(BUTTON_NAME);
     expect(T.namedClickQueryName(BUTTON_NAME)).toBe(BUTTON_NAME);
@@ -184,9 +185,9 @@ describe('#427 Playwright text= selector is an alias for the visible-text form',
         throw new Error(`unexpected ${method}`);
       },
     };
-    const err = await T.clickStr(cdp, 'sid', 'Save').catch(e => e);
-    expect(err.message).toMatch(/^Element not found: Save\./);
-    expect(err.message).toContain('"text=Save"');
+    const err = await T.clickStr(cdp, 'sid', 'button').catch(e => e);
+    expect(err.message).toMatch(/^Element not found: button\./);
+    expect(err.message).toContain('"text=button"');
     expect(err.message).toMatch(/@ref/);
     const css = await T.clickStr(cdp, 'sid', '#nope').catch(e => e);
     expect(css.message).toMatch(/^Element not found: #nope\./);

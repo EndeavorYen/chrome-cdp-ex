@@ -637,8 +637,8 @@ scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
 scripts/cdp.mjs nav     <target> <url> [--compact] [--format json] # URL+title; --compact is one line
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
-scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; one-step jsclick, skinny URL
-scripts/cdp.mjs click   <target> "text=Save" [--format json]  # Playwright-style alias for the named form (exact visible text)
+scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; hit-tests, then one-step jsclick, skinny URL
+scripts/cdp.mjs click   <target> "text=Save" [--format json]  # alias for the named form (exact visible text)
 scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path; scrollIntoView if off-screen
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
@@ -1394,17 +1394,20 @@ associated `<label>` with a positive in-viewport box is used instead. Otherwise 
 and the click exits 1 with `Kind: no-click-box` (`dispatched: false`) and one Next,
 `cdp jsclick <target> <sel>`. `clickxy` is an explicit point and is unchanged.
 
-A named query (`click` / `jsclick` `"Browse 1M+ applications"`) is the one-step
-jsclick path: no `perceive -C -d 8`, unique off-screen names `scrollIntoView`
-then click, skinny URL receipt (Scroll before/after when it scrolled).
+A named query (`click` `"Save profile"` or `"Browse 1M+ applications"`, any script) hit-tests
+the click point, then takes the one-step jsclick path: no `perceive -C -d 8`, unique off-screen
+names `scrollIntoView` then click, skinny URL receipt (Scroll before/after when it scrolled).
+A covered label, including `text=`, sends nothing and exits 1 with `Kind: covered`. `jsclick`
+and `click --js` skip that hit test.
 
-`text=Save`, `text="Save changes"`, and `text='Save'` are aliases for that named
-form. The match is the same exact, whitespace-normalised match on a button or
-link's `aria-label` or visible text; unquoted `text=` is not Playwright's
-case-insensitive substring match. Use `text=` to force a name lookup for a single
-word that would otherwise parse as a CSS tag selector (`text=Save` vs `Save`). A
-miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
-`Kind: selector`, and Next `perceive -C -d 8` for an `@ref`.
+`text=button`, `text="Save changes"`, and `text='Save'` are aliases for that named
+form. The match prefers the exact visible text or `aria-label`, then a whitespace-normalised
+fallback; unquoted `text=` is not Playwright's case-insensitive substring match. Use `text=`
+to force a name when the word is an HTML tag (`text=button` vs `button`). A word that is not
+a tag, such as `Save`, is already a label. A real selector (`#form #delete`, `div span`, `nav a`)
+stays a selector. A miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
+`Kind: selector`, and Next `perceive -C -d 8` for an `@ref`. An unclosed quote in the target
+is an error.
 
 When a successful one-line receipt has no diagnosis-specific Next, it points at the same tab: `perceive
 <target> --since-action` after an in-page action, `perceive <target> -C -d 8`
@@ -1504,8 +1507,8 @@ target. A natively disabled control gets no such hint: the browser does not deli
 An `@ref` is checked for disabled without waiting (also when its scroll settle timed out); its Next is
 `perceive`. The check happens in the same evaluation that scrolls the target into view, so the page may
 have scrolled even though no input was sent. A selector that matches nothing after the wait still fails
-as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `text=` clicks,
-`click --js` and `click --pointer` do not wait. A target with a zero-size box (a collapsed input that
+as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `text=` clicks
+hit-test and do not actionability-wait. `click --js` and `click --pointer` do not wait. A target with a zero-size box (a collapsed input that
 grows on focus, `display: contents`) waits the full 2 s for visibility before it is acted on as before;
 pass `--wait-ms 0` to skip that. `--wait-ms` is a flag on these commands, so the 81-command surface, the
 public synopsis and the MCP tool schemas are unchanged; MCP `click` and `fill` use the 2 s default.

@@ -16,7 +16,7 @@ import { explicitBackgroundChoice, isBackgroundMode, shellQuoteCliArg, tokenizeC
 import { connectToSocket, sendCommand } from './cdp-daemon.mjs';
 import { fdLimitRecovery, isolatedSpawnProfileDir, spawnDebugBrowserHelpDetails } from './cdp-doctor.mjs';
 import { classifyCommandResultSemantics, commandCatalogName, commandMeta, flowStepHelpLines, maybeParseJson, splitFlowSegmentsRaw } from './cdp-flow.mjs';
-import { absolutizeArtifactFileArgs, absolutizeElshotFileArg, absolutizeFullshotArgs, absolutizeResponsiveAuditArgs, absolutizeShotArgs, absolutizeUploadArgs, callerPayloadIndexes, canonicalCallerCommand, clickFeedbackPolicy, isNamedClickQuery, namedClickActionTarget, parseActionabilityWaitArgs, pressHelpLines, rejoinRewrittenCommand, replaceCallerPayload, sameArgList } from './cdp-input.mjs';
+import { absolutizeArtifactFileArgs, absolutizeElshotFileArg, absolutizeFullshotArgs, absolutizeResponsiveAuditArgs, absolutizeShotArgs, absolutizeUploadArgs, assertClosedClickTarget, callerPayloadIndexes, canonicalCallerCommand, clickFeedbackPolicy, namedClickActionTarget, parseActionabilityWaitArgs, pressHelpLines, rejoinRewrittenCommand, replaceCallerPayload, sameArgList } from './cdp-input.mjs';
 import { cdpDomains, evalScopeHelpLines, isHiddenTabCaptureError, runtimeExceptionMessage } from './cdp-page.mjs';
 import { absolutizeNetlogOutArg } from './cdp-page-commands.mjs';
 import { perceiveReadinessRecovery } from './cdp-perceive.mjs';
@@ -366,6 +366,7 @@ export function parseClickArgs(args = []) {
     positional.push(token);
   }
   if (js && pointer) throw new Error('click: --pointer and --js are alternatives; use one');
+  assertClosedClickTarget(positional[0] || '');
   return {
     format: fopts.format,
     compact: fopts.compact,
@@ -385,8 +386,8 @@ export function createClickCommandHandler({ actionFeedback, click, jsClick, poin
   return async ({ args }) => {
     const parsed = parseClickArgs(args);
     const selector = parsed.selector;
-    const named = isNamedClickQuery(selector);
-    const useJs = parsed.js || (named && !parsed.pointer);
+    // A plain label goes through click(), which hit-tests. --js is the hit-test bypass.
+    const useJs = parsed.js;
     const baseArgs = parsed.pointer ? ['--pointer', selector] : parsed.js ? ['--js', selector] : [selector];
     const target = namedClickActionTarget(selector, {
       commandArgs: parsed.download ? [...baseArgs, '--expect-download'] : baseArgs,

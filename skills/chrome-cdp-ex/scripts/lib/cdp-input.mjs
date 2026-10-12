@@ -1668,29 +1668,88 @@ export async function resolveSelectorNode(cdp, sid, selector) {
   const { object } = await cdpDomains(cdp).DOM.resolveNode( { nodeId: result.nodeId }, sid);
   return object.objectId;
 }
+// A word is a tag selector only when it is a known element name. `Save` is a label;
+// `button` and a hyphenated custom element stay selectors. Compared lowercased.
+const HTML_TAG_NAMES = new Set(`
+a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu meta meter nav noscript object ol optgroup option output p picture pre progress q rp rt ruby s samp script search section select slot small source span strong style sub summary sup table tbody td template textarea tfoot th thead time title tr track u ul var video wbr
+svg g path circle rect ellipse line polyline polygon text tspan textpath use image defs symbol marker clippath mask pattern lineargradient radialgradient stop filter foreignobject switch desc
+`.trim().split(/\s+/));
+function isCssTypeSelector(token) {
+  if (!/^[A-Za-z][\w-]*$/.test(token)) return false;
+  if (token.includes('-')) return true;
+  return HTML_TAG_NAMES.has(token.toLowerCase());
+}
+// Compounds split on whitespace and > + ~, not inside [], (), or quotes.
+function cssCompounds(selector) {
+  const parts = [];
+  let current = '';
+  let square = 0;
+  let paren = 0;
+  let quote = '';
+  for (let i = 0; i < selector.length; i++) {
+    const ch = selector[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '[') { square += 1; current += ch; continue; }
+    if (ch === ']' && square > 0) { square -= 1; current += ch; continue; }
+    if (ch === '(') { paren += 1; current += ch; continue; }
+    if (ch === ')' && paren > 0) { paren -= 1; current += ch; continue; }
+    if (square === 0 && paren === 0 && (ch === '>' || ch === '+' || ch === '~' || /\s/.test(ch))) {
+      if (current.trim()) parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+function isPlausibleCssCompound(compound) {
+  const start = compound[0];
+  if (start === '#' || start === '.' || start === '[' || start === '*' || start === ':') return true;
+  const match = compound.match(/^([A-Za-z][\w-]*)([\s\S]*)$/);
+  if (!match || !isCssTypeSelector(match[1])) return false;
+  return match[2] === '' || /^[#.[:]/.test(match[2]);
+}
 export function isLikelyCssSelector(value) {
   const selector = String(value || '').trim();
   if (!selector) return false;
-  const start = selector[0];
-  if (start === '#' || start === '.' || start === '[' || start === '*' || start === ':') return true;
-  if (/^[A-Za-z][\w-]*$/.test(selector)) return true;
-  if (/^[A-Za-z][\w-]*[#.:]/.test(selector)) return true;
-  if (/^[A-Za-z][\w-]*\[/.test(selector)) return true;
-  if (!/\s/.test(selector)) return false;
-  const rest = selector.replace(/^\S+(?:\s*[>+~]\s*|\s+)/, '');
-  const next = rest[0];
-  return next === '#' || next === '.' || next === '[' || next === '*' || next === ':' || /^[A-Za-z]/.test(next || '');
+  const compounds = cssCompounds(selector);
+  return compounds.length > 0 && compounds.every(isPlausibleCssCompound);
 }
+// `text="a  b"` keeps the inner spaces. An unquoted tail keeps its own leading and trailing space.
+// One balanced wrapping quote pair is syntax, not part of the label.
 export function textSelectorName(value) {
-  const selector = String(value || '').trim();
-  if (!TEXT_SELECTOR_PREFIX_RE.test(selector)) return null;
-  const raw = selector.replace(TEXT_SELECTOR_PREFIX_RE, '').trim();
-  const quoted = raw.match(/^(["'])([\s\S]*)\1$/);
-  return (quoted ? quoted[2] : raw).replace(/\s+/g, ' ').trim();
+  const text = String(value ?? '');
+  const match = text.match(/^\s*text=/i);
+  if (!match) return null;
+  const raw = text.slice(match[0].length);
+  const quoted = raw.trim().match(/^(["'])([\s\S]*)\1$/);
+  return quoted ? quoted[2] : raw;
 }
 export function namedClickQueryName(value) {
   const fromText = textSelectorName(value);
-  return fromText == null ? String(value || '').replace(/\s+/g, ' ').trim() : fromText;
+  return fromText == null ? String(value ?? '') : fromText;
+}
+// A quote that opens the target and never closes is an error. A quote inside the
+// label (`O'Brien`, `don't`) is text. A balanced wrapper stays in a plain label.
+export function assertClosedClickTarget(value) {
+  const text = String(value ?? '').trim().replace(/^text=/i, '');
+  const quote = text[0];
+  if (quote !== '"' && quote !== "'") return;
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] === quote) return;
+  }
+  const example = quote === '"' ? "'abc'" : '"abc"';
+  throw new Error(`click: unclosed quote in target (${text}). Close the ${quote} quote, for example ${example}.`);
 }
 export function isNamedClickQuery(value) {
   const selector = String(value || '').trim();
@@ -1699,8 +1758,8 @@ export function isNamedClickQuery(value) {
   if (isRef(selector) || isCursorRef(selector)) return false;
   return !isLikelyCssSelector(selector);
 }
-// #427: a CSS miss says what to try instead. A bare word (`Save`) parses as a tag selector,
-// so point at the text= form that forces a visible-text lookup.
+// #427: a CSS miss says what to try instead. A bare HTML tag (`button`) parses as a tag
+// selector, so point at the text= form that forces a visible-text lookup.
 export function cssClickMissMessage(selector, error) {
   const text = String(error || '');
   if (!text.startsWith('Element not found')) return text;
@@ -1771,8 +1830,34 @@ export function namedClickActionTarget(input, extra = {}) {
   }
   return target;
 }
-export function namedInViewportClickExpression(name) {
-  const wanted = String(name || '').replace(/\s+/g, ' ').trim();
+export function namedInViewportClickExpression(name, { checkCover = false } = {}) {
+  const wanted = String(name ?? '');
+  const coverCheck = checkCover ? `
+    ${clickPointHitFunctionSource()}
+    const hitBox = () => {
+      const box = el.getBoundingClientRect();
+      return { x: box.x, y: box.y, w: box.width, h: box.height };
+    };
+    const fullyInView = (box) => box.w > 0 && box.h > 0 && box.x >= 0 && box.y >= 0 && box.x + box.w <= vw && box.y + box.h <= vh;
+    let point = hitBox();
+    let hit = clickPointHit(el, point);
+    if (hit && hit.covered && fullyInView(point)) {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      point = hitBox();
+      hit = clickPointHit(el, point);
+      if (hit && hit.covered) hit.recentred = true;
+    }
+    if (hit && hit.covered) {
+      return JSON.stringify({
+        ok: false,
+        covered: true,
+        hit,
+        tag: el.tagName,
+        text: labelOf(el).substring(0, 80),
+        x: point.x + point.w / 2,
+        y: point.y + point.h / 2,
+      });
+    }` : '';
   return `(function() {
     /* chrome-cdp-ex.named-in-viewport-click */
     const wanted = ${JSON.stringify(wanted)};
@@ -1783,11 +1868,35 @@ export function namedInViewportClickExpression(name) {
       const rect = el.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw;
     };
-    const nameOf = (el) => normalize(
-      el.getAttribute('aria-label') || el.innerText || el.textContent || el.getAttribute('title') || ''
-    );
+    const fieldsOf = (el) => [
+      typeof el.getAttribute === 'function' ? el.getAttribute('aria-label') : null,
+      el.innerText,
+      el.textContent,
+      typeof el.getAttribute === 'function' ? el.getAttribute('title') : null,
+    ];
+    const exactField = (el) => {
+      for (const field of fieldsOf(el)) {
+        if (field != null && String(field) === wanted) return String(field);
+      }
+      return null;
+    };
+    const normalizedField = (el) => {
+      const wantedNorm = normalize(wanted);
+      if (!wantedNorm) return null;
+      for (const field of fieldsOf(el)) {
+        if (field != null && normalize(field) === wantedNorm) return String(field);
+      }
+      return null;
+    };
+    const labelOf = (el) => {
+      const exact = exactField(el);
+      if (exact != null) return exact;
+      const fuzzy = normalizedField(el);
+      return fuzzy == null ? '' : normalize(fuzzy);
+    };
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(NAMED_IN_VIEWPORT_CLICK_SELECTOR)}));
-    const named = nodes.filter(el => nameOf(el) === wanted);
+    const exactNodes = nodes.filter(el => exactField(el) != null);
+    const named = exactNodes.length ? exactNodes : nodes.filter(el => normalizedField(el) != null);
     const visible = named.filter(inViewport);
     const scrollYBefore = Math.round(window.scrollY || 0);
     let el = visible[0] || null;
@@ -1804,6 +1913,7 @@ export function namedInViewportClickExpression(name) {
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       scrolled = true;
     }
+    ${coverCheck}
     const rect = el.getBoundingClientRect();
     const href = el.href || el.getAttribute('href') || null;
     const linkTarget = ${linkTargetPageExpression('el')};
@@ -1814,7 +1924,7 @@ export function namedInViewportClickExpression(name) {
     return JSON.stringify({
       ok: true,
       tag: el.tagName,
-      text: nameOf(el).substring(0, 80),
+      text: labelOf(el).substring(0, 80),
       href,
       linkTarget,
       frameName,
@@ -1837,9 +1947,10 @@ export function rememberClickTrust(holder, { tag = '', role = '' } = {}) {
   if (nextTag) holder.tag = nextTag;
   if (nextRole && nextRole !== 'null') holder.role = nextRole;
 }
-export async function namedInViewportJsClickStr(cdp, sid, input, clickTrust = null) {
+export async function namedInViewportJsClickStr(cdp, sid, input, clickTrust = null, { checkCover = false } = {}) {
+  assertClosedClickTarget(input);
   const name = namedClickQueryName(input);
-  if (!name) {
+  if (!String(name).trim()) {
     throw new Error(`${String(input).trim()} has no visible text to match. Pass the button or link text, e.g. click <target> "text=Save", or an @ref from perceive.`);
   }
   // #437: the name is resolved and clicked in one evaluate, so whether it is a link that
@@ -1847,8 +1958,11 @@ export async function namedInViewportJsClickStr(cdp, sid, input, clickTrust = nu
   // waiting: CDP handles one connection's messages in order, so it reflects the tabs from
   // before the click and adds no round trip; it is awaited only for such a link.
   const pagesBefore = boundedPageTargets(cdp, CLICK_NAVIGATION_WAIT_MS);
-  const result = await evalStr(cdp, sid, namedInViewportClickExpression(name));
+  const result = await evalStr(cdp, sid, namedInViewportClickExpression(name, { checkCover }));
   const parsed = JSON.parse(result);
+  if (parsed.covered === true) {
+    assertClickPointNotCovered(parsed.hit, { x: parsed.x, y: parsed.y, tag: parsed.tag, text: parsed.text });
+  }
   if (!parsed.ok) throw new Error(namedClickMissMessage(input, parsed.error));
   rememberClickTrust(clickTrust, { tag: parsed.tag, role: parsed.role });
   const newTabWatch = clickFollowsHref(parsed) && linkOpensNewBrowsingContext(parsed)
@@ -1872,6 +1986,7 @@ export async function namedInViewportJsClickStr(cdp, sid, input, clickTrust = nu
 export async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
   const pointer = options.pointer === true;
   if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
+  assertClosedClickTarget(selector);
   if (isNamedClickQuery(selector)) {
     if (pointer) {
       throw new Error('click --pointer needs a CSS selector or @ref, not an accessible name. Run `perceive` to get an @ref.');
@@ -2165,7 +2280,12 @@ export async function waitForActionableSelector(cdp, sid, selector, { waitMs = A
 // without waiting.
 export async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
-  if (isNamedClickQuery(selector)) return jsClickStr(cdp, sid, selector, refMap, refState, { clickTrust: opts.clickTrust });
+  assertClosedClickTarget(selector);
+  // A label hit-tests, then uses the same in-page click as jsclick. `click --js` / `jsclick`
+  // call jsClickStr and skip the hit test.
+  if (isNamedClickQuery(selector)) {
+    return namedInViewportJsClickStr(cdp, sid, selector, opts.clickTrust, { checkCover: true });
+  }
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);
     const cursorPoint = { x: r.x + r.w / 2, y: r.y + r.h / 2 };
