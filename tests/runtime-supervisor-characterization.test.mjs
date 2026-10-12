@@ -9,6 +9,7 @@ import {
 import { commandResult } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
 import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs';
 import { MCP_RUN_COMMAND_ALLOWLIST } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
+import { isServedMcpTool } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 
@@ -478,19 +479,19 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['visual-check', 'visual check alias fixture failure'],
     ]);
     const cases = [
-      { cmd: 'perceive', args: ['--format', 'json'], tool: 'perceive', toolArgs: { target: 'fixture', adaptive: false } },
+      { cmd: 'perceive', args: ['--format', 'json'], tool: 'perceive', toolArgs: { target: 'fixture', adaptive: false, format: 'json' } },
       { cmd: 'report', args: ['--format', 'json'], tool: 'report', toolArgs: { target: 'fixture' } },
-      { cmd: 'click', args: ['@1', '--format', 'json'], tool: 'click', toolArgs: { target: 'fixture', selector: '@1', confirm: true } },
-      { cmd: 'evalraw', args: ['DOM.getDocument', '{}'], mcpDenied: 'run_command command not allowlisted: evalraw' },
-      { cmd: 'eval', args: ['1 + 2'], mcpDenied: 'run_command command not allowlisted: eval' },
-      { cmd: 'eval64', args: [Buffer.from('"多語"').toString('base64')], mcpDenied: 'run_command command not allowlisted: eval64' },
-      { cmd: 'call', args: ['Promise.resolve({ok:true})'], mcpDenied: 'run_command command not allowlisted: call' },
+      { cmd: 'click', args: ['@1', '--format', 'json'], tool: 'click', toolArgs: { target: 'fixture', selector: '@1', confirm: true, format: 'json' } },
+      { cmd: 'evalraw', args: ['DOM.getDocument', '{}'], mcpDenied: 'run_command evalraw requires confirm: true' },
+      { cmd: 'eval', args: ['1 + 2'], mcpDenied: 'run_command eval requires confirm: true' },
+      { cmd: 'eval64', args: [Buffer.from('"多語"').toString('base64')], mcpDenied: 'run_command eval64 requires confirm: true' },
+      { cmd: 'call', args: ['Promise.resolve({ok:true})'], mcpDenied: 'run_command call requires confirm: true' },
       { cmd: 'console', args: ['--clear'], tool: 'run_command', toolArgs: { command: 'console', args: ['fixture', '--clear'], confirm: true } },
       { cmd: 'record', args: ['100'], tool: 'record_snapshot', toolArgs: { target: 'fixture', durationMs: 100 } },
       { cmd: 'summary', args: [], tool: 'run_command', toolArgs: { command: 'summary', args: ['fixture'] } },
-      { cmd: 'fill', args: ['#fixture', 'value', '--format', 'json'], tool: 'fill', toolArgs: { target: 'fixture', selector: '#fixture', text: 'value', confirm: true } },
+      { cmd: 'fill', args: ['#fixture', 'value', '--format', 'json'], tool: 'fill', toolArgs: { target: 'fixture', selector: '#fixture', text: 'value', confirm: true, format: 'json' } },
       { cmd: 'hover', args: ['#fixture'], tool: 'run_command', toolArgs: { command: 'hover', args: ['fixture', '#fixture'], confirm: true } },
-      { cmd: 'press', args: ['Enter', '--format', 'json'], tool: 'press', toolArgs: { target: 'fixture', key: 'Enter', confirm: true } },
+      { cmd: 'press', args: ['Enter', '--format', 'json'], tool: 'press', toolArgs: { target: 'fixture', key: 'Enter', confirm: true, format: 'json' } },
       { cmd: 'scroll', args: ['down', '100', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'scroll', args: ['fixture', 'down', '100', '--format', 'json'], confirm: true } },
       { cmd: 'select', args: ['#fixture', 'two', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'select', args: ['fixture', '#fixture', 'two', '--format', 'json'], confirm: true } },
       { cmd: 'clickxy', args: ['64', '322', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'clickxy', args: ['fixture', '64', '322', '--format', 'json'], confirm: true } },
@@ -498,7 +499,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'jsclick', args: ['#fixture', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'jsclick', args: ['fixture', '#fixture', '--format', 'json'], confirm: true } },
       { cmd: 'type', args: ['value', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'type', args: ['fixture', 'value', '--format', 'json'], confirm: true } },
       { cmd: 'verify-click', args: ['#fixture', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'verify-click', args: ['fixture', '#fixture', '--format', 'json'], confirm: true } },
-      { cmd: 'nav', args: ['https://fixture.test/next', '--format', 'json'], tool: 'navigate', toolArgs: { target: 'fixture', url: 'https://fixture.test/next', confirm: true } },
+      { cmd: 'nav', args: ['https://fixture.test/next', '--format', 'json'], tool: 'navigate', toolArgs: { target: 'fixture', url: 'https://fixture.test/next', confirm: true, format: 'json' } },
       {
         key: 'navigate', cmd: 'navigate', canonical: 'nav', args: ['https://fixture.test/alias', '--format', 'json'],
         tool: 'run_command', toolArgs: { command: 'navigate', args: ['fixture', 'https://fixture.test/alias', '--format', 'json'], confirm: true },
@@ -507,12 +508,12 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'forward', args: ['--format', 'json'], tool: 'run_command', toolArgs: { command: 'forward', args: ['fixture', '--format', 'json'], confirm: true } },
       { cmd: 'reload', args: ['--format', 'json'], tool: 'run_command', toolArgs: { command: 'reload', args: ['fixture', '--format', 'json'], confirm: true } },
       { cmd: 'mock', args: ['add', '**/api/mock', '--status', '201', '--body', 'fixture', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'mock', args: ['fixture', 'add', '**/api/mock', '--status', '201', '--body', 'fixture', '--format', 'json'], confirm: true } },
-      { key: 'network-mock', cmd: 'network-mock', canonical: 'mock', args: [], mcpDenied: 'run_command command not allowlisted: network-mock' },
+      { key: 'network-mock', cmd: 'network-mock', canonical: 'mock', args: [], mcpDenied: 'run_command network-mock requires confirm: true' },
       { cmd: 'clock', args: ['freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'clock', args: ['fixture', 'freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json'], confirm: true } },
       { cmd: 'closetab', args: [], tool: 'run_command', toolArgs: { command: 'closetab', args: ['fixture'], confirm: true } },
-      { key: 'time-travel', cmd: 'time-travel', canonical: 'clock', args: [], mcpDenied: 'run_command command not allowlisted: time-travel' },
+      { key: 'time-travel', cmd: 'time-travel', canonical: 'clock', args: [], mcpDenied: 'run_command time-travel requires confirm: true' },
       { cmd: 'throttle', args: ['fast-3g', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'throttle', args: ['fixture', 'fast-3g', '--format', 'json'], confirm: true } },
-      { key: 'network-throttle', cmd: 'network-throttle', canonical: 'throttle', args: [], mcpDenied: 'run_command command not allowlisted: network-throttle' },
+      { key: 'network-throttle', cmd: 'network-throttle', canonical: 'throttle', args: [], mcpDenied: 'run_command network-throttle requires confirm: true' },
       { cmd: 'viewport', args: ['390x844', '--format', 'json'], tool: 'viewport', toolArgs: { target: 'fixture', size: '390x844', confirm: true } },
       { key: 'viewport-read', cmd: 'viewport', args: [], tool: 'viewport', toolArgs: { target: 'fixture' } },
       {
@@ -520,8 +521,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         tool: 'run_command', toolArgs: { command: 'resize', args: ['fixture', '390x844', '--format', 'json'], confirm: true },
       },
       { cmd: 'emulate', args: ['dark', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'emulate', args: ['fixture', 'dark', '--format', 'json'], confirm: true } },
-      { cmd: 'cookieset', args: ['fixture_cookie=fixture-value'], mcpDenied: 'run_command command not allowlisted: cookieset' },
-      { cmd: 'cookiedel', args: ['fixture_cookie'], mcpDenied: 'run_command command not allowlisted: cookiedel' },
+      { cmd: 'cookieset', args: ['fixture_cookie=fixture-value'], mcpDenied: 'run_command cookieset requires confirm: true' },
+      { cmd: 'cookiedel', args: ['fixture_cookie'], mcpDenied: 'run_command cookiedel requires confirm: true' },
       { cmd: 'dialog', args: ['off'], tool: 'run_command', toolArgs: { command: 'dialog', args: ['fixture', 'off'], confirm: true } },
       { cmd: 'keepalive', args: ['1000'], tool: 'run_command', toolArgs: { command: 'keepalive', args: ['fixture', '1000'], confirm: true } },
       { cmd: 'loadall', args: ['#load-more', '25'], tool: 'run_command', toolArgs: { command: 'loadall', args: ['fixture', '#load-more', '25'], confirm: true } },
@@ -532,7 +533,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'net', args: [], tool: 'run_command', toolArgs: { command: 'net', args: ['fixture'] } },
       {
         key: 'network', cmd: 'network', canonical: 'net', args: [],
-        mcpDenied: 'run_command command not allowlisted: network',
+        tool: 'run_command', toolArgs: { command: 'network', args: ['fixture'] },
       },
       { cmd: 'status', args: [], tool: 'run_command', toolArgs: { command: 'status', args: ['fixture'] } },
       { key: 'status-json', cmd: 'status', args: ['--format', 'json'], tool: 'run_command', toolArgs: { command: 'status', args: ['fixture', '--format', 'json'] } },
@@ -551,23 +552,23 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'overlay', args: ['--format', 'json'], tool: 'overlay', toolArgs: { target: 'fixture' } },
       {
         key: 'overlays', cmd: 'overlays', canonical: 'overlay', args: ['--format', 'json'],
-        mcpDenied: 'run_command command not allowlisted: overlays',
+        tool: 'run_command', toolArgs: { command: 'overlays', args: ['fixture', '--format', 'json'] },
       },
       { cmd: 'styles', args: ['#auth-panel'], tool: 'run_command', toolArgs: { command: 'styles', args: ['fixture', '#auth-panel'] } },
       { cmd: 'components', args: ['#auth-panel', '--format', 'json'], tool: 'components', toolArgs: { target: 'fixture', selector: '#auth-panel', confirm: true } },
       { cmd: 'record-actions', args: ['--format', 'json'], tool: 'run_command', toolArgs: { command: 'record-actions', args: ['fixture', '--format', 'json'] } },
       {
         key: 'recordactions', cmd: 'recordactions', canonical: 'record-actions', args: ['--format', 'json'],
-        mcpDenied: 'run_command command not allowlisted: recordactions',
+        tool: 'run_command', toolArgs: { command: 'recordactions', args: ['fixture', '--format', 'json'] },
       },
       { cmd: 'export-playwright', args: [], tool: 'run_command', toolArgs: { command: 'export-playwright', args: ['fixture'] } },
       {
         key: 'export-pw', cmd: 'export-pw', canonical: 'export-playwright', args: [],
-        mcpDenied: 'run_command command not allowlisted: export-pw',
+        tool: 'run_command', toolArgs: { command: 'export-pw', args: ['fixture'] },
       },
       { cmd: 'wait', args: ['25'], tool: 'run_command', toolArgs: { command: 'wait', args: ['fixture', '25'] } },
       { cmd: 'waitfor', args: ['--text', 'Ready', '500'], tool: 'wait_for', toolArgs: { target: 'fixture', text: 'Ready', timeoutMs: 500 } },
-      { cmd: 'cascade', args: ['#auth-panel', 'color', '--format', 'json'], tool: 'cascade', toolArgs: { target: 'fixture', selector: '#auth-panel', property: 'color' } },
+      { cmd: 'cascade', args: ['#auth-panel', 'color', '--format', 'json'], tool: 'cascade', toolArgs: { target: 'fixture', selector: '#auth-panel', property: 'color', format: 'json' } },
       { cmd: 'checkpoint', args: [], tool: 'session_checkpoint', toolArgs: { target: 'fixture', confirm: true } },
       { cmd: 'cookies', args: [], tool: 'run_command', toolArgs: { command: 'cookies', args: ['fixture'], confirm: true } },
       {
@@ -576,7 +577,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       },
       {
         key: 'qa-page', cmd: 'qa-page', canonical: 'qa', args: ['--format', 'json'],
-        mcpDenied: 'run_command command not allowlisted: qa-page',
+        mcpDenied: 'run_command qa-page requires confirm: true',
       },
       {
         cmd: 'responsive-audit', args: ['--viewport', '800x600', '--format', 'json'],
@@ -584,7 +585,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       },
       {
         key: 'visual-check', cmd: 'visual-check', canonical: 'responsive-audit', args: ['--format', 'json'],
-        mcpDenied: 'run_command command not allowlisted: visual-check',
+        mcpDenied: 'run_command visual-check requires confirm: true',
       },
     ];
 
@@ -750,26 +751,32 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         ? entry.toolArgs?.command
         : (entry.tool ? null : entry.cmd);
       const offAllowlist = Boolean(runSpelling) && !MCP_RUN_COMMAND_ALLOWLIST.includes(runSpelling);
-      const mcpDenied = offAllowlist
-        ? `run_command command not allowlisted: ${runSpelling}`
-        : (entry.mcpDenied || null);
+      // #643: a tool tools/list does not serve is an unknown tool.
+      const hiddenTool = Boolean(entry.tool) && !isServedMcpTool(entry.tool);
+      let mcpDenied = entry.mcpDenied || null;
+      if (offAllowlist) mcpDenied = `run_command command not allowlisted: ${runSpelling}`;
+      else if (hiddenTool) mcpDenied = `Unknown MCP tool: ${entry.tool}`;
       await handle({
         jsonrpc: '2.0', id: index + 1, method: 'tools/call',
-        params: mcpDenied
+        params: mcpDenied && !hiddenTool
           ? { name: 'run_command', arguments: { command: entry.cmd, args: ['fixture', ...entry.args] } }
           : { name: entry.tool, arguments: entry.toolArgs },
       });
       if (mcpDenied) {
         expect(sent[0].error).toMatchObject({ code: -32000, message: mcpDenied });
       } else {
-        // Versioned JSON output (an object with a `schema`) is also returned as structuredContent (#465).
+        // A --format json call keeps versioned JSON output (an object with a `schema`) as
+        // structuredContent (#465); a text call carries the mcp-result block (#643).
         const output = outputs.get(key);
-        const schemaJson = output.startsWith('{"schema"') ? { structuredContent: JSON.parse(output) } : {};
-        expect(sent[0].result).toEqual({
-          content: [{ type: 'text', text: output }],
-          ...schemaJson,
-          isError: false,
-        });
+        expect(sent[0].result.content).toEqual([{ type: 'text', text: output }]);
+        expect(sent[0].result.isError).toBe(false);
+        if (entry.args.includes('--format')) {
+          if (output.startsWith('{"schema"')) expect(sent[0].result.structuredContent).toEqual(JSON.parse(output));
+          else expect(sent[0].result).not.toHaveProperty('structuredContent');
+        } else {
+          expect(sent[0].result.structuredContent)
+            .toMatchObject({ schema: 'chrome-cdp-ex.mcp-result.v1', ok: true, exitCode: 0 });
+        }
       }
 
       await expect(direct(entry, true)).rejects.toThrow(failures.get(key));
@@ -794,10 +801,10 @@ describe('Phase 5 current MCP process boundary characterization', () => {
           jsonrpc: '2.0', id: index + 100, method: 'tools/call',
           params: { name: entry.tool, arguments: entry.toolArgs },
         });
-        expect(failedSent[0].result).toEqual({
-          content: [{ type: 'text', text: failures.get(key) }],
-          isError: true,
-        });
+        expect(failedSent[0].result.content).toEqual([{ type: 'text', text: failures.get(key) }]);
+        expect(failedSent[0].result.isError).toBe(true);
+        if (entry.args.includes('--format')) expect(failedSent[0].result).not.toHaveProperty('structuredContent');
+        else expect(failedSent[0].result.structuredContent).toMatchObject({ schema: 'chrome-cdp-ex.mcp-result.v1', ok: false, exitCode: 1 });
       }
     }
   });

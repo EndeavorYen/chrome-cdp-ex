@@ -311,9 +311,9 @@ describe('#471 drag command surface', () => {
 
   it('maps the MCP drag tool to the CLI command and requires confirm', () => {
     expect(buildMcpToolCommand('drag', { target: 'A1', from: '#a', to: '10,20', steps: 5, mode: 'pointer', confirm: true }))
-      .toEqual(['drag', 'A1', '#a', '10,20', '--steps', '5', '--pointer', '--format', 'json']);
+      .toEqual(['drag', 'A1', '#a', '10,20', '--steps', '5', '--pointer']);
     expect(buildMcpToolCommand('drag', { target: 'A1', from: '@3', to: '@4', confirm: true }))
-      .toEqual(['drag', 'A1', '@3', '@4', '--format', 'json']);
+      .toEqual(['drag', 'A1', '@3', '@4']);
     expect(() => buildMcpToolCommand('drag', { target: 'A1', from: '#a', to: '#b' })).toThrow(/requires confirm: true/);
   });
 

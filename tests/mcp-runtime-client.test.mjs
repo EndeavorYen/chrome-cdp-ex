@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
+import { isServedMcpTool } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 
@@ -103,11 +104,12 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     },
   );
 
+  // #643: every catalog command a Next line can name is allowlisted. A spelling that is
+  // not a catalog command stays refused.
   it.each([
-    'back', 'clickxy', 'forward', 'jsclick', 'reload', 'type', 'verify-click',
-    'mock', 'clock', 'throttle', 'emulate', 'resize', 'table',
+    'rm', 'not-a-command',
   ])(
-    'rejects run_command %s because it is off the survivor allowlist',
+    'rejects run_command %s because it is off the allowlist',
     async command => {
       const executeCli = vi.fn();
       const state = handlerWith(executeCli);
@@ -120,6 +122,17 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
       expect(executeCli).not.toHaveBeenCalled();
     },
   );
+
+  it('refuses a tool that is mapped but not served, before RuntimeClient execution (#643)', async () => {
+    const executeCli = vi.fn();
+    const state = handlerWith(executeCli);
+    expect(isServedMcpTool('report')).toBe(false);
+    await state.handle({
+      jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'report', arguments: { session: 'latest' } },
+    });
+    expect(state.sent.at(-1).error).toEqual({ code: -32000, message: 'Unknown MCP tool: report' });
+    expect(executeCli).not.toHaveBeenCalled();
+  });
 
   it('rejects table collection before RuntimeClient execution', async () => {
     const executeCli = vi.fn();
@@ -135,7 +148,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
       },
     });
     expect(state.sent[0].error).toMatchObject({ code: -32000 });
-    expect(state.sent[0].error.message).toMatch(/not allowlisted/);
+    expect(state.sent[0].error.message).toMatch(/confirm: true/);
     expect(executeCli).not.toHaveBeenCalled();
   });
 
@@ -248,6 +261,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     });
     expect(failures.sent[0].result).toEqual({
       content: [{ type: 'text', text: 'exact stderr\npartial stdout' }],
+      structuredContent: { schema: 'chrome-cdp-ex.mcp-result.v1', ok: false, exitCode: 7 },
       isError: true,
     });
 

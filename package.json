@@ -24,6 +24,7 @@
     "check:docs": "node scripts/check-docs-contract.mjs",
     "check:changelog": "node scripts/changelog-fragments.mjs --check",
     "changelog:fold": "node scripts/changelog-fragments.mjs --fold",
+    "check:next-allowlist": "node scripts/check-next-run-command.mjs",
     "check:command-surfaces": "node scripts/generate-command-surfaces.mjs",
     "check:release-package": "node scripts/changelog-fragments.mjs --release && node scripts/check-release-package.mjs",
     "setup": "node scripts/setup.mjs",
@@ -35,6 +36,7 @@
     "@eslint/js": "^10.0.1",
     "@vitest/coverage-v8": "^3.2.6",
     "eslint": "^10.1.0",
+    "espree": "^11.2.0",
     "globals": "^17.4.0",
     "vitest": "^3.2.6"
   },

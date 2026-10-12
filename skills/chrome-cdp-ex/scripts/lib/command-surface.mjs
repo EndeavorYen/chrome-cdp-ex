@@ -338,22 +338,6 @@ function booleanSchema(description, extra = {}) {
   return { type: 'boolean', description, ...extra };
 }
 
-/** Allowlisted CLI commands for the MCP run_command escape hatch. */
-const MCP_RUN_COMMAND_ALLOWLIST_INPUT = Object.freeze([
-  'help', 'doctor', 'ready', 'list', 'tabs', 'ls', 'target', 'open', 'use', 'current', 'forget',
-  'perceive', 'controls', 'overlay', 'snap', 'snapshot', 'summary', 'status', 'console',
-  'shot', 'screenshot', 'elshot', 'fullshot', 'scanshot', 'diff-shot', 'diffshot',
-  'click', 'verify-click', 'jsclick', 'clickxy', 'type', 'press', 'key', 'scroll', 'hover', 'drag',
-  'fill', 'select', 'upload', 'dialog', 'dismiss-modal',
-  'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'resize', 'emulate',
-  'wait', 'waitfor', 'loadall',
-  'cascade', 'components', 'frame', 'frames', 'text', 'table', 'html', 'styles',
-  'net', 'netlog', 'cookies', 'qa', 'responsive-audit', 'visual-check', 'report',
-  'record', 'checkpoint', 'restore', 'record-actions', 'export-playwright',
-  'tab-group', 'broadcast', 'spawn-debug-browser', 'spawn', 'attach', 'stop', 'closetab',
-  'keepalive', 'mock', 'clock', 'throttle', 'inject',
-]);
-
 const MCP_RESOURCE_RECORDS_INPUT = [
   {
     uriTemplate: 'chrome-cdp-ex://doctor/status',
@@ -802,7 +786,7 @@ const MCP_TOOL_DEFINITIONS_INPUT = Object.freeze([
       type: 'object',
       required: ['command'],
       properties: {
-        command: stringSchema(`Allowlisted CLI command name. One of: ${MCP_RUN_COMMAND_ALLOWLIST_INPUT.join(', ')}`),
+        command: stringSchema('Allowlisted CLI command name.'),
         args: {
           type: 'array',
           items: { type: 'string' },
@@ -832,9 +816,9 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"perceive","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["Accessibility","DOM","Runtime"],"help":{"synopsis":"perceive <target> [flags] [--unsafe-full] [--format json]","summary":"Full page perception with @ref indices + coordinates","order":9,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"perceive","mapper":"perceive"}},
   {"name":"snap","aliases":["snapshot"],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["Accessibility"],"help":{"synopsis":"snap <target> [--full]","summary":"Accessibility tree snapshot (compact by default, --full for complete)","order":10,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"controls","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]","summary":"Bounded visible controls inventory for selector/debugging repair","order":11,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"controls","mapper":"controls"}},
-  {"name":"eval","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"script","authorization":"raw-script","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"eval <target> <expr>","summary":"Evaluate JS expression","order":12,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
-  {"name":"eval64","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"script","authorization":"raw-script","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"eval64 <target> <base64>","summary":"Shorthand for eval --b64; preserves multibyte characters","order":13,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
-  {"name":"call","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"script","authorization":"raw-script","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"call <target> <expr|fn>","summary":"Await expression/function result and print JSON when possible","order":14,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
+  {"name":"eval","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"script","authorization":"raw-script","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"eval <target> <expr>","summary":"Evaluate JS expression","order":12,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"eval64","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"script","authorization":"raw-script","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"eval64 <target> <base64>","summary":"Shorthand for eval --b64; preserves multibyte characters","order":13,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"call","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"script","authorization":"raw-script","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"call <target> <expr|fn>","summary":"Await expression/function result and print JSON when possible","order":14,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"wait","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":[],"help":{"synopsis":"wait <target> <ms>","summary":"Delay inside cdp (also: cdp wait <ms> [target])","order":48,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"keepalive","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"protected-mutation","authorization":"mutation","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"keepalive <target> <ms>","summary":"Extend this tab daemon lifetime (fire-and-forget eval extends 1h)","order":77,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"shot","aliases":["screenshot"],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["Page","Runtime"],"help":{"synopsis":"shot <target> [file|--annotate]","summary":"Viewport screenshot; --annotate (-a) overlays @ref labels","order":16,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"screenshot","mapper":"screenshot"}},
@@ -855,7 +839,7 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"restore","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Network","Runtime"],"help":{"synopsis":"restore <target> --file <path> [--format json]","summary":"Restore a checkpoint artifact into the live page","order":28,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"record-actions","aliases":["recordactions"],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":[],"help":{"synopsis":"record-actions <target>","summary":"Export action log + mock/clock/throttle environment as text or JSON","order":29,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"export-playwright","aliases":["export-pw"],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":[],"help":{"synopsis":"export-playwright <target> [--format json]","summary":"Export current workflow as a Playwright spec draft or JSON handoff","order":30,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
-  {"name":"replay","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Network","Runtime","Input","Emulation","Fetch"],"help":{"synopsis":"replay <target> --file <path> [--format json]","summary":"Replay environment controls + actions against the live page","order":31,"section":"interaction"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
+  {"name":"replay","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Network","Runtime","Input","Emulation","Fetch"],"help":{"synopsis":"replay <target> --file <path> [--format json]","summary":"Replay environment controls + actions against the live page","order":31,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"elshot","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["DOM","Page","Runtime"],"help":{"synopsis":"elshot <target> <sel|@ref> [file]","summary":"Element screenshot: captures element by CSS selector or @ref","order":15,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"qa","aliases":["qa-page"],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Accessibility","DOM","Runtime","Page","Input","Network","Emulation"],"help":{"synopsis":"qa <target> [--desktop WxH] [--mobile WxH] [--format json]","summary":"Live UI smoke: page info, console health, screenshots, perception, assertions","order":34,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"qa_page","mapper":"qa-page"}},
   {"name":"responsive-audit","aliases":["visual-check"],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Accessibility","DOM","Runtime","Page","Emulation"],"help":{"synopsis":"responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]","summary":"Built-in responsive visual audit (alias: visual-check).","order":35,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"responsive_audit","mapper":"responsive-audit"}},
@@ -877,10 +861,10 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"styles","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"styles <target> <selector> [--root auto|body|document|<sel>]","summary":"Get computed styles for element (filtered to meaningful props)","order":53,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"components","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"sensitive-read","authorization":"sensitive-read","evidencePolicy":"none","domains":["DOM","Runtime"],"help":{"synopsis":"components <target> [--depth N] [@ref|selector] [--max-chars N] [--unsafe-full] [--format json]","summary":"React/Vue component tree; targeted props/state requires React fiber.","order":54,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"components","mapper":"components"}},
   {"name":"cookies","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"sensitive-read","authorization":"sensitive-read","evidencePolicy":"none","domains":["Network"],"help":{"synopsis":"cookies <target> [--unsafe-full]","summary":"List cookies for the current page; values redacted unless --unsafe-full","order":55,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
-  {"name":"cookieset","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Network"],"help":{"synopsis":"cookieset <target> <cookie>","summary":"Set a cookie: \"name=value\" or \"name=value; domain=.example.com; secure\"","order":56,"section":"interaction"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
-  {"name":"cookiedel","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Network"],"help":{"synopsis":"cookiedel <target> <name>","summary":"Delete a cookie by name","order":57,"section":"interaction"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
-  {"name":"evalraw","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"raw-cdp","authorization":"raw-cdp","evidencePolicy":"raw-audit","domains":[],"help":{"synopsis":"evalraw <target> <method> [json]","summary":"Send a raw CDP command; returns JSON result","order":72,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
-  {"name":"batch","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"composite","authorization":"composite","evidencePolicy":"none","domains":[],"help":{"synopsis":"batch <target> <cmds> [--parallel] [--format json]","summary":"Execute multiple commands in one call","order":73,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
+  {"name":"cookieset","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Network"],"help":{"synopsis":"cookieset <target> <cookie>","summary":"Set a cookie: \"name=value\" or \"name=value; domain=.example.com; secure\"","order":56,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"cookiedel","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Network"],"help":{"synopsis":"cookiedel <target> <name>","summary":"Delete a cookie by name","order":57,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"evalraw","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"raw-cdp","authorization":"raw-cdp","evidencePolicy":"raw-audit","domains":[],"help":{"synopsis":"evalraw <target> <method> [json]","summary":"Send a raw CDP command; returns JSON result","order":72,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"batch","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"composite","authorization":"composite","evidencePolicy":"none","domains":[],"help":{"synopsis":"batch <target> <cmds> [--parallel] [--format json]","summary":"Execute multiple commands in one call","order":73,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"dialog","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"protected-mutation","authorization":"mutation","evidencePolicy":"none","domains":["Page"],"help":{"synopsis":"dialog <target> [accept|dismiss]","summary":"Show dialog history. Default is dismiss; accept is explicit","order":58,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"viewport","aliases":["resize"],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Emulation","Runtime","Page"],"help":{"synopsis":"viewport|resize <target> [WxH]","summary":"Show or set viewport size (e.g. 375x812, 1280x720)","order":59,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"viewport","mapper":"viewport"}},
   {"name":"emulate","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Emulation"],"help":{"synopsis":"emulate <target> [dark|light|no-preference|--focus|off|status]","summary":"Media feature and focus emulation via CDP Emulation.setEmulatedMedia / setFocusEmulationEnabled","order":60,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
@@ -895,8 +879,8 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"inject","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"state-change","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Runtime"],"help":{"synopsis":"inject <target> <flag> [content]","summary":"Live CSS/JS injection with tracking and removal","order":69,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"cascade","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["DOM","CSS"],"help":{"synopsis":"cascade <target> <sel|@ref> [prop] [--format json]","summary":"CSS origin tracing — shows which rules apply, source file + line","order":70,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"cascade","mapper":"cascade"}},
   {"name":"record","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["DOM","Runtime","Page"],"help":{"synopsis":"record <target> [ms]","summary":"Record a short timeline of DOM/console/network/navigation events","order":71,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"record_snapshot","mapper":"record-snapshot"}},
-  {"name":"flow","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"composite","authorization":"composite","evidencePolicy":"none","domains":[],"help":{"synopsis":"flow <target> \"<steps>\" [--format json]","summary":"Sequential runner. A semicolon separates flow steps only outside quotes. Millisecond waits such as wait 2000 run the standalone wait command.","order":74,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
-  {"name":"repeat","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"composite","authorization":"composite","evidencePolicy":"none","domains":[],"help":{"synopsis":"repeat <target> <N> <cmd> [args]","summary":"Run a command up to N times (cap 50). Fail-fast exits non-zero.","order":75,"section":"workflow"},"mcp":{"exposure":"none","toolName":null,"mapper":null}},
+  {"name":"flow","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"composite","authorization":"composite","evidencePolicy":"none","domains":[],"help":{"synopsis":"flow <target> \"<steps>\" [--format json]","summary":"Sequential runner. A semicolon separates flow steps only outside quotes. Millisecond waits such as wait 2000 run the standalone wait command.","order":74,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"repeat","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"composite","authorization":"composite","evidencePolicy":"none","domains":[],"help":{"synopsis":"repeat <target> <N> <cmd> [args]","summary":"Run a command up to N times (cap 50). Fail-fast exits non-zero.","order":75,"section":"workflow"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"dismiss-modal","aliases":["dismissmodal"],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime","Input"],"help":{"synopsis":"dismiss-modal <target>","summary":"Close common dialog/modal patterns safely (close button, then Escape) —","order":80,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"dismiss_modal","mapper":"dismiss-modal"}}
 ];
 
@@ -932,17 +916,27 @@ for (const name of SURVIVOR_COMMANDS) {
 
 const SURVIVOR_NAME_SET = new Set(SURVIVOR_COMMANDS);
 
-function isSurvivorAllowlistSpelling(spelling) {
-  if (spelling === 'help') return true;
-  const command = COMMAND_SURFACE.resolve(spelling);
-  return Boolean(command && SURVIVOR_NAME_SET.has(command.name));
+function runCommandExposure(command) {
+  return command.mcp.exposure === 'run-command' || command.mcp.exposure === 'tool-and-run-command';
+}
+
+// #643: a Next hint can name any catalog command (a literal, a typo suggestion, or the
+// command the user just ran). run_command accepts every spelling of every command whose
+// MCP exposure is run-command or tool-and-run-command. confirm still gates mutation,
+// raw-script, raw-cdp, and composite calls. scripts/check-next-run-command.mjs fails
+// when a Next-emitted spelling is missing from this list.
+function runCommandSpellings(surface) {
+  const spellings = [];
+  for (const command of surface.commands) {
+    if (!runCommandExposure(command)) continue;
+    spellings.push(command.name, ...command.aliases);
+  }
+  return spellings;
 }
 
 // #554: the served MCP list is the survivor card plus the run_command hatch and help.
-// The input arrays keep the historical catalog so leftover handlers stay in the tree.
-export const MCP_RUN_COMMAND_ALLOWLIST = Object.freeze(
-  MCP_RUN_COMMAND_ALLOWLIST_INPUT.filter(isSurvivorAllowlistSpelling),
-);
+// The tool input arrays keep the historical catalog so leftover handlers stay in the tree.
+export const MCP_RUN_COMMAND_ALLOWLIST = Object.freeze(runCommandSpellings(COMMAND_SURFACE));
 
 const SURVIVOR_TOOL_NAMES = new Set(
   COMMAND_SURFACE.commands
@@ -968,11 +962,37 @@ function withSurvivorRunCommandDescription(tool) {
   };
 }
 
+// #643: a tool result is the CLI text receipt. These tools run a command with JSON output, so
+// `format: "json"` returns that full versioned receipt instead, as it was before. run_command
+// takes `--format json` in its args.
+export const MCP_JSON_FORMAT_TOOLS = Object.freeze([
+  'doctor', 'list_tabs', 'open_or_attach', 'perceive', 'click', 'dismiss_modal', 'fill', 'navigate', 'press', 'cascade',
+]);
+const MCP_JSON_FORMAT_TOOL_SET = new Set(MCP_JSON_FORMAT_TOOLS);
+
+function withFormatOption(tool) {
+  if (!MCP_JSON_FORMAT_TOOL_SET.has(tool.name)) return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...tool.inputSchema.properties,
+        format: stringSchema('json: the full JSON receipt.', { enum: ['text', 'json'] }),
+      },
+    },
+  };
+}
+
 export const MCP_TOOL_DEFINITIONS = Object.freeze(
   MCP_TOOL_DEFINITIONS_INPUT
     .filter(tool => tool.name === 'run_command' || SURVIVOR_TOOL_NAMES.has(tool.name))
-    .map(withSurvivorRunCommandDescription),
+    .map(withSurvivorRunCommandDescription)
+    .map(withFormatOption),
 );
+for (const name of MCP_JSON_FORMAT_TOOLS) {
+  if (!MCP_TOOL_DEFINITIONS.some(tool => tool.name === name)) fail('mcp.tools', `format option names unserved tool ${name}`);
+}
 
 const VALIDATED_MCP_SURFACE = defineMcpSurface({
   tools: MCP_TOOL_DEFINITIONS,
@@ -1016,10 +1036,11 @@ function validateSurfaceConsistency(commandSurface, mcpSurface) {
     }
   }
   for (const command of commandSurface.commands) {
-    if (!SURVIVOR_NAME_SET.has(command.name) && command.name !== 'help') continue;
-    if ((command.mcp.exposure === 'run-command' || command.mcp.exposure === 'tool-and-run-command')
-        && !declaredAllowlist.has(command.name)) {
-      fail('mcp.runCommandAllowlist', `is missing canonical command ${command.name}`);
+    if (command.mcp.exposure !== 'run-command' && command.mcp.exposure !== 'tool-and-run-command') continue;
+    for (const spelling of [command.name, ...command.aliases]) {
+      if (!declaredAllowlist.has(spelling)) {
+        fail('mcp.runCommandAllowlist', `is missing ${spelling}`);
+      }
     }
   }
 }
@@ -1044,8 +1065,8 @@ function surfaceDigest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export const COMMAND_SURFACE_IDENTITY = '60faf3b29f6390a492890d89bd5a4bb88197fefb64357255283f5a939800a9ea';
-export const MCP_SURFACE_IDENTITY = '3ce39f3eb2a2d922d26a3dbe8fa18cc242748ecdfde16cfd204d13c0a21616b2';
+export const COMMAND_SURFACE_IDENTITY = 'e051d94c46f26accbfed786f0ec64874fc996b6544c66603ef09f7ca4a7940e7';
+export const MCP_SURFACE_IDENTITY = 'c73b5f25b950f13bb3dbc4bb7f51450cdf4c3613384c5e5744187185b0e1c5ea';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }

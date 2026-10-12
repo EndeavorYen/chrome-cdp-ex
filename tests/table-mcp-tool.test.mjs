@@ -43,7 +43,7 @@ describe('first-class MCP table tool', () => {
 
   it('maps observe, collect, and continue aliases onto exact JSON argv', () => {
     expect(buildMcpToolCommand('table', { target: 'fixture', selector: '#grid' }))
-      .toEqual(['table', 'fixture', '#grid', '--format', 'json']);
+      .toEqual(['table', 'fixture', '#grid']);
     expect(buildMcpToolCommand('table', {
       target: 'fixture',
       selector: '#grid',
@@ -51,7 +51,7 @@ describe('first-class MCP table tool', () => {
       scrollContainer: '.viewport',
       confirm: true,
     })).toEqual([
-      'table', 'fixture', '#grid', '--collect', '--scroll-container', '.viewport', '--format', 'json',
+      'table', 'fixture', '#grid', '--collect', '--scroll-container', '.viewport',
     ]);
     expect(buildMcpToolCommand('table', {
       target: 'fixture',
@@ -63,10 +63,10 @@ describe('first-class MCP table tool', () => {
       confirm: true,
     })).toEqual([
       'table', 'fixture', '#grid', '--collect', '--scroll-container', '.viewport',
-      '--load-more', '#more', '--row-key-column', '0', '--format', 'json',
+      '--load-more', '#more', '--row-key-column', '0',
     ]);
     expect(buildMcpToolCommand('table', { target: 'fixture', continue: TOKEN }))
-      .toEqual(['table', 'fixture', '--continue', TOKEN, '--format', 'json']);
+      .toEqual(['table', 'fixture', '--continue', TOKEN]);
   });
 
   it('keeps selector and continue mutually exclusive before RuntimeClient', () => {
@@ -95,29 +95,32 @@ describe('first-class MCP table tool', () => {
     })).toContain('--collect');
   });
 
-  it('keeps the table tool and refuses table through the survivor run_command allowlist', () => {
+  it('keeps the table tool and accepts table through run_command', () => {
     expect(buildMcpToolCommand('table', { target: 'fixture', selector: '#grid' })[0]).toBe('table');
-    expect(() => buildMcpToolCommand('run_command', {
+    expect(buildMcpToolCommand('run_command', {
       command: 'table',
       args: ['fixture', '#grid', '--format', 'json'],
-    })).toThrow(/not allowlisted/);
-    expect(() => buildMcpToolCommand('run_command', {
+    })).toEqual(['table', 'fixture', '#grid', '--format', 'json']);
+    expect(buildMcpToolCommand('run_command', {
       command: 'table',
       args: [
         'fixture', '#grid', '--collect', '--scroll-container', '.viewport',
         '--load-more', '#more', '--row-key-column', '2', '--format', 'json',
       ],
       confirm: true,
-    })).toThrow(/not allowlisted/);
-    expect(() => buildMcpToolCommand('run_command', {
+    })).toEqual([
+      'table', 'fixture', '#grid', '--collect', '--scroll-container', '.viewport',
+      '--load-more', '#more', '--row-key-column', '2', '--format', 'json',
+    ]);
+    expect(buildMcpToolCommand('run_command', {
       command: 'table',
       args: ['fixture', '--continue', TOKEN, '--format', 'json'],
-    })).toThrow(/not allowlisted/);
+    })).toEqual(['table', 'fixture', '--continue', TOKEN, '--format', 'json']);
   });
 });
 
 describe('first-class MCP table confirmation isolation', () => {
-  it('denies collect without confirmation before RuntimeClient execution', async () => {
+  it('refuses the unlisted table tool before RuntimeClient execution, and its mapper still needs confirm', async () => {
     const executeCli = vi.fn();
     const state = handlerWith(executeCli);
     await state.handle({
@@ -127,9 +130,12 @@ describe('first-class MCP table confirmation isolation', () => {
         arguments: { target: 'fixture', selector: '#grid', collect: true, scrollContainer: '.viewport' },
       },
     });
-    expect(state.sent[0].error).toMatchObject({ code: -32000 });
-    expect(state.sent[0].error.message).toMatch(/confirm: true/i);
+    // #643: tools/list does not serve table, so tools/call does not run it.
+    expect(state.sent[0].error).toEqual({ code: -32000, message: 'Unknown MCP tool: table' });
     expect(executeCli).not.toHaveBeenCalled();
+    expect(() => buildMcpToolCommand('table', {
+      target: 'fixture', selector: '#grid', collect: true, scrollContainer: '.viewport',
+    })).toThrow(/confirm: true/i);
   });
 
   it('rejects inherited confirmation before RuntimeClient execution', async () => {
