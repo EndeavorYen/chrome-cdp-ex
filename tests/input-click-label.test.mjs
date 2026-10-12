@@ -2,6 +2,7 @@ import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const { absolutizeBatchArgs, absolutizeFlowArgs } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-cli.mjs');
 const { classifyActionFailure } = await import('../skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs');
 
 const TARGET_ID = '71DF370F9D36D5A232B424FDC696BE1A';
@@ -243,5 +244,63 @@ describe('click visible-text labels (#641)', () => {
     expect(T.parseBatchArgs(["click O'Brien"]).commands[0].args).toEqual(["O'Brien"]);
     expect(T.namedClickQueryName('text="Save changes"')).toBe('Save changes');
     expect(T.namedClickQueryName(`text=${'a  b   c'}`)).toBe('a  b   c');
+  });
+});
+
+const EDGE_CALLER = '/tmp/caller';
+
+function quoteCharAbsentFrom(line, quotes) {
+  return quotes.find(ch => !line.includes(ch)) || '';
+}
+
+function flowEdge(line) {
+  const quote = quoteCharAbsentFrom(line, ['"', "'", '`']);
+  if (!quote) {
+    const attempt = `fill #q "${line}"`;
+    expect(() => absolutizeFlowArgs([attempt], EDGE_CALLER)).not.toThrow();
+    expect(() => T.parseFlowSteps(attempt)).toThrow(/unclosed quote/);
+    return 'error: unclosed quote';
+  }
+  const step = `fill #q ${quote}${line}${quote}`;
+  const out = absolutizeFlowArgs([step], EDGE_CALLER);
+  expect(T.parseFlowSteps(out[0])).toEqual([
+    { kind: 'command', cmd: 'fill', args: ['#q', line] },
+  ]);
+  return 'kept';
+}
+
+function batchEdge(line) {
+  if (line.includes('|')) {
+    const step = `fill #q "${line}"`;
+    const out = absolutizeBatchArgs([step], EDGE_CALLER);
+    expect(out).toEqual([step]);
+    expect(() => T.parseBatchArgs(out)).toThrow(/\| separates batch steps/);
+    return 'error: | separates batch steps';
+  }
+  const quote = quoteCharAbsentFrom(line, ['"', "'"]);
+  if (quote) {
+    const step = `fill #q ${quote}${line}${quote}`;
+    const out = absolutizeBatchArgs([step], EDGE_CALLER);
+    expect(T.parseBatchArgs(out).commands).toEqual([
+      { cmd: 'fill', args: ['#q', line] },
+    ]);
+    return 'kept';
+  }
+  // Pipe syntax has no quote left (`'` and `"` both appear). The JSON command
+  // array is the quoting that keeps the fill argument byte-for-byte.
+  const payload = JSON.stringify([{ cmd: 'fill', args: ['#q', line] }]);
+  const out = absolutizeBatchArgs([payload], EDGE_CALLER);
+  expect(T.parseBatchArgs(out).commands).toEqual([
+    { cmd: 'fill', args: ['#q', line] },
+  ]);
+  return 'kept (JSON array)';
+}
+
+describe('text edge lines through flow and batch absolutize', () => {
+  it.each(TEXT_EDGE_LINES)('keeps %j as a quoted fill argument', (line) => {
+    const flow = flowEdge(line);
+    const batch = batchEdge(line);
+    expect(flow).toMatch(/^(kept|error: )/);
+    expect(batch).toMatch(/^(kept|error: )/);
   });
 });

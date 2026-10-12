@@ -343,7 +343,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs verify-click <target> @ref \
 
 It returns `chrome-cdp-ex.semantic-interaction.v1` with the action evidence plus text, network, and console assertions. Failed assertions exit non-zero (`Kind: assertion`). `--expect-status` is only meaningful with `--expect-request`; using it alone is a usage error. Text output keeps the same signals readable for human review.
 
-`batch` exits non-zero when any step fails, including `chrome-cdp-ex.batch.v1` handoffs with `counts.failed > 0`. Unknown inner commands recover with `cdp help`.
+`batch` exits non-zero when any step fails, including `chrome-cdp-ex.batch.v1` handoffs with `counts.failed > 0`. Unknown inner commands recover with `cdp help`. `|` always splits batch steps, including inside quotes. An unclosed quote in a batch step is an error; it used to be kept as literal text. A value that contains `|` belongs in `flow`, or the steps need different quoting.
 
 `qa` is a higher-level smoke command for live UI checks:
 
