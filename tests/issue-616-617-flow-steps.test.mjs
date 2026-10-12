@@ -9,6 +9,7 @@ const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
 const SPLIT_RULE = 'A semicolon separates flow steps only outside quotes';
 const QUOTE_RULE = 'A quote opens only at the start of a word';
+const BACKSLASH_RULE = 'Inside quotes, a backslash is literal';
 const QUOTED_BODY = "const s = 'a  b';\n\ts";
 const SINGLE_QUOTED_BODY = 'const s = "a  b";\n\ts';
 const UNQUOTED_BODY = 'const  s = 1;\n\treturn s';
@@ -108,8 +109,10 @@ describe('flow script and quote splitting (#617)', () => {
 
   it('preserves semicolons inside for(;;) and quoted strings', () => {
     expect(expressionOf('eval for(;;){ break }')).toBe('for(;;){ break }');
-    expect(expressionOf('eval "const s = \\"a;b\\"; s"')).toBe('const s = "a;b"; s');
+    // A backslash does not embed the same quote. Use the other quote kind.
+    expect(expressionOf(`eval 'const s = "a;b"; s'`)).toBe('const s = "a;b"; s');
     expect(expressionOf('eval "a\\nb"')).toBe('a\\nb');
+    expect(expressionOf('eval "a\\;b"')).toBe('a;b');
   });
 
   it('keeps eval flags and call or eval64 bodies intact', () => {
@@ -277,9 +280,82 @@ describe('flow script and quote splitting (#617)', () => {
 
   it('rejects an unclosed quote before any step runs', () => {
     expect(() => T.parseFlowSteps('eval "const x = 1; x')).toThrow(/unclosed quote/);
+    // A leading apostrophe opens a quote, so this word is not the literal 'twas.
+    expect(() => T.parseFlowSteps("'twas")).toThrow(/unclosed quote/);
+    expect(() => T.parseFlowSteps("type 'twas")).toThrow(/unclosed quote/);
     const recovery = T.buildCliErrorRecovery('flow: unclosed quote in steps', { cmd: 'flow' });
     expect(recovery.kind).toBe('usage');
     expect(recovery.run).toBe('cdp help flow');
+  });
+
+  it('keeps Windows backslashes inside quotes and rejects an unquoted \\; before a command', async () => {
+    expect(T.parseFlowSteps('fill #p "C:\\a\\"; summary')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'C:\\a\\'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('fill #p "C:\\a\\b"')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'C:\\a\\b'] },
+    ]);
+    expect(T.parseFlowSteps("fill #p 'C:\\Users\\x\\'")).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'C:\\Users\\x\\'] },
+    ]);
+    expect(T.parseFlowSteps('fill #p "a\\;b"')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'a;b'] },
+    ]);
+    expect(T.parseFlowSteps('shot "C:\\a\\"; summary')).toEqual([
+      { kind: 'command', cmd: 'shot', args: ['C:\\a\\'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('fill #p "C:\\Program Files\\a"; summary')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'C:\\Program Files\\a'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('fill #p a\\;b; summary')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'a;b'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+    expect(T.parseFlowSteps('fill #p C:\\a\\; notacommand')).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'C:\\a;', 'notacommand'] },
+    ]);
+    expect(T.parseFlowSteps('eval const x = 1\\; summary')).toEqual([
+      { kind: 'command', cmd: 'eval', args: ['const x = 1; summary'] },
+    ]);
+    expect(T.parseFlowSteps(`fill #p 'say "hi"'; summary`)).toEqual([
+      { kind: 'command', cmd: 'fill', args: ['#p', 'say "hi"'] },
+      { kind: 'command', cmd: 'summary', args: [] },
+    ]);
+
+    const seen = [];
+    const input = 'click @1; fill #p C:\\a\\; summary';
+    await expect(T.flowStr({
+      run: async (step) => {
+        seen.push(step);
+        return { ok: true, result: 'ok' };
+      },
+      settle: async () => 'settled',
+    }, input)).rejects.toThrow(/unquoted \\;/);
+    expect(seen).toEqual([]);
+
+    let error;
+    try {
+      T.parseFlowSteps(input);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error.message.endsWith('Kind: usage\nNext: cdp help flow')).toBe(true);
+    expect(error.message).toContain('fill #p "C:\\a\\"; summary');
+    const text = T.formatCliError(error, { cmd: 'flow' });
+    expect(text.endsWith('Next: cdp help flow')).toBe(true);
+    expect(text).toMatch(/^Kind: usage$/m);
+    expect(text).not.toMatch(/Next:.*\(Kind:/);
+    const recovery = T.buildCliErrorRecovery(error.message, { cmd: 'flow' });
+    expect(recovery.kind).toBe('usage');
+    expect(recovery.run).toBe('cdp help flow');
+
+    expect(() => T.parseFlowSteps('fill #p C:\\a\\; screenshot')).toThrow(/unquoted \\;/);
+    expect(() => T.parseFlowSteps('fill #p C:\\a\\; assert text Saved')).toThrow(/unquoted \\;/);
+    expect(() => T.parseFlowSteps('type C:\\a\\; key Enter')).toThrow(/unquoted \\;/);
+    expect(() => T.parseFlowSteps('eval "const x = 1"\\; summary')).toThrow(/unquoted \\;/);
   });
 
   it('runs one eval step whose script contains a semicolon', async () => {
@@ -308,10 +384,15 @@ describe('flow step rule documentation (#616 #617)', () => {
     for (const text of [help, T.CATALOG_USAGE, commands, reference, skill]) {
       expect(text).toContain(SPLIT_RULE);
       expect(text).toContain(QUOTE_RULE);
+      expect(text).toContain(BACKSLASH_RULE);
       expect(text).toContain('wait 2000');
+      expect(text).toContain('fill #p "C:\\a\\"; summary');
     }
     expect(help).toContain('eval, eval64, and call');
     expect(help).toContain('command name, alias, or assert');
     expect(help).toContain('\\;');
+    expect(help).toContain("'twas");
+    expect(commands).toContain("'twas");
+    expect(reference).toContain("'twas");
   });
 });

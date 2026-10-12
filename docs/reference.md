@@ -253,12 +253,21 @@ not start a quote. `type don't; summary` and `eval don't; summary` are two
 steps. `eval "don't; summary"` is one step. `\;` is a literal semicolon.
 A doubled backslash does not escape that semicolon, so `\\;` still starts the
 next step and both backslashes stay in the previous step.
+Inside quotes, a backslash is literal, except `\;`, which keeps a semicolon.
+The opening quote always closes. Put a quote in the value by wrapping that
+step in another kind of quote. `fill #p "C:\a\"; summary` is two steps and the
+value is `C:\a\`. `"a\;b"` is the value `a;b`. An unquoted `\;` before a
+command name, alias, or `assert` fails the flow before any step runs, except
+inside an unquoted `eval`, `eval64`, or `call` body. Quote the value to keep a
+trailing backslash and start the next step, for example
+`fill #p "C:\a\"; summary`.
 `eval`, `eval64`, and `call` take one script body: wrapping quotes are flow
 delimiters, not JavaScript, and spaces, newlines, and tabs in that body stay
 byte-for-byte. An unquoted body continues across semicolons until the next
-segment starts with a command name, alias, or `assert`. Quote that body when
-the next statement starts with one of those words. An unclosed quote fails the
-flow before any step runs. `cdp help flow` prints this rule.
+segment starts with a command name, alias, or `assert`. Quote that body, or
+write `\;`, when the next statement starts with one of those words. An unclosed
+quote fails the flow before any step runs. A leading apostrophe opens a quote,
+so `'twas` is an unclosed quote. `cdp help flow` prints this rule.
 
 Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.

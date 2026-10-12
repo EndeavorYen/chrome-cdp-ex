@@ -56,7 +56,7 @@ Take action immediately; do not just read this file.
 
 ## Flow steps
 
-A semicolon separates flow steps only outside quotes. A quote opens only at the start of a word. `wait 2000` is the standalone `wait` command. `eval`, `eval64`, and `call` keep one script body, including its spaces, newlines, and tabs, so a semicolon inside that script is not the next step. `cdp help flow` states the exact rule.
+A semicolon separates flow steps only outside quotes. A quote opens only at the start of a word. `wait 2000` is the standalone `wait` command. `eval`, `eval64`, and `call` keep one script body, including its spaces, newlines, and tabs, so a semicolon inside that script is not the next step. Inside quotes, a backslash is literal, except `\;`, which keeps a semicolon, and the opening quote always closes. An unquoted `\;` before a command name fails the flow unless it is an unquoted `eval`, `eval64`, or `call` body. Quote a trailing backslash: `fill #p "C:\a\"; summary`. `cdp help flow` states the exact rule.
 
 ## Need more depth?
 

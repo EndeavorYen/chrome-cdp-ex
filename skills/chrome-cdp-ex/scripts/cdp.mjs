@@ -26860,13 +26860,16 @@ async function repeatStr({ run, probeCondition }, args) {
 // --- Flow: sequential step runner ---
 // A semicolon separates steps only outside quotes (' " `). A quote opens only at
 // the start of a word: the start of a segment, or after whitespace. A quote inside
-// a word stays literal. \; outside quotes is a literal semicolon. A doubled
-// backslash does not escape the next character, so \\; still separates steps.
-// An unquoted eval/eval64/call body keeps consuming segments until the next one
-// starts with a command name, alias, or assert. A body that is one wrapped quote
-// stops at that quote. The unwrapped script body is one argument, byte-exact,
-// including an empty quoted body. Wrapping quotes on that body are flow delimiters
-// and are not part of the JavaScript.
+// a word stays literal. Inside quotes a backslash is literal, except `\;`, which
+// keeps a semicolon. The opening quote always closes. Outside quotes, `\;` is a
+// literal semicolon, and a doubled backslash does not escape the next character,
+// so `\\;` still separates steps. An unquoted `\;` before a command name, alias,
+// or assert fails the flow, except inside an unquoted eval/eval64/call body.
+// That body keeps consuming segments until the next one starts with a command
+// name, alias, or assert. A body that is one wrapped quote stops at that quote.
+// The unwrapped script body is one argument, byte-exact, including an empty
+// quoted body. Wrapping quotes on that body are flow delimiters and are not
+// part of the JavaScript.
 let flowStepHeads = null;
 
 function flowStepHeadSet() {
@@ -26895,6 +26898,50 @@ function flowQuoteOpens(atTokenStart, ch) {
   return atTokenStart && (ch === '"' || ch === "'" || ch === '`');
 }
 
+// Inside quotes, a backslash is literal except `\;`, which keeps a semicolon.
+// The opening quote always closes; this does not swallow it. `skip` is how many
+// extra characters the caller moves past. A trailing backslash emits itself.
+function flowQuotedEscape(ch, next) {
+  if (ch === '\\' && next === ';') return { emit: ';', skip: 1 };
+  return { emit: ch, skip: 0 };
+}
+
+function flowWordAt(input, index, limit = input.length) {
+  let cursor = index;
+  while (cursor < limit && /\s/.test(input[cursor])) cursor += 1;
+  if (cursor >= limit) return '';
+  const opener = input[cursor];
+  if (opener === '"' || opener === "'" || opener === '`') return '';
+  let word = '';
+  while (cursor < limit && !/\s/.test(input[cursor]) && input[cursor] !== ';') {
+    word += input[cursor];
+    cursor += 1;
+  }
+  return word;
+}
+
+// Unquoted `\;` in an eval/eval64/call body is how that body keeps a semicolon
+// before a command word. After a wrapped script quote has closed, or in any
+// other step, that same spelling swallows the next step.
+function escapedSemicolonIsScriptBody(input, segmentStart, slashIndex) {
+  const prefix = input.slice(segmentStart, slashIndex).trim();
+  const head = firstFlowToken(prefix);
+  if (!FLOW_SCRIPT_COMMANDS.has(head)) return false;
+  const rest = prefix.slice(head.length).trim();
+  const body = head === 'eval' ? takeEvalFlowFlags(rest).body : rest;
+  if (!body) return true;
+  const opener = body[0];
+  return opener !== '"' && opener !== "'" && opener !== '`';
+}
+
+function ambiguousEscapedSemicolonError(nextWord) {
+  return new Error([
+    `flow: unquoted \\; before ${nextWord} is a semicolon, so ${nextWord} does not start a step. Quote the value, for example fill #p "C:\\a\\"; summary`,
+    'Kind: usage',
+    'Next: cdp help flow',
+  ].join('\n'));
+}
+
 function splitFlowSegmentsRaw(input) {
   const segments = [];
   let start = 0;
@@ -26903,9 +26950,10 @@ function splitFlowSegmentsRaw(input) {
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
     if (quote) {
-      if (ch === '\\') {
-        if (i + 1 >= input.length) throw new Error('flow: dangling escape in steps');
-        i += 1;
+      // A backslash does not swallow the closer. `\;` stays in this step.
+      const escaped = flowQuotedEscape(ch, input[i + 1]);
+      if (escaped.skip) {
+        i += escaped.skip;
         continue;
       }
       if (ch === quote) {
@@ -26922,6 +26970,10 @@ function splitFlowSegmentsRaw(input) {
       continue;
     }
     if (ch === '\\' && input[i + 1] === ';') {
+      const nextWord = flowWordAt(input, i + 2);
+      if (nextWord && flowStepHeadSet().has(nextWord) && !escapedSemicolonIsScriptBody(input, start, i)) {
+        throw ambiguousEscapedSemicolonError(nextWord);
+      }
       i += 1;
       atTokenStart = false;
       continue;
@@ -26951,12 +27003,8 @@ function decodeFlowEscapedSemicolon(segment) {
   for (let i = 0; i < segment.length; i++) {
     const ch = segment[i];
     if (quote) {
+      // Keep `\;` for the quoted-value decode. A backslash does not hide the closer.
       out += ch;
-      if (ch === '\\') {
-        if (i + 1 >= segment.length) throw new Error('flow: dangling escape in steps');
-        out += segment[++i];
-        continue;
-      }
       if (ch === quote) {
         quote = '';
         atTokenStart = false;
@@ -26991,6 +27039,40 @@ function splitFlowSegments(input) {
   return splitFlowSegmentsRaw(input).map(decodeFlowEscapedSemicolon);
 }
 
+// `\;` inside quotes becomes a semicolon once. Other backslashes stay.
+// Outside quotes, decodeFlowEscapedSemicolon already turned `\;` into `;`.
+function decodeQuotedFlowSemicolon(segment) {
+  let out = '';
+  let quote = '';
+  let atTokenStart = true;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      const escaped = flowQuotedEscape(ch, segment[i + 1]);
+      if (escaped.skip) {
+        out += escaped.emit;
+        i += escaped.skip;
+        continue;
+      }
+      out += ch;
+      if (ch === quote) {
+        quote = '';
+        atTokenStart = false;
+      }
+      continue;
+    }
+    if (flowQuoteOpens(atTokenStart, ch)) {
+      quote = ch;
+      atTokenStart = false;
+    } else {
+      atTokenStart = /\s/.test(ch);
+    }
+    out += ch;
+  }
+  if (quote) throw new Error('flow: unclosed quote in steps');
+  return out;
+}
+
 function takeEvalFlowFlags(rest) {
   const args = [];
   let body = String(rest || '').trim();
@@ -27009,9 +27091,9 @@ function wrappedFlowQuote(text) {
   const opener = text[0];
   if (opener !== '"' && opener !== "'" && opener !== '`') return false;
   for (let i = 1; i < text.length; i++) {
-    if (text[i] === '\\') {
-      if (i + 1 >= text.length) return false;
-      i += 1;
+    const escaped = flowQuotedEscape(text[i], text[i + 1]);
+    if (escaped.skip) {
+      i += escaped.skip;
       continue;
     }
     if (text[i] === opener) return i === text.length - 1;
@@ -27069,10 +27151,17 @@ function unwrapFlowScriptBody(text) {
     const ch = text[i];
     if (ch === '\\') {
       const next = text[i + 1];
-      if (next == null) throw new Error('flow: dangling escape in steps');
-      decoded += (next === opener || next === '\\' || next === ';') ? next : `\\${next}`;
-      i++;
-      continue;
+      // A trailing backslash is literal. The quote, if still open, is unclosed.
+      if (next === undefined) {
+        decoded += ch;
+        continue;
+      }
+      const escaped = flowQuotedEscape(ch, next);
+      if (escaped.skip) {
+        decoded += escaped.emit;
+        i += escaped.skip;
+        continue;
+      }
     }
     if (ch === opener) {
       if (i !== text.length - 1) return text;
@@ -27094,8 +27183,15 @@ function scriptCommandArgs(cmd, body) {
 function parseFlowLine(line) {
   const trimmed = String(line || '').trim();
   const head = firstFlowToken(trimmed);
+  if (head === FOREGROUND_ACTIVATE_COMMAND) throw new Error(`flow: "${head}" is internal and not allowed as a step`);
+  if (FLOW_SCRIPT_COMMANDS.has(head)) {
+    return { kind: 'command', cmd: head, args: scriptCommandArgs(head, trimmed.slice(head.length)) };
+  }
+  // Non-script steps use tokenizeCommandLine, which keeps a backslash inside quotes.
+  // Flow's only inside-quote exception, `\;`, is decoded first so the value is a semicolon.
+  const decoded = decodeQuotedFlowSemicolon(trimmed);
   if (head === 'wait') {
-    const parts = tokenizeCommandLine(trimmed).map(token => token.value);
+    const parts = tokenizeCommandLine(decoded).map(token => token.value);
     const what = parts.slice(1).join(' ').toLowerCase();
     if (what === 'dom stable' || what === 'network idle') return { kind: 'wait', what };
     // `cdp wait <ms>` is a real command. Flow used to send every wait to the settle helper.
@@ -27103,7 +27199,7 @@ function parseFlowLine(line) {
     return { kind: 'wait', what };
   }
   if (head === 'assert') {
-    const parts = tokenizeCommandLine(trimmed).map(token => token.value);
+    const parts = tokenizeCommandLine(decoded).map(token => token.value);
     const assertionKind = parts[1];
     const value = parts.slice(2).join(' ').replace(/^(['"`])(.*)\1$/, '$2');
     const kinds = {
@@ -27116,11 +27212,7 @@ function parseFlowLine(line) {
     }
     return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
   }
-  if (head === FOREGROUND_ACTIVATE_COMMAND) throw new Error(`flow: "${head}" is internal and not allowed as a step`);
-  if (FLOW_SCRIPT_COMMANDS.has(head)) {
-    return { kind: 'command', cmd: head, args: scriptCommandArgs(head, trimmed.slice(head.length)) };
-  }
-  const tokens = tokenizeCommandLine(trimmed);
+  const tokens = tokenizeCommandLine(decoded);
   return { kind: 'command', cmd: tokens[0].value, args: commandArgsFromTokens(tokens.slice(1)) };
 }
 
@@ -27134,14 +27226,15 @@ function flowStepHelpLines() {
     'A semicolon separates flow steps only outside quotes. Quotes are single quotes, double quotes, or backticks.',
     'A quote opens only at the start of a word (the start of a step, or after whitespace). A quote inside a word stays literal.',
     'A backslash-semicolon (\\;) is a literal semicolon and does not start a step. A doubled backslash does not escape that semicolon, so \\\\; still starts a step and both backslashes stay in the previous step.',
+    'Inside quotes, a backslash is literal, except \\; which keeps a semicolon. The opening quote always closes. Put a quote in the value by wrapping that step in another kind of quote.',
+    'An unquoted \\; before a command name, alias, or assert fails the flow before any step runs, except inside an unquoted eval, eval64, or call body. Quote the value to keep a trailing backslash and start the next step, for example fill #p "C:\\a\\"; summary.',
     'wait <milliseconds> is the standalone wait command, for example wait 2000.',
     'wait dom stable and wait network idle still wait for the page and fail the flow on timeout.',
     'eval, eval64, and call take one script body. Wrapping quotes around that body are flow delimiters, not JavaScript.',
     'Spaces, newlines, and tabs in that script body stay byte-for-byte.',
-    'Inside those quotes, \\\\ keeps a backslash, an escaped quote keeps that quote, and \\; keeps a semicolon. Any other backslash stays.',
     'An unquoted script body continues across semicolons until the next segment starts with a command name, alias, or assert.',
     'Quote that body, or write \\;, when a statement after a semicolon starts with one of those words.',
-    'An unclosed quote fails the flow before any step runs.',
+    'An unclosed quote fails the flow before any step runs. A leading apostrophe opens a quote, so \'twas is an unclosed quote.',
   ];
 }
 
@@ -33175,8 +33268,8 @@ Usage: cdp <command> [args]
                                     such as wait 2000, or a settle alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
                                     A semicolon separates flow steps only outside quotes (' " \`).
-                                    A quote opens only at the start of a word.
-                                    \\; is a literal semicolon. eval, eval64, and call keep one script body.
+                                    A quote opens only at the start of a word. Inside quotes, a backslash is literal, except \\; which keeps a semicolon. The opening quote always closes.
+                                    An unquoted \\; before a command name fails unless it is an unquoted eval, eval64, or call body. Quote a trailing backslash: fill #p "C:\\a\\"; summary.
                                     Assertions: "assert selector <css>", "assert selector-missing <css>", "assert text <value>".
                                     Halts and exits non-zero on the first failing step; JSON preserves chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait 2000; eval const x = 1; x; summary"
@@ -34644,6 +34737,14 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'show-help',
       run: 'cdp help flow',
       reason: 'flow wait accepts "dom stable", "network idle", or a millisecond count such as wait 2000. Print usage instead of probing status.',
+    };
+  }
+  if (lower.includes('flow: unquoted \\;')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help flow',
+      reason: 'An unquoted \\; before a command name keeps a semicolon and swallows the next step. Quote the value, or run cdp help flow.',
     };
   }
   if (lower.includes('flow: unclosed quote') || lower.includes('flow: dangling escape')) {
