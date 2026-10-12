@@ -1738,8 +1738,8 @@ perceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.
 text --auto for what the page says.
 Window size: viewport|resize <target> WxH; responsive-audit <target> --viewport WxH.
 
-Chrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.
-Electron: CDP_PORT=9333 (not 9222).
+First step: chrome://inspect/#remote-debugging (keeps logins). spawn-debug-browser, --daily-profile, and isolated profiles have no user logins; ask first.
+Electron or a browser on its own port: CDP_PORT=<port> (example 9333, not 9222).
 Opt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.
 
 cdp help <command> prints leftover topic help.
