@@ -54,6 +54,10 @@ Take action immediately; do not just read this file.
 3. If the request names a page, match it and `perceive <target> -C -d 8`.
 4. If no target is clear, ask which tab after listing.
 
+## Flow steps
+
+A semicolon separates flow steps only outside quotes. A quote opens only at the start of a word. `wait 2000` is the standalone `wait` command. `eval`, `eval64`, and `call` keep one script body, including its spaces, newlines, and tabs, so a semicolon inside that script is not the next step. Inside quotes, a backslash is literal, except `\;`, which keeps a semicolon, and the opening quote always closes. An unquoted `\;` before a command name fails the flow unless it is an unquoted `eval`, `eval64`, or `call` body. Quote a trailing backslash: `fill #p "C:\a\"; summary`. A backtick-quoted word in a non-script step is one argument with the backticks removed. A value with significant whitespace or a quote must be wrapped in a quote kind it does not contain. An unquoted fill or type value is trimmed, and a run of whitespace is an argument boundary. `cdp help flow` states the exact rule.
+
 ## Need more depth?
 
 - `references/commands.md` — exhaustive command and edge-case reference.
