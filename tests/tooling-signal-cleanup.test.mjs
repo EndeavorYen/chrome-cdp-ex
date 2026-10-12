@@ -56,7 +56,7 @@ describe.skipIf(process.platform === 'win32')('#676 npm test process group', () 
       const ready = join(tmpdir(), `chrome-cdp-ex-676-ready-${signal}-${process.pid}`);
       rmSync(ready, { force: true });
       const outer = process.env.CHROME_CDP_EX_VITEST_RUN_RUNTIME || '';
-      const child = spawn(process.execPath, [runner, 'tests/issue-676-hold.test.mjs', '--testTimeout=120000'], {
+      const child = spawn(process.execPath, [runner, 'tests/tooling-signal-hold.test.mjs', '--testTimeout=120000'], {
         detached: true,
         stdio: 'ignore',
         env: {

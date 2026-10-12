@@ -33,13 +33,15 @@ Order when they conflict: effective > easy for agents > efficient.
 ## Code
 
 - Pure ESM, Node built-ins only in shipped code.
-- The `cdp-*` modules import each other in cycles. At module top level, do not read a binding from another `cdp-*` module; put shared constants in `cdp-base`. `tests/runtime-modules.test.mjs` loads each module on its own to catch this.
+- The `cdp-*` modules import each other in cycles. At module top level, do not read a binding from another `cdp-*` module; put shared constants in `cdp-base`. `tests/core-runtime-modules.test.mjs` loads each module on its own to catch this.
 - A public surface change updates, in the same PR: `command-surface.mjs`, help text, `SKILL.md` or `references/commands.md`, and the MCP mapping when the command is an MCP tool. `npm run check:docs` checks that every command is documented.
 - Redact secrets by default. Mutating commands return an action receipt with recovery guidance.
 
 ## Tests
 
-- Red before green: add the failing case first, in the existing test file for that behavior. Create a new file only for a new area. Do not name files after issue numbers.
+- Test files are flat in `tests/` and named `<area>-<topic>.test.mjs`. Areas: `browser`, `daemon`, `core`, `cli`, `perceive`, `input`, `action`, `page`, `flow`, `report`, `mcp`, `table`, `tooling`. Find the file with `ls tests/<area>-*`.
+- Red before green: add the failing case first, in the existing file for that behavior. Create a new file only for a new topic. Do not name files after issue numbers, and do not add to `legacy-*.test.mjs` (old mixed batches; move a case out when you touch it).
+- Command-function tests use the shared fake client in `tests/mock-cdp.mjs`. Runtime source text, when a test must read it, comes from `tests/runtime-source.mjs`.
 - Test behavior, not source layout: no line numbers, digests, inventories, or checks that a named function calls another. A source scan is fine only when it guards a product property (for example, every `Next:` command is runnable through MCP).
 - A test that needs a browser uses `describe.skipIf(!browser)`; the unit suite must pass with no browser installed.
 - Keep `npm test` fast. On a small machine, use `npm test -- --maxWorkers=2` or run the touched files with `npx vitest run <files>`; CI runs the full suite.

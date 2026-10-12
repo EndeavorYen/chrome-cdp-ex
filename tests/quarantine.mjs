@@ -3,17 +3,17 @@
 export const QUARANTINE = [
   {
     issue: 518,
-    file: 'tests/issue-503-quoted-secret-tail.test.mjs',
+    file: 'tests/core-quoted-secret-tail.test.mjs',
     test: 'redacts 256 KB of ${name} in linear time',
   },
   {
     issue: 518,
-    file: 'tests/issue-511-escaped-json-and-netlog-bodies.test.mjs',
+    file: 'tests/page-escaped-json-and-netlog-bodies.test.mjs',
     test: 'redacts 256 KB of ${name} in linear time',
   },
   {
     issue: 687,
-    file: 'tests/issue-518-linear-timing-helper.test.mjs',
+    file: 'tests/tooling-linear-timing-helper.test.mjs',
     test: 'catches a quadratic scan',
   },
 ];
