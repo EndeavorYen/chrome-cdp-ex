@@ -2115,6 +2115,42 @@ export async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   }
   return formatSpawnDebugBrowserOutput(model, { format: 'json' });
 }
+// #629: an ancestor behind a fixed layer is the layer's own shell only when the layer is the
+// sole rendered child on every step from that ancestor down to the layer. Each page script
+// inlines this helper (the scripts are strings evaluated in the page). Keep the one copy.
+function soleRenderedChainSource() {
+  return `function soleRenderedChain(ancestor, el) {
+      if (typeof getComputedStyle !== 'function' || !el || !ancestor) return true;
+      const skipTag = { script: 1, style: 1, template: 1, head: 1, link: 1, meta: 1, noscript: 1 };
+      function renderedSibling(node) {
+        if (!node || (node.nodeType && node.nodeType !== 1)) return false;
+        const tag = String(node.tagName || '').toLowerCase();
+        if (skipTag[tag]) return false;
+        let cs = null;
+        try { cs = getComputedStyle(node); } catch (err) { return false; }
+        if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return false;
+        if (typeof node.getBoundingClientRect !== 'function') return true;
+        let box = null;
+        try { box = node.getBoundingClientRect(); } catch (err) { return false; }
+        if (!box || !(box.width > 0) || !(box.height > 0)) return false;
+        return true;
+      }
+      let node = el;
+      for (let guard = 0; node && node !== ancestor && guard < 64; guard++) {
+        let parent = null;
+        try { parent = node.parentElement; } catch (err) { return true; }
+        if (!parent) return true;
+        let kids = null;
+        try { kids = parent.children; } catch (err) { return true; }
+        if (!kids || typeof kids.length !== 'number') return true;
+        for (let i = 0; i < kids.length; i++) {
+          if (kids[i] !== node && renderedSibling(kids[i])) return false;
+        }
+        node = parent;
+      }
+      return true;
+    }`;
+}
 export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false } = {}) {
   const targetJson = JSON.stringify(targetPoint && ['input', 'x', 'y', 'descriptor'].reduce((snapshot, key) => { const property = Object.getOwnPropertyDescriptor(targetPoint, key); if (property && Object.hasOwn(property, 'value')) snapshot[key] = property.value; return snapshot; }, Object.create(null))); return `(function() {
     const targetPoint = ${targetJson};
@@ -2153,6 +2189,9 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
       const cy = Math.min(Math.max(r.top + r.height / 2, 0), Math.max(vh - 1, 0));
       const topAtCenter = document.elementFromPoint(cx, cy);
       const topAtTarget = target ? document.elementFromPoint(target.x, target.y) : null;
+      // #629: a fixed shell that contains the target also contains the hit. That is not "on top".
+      const ancestorOfTarget = !!(targetElement && el !== targetElement && typeof el.contains === 'function' && el.contains(targetElement));
+      const onTarget = !!topAtTarget && !ancestorOfTarget && (topAtTarget === el || (typeof el.contains === 'function' && el.contains(topAtTarget)));
       return {
         kind,
         selector: selectorFor(el),
@@ -2168,8 +2207,32 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
           || (r.left <= 8 && r.top <= 8 && r.right >= layoutW - 8 && r.bottom >= layoutH - 8),
         coversTarget: pointInRect(target, r),
         topAtCenter: topAtCenter === el || el.contains(topAtCenter),
-        topAtTarget: topAtTarget === el || el.contains(topAtTarget),
+        topAtTarget: onTarget,
       };
+    }
+    // A viewport-sized fixed element is a cover only when something it does not contain is behind
+    // it. An ancestor in that stack (html/body on a short page) is not foreign when el is the
+    // sole rendered child from that ancestor down to el; any other rendered sibling makes the
+    // ancestor a cover. elementsFromPoint skips pointer-events:none. Without that API, keep the rect check.
+    ${soleRenderedChainSource()}
+    function coversForeignContent(el) {
+      if (typeof document.elementsFromPoint !== 'function') return true;
+      const box = el.getBoundingClientRect();
+      const fx = Math.min(Math.max(box.left + box.width / 2, 0), Math.max(vw - 1, 0));
+      const fy = Math.min(Math.max(box.top + box.height / 2, 0), Math.max(vh - 1, 0));
+      let stack = null;
+      try { stack = document.elementsFromPoint(fx, fy); } catch (err) { return true; }
+      if (!stack || typeof stack.length !== 'number') return true;
+      let seenEl = false;
+      for (let i = 0; i < stack.length; i++) {
+        const node = stack[i];
+        if (node === el) { seenEl = true; continue; }
+        if (!seenEl) continue;
+        if (typeof el.contains === 'function' && el.contains(node)) continue;
+        if (node && typeof node.contains === 'function' && node.contains(el) && soleRenderedChain(node, el)) continue;
+        return true;
+      }
+      return false;
     }
     function isDialog(el) {
       return el.matches('[role="dialog"], dialog, [aria-modal="true"]');
@@ -2177,13 +2240,22 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
     const targetElement = ${objectBoundTarget ? 'this' : 'null'} || (targetPoint && typeof targetPoint.input === 'string' && !targetPoint.input.startsWith('@') ? document.querySelector(targetPoint.input) : null);
     const seen = new Set(), overlays = [];
     function add(el, kind) {
-      const dialog = isDialog(el); if (!visible(el) || seen.has(el) || (!dialog && targetElement && (el === targetElement || targetElement.contains(el)))) return;
+      const dialog = isDialog(el);
+      if (!visible(el) || seen.has(el)) return;
+      if (targetElement && !dialog && (el === targetElement || (typeof targetElement.contains === 'function' && targetElement.contains(el)))) return;
+      const ancestorOfTarget = !!(targetElement && el !== targetElement && typeof el.contains === 'function' && el.contains(targetElement));
+      // #629: the target's own fixed/sticky shell is not a cover.
+      if (ancestorOfTarget && !dialog) return;
       seen.add(el);
       const info = elementInfo(el, kind, targetPoint);
       const hasPointer = info.pointerEvents !== 'none';
-      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || dialog);
-      const blocksPage = !targetPoint && hasPointer && (dialog || info.coversViewport);
-      if (dialog || blocksTarget || blocksPage) overlays.push(Object.defineProperty({ ...info, blocking: blocksTarget || blocksPage || dialog }, 'targetSelf', { value: dialog && el === targetElement }));
+      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && !ancestorOfTarget && (info.topAtTarget || dialog);
+      const blocksPage = !targetPoint && hasPointer && (dialog || (info.coversViewport && coversForeignContent(el)));
+      if (!(dialog || blocksTarget || blocksPage)) return;
+      const record = { ...info, blocking: blocksTarget || blocksPage || dialog };
+      Object.defineProperty(record, 'targetSelf', { value: !!(dialog && el === targetElement) });
+      Object.defineProperty(record, 'ancestorOfTarget', { value: ancestorOfTarget });
+      overlays.push(record);
     }
     for (const el of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
     for (const el of document.querySelectorAll('body *')) {
@@ -2191,6 +2263,19 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
       if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
       add(el, el.getAttribute('aria-modal') === 'true' ? 'dialog' : 'overlay');
       if (overlays.length >= 20) break;
+    }
+    // A layer over the hit point that is not fixed/sticky (an absolute popover) is still the cover
+    // when it does not contain the target. Skip it when a real fixed cover is already named.
+    if (targetPoint && targetElement && typeof document.elementFromPoint === 'function') {
+      const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
+      const separate = !!(top && top !== targetElement
+        && !(typeof targetElement.contains === 'function' && targetElement.contains(top))
+        && !(typeof top.contains === 'function' && top.contains(targetElement)));
+      if (separate && !overlays.some(entry => entry.topAtTarget && entry.coversTarget && !entry.ancestorOfTarget)) {
+        let pointer = 'auto';
+        try { pointer = getComputedStyle(top).pointerEvents || 'auto'; } catch (err) { pointer = 'auto'; }
+        if (pointer !== 'none') add(top, isDialog(top) ? 'dialog' : 'overlay');
+      }
     }
     overlays.sort((a, b) => {
       const za = Number.parseInt(a.zIndex, 10);
@@ -2203,7 +2288,7 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
     if (targetPoint) {
       const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
       if (top) target.topElement = elementInfo(top, isDialog(top) ? 'dialog' : 'top-element', targetPoint);
-      const blocker = overlays.find(o => !o.targetSelf && o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
+      const blocker = overlays.find(o => !o.targetSelf && !o.ancestorOfTarget && o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
       if (blocker) {
         target.blocked = true;
         target.topElement = { kind: blocker.kind, selector: blocker.selector, text: blocker.label || blocker.text || blocker.tag };
@@ -2320,6 +2405,7 @@ export function dialogVisibleFunctionSource() {
 export function dismissModalScript() {
   return `(function() {
     ${dialogVisibleFunctionSource()}
+    ${soleRenderedChainSource()}
     // #653: only a control whose job is to close counts. Accept words (OK, 確認, Continue) and labels
     // that merely contain a close word ("Cancel subscription", "Book") are the user's decision.
     // A Chinese close label is the whole string: 關閉 or 取消, optionally followed by 對話框, 視窗,
@@ -2396,6 +2482,30 @@ export function dismissModalScript() {
         const coversViewport = (r.left <= slackX && r.top <= slackY && r.right >= vw - slackX && r.bottom >= vh - slackY)
           || (r.left <= 8 && r.top <= 8 && r.right >= layoutW - 8 && r.bottom >= layoutH - 8);
         if (!coversViewport) continue;
+        // #629: a fixed app shell contains the page. It is not a cover unless a non-descendant
+        // sits behind it. An ancestor behind the centre counts only when el is not the sole
+        // rendered child from that ancestor down to el (a sibling panel is a backdrop).
+        // elementFromPoint / elementsFromPoint skip pointer-events:none.
+        if (typeof document.elementsFromPoint === 'function') {
+          const cx = Math.min(Math.max(r.left + r.width / 2, 0), Math.max(vw - 1, 0));
+          const cy = Math.min(Math.max(r.top + r.height / 2, 0), Math.max(vh - 1, 0));
+          let stack = null;
+          try { stack = document.elementsFromPoint(cx, cy); } catch (err) { stack = null; }
+          if (stack && typeof stack.length === 'number') {
+            let seenEl = false;
+            let foreign = false;
+            for (let i = 0; i < stack.length; i++) {
+              const node = stack[i];
+              if (node === el) { seenEl = true; continue; }
+              if (!seenEl) continue;
+              if (typeof el.contains === 'function' && el.contains(node)) continue;
+              if (node && typeof node.contains === 'function' && node.contains(el) && soleRenderedChain(node, el)) continue;
+              foreign = true;
+              break;
+            }
+            if (!foreign) continue;
+          }
+        }
         overlays.push(el.id ? ('#' + (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(el.id) : el.id)) : (el.tagName || 'overlay'));
         if (overlays.length >= 5) break;
       }

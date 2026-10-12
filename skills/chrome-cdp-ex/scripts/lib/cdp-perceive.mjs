@@ -460,22 +460,21 @@ export function clickPointHitFunctionSource() {
       return '<' + tag + id + classes + '>' + (text ? ' "' + text + '"' : '');
     };
     // Only on the failure path: the nearest fixed/sticky layer and whether a dialog is on top.
-    // #601 large: walk from the hit upward. Measure only the first fixed/sticky ancestor that
-    // does not contain the click target and can receive hits (pointer-events is not none).
-    // A pointer-events:none shell (react-hot-toast) and a fixed app shell that contains the
-    // target do not qualify, so Next stays a JS click.
+    // #601 / #629: that layer is the first fixed/sticky ancestor of the hit that does not contain
+    // the click target and can receive hits (pointer-events is not none). The target's own app
+    // shell and a pointer-events:none wrapper are not the cover, so they are not reported.
     const dialogSelector = 'dialog,[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
     let layer = null;
     let dialog = false;
     let largeCover = null;
     for (let node = top, guard = 0; node && node.nodeType === 1 && guard < 64; node = composedParent(node), guard++) {
       const position = positionOf(node);
-      if (position === 'fixed' || position === 'sticky') {
-        if (!layer) layer = { node, position };
-        if (!largeCover && !composedContains(node, target)) {
-          let pointerEvents = '';
-          try { pointerEvents = getComputedStyle(node).pointerEvents || ''; } catch { pointerEvents = ''; }
-          if (pointerEvents !== 'none') largeCover = node;
+      if ((position === 'fixed' || position === 'sticky') && !composedContains(node, target)) {
+        let pointerEvents = '';
+        try { pointerEvents = getComputedStyle(node).pointerEvents || ''; } catch { pointerEvents = ''; }
+        if (pointerEvents !== 'none') {
+          if (!layer) layer = { node, position };
+          if (!largeCover) largeCover = node;
         }
       }
       if (!dialog && typeof node.matches === 'function' && node.matches(dialogSelector)) dialog = true;
