@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
@@ -28,10 +28,6 @@ const pkCharts = Object.fromEntries(Object.entries(PK_324_CHART_FILES).map(([fac
 const pkScoreboard = readFileSync(new URL(`../${PK_324_SCOREBOARD_FILE}`, import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-const runtimeV3ArchitectureUrl = new URL('../docs/architecture/runtime-v3.md', import.meta.url);
-const runtimeV3AdrUrl = new URL('../docs/adr/0001-runtime-v3-contract-first-strangler.md', import.meta.url);
-const runtimeV3FinalAdrUrl = new URL('../docs/adr/0003-runtime-v3-application-dispatch.md', import.meta.url);
-const publicContractsReadmeUrl = new URL('../docs/contracts/README.md', import.meta.url);
 
 describe('Killer Path docs contract', () => {
   it('runs by absolute script path without depending on caller cwd', () => {
@@ -230,10 +226,6 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract(docs, [])).toEqual([]);
   });
 
-  it('documents a checked-in measured baseline artifact for comparison reruns', () => {
-    expect(reference).toContain('docs/benchmarks/measured-baselines.example.json');
-  });
-
   it('requires package and plugin manifest versions to match', () => {
     const packageVersion = JSON.parse(packageJson).version;
     const docs = {
@@ -424,88 +416,9 @@ describe('Killer Path docs contract', () => {
     );
   });
 
-  it('does not make 10-round benchmark:campaign a CLAUDE.md / CONTRIBUTING.md merge-gate', () => {
-    for (const [label, text] of [['CLAUDE.md', claude], ['CONTRIBUTING.md', contributing]]) {
-      expect(text, label).toContain('npm test');
-      expect(text, label).toContain('npm run lint');
-      expect(text, label).toContain('npm run check:docs');
-      expect(text, label).toContain('npm run smoke:live');
-      expect(text, label).not.toMatch(/requires a passing 10\+\s*round mixed campaign/i);
-      expect(text, label).not.toMatch(/10\+\s*round mixed campaign for release readiness/i);
-      expect(text, label).not.toMatch(/A release candidate should pass matched MCP\/CLI rounds/i);
-    }
-    expect(selfImprovementLoop).toContain('Not a merge gate');
-    expect(selfImprovementLoop).not.toMatch(/10\+\s*round mixed campaign for release readiness/i);
-
-    const docs = {
-      readme,
-      reference,
-      pkBoard,
-      pkCharts,
-      pkScoreboard,
-      selfImprovementLoop,
-      skill,
-      skillCommands,
-      killerPath,
-      packageJson,
-      pluginManifest,
-      changelog,
-      claude,
-      contributing,
-      design,
-    };
-
-    expect(checkDocsContract(docs, [])).toEqual([]);
-    expect(checkDocsContract({
-      ...docs,
-      claude: claude.replace('npm run check:docs', 'npm run check:style'),
-    }, [])).toContain('CLAUDE.md verification is missing: npm run check:docs');
-    expect(checkDocsContract({
-      ...docs,
-      claude: `${claude}\nRelease-facing work requires a passing 10+ round mixed campaign.`,
-    }, [])).toContain('CLAUDE.md must not list 10-round mixed campaign as required');
-  });
 });
 
 describe('Repository release gates', () => {
-  it('ships the Runtime v3 contract source of truth and fixture policy', () => {
-    const files = JSON.parse(packageJson).files;
-
-    expect(existsSync(runtimeV3ArchitectureUrl)).toBe(true);
-    expect(existsSync(runtimeV3AdrUrl)).toBe(true);
-    expect(existsSync(runtimeV3FinalAdrUrl)).toBe(true);
-    expect(existsSync(publicContractsReadmeUrl)).toBe(true);
-    expect(files).toEqual(expect.arrayContaining([
-      'docs/architecture/runtime-v3.md',
-      'docs/adr/0001-runtime-v3-contract-first-strangler.md',
-      'docs/adr/0003-runtime-v3-application-dispatch.md',
-      'docs/contracts/',
-    ]));
-    const architecture = readFileSync(runtimeV3ArchitectureUrl, 'utf8');
-    expect(architecture).toMatch(/representative browser-independent CLI\s+exit and error behavior/);
-    expect(architecture).toContain('68 application handlers');
-    expect(architecture).toContain('13 targetless CLI adapters');
-    expect(architecture).toContain('five daemon protocol groups');
-    expect(architecture).toContain('Intentional compatibility components retained');
-    expect(architecture).toContain('None is retained merely as a fallback');
-    expect(architecture).toContain('currently implements public `browser`, `page`, and `frame` resources');
-    expect(architecture).toMatch(/Future graph extensions may add\s+browser contexts, DOM\/accessibility nodes/);
-    expect(architecture).not.toContain('remaining target architecture');
-    expect(architecture).not.toContain('77 explicitly enumerated legacy command routes');
-  });
-
-  it('keeps Phase 1 host evidence historical while promoting only the exact-tree runtime benchmark', () => {
-    const codexIntegration = readFileSync(new URL('../docs/integrations/codex.md', import.meta.url), 'utf8');
-    const codexKillerPath = readFileSync(new URL('../docs/examples/codex-killer-path.md', import.meta.url), 'utf8');
-
-    for (const surface of [codexIntegration, codexKillerPath]) {
-      expect(surface).toContain('Phase 1 candidate');
-      expect(surface).toMatch(/historical/i);
-    }
-    const benchmark = readFileSync(new URL('../experiment/benchmark.html', import.meta.url), 'utf8');
-    expect(benchmark).toContain('Smart Eye benchmark · latest measured release');
-    expect(benchmark).not.toContain('historical for current tree');
-  });
 
   it('runs CI for pull requests targeting main and dev', () => {
     expect(ciWorkflow).toMatch(/pull_request:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\bdev\b[^\]]*\]/);
@@ -533,12 +446,9 @@ describe('Repository release gates', () => {
     expect(releaseWorkflow).toContain("steps.readiness.outputs.ready == 'true'");
   });
 
-  it('validates host evidence and the actual tarball before attaching a release', () => {
+  it('validates the actual tarball before attaching a release', () => {
     expect(releaseWorkflow).toContain('npm ci');
-    expect(releaseWorkflow).toContain('npm run check:host-validation');
-    expect(releaseWorkflow).toContain('npm run check:contracts');
     expect(releaseWorkflow).toContain('npm pack');
-    expect(releaseWorkflow).toContain('npm run check:contracts -- --tarball "$TARBALL"');
     expect(releaseWorkflow).toContain('npm run check:release-package -- "$TARBALL"');
     expect(releaseWorkflow).toContain("node-version: '22'");
     expect(releaseWorkflow).toMatch(/gh release create "\$TAG" "\$TARBALL"/);

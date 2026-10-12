@@ -1,5 +1,4 @@
 import { EventEmitter } from 'events';
-import { readFileSync } from 'fs';
 import { PassThrough } from 'stream';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -12,11 +11,6 @@ import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/com
 import { MCP_RUN_COMMAND_ALLOWLIST } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
-const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const contract = JSON.parse(readFileSync(
-  new URL(`../docs/contracts/v${packageVersion}/public-contracts.v1.json`, import.meta.url),
-  'utf8',
-));
 
 function fakeChild({ code = 0, stdout = '', stderr = '' } = {}) {
   const child = new EventEmitter();
@@ -332,92 +326,6 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       env: { CDP_PORT: '9222' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-  });
-
-  it('maps every frozen valid tool case through one direct RuntimeClient execution', async () => {
-    const executeCli = vi.fn(async command => ({
-      code: 0,
-      stdout: JSON.stringify(command),
-      stderr: '',
-    }));
-    const sent = [];
-    const handle = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({ executeCli }),
-      sendMessage: message => sent.push(message),
-    });
-
-    const mappingCases = contract.mcp.mappingCases.filter(fixture => (
-      fixture.tool !== 'run_command' || MCP_RUN_COMMAND_ALLOWLIST.includes(fixture.args?.command)
-    ));
-    for (const [index, fixture] of mappingCases.entries()) {
-      await handle({
-        jsonrpc: '2.0',
-        id: index + 1,
-        method: 'tools/call',
-        params: { name: fixture.tool, arguments: fixture.args },
-      });
-      expect(sent.at(-1)).toEqual({
-        jsonrpc: '2.0',
-        id: index + 1,
-        result: {
-          content: [{ type: 'text', text: JSON.stringify(fixture.command) }],
-          isError: false,
-        },
-      });
-    }
-    expect(executeCli).toHaveBeenCalledTimes(mappingCases.length);
-  });
-
-  it('rejects all frozen invalid mappings before direct runtime execution', async () => {
-    const executeCli = vi.fn();
-    const sent = [];
-    const handle = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({ executeCli }),
-      sendMessage: message => sent.push(message),
-    });
-    for (const [index, fixture] of contract.mcp.invalidCases.entries()) {
-      await handle({
-        jsonrpc: '2.0',
-        id: index + 1,
-        method: fixture.kind === 'resource' ? 'resources/read' : 'tools/call',
-        params: fixture.kind === 'resource'
-          ? { uri: fixture.uri }
-          : { name: fixture.tool, arguments: fixture.args },
-      });
-      const spelling = fixture.args?.command;
-      const message = fixture.tool === 'run_command' && spelling && !MCP_RUN_COMMAND_ALLOWLIST.includes(spelling)
-        ? `run_command command not allowlisted: ${spelling}`
-        : fixture.error;
-      expect(sent.at(-1).error).toMatchObject({ code: -32000, message });
-    }
-    expect(executeCli).not.toHaveBeenCalled();
-  });
-
-  it('maps every frozen resource read through one direct runtime execution', async () => {
-    const executeCli = vi.fn(async command => ({
-      code: 0,
-      stdout: JSON.stringify(command),
-      stderr: '',
-    }));
-    const sent = [];
-    const handle = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({ executeCli }),
-      sendMessage: message => sent.push(message),
-    });
-    for (const [index, fixture] of contract.mcp.resourceMappings.entries()) {
-      await handle({
-        jsonrpc: '2.0',
-        id: index + 1,
-        method: 'resources/read',
-        params: { uri: fixture.uri },
-      });
-      expect(executeCli).toHaveBeenLastCalledWith(fixture.command);
-      expect(sent.at(-1).result.contents[0]).toMatchObject({
-        uri: fixture.uri,
-        text: JSON.stringify(fixture.command),
-      });
-    }
-    expect(executeCli).toHaveBeenCalledTimes(contract.mcp.resourceMappings.length);
   });
 
   it('freezes content and error parity across direct, daemon-wire, batch, flow, and MCP boundaries', async () => {

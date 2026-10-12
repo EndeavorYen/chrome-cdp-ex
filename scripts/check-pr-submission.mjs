@@ -21,11 +21,8 @@ export function checkVerification(body) {
     }
   }
 
-  const section = lines.slice(start + 1, end).join('\n').toLowerCase();
-  const problems = [];
-  if (!section.includes('proof')) problems.push('Verification section missing Proof');
-  if (!section.includes('evidence class')) problems.push('Verification section missing Evidence class');
-  return problems;
+  const section = lines.slice(start + 1, end).join('\n').trim();
+  return section ? [] : ['Verification section is empty'];
 }
 
 export function checkForbiddenText(text, extraTerms = []) {

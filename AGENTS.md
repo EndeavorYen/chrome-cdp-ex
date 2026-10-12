@@ -16,7 +16,7 @@ chrome-cdp-ex is effective, efficient, and easy for agents to use. When those go
 - Default output is concise.
 - Bulk or sensitive detail is opt-in, using the flags that exist in the runtime: `--verbose` (`-v` on `shot`, the long coordinate-mapping text), `--full` (the complete `snap` tree, or the full action JSON envelope), and `--unsafe-full` (unredacted or unbounded output on `netlog`, `checkpoint`, and `components`; on action commands it selects the same full envelope as `--full`).
 - Any change to perceive, act, or output format must report before/after `agentChars` and `wallMs`. `agentChars` is the Unicode code-point length of agent-facing stdout plus stderr. `wallMs` is wall-clock milliseconds for the scored commands.
-- Measure that change with `npm run benchmark:slice1`. Do not treat it as a merge gate. That matches the existing stance on `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) and validation-lab phases 4–7: those are not merge requirements either.
+- Measure that change with `npm run benchmark:slice1`. It is a measurement, not a merge gate.
 
 ### Easy for agents
 
@@ -51,10 +51,8 @@ npm run check:docs
 
 When attach, perceive, or act code changes and a supported browser exists, also run `npm run smoke:live`.
 
-Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Do not police npm registry publish as an agent process for this repository.
+Do not police npm registry publish as an agent process for this repository.
 
-## Changelog and dispatch fixture
+## Changelog
 
 Add unreleased notes as `changelog.d/<slug>.md` (`###` headings and `* ` bullets). Leave existing `## [Unreleased]` entries in `CHANGELOG.md`. Before a release tag, run `npm run changelog:fold` so the release workflow can read the version section from `CHANGELOG.md`.
-
-The current `runtime-dispatch.v1.json` omits source line numbers. A line move leaves it unchanged. Run `node scripts/runtime-dispatch-inventory.mjs --write` only when a command, owner, or digest changes.

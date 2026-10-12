@@ -54,32 +54,19 @@ function actionSha(text, action) {
 }
 
 describe('checkVerification', () => {
-  it('accepts a Verification section that contains Proof and Evidence class', () => {
+  it('accepts a non-empty Verification section', () => {
     expect(checkVerification(passingBody)).toEqual([]);
   });
 
   it('reports a missing Verification heading', () => {
-    expect(checkVerification('Proof and Evidence class without a heading\n')).toEqual([
+    expect(checkVerification('npm test without a heading\n')).toEqual([
       'missing ## Verification heading',
     ]);
   });
 
-  it('reports a missing Evidence class inside the Verification section', () => {
-    const body = [
-      '## Verification',
-      '### Notes',
-      'Proof is in the subsection.',
-      '## Later',
-      'Evidence class: should not count',
-    ].join('\n');
-    expect(checkVerification(body)).toEqual([
-      'Verification section missing Evidence class',
-    ]);
-  });
-
-  it('reports a missing Proof inside the Verification section', () => {
-    expect(checkVerification('## Verification\nEvidence class: manual\n')).toEqual([
-      'Verification section missing Proof',
+  it('reports an empty Verification section', () => {
+    expect(checkVerification('## Verification\n\n## Later\nnpm test\n')).toEqual([
+      'Verification section is empty',
     ]);
   });
 });
@@ -336,7 +323,6 @@ describe('PR submission check workflow and docs', () => {
     expect(doc).toContain('PR_FORBIDDEN_TERMS');
     expect(doc).toContain('scripts/check-pr-submission.mjs');
     expect(doc).toContain('## Verification');
-    expect(doc).toContain('Evidence class');
     expect(doc).toContain('--body-file');
     expect(doc).toContain('--head');
     expect(doc).toContain('---commit---');

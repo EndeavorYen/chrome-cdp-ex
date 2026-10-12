@@ -14,7 +14,6 @@ const {
 } = await import('../skills/chrome-cdp-ex/scripts/mcp-server.mjs');
 const { createRuntimeClient } = await import('../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs');
 const { verifyMcpInitialize } = await import('../scripts/setup.mjs');
-const { encodeMcpFrame, parseMcpFrames } = await import('../scripts/benchmark-mcp-path.mjs');
 
 const serverPath = fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/mcp-server.mjs', import.meta.url));
 
@@ -198,10 +197,4 @@ describe('#454 MCP stdio framing', () => {
     }
   });
 
-  it('benchmark-mcp-path frames requests and parses replies as newline-delimited JSON', () => {
-    expect(encodeMcpFrame({ jsonrpc: '2.0', id: 1, method: 'ping' })).toBe('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
-    const parsed = parseMcpFrames(Buffer.from('{"jsonrpc":"2.0","id":1,"result":{}}\n{"jsonrpc":"2.0","id":2', 'utf8'));
-    expect(parsed.messages).toEqual([{ jsonrpc: '2.0', id: 1, result: {} }]);
-    expect(parsed.rest.toString('utf8')).toBe('{"jsonrpc":"2.0","id":2');
-  });
 });

@@ -231,9 +231,6 @@ function checkSelfImprovementLoopContract(docs) {
   if (/10\+\s*round mixed campaign for release readiness/i.test(text)) {
     failures.push('Self-improvement loop runbook must not treat 10-round mixed campaign as a merge instruction');
   }
-  if (docs.reference && !docs.reference.includes('self-improvement-loop.md')) {
-    failures.push('Reference docs must link to the self-improvement loop runbook');
-  }
   return failures;
 }
 

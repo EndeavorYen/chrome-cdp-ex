@@ -14,7 +14,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   listTarEntries,
-  validatePackageInventory,
   validateReadmeLinks,
 } from '../scripts/check-release-package.mjs';
 
@@ -23,81 +22,16 @@ const checkerPath = join(rootDir, 'scripts/check-release-package.mjs');
 const requiredEntries = [
   '.claude-plugin/plugin.json',
   'INTEGRATIONS.md',
-  'bin/chrome-cdp',
-  'docs/benchmarks/host-validation.v1.json',
-  'docs/architecture/runtime-v3.md',
-  'docs/adr/0001-runtime-v3-contract-first-strangler.md',
-  'docs/adr/0003-runtime-v3-application-dispatch.md',
-  'docs/contracts/README.md',
-  'docs/contracts/v2.15.0/public-contracts.v1.json',
-  'docs/contracts/v2.15.0/package-entries.v1.json',
-  'docs/contracts/v2.15.0/runtime-dispatch.v1.json',
-  'docs/contracts/v2.16.0/public-contracts.v1.json',
-  'docs/contracts/v2.16.0/package-entries.v1.json',
-  'docs/contracts/v2.16.0/runtime-dispatch.v1.json',
-  'docs/contracts/v2.17.0/public-contracts.v1.json',
-  'docs/contracts/v2.17.0/package-entries.v1.json',
-  'docs/contracts/v2.17.0/runtime-dispatch.v1.json',
-  'docs/contracts/v2.18.0/public-contracts.v1.json',
-  'docs/contracts/v2.18.0/package-entries.v1.json',
-  'docs/contracts/v2.18.0/runtime-dispatch.v1.json',
-  'docs/contracts/v2.19.0/public-contracts.v1.json',
-  'docs/contracts/v2.19.0/package-entries.v1.json',
-  'docs/contracts/v2.19.0/runtime-dispatch.v1.json',
-  'docs/contracts/v2.19.1/public-contracts.v1.json',
-  'docs/contracts/v2.19.1/package-entries.v1.json',
-  'docs/contracts/v2.19.1/runtime-dispatch.v1.json',
-  'docs/contracts/v2.20.0/public-contracts.v1.json',
-  'docs/contracts/v2.20.0/package-entries.v1.json',
-  'docs/contracts/v2.20.0/runtime-dispatch.v1.json',
-  'docs/contracts/v2.21.0/public-contracts.v1.json',
-  'docs/contracts/v2.21.0/package-entries.v1.json',
-  'docs/contracts/v2.21.0/runtime-dispatch.v1.json',
-  'docs/contracts/v2.21.0/survivor-synopsis.v1.json',
-  'docs/daily-browser-cdp.md',
-  'docs/examples/codex-killer-path.md',
-  'experiment/codex-killer-path-demo-poster.png',
-  'experiment/codex-killer-path-demo.html',
-  'experiment/codex-killer-path-demo.mp4',
-  'scripts/check-host-validation.mjs',
-  'scripts/check-release-package.mjs',
-  'scripts/check-public-contracts.mjs',
-  'scripts/setup.mjs',
   'README.md',
+  'bin/chrome-cdp',
   'package.json',
+  'scripts/check-release-package.mjs',
+  'scripts/setup.mjs',
   'skills/chrome-cdp-ex/SKILL.md',
   'skills/chrome-cdp-ex/scripts/cdp.mjs',
+  'skills/chrome-cdp-ex/scripts/download.mjs',
   'skills/chrome-cdp-ex/scripts/mcp-server.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/command-application.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/command-surface.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/daemon-action-handlers.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/git-head.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/netlog.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/page-health.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/pdf-text.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/perception-model.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/redaction.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/runtime-dir.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/secrets.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/session-policy.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/session-report.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/source-maps.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/tab-observation.mjs',
-  'skills/chrome-cdp-ex/scripts/lib/target-binding.mjs',
+  'skills/chrome-cdp-ex/scripts/session.mjs',
 ];
 
 let tempRoot;
@@ -169,14 +103,6 @@ describe('release package checker', () => {
     ]);
   });
 
-  it('rejects duplicate non-directory tar entries instead of deduplicating them', () => {
-    expect(validatePackageInventory(
-      ['package/a', 'package/a'],
-      { schema: 'chrome-cdp-ex.package-entries.v1', productVersion: '2.15.0', entries: ['package/a'] },
-      '2.15.0',
-    )).toContain('Release package inventory contains duplicate file entries');
-  });
-
   it('accepts the actual npm package only when every release-critical entry is present', () => {
     const result = spawnSync(process.execPath, [checkerPath, packedTarball], {
       cwd: rootDir,
@@ -184,7 +110,7 @@ describe('release package checker', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Release package OK: 86 required entries');
+    expect(result.stdout).toContain('Release package OK: 12 required entries');
   });
 
   it('rejects an artifact that omits a release-critical entry', () => {

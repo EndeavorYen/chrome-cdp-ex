@@ -4,7 +4,7 @@
 
 ## Verification
 
-The body needs a `## Verification` heading. From that heading until the next `## ` heading, or the end of the body, the text must include `Proof` and `Evidence class`. Matching ignores case. A `###` subsection stays inside the section.
+The body needs a `## Verification` heading with at least one line under it before the next `## ` heading: the command you ran and its result, or the CI run. A `###` subsection stays inside the section.
 
 ## Forbidden text
 

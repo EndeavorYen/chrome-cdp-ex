@@ -630,21 +630,9 @@ Every `tools/call` result starts with one text block holding the command output 
 - **openWorld** comes from `domains`. A command that talks to the live browser over any CDP domain returns or acts on untrusted web content, so it is open-world. This covers page readers such as `perceive`, `controls` and `list_tabs`. Only `report`, which reads the CLI's own session log, is closed-world.
 - **`run_command`** takes the widest hints of its allowlist.
 
-`benchmark:mcp` token budgets count text blocks only. Image base64 and `structuredContent` sizes are reported separately as `imageBase64Chars` and `structuredContentChars`.
-
 It exposes curated tools for the killer path plus Tier-1 workflow coverage: `doctor`, `list_tabs`, `open_or_attach`, `select_target`, `perceive`, `controls`, `overlay`, `screenshot`, `click`, `verify_click`, `dismiss_modal`, `fill`, `viewport`, `qa_page`, `responsive_audit`, `report`, `navigate`, `press`, `wait_for`, `cascade`, `components`, `spawn_debug_browser`, `record_snapshot`, `session_checkpoint`, and allowlisted `run_command`. Mutating tools require `confirm: true`. MCP also advertises resources such as `chrome-cdp-ex://doctor/status` and session report/screenshot templates so large handoffs need not ride only on tool results.
 
 Agent-facing defaults are intentionally compact: MCP `perceive` adds `--adaptive`, `controls` adds `--compact`, and bounded `report` calls add `--compact`. Set the matching tool argument to `false` only when the full response is worth the extra context.
-
-Use the MCP benchmark when changing the adapter or tool surface:
-
-```bash
-npm run benchmark:mcp
-npm run benchmark:cli
-npm run benchmark:campaign -- --rounds 2 --types mcp,cli --json
-```
-
-Both routes execute task `problem-finding-v1` with the same six checkpoints: open, controls, overlay, dismiss-modal, verify-click, and report. Route recommendations compare these matched runs only; Killer Path/adversarial rounds are excluded.
 
 ## Electron
 
@@ -672,69 +660,15 @@ powershell.exe -NoProfile -Command "(Get-Command node -ErrorAction SilentlyConti
 "/mnt/c/.../node.exe" skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-## Benchmark Gate
+## Measuring output size
 
-The dogfood benchmark launches a disposable debug browser and measures:
-
-- `doctor -> open -> perceive -> act -> since-action evidence -> report`
-- command calls, total time, first useful observation, useful observation tokens
-- action evidence coverage and JSON completeness
-- Action Receipt contract completeness
-- failed-action diagnosis and no-change recovery
-- `nextSteps` and recommendation handoffs
-- modal, frame, CSS tracing, HMR/SPA diff, stale-ref recovery, and session stability probes
-
-Run:
+Changes to perceive, act, or output format report before/after `agentChars` and `wallMs` from:
 
 ```bash
-npm run benchmark:killer
-npm run benchmark:killer -- --json
-npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
-npm run benchmark:playwright -- --out playwright-raw.json
-npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
-npm run benchmark:killer -- --comparison-baselines ./baselines.json
-npm run benchmark:killer -- --json --adversarial-seed round5-alpha
-npm run benchmark:campaign -- --rounds 10 --output ./campaign.json
-npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alpha,beta --json
-npm run benchmark:campaign -- --rounds 10 --history ./campaign-history.jsonl
-npm run benchmark:campaign -- --rounds 10 --compare-baseline ./main-campaign.json
-npm run benchmark:campaign -- --types large-app --rounds 1 --json
-npm run benchmark:campaign -- --types real-app --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --rounds 5 --json
-npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --json
+npm run benchmark:slice1
 ```
 
-Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
-
-Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating matched MCP and CLI routes by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, culprit steps, and a deterministic candidate identity. That identity binds the product version to a SHA-256 digest of the runtime, benchmark, setup, package, and identity-owned source files. Failed, incomplete, or regression-fail campaigns exit nonzero; `--allow-failures` is only for intentionally collecting diagnostic output. Add `--types large-app` for the 5000+ DOM node, 1000-row, 200-control bounded-output stress gate.
-
-Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy` when a smoke page is too easy. Each profile has a distinct trait/probe contract, and output records generated coverage, exercised coverage, missing probes, target class, and culprit steps. These are safe local/test-only fixtures. Any future URL-backed profile must use an owned staging/test tenant, never customer data, personal accounts, or production workflows.
-
-The README and GitHub Pages benchmark proof should use a current passing mixed campaign when making release-quality usability claims. For the v2.12.0 front-door snapshot, the command was:
-
-```bash
-npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
-npm run benchmark:update-readme -- release-campaign.json README.md --html experiment/benchmark.html --date YYYY-MM-DD --version X.Y.Z
-```
-
-The public-proof updater validates all ten ordered rounds, every round gate, zero failures, the exact release route/profile inventory, and the artifact candidate identity against the current tree before it writes either README or benchmark HTML.
-
-Killer Path gates include long-session report budget coverage. Any report handoff with 50 or more recorded actions must stay inside its JSON byte budget, expose `latestAction`, keep a bounded non-expensive `timelineWindow`, preserve recovery-critical receipt fields, and point to artifact paths instead of dumping all history.
-
-Campaign summaries include a `routeRecommendation` block. When comparable MCP and CLI rounds are present, it compares pass rate, average total latency, first-useful-observation latency, first-action-evidence latency, and estimated output tokens, then returns `mcp`, `cli`, or `inconclusive` with a confidence level. Deltas are reported as `mcp - cli`; negative latency or token deltas mean MCP used less. Killer Path and adversarial rounds are excluded so replay stress does not pollute the matched-route decision.
-
-Use `--adversarial-seed <seed>` on `benchmark:killer` when you need a replayable high-difficulty browser page. The generated page can compose overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, hidden-template, and canvas traits while preserving normal Killer Path selectors. Campaign failures include the seed and exact reproduction command in `issueDrafts`.
-
-Add `--history <jsonl>` when running self-improvement loops. The campaign appends a compact record for each run and reports deltas against the previous record for pass rate, average output tokens, max step tokens, and slowest-step latency so regressions are visible before opening or merging follow-up fixes.
-
-Add `--compare-baseline <json-or-jsonl>` during PR review when you need a before-after regression check against `main` or a saved campaign summary. The comparison reports pass-rate delta, average output-token delta, max-step token delta, slowest-step latency delta, and new culprit changes for both slowest and largest-output steps. JSONL baselines use the latest non-empty record, so a `--history` file can double as a compact review baseline.
-
-When a campaign round fails, the summary includes issue-ready diagnostics with a suggested title, reproduction command, ports, failed criteria, culprit step, artifact paths, and labels. Use those drafts as the starting point for follow-up issues instead of hand-writing failure reports from raw logs.
-
-For the repeatable issue -> fix -> review -> merge process, use the [self-improvement loop runbook](self-improvement-loop.md).
-
-Direct live benchmark commands use an isolated run manager and fail fast if the configured live slot is already owned. Each owner record includes the benchmark name, run id, slot, CDP port, HTTP server port, profile directory, process id, and heartbeat timestamp, so interrupted runs can be reclaimed without hiding live owners. Prefer `benchmark:campaign` for repeated testing; it keeps one owner for the full sequence while allocating unique round ports to avoid cross-run CDP target contamination.
-
-Publish comparison claims only when `gate.passed` is true and competitor baselines are measured, not the planning-only `heuristic-smoke-baseline`.
+It is a measurement, not a merge gate.
 
 ## More Detail
 
