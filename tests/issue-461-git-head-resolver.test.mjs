@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 process.env.NODE_ENV = 'test';
+
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const { resolveGitHead } = await import('../skills/chrome-cdp-ex/scripts/lib/git-head.mjs');
@@ -150,9 +152,9 @@ describe('#461 resolveGitHead reads .git without spawning git', () => {
 
 describe('#461 daemon metadata no longer spawns git', () => {
   it('cdp.mjs has no git subprocess left', () => {
-    const source = readFileSync(CDP_SCRIPT, 'utf8');
+    const source = runtimeSource();
     expect(source).not.toMatch(/spawn(?:Sync)?\(\s*['"]git['"]/);
-    expect(source).toContain("import { resolveGitHead } from './lib/git-head.mjs';");
+    expect(source).toMatch(/import \{ resolveGitHead \} from '\.\/(?:lib\/)?git-head\.mjs';/);
   });
 
   it.skipIf(!gitAvailable())('matches `git rev-parse HEAD` for this checkout, keeping the 12-char gitCommit shape', () => {

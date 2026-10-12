@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
-import { readFileSync } from 'fs';
+
 import { describe, expect, it, vi } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -288,7 +289,7 @@ describe('#419 daemon page list for target discovery', () => {
   });
 
   it('every client list_raw request in cdp.mjs carries args', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const source = runtimeSource();
     const requests = source.match(/\{\s*cmd:\s*'list_raw'[^}]*\}/g) || [];
     expect(requests.length).toBeGreaterThan(0);
     for (const literal of requests) expect(literal).toMatch(/args:/);

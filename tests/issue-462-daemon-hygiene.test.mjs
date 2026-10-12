@@ -2,6 +2,7 @@ import { existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirS
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -385,7 +386,7 @@ describe('#462 runtime artifacts are pruned and the session log rotates', () => 
   });
 
   it('runDaemon wires the idle-tracking request handler and the deferred prune', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const source = runtimeSource();
     const start = source.indexOf('\nasync function runDaemon(');
     expect(start).toBeGreaterThan(0);
     const end = source.indexOf('\n}\n', start);

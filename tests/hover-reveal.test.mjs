@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -232,7 +233,7 @@ describe('issue #341 hover leftover AX recapture races :hover', () => {
 
   it('keeps compositor-ack swallow at 250ms and does not use evalraw mouseMoved as the happy path', () => {
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
-    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const src = runtimeSource();
     expect(src).toMatch(/hover: async args =>[\s\S]{0,1600}dispatchHoverWithLeftoverPolicy\(/);
     expect(src).toMatch(/async function dispatchHoverWithLeftoverPolicy[\s\S]{0,1600}hoverFeedbackPolicy\(/);
     expect(src).toMatch(/async function dispatchHoverWithLeftoverPolicy[\s\S]{0,2000}rememberHoverSettleBaseline\(/);

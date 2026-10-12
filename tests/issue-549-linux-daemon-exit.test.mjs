@@ -6,13 +6,14 @@ import net from 'node:net';
 
 process.env.NODE_ENV = 'test';
 
+import { runtimeSource } from './runtime-source.mjs';
+
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
   claimDaemonEndpoint,
   watchDaemonSocket,
 } = await import('../skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs');
 
-const CDP_SOURCE = new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url);
 
 const tempDirs = [];
 function runtimeDir() {
@@ -275,7 +276,7 @@ describe('#549 session log keeps the exit reason', () => {
     expect(beforeExit).toHaveBeenCalledWith(expect.objectContaining({ reason: 'socket-lost', exitCode: 0 }));
     expect(exitProcess).toHaveBeenCalledExactlyOnceWith(0);
 
-    const source = readFileSync(CDP_SOURCE, 'utf8');
+    const source = runtimeSource();
     const runStart = source.indexOf('async function runDaemon(');
     const runDaemon = source.slice(runStart, source.indexOf('function listenDaemonServer', runStart));
     expect(runDaemon.startsWith('async function runDaemon(')).toBe(true);

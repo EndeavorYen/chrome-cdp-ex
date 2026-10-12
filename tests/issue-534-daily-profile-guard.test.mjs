@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -242,7 +243,7 @@ describe('#534 pre-submit review fixes', () => {
   });
 
   it('broadcast and open readiness: the gate covers broadcast, readiness polls skip the lookup', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const source = runtimeSource();
     const broadcast = source.slice(source.indexOf("if (cmd === 'broadcast') {"), source.indexOf("if (cmd === 'broadcast') {") + 1200);
     expect(broadcast).toMatch(/createIsolatedMemberGate/);
     expect(source).not.toMatch(/getWsUrlFn = getWsUrl,/);

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -302,7 +303,7 @@ describe('#589 click baseline follows a navigation the page started', () => {
 });
 
 describe('#589 daemon wiring', () => {
-  const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+  const src = runtimeSource();
 
   it('a main-frame navigation still invalidates refs, and the settle baseline reads that reason', () => {
     expect(src).toMatch(/Page\.frameNavigated[\s\S]{0,500}invalidateSessionRefs\(session, 'navigation'\)/);

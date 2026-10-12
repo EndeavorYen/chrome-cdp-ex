@@ -1,8 +1,9 @@
 // #644: open creates about:blank, then navigateOpenTarget polled 1500 ms for the
 // requested URL before anything navigated. Same class as #339 (a fixed poll for
 // a condition the current step has not caused). This file is the CI guard.
-import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -11,7 +12,7 @@ const PAGE_URL = 'http://127.0.0.1:9/todo.html';
 const REDIRECT_URL = 'http://127.0.0.1:9/done';
 
 function navigateOpenTargetSource() {
-  const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+  const src = runtimeSource();
   const start = src.indexOf('async function navigateOpenTarget');
   const end = src.indexOf('\nfunction formatOpenNextPerceiveCommand');
   return src.slice(start, end);

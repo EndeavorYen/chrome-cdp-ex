@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'fs';
+
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -8,7 +9,7 @@ const { COMMAND_SURFACE } = await import('../skills/chrome-cdp-ex/scripts/lib/co
 
 const EXAMPLE_ORG = 'https://example.org/';
 const EXAMPLE_COM = 'https://example.com/';
-const SOURCE = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+const SOURCE = runtimeSource();
 
 function createNavCdp(handlers = {}) {
   const calls = [];

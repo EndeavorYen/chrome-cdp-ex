@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { runInNewContext } from 'node:vm';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -2425,7 +2426,7 @@ describe('issue #144 pending CDP lifecycle errors', () => {
   });
 
   it('daemon nav passes the bound targetId into navStr', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const source = runtimeSource();
     expect(source).toMatch(/navStr\(cdp, sessionId, url, \{[^}]*targetId/);
   });
 });
@@ -6969,7 +6970,7 @@ describe('issue #279 leftover 0-card cards settle for click --js', () => {
   });
 
   it('#279 actionFeedback recapture gate is leftover cards as well as leftover frames', () => {
-    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const src = runtimeSource();
     expect(src).toMatch(/!settleBaseline\.output\s*\n\s*&& shouldCaptureTopLevelActionSettle\(/);
     expect(src).toMatch(
       /function shouldCaptureTopLevelActionSettle[\s\S]{0,1200}snapshotOpts\?\.cards === true \|\| isCardsPerceiveOutput\(output\)/,
@@ -10208,7 +10209,7 @@ describe('issue #286 hover settle baseline', () => {
   });
 
   it('#286 hover handler refreshes last-perceive settle baseline', () => {
-    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const src = runtimeSource();
     expect(src).toMatch(/hover: async args =>[\s\S]{0,1600}dispatchHoverWithLeftoverPolicy\(/);
     expect(src).toMatch(/async function dispatchHoverWithLeftoverPolicy[\s\S]{0,2000}rememberHoverSettleBaseline\(/);
     expect(src).toMatch(/async function dispatchHoverWithLeftoverPolicy[\s\S]{0,2000}hoverStr\(/);
@@ -12054,7 +12055,7 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
       alias: attachStore.aliases.p19att,
     }).resolvedTargetId).toBe(LIVE_TARGET_ID);
 
-    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const src = runtimeSource();
     const attachUse = src.slice(
       src.indexOf("if (cmd === 'attach' || cmd === 'use')"),
       src.indexOf("if (cmd === 'forget')"),

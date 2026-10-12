@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -133,7 +134,7 @@ describe('#658 native confirm() is dismissed unless accept is explicit', () => {
   });
 
   it('the daemon source cannot silently return to auto-accept (#658 guard)', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const source = runtimeSource();
     const saved = source.slice(
       source.indexOf('function savedDialogAccepts'),
       source.indexOf('function environmentRestoreOutcome'),

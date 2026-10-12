@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -253,7 +254,7 @@ describe('#504 the first action of a fresh daemon has a settle baseline', () => 
 describe('#504 daemon wiring', () => {
   // The helper defaults (settle-diff, no observer) would make report-only and
   // custom-observer actions pay for the snapshot if the call site dropped them.
-  const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+  const src = runtimeSource();
   const start = src.indexOf('  async function actionFeedback(');
   const end = src.indexOf('    session.lastAction = {', start);
   const body = src.slice(start, end);

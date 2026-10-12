@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { runtimeSource } from './runtime-source.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -126,7 +127,7 @@ describe('#538 a vanished prefix names its successor page', () => {
 
 describe('#538 main() keeps the last-seen page list for the resolver', () => {
   it('T4: reads the previous pages.json before writing the fresh list', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const source = runtimeSource();
     const read = source.indexOf('const lastSeenPages = readCachedPages()');
     const write = source.indexOf('writeFileSync(PAGES_CACHE, JSON.stringify(livePages)');
     expect(read).toBeGreaterThan(-1);
