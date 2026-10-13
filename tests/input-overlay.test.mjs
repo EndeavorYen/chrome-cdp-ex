@@ -1773,4 +1773,97 @@ describe('overlay detector', () => {
       buttons: [],
     });
   });
+
+  it('reports a fixed cover inside an open shadow root when the page under it is display:contents', () => {
+    const { html, body } = shortPageRoots();
+    const host = paintedNode({
+      id: 'host',
+      text: 'widget',
+      rect: { x: 0, y: 0, w: 1440, h: 900 },
+    });
+    const cover = paintedNode({
+      id: 'cover',
+      position: 'fixed',
+      zIndex: '2',
+      rect: FULL,
+      text: 'Scrim',
+    });
+    const wrap = paintedNode({
+      id: 'wrap',
+      rect: { x: 0, y: 0, w: 0, h: 0 },
+      style: { display: 'contents' },
+    });
+    const page = paintedNode({
+      id: 'page',
+      tagName: 'MAIN',
+      text: 'Page',
+      rect: FULL,
+    });
+    adopt(body, host);
+    adopt(wrap, page);
+    // document.elementsFromPoint retargets the cover to the host. The shadow list still
+    // names the cover above the page. wrap is display:contents, so it is not a rendered
+    // sibling and the host looks like the sole shell unless the shadow list is pierced.
+    const root = attachOpenShadow(host, [cover, wrap]);
+    root.elementsFromPoint = () => [cover, page, host, body, html];
+    const { model, dismissed } = runPainted({
+      elements: [host],
+      topElement: host,
+      elementsFromPoint: () => [host, body, html],
+    });
+    expect(model).toMatchObject({ blocking: true, overlayCount: 1, target: null });
+    expect(model.overlays).toContainEqual(expect.objectContaining({
+      kind: 'overlay',
+      selector: '#cover',
+      blocking: true,
+      coversViewport: true,
+    }));
+    expect(dismissed).toEqual({ ok: false, reason: 'overlay-not-dialog', overlays: ['#cover'] });
+  });
+
+  it('reports a fixed cover two open shadow roots deep when the hit stack names the inner host', () => {
+    const { html, body } = shortPageRoots();
+    const outer = paintedNode({
+      id: 'outer',
+      text: 'outer',
+      rect: { x: 0, y: 0, w: 200, h: 40 },
+    });
+    const inner = paintedNode({
+      id: 'inner',
+      text: 'inner',
+      rect: { x: 0, y: 0, w: 200, h: 40 },
+    });
+    const cover = paintedNode({
+      id: 'ov',
+      position: 'fixed',
+      zIndex: '4',
+      rect: FULL,
+      text: 'Scrim',
+    });
+    const page = paintedNode({
+      id: 'page',
+      tagName: 'MAIN',
+      text: 'Page',
+      rect: FULL,
+    });
+    adopt(body, outer);
+    const outerRoot = attachOpenShadow(outer, [inner]);
+    attachOpenShadow(inner, [cover, page]);
+    // One pierce step lists the inner host, not the cover. The inner host has to count
+    // as the cover or the page sibling under it never gets marked as foreign.
+    outerRoot.elementsFromPoint = () => [inner, outer, body, html];
+    const { model, dismissed } = runPainted({
+      elements: [outer],
+      topElement: outer,
+      elementsFromPoint: () => [outer, body, html],
+    });
+    expect(model).toMatchObject({ blocking: true, overlayCount: 1, target: null });
+    expect(model.overlays).toContainEqual(expect.objectContaining({
+      kind: 'overlay',
+      selector: '#ov',
+      blocking: true,
+      coversViewport: true,
+    }));
+    expect(dismissed).toEqual({ ok: false, reason: 'overlay-not-dialog', overlays: ['#ov'] });
+  });
 });
