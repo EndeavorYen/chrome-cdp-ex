@@ -317,15 +317,39 @@ export async function createRefExecutionContext(cdp, sid, frameId) {
   }
   return result.executionContextId;
 }
+const resolvedNodeSessions = new WeakMap();
+
+function rememberResolvedNodeSession(cdp, objectId, sessionId) {
+  if (!cdp || objectId == null || !sessionId) return;
+  let sessions = resolvedNodeSessions.get(cdp);
+  if (!sessions) {
+    sessions = new Map();
+    resolvedNodeSessions.set(cdp, sessions);
+  }
+  sessions.set(objectId, sessionId);
+}
+
+// Object ids are session-scoped. A cross-site ref resolves in the child session,
+// and later Runtime.callFunctionOn for that id has to use the same session.
+export function resolvedNodeSession(cdp, fallbackSid, objectId) {
+  if (objectId == null) return fallbackSid;
+  return resolvedNodeSessions.get(cdp)?.get(objectId) || fallbackSid;
+}
+
 export async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
   const frameParsed = parseFrameRef(ref);
+  const allowCrossSite = options.allowCrossSite === true;
   let num = null;
   let backendNodeId;
   let frameId = null;
+  let contentSid = sid;
   if (frameParsed) {
-    const scoped = frameScopedBackendNode(refState || {}, frameParsed);
+    const scoped = frameScopedBackendNode(refState || {}, frameParsed, { allowCrossSite });
     backendNodeId = scoped.backendNodeId;
     frameId = scoped.entry.frameId;
+    if (allowCrossSite && crossSiteFrameProcess(scoped.entry, frameParsed.frameRef) === 'oopif') {
+      contentSid = await ensureCrossSiteFrameSession(cdp, sid, scoped.entry);
+    }
   } else {
     num = parseInt(ref.slice(1));
     if (isNaN(num) || !refMap.has(num)) {
@@ -340,15 +364,15 @@ export async function resolveRefNode(cdp, sid, refMap, ref, refState, options = 
   }
   const executionContextId = await createRefExecutionContext(
     cdp,
-    sid,
-    frameId || await rootFrameId(cdp, sid),
+    contentSid,
+    frameId || await rootFrameId(cdp, contentSid),
   );
   let object;
   try {
     ({ object } = await cdpDomains(cdp).DOM.resolveNode({
       backendNodeId,
       executionContextId,
-    }, sid, REF_RESOLVE_TIMEOUT));
+    }, contentSid, REF_RESOLVE_TIMEOUT));
   } catch (error) {
     if (isMissingDomNodeError(error)) {
       throw await staleRefError(cdp, sid, refMap, ref, refState, error, { contextId: executionContextId });
@@ -356,11 +380,12 @@ export async function resolveRefNode(cdp, sid, refMap, ref, refState, options = 
     throw error;
   }
   if (!object?.objectId) throw new Error('DOM.resolveNode did not return an object id');
+  rememberResolvedNodeSession(cdp, object.objectId, contentSid);
   const validation = await cdpDomains(cdp).Runtime.callFunctionOn({
     objectId: object.objectId,
     functionDeclaration: trustedRefConnectivityFunctionDeclaration(),
     returnByValue: true,
-  }, sid, REF_RESOLVE_TIMEOUT);
+  }, contentSid, REF_RESOLVE_TIMEOUT);
   if (validation.exceptionDetails) {
     throw new Error(runtimeExceptionMessage(validation.exceptionDetails));
   }
@@ -382,7 +407,7 @@ export async function resolveRefNode(cdp, sid, refMap, ref, refState, options = 
   if (options.returnRealm === 'page') {
     let pageResult;
     try {
-      pageResult = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
+      pageResult = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, contentSid, REF_RESOLVE_TIMEOUT);
     } catch (error) {
       if (isMissingDomNodeError(error)) {
         throw await staleRefError(cdp, sid, refMap, ref, refState, error, { contextId: executionContextId });
@@ -390,6 +415,7 @@ export async function resolveRefNode(cdp, sid, refMap, ref, refState, options = 
       throw error;
     }
     if (!pageResult.object?.objectId) throw new Error('DOM.resolveNode did not return a page-world object id');
+    rememberResolvedNodeSession(cdp, pageResult.object.objectId, contentSid);
     return pageResult.object.objectId;
   }
   return object.objectId;
@@ -746,9 +772,10 @@ export function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     };
   }`;
 }
-export async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = false } = {}) {
+export async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = false, allowCrossSite = false } = {}) {
   const frameParsed = parseFrameRef(ref);
-  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState, { allowCrossSite });
+  const nodeSid = resolvedNodeSession(cdp, sid, objectId);
   let result;
   try {
     result = await cdpDomains(cdp).Runtime.callFunctionOn( {
@@ -756,18 +783,19 @@ export async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = fa
       functionDeclaration: scrollSettledRectFunctionDeclaration({ hitTest }),
       returnByValue: true,
       awaitPromise: true,
-    }, sid, REF_RESOLVE_TIMEOUT);
+    }, nodeSid, REF_RESOLVE_TIMEOUT);
   } catch (error) {
     if (isTimeoutError(error, ['Runtime.callFunctionOn'])) {
       // resolveRefRectNoScroll returns { rect, objectId }; callers of resolveRef read the
       // rect fields directly, so unwrap it (#464: x/y were undefined → NaN click point).
-      const { rect } = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, { objectId });
-      const value = { ...rect, connected: true, settled: false };
+      const resolved = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, { objectId, allowCrossSite });
+      const value = { ...resolved.rect, connected: true, settled: false };
       if (hitTest) {
         // No settle happened, so check the point now: a covered target still fails as
         // covered instead of clicking whatever sits there.
         const probe = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, {
           objectId,
+          allowCrossSite,
           functionDeclaration: `function() {
             ${clickPointHitFunctionSource()}
             ${actionabilityFunctionSource()}
@@ -781,6 +809,10 @@ export async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = fa
         // #468: the disabled check must not be skipped when the settle timed out.
         value.hit = probe?.hit && typeof probe.hit === 'object' ? probe.hit : null;
         value.disabled = typeof probe?.disabled === 'string' ? probe.disabled : '';
+        if (resolved.ownerBackendNodeId) {
+          const parentHit = await ownerIframeCover(cdp, sid, resolved.ownerBackendNodeId, value, frameParsed?.frameRef);
+          if (parentHit?.covered === true) value.hit = parentHit;
+        }
       }
       return value;
     }
@@ -798,10 +830,7 @@ export async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = fa
     );
   }
   if (frameParsed) {
-    const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
-    const offset = await frameViewportOffset(cdp, sid, entry, { settle: true });
-    value.x = (Number(value.x) || 0) + offset.x;
-    value.y = (Number(value.y) || 0) + offset.y;
+    await placeFrameRect(cdp, sid, refState, frameParsed, value, { allowCrossSite, settle: true, hitTest });
   }
   return value;
 }
@@ -1674,12 +1703,12 @@ export function frameScopedRefEntry(refState, parsed) {
   if (!(store instanceof Map)) return null;
   return store.get(parsed.frameRef) || null;
 }
-export function frameScopedBackendNode(refState, parsed) {
+export function frameScopedBackendNode(refState, parsed, { allowCrossSite = false } = {}) {
   const entry = frameScopedRefEntry(refState, parsed);
   if (!entry) {
     throw new Error(`Unknown frame ref: ${parsed.frameRef}. Run "frame", then "perceive --frame ${parsed.frameRef}" to assign iframe-local refs.`);
   }
-  rejectCrossSiteFrameEntry(entry, parsed.frameRef);
+  if (!allowCrossSite) rejectCrossSiteFrameEntry(entry, parsed.frameRef);
   if (!(entry.refs instanceof Map) || !entry.refs.has(parsed.refIndex)) {
     throw new Error(`Unknown ref: ${parsed.frameRef}:${parsed.refIndex}. Run "perceive --frame ${parsed.frameRef}" to refresh refs inside that frame.`);
   }
@@ -1700,9 +1729,8 @@ export function crossSiteFrameActionError(frameRef) {
 function rejectCrossSiteFrameEntry(entry, frameRef) {
   if (crossSiteFrameProcess(entry, frameRef) === 'oopif') throw crossSiteFrameActionError(frameRef);
 }
-// #717: click, fill, cascade, and every other action resolve the ref through
-// frameScopedBackendNode. Refuse before Page.createIsolatedWorld on the parent
-// session, which reports "No frame for given id found" for an OOPIF.
+// Actions that do not route into the child session still refuse here, before
+// Page.createIsolatedWorld on the parent session ("No frame for given id found").
 export function rejectCrossSiteFrameAction(refState, ref) {
   const parsed = parseFrameRef(ref);
   if (!parsed) return;
@@ -1732,6 +1760,151 @@ export function baselineOutputForActionTarget(refState, fallbackOutput, target =
   }
   return fallbackOutput;
 }
+function crossSiteFrameNotAttachedError(frameRef) {
+  const ref = frameRef || 'cross-site frame';
+  return new Error(`Cross-site frame ${ref} is not attached. Run "frame" to refresh it, then "perceive --frame ${ref}".`);
+}
+
+function crossSiteFrameBoxError(frameRef) {
+  const ref = frameRef || 'cross-site frame';
+  return new Error(`Cross-site frame ${ref} has no box for its owner iframe. Run "frame" to refresh it, then retry.`);
+}
+
+async function ensureCrossSiteFrameSession(cdp, pageSid, entry) {
+  const frameId = entry?.frameId || '';
+  const frameRef = entry?.frameRef || entry?.ref || '';
+  const ready = crossSiteFrameSession(cdp, pageSid, frameId);
+  if (ready) return ready;
+  await framesModel(cdp, pageSid, { crossSite: true });
+  const attached = crossSiteFrameSession(cdp, pageSid, frameId);
+  if (attached) return attached;
+  throw crossSiteFrameNotAttachedError(frameRef);
+}
+
+function contentQuadOrigin(model) {
+  const content = model?.model?.content;
+  if (!Array.isArray(content) || content.length < 2) return null;
+  const x = Number(content[0]);
+  const y = Number(content[1]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+// Child-local points are viewport CSS pixels of the OOPIF. DOM.getBoxModel's
+// content quad is the viewport top-left of that document's root frame, so the
+// page point is the sum of each owner iframe's content origin. Do not also
+// subtract scroll: the quad is already in viewport pixels.
+async function crossSiteFramePageOffset(cdp, pageSid, entry, frameRef) {
+  const ref = frameRef || entry?.frameRef || entry?.ref || '';
+  if (!entry?.frameId || !entry.parentId) throw crossSiteFrameBoxError(ref);
+  let x = 0;
+  let y = 0;
+  let ownerBackendNodeId = 0;
+  let current = entry;
+  const frames = Array.isArray(entry.frames) ? entry.frames : [];
+  for (let guard = 0; current?.frameId && current.parentId && guard < 8; guard += 1) {
+    const parentFrame = frames.find(frame => frame && frame.id === current.parentId) || null;
+    const parentIsOopif = parentFrame?.process === 'oopif';
+    let ownerSid = pageSid;
+    if (parentIsOopif) {
+      ownerSid = crossSiteFrameSession(cdp, pageSid, current.parentId);
+      if (!ownerSid) throw crossSiteFrameNotAttachedError(parentFrame.ref || ref);
+    }
+    const owner = await cdpDomains(cdp).DOM.getFrameOwner({ frameId: current.frameId }, ownerSid);
+    const backendNodeId = owner?.backendNodeId;
+    const stepRef = current.frameRef || current.ref || ref;
+    if (!backendNodeId) throw crossSiteFrameBoxError(stepRef);
+    const model = await cdpDomains(cdp).DOM.getBoxModel({ backendNodeId }, ownerSid);
+    const origin = contentQuadOrigin(model);
+    if (!origin) throw crossSiteFrameBoxError(stepRef);
+    x += origin.x;
+    y += origin.y;
+    if (ownerSid === pageSid) {
+      ownerBackendNodeId = backendNodeId;
+      break;
+    }
+    if (!parentFrame) break;
+    current = {
+      frameId: parentFrame.id,
+      parentId: parentFrame.parentId || null,
+      frameRef: parentFrame.ref || '',
+      ref: parentFrame.ref || '',
+      frames,
+    };
+  }
+  if (!ownerBackendNodeId) throw crossSiteFrameBoxError(ref);
+  return { x, y, ownerBackendNodeId };
+}
+
+async function framePointOffset(cdp, sid, entry, frameRef, { settle = false } = {}) {
+  if (crossSiteFrameProcess(entry, frameRef) === 'oopif') {
+    return crossSiteFramePageOffset(cdp, sid, entry, frameRef);
+  }
+  const offset = await frameViewportOffset(cdp, sid, entry, { settle });
+  return { x: offset.x, y: offset.y, ownerBackendNodeId: 0 };
+}
+
+async function placeFrameRect(cdp, sid, refState, frameParsed, value, { allowCrossSite = false, settle = false, hitTest = false } = {}) {
+  const { entry } = frameScopedBackendNode(refState || {}, frameParsed, { allowCrossSite });
+  const offset = await framePointOffset(cdp, sid, entry, frameParsed.frameRef, { settle });
+  value.x = (Number(value.x) || 0) + offset.x;
+  value.y = (Number(value.y) || 0) + offset.y;
+  if (hitTest && offset.ownerBackendNodeId) {
+    const parentHit = await ownerIframeCover(cdp, sid, offset.ownerBackendNodeId, value, frameParsed.frameRef);
+    if (parentHit?.covered === true) value.hit = parentHit;
+  }
+  return offset;
+}
+
+const OWNER_IFRAME_HIT_MARKER = 'chrome-cdp-ex.owner-iframe-hit.v1';
+
+function ownerIframeHitDeclaration() {
+  return `function(x, y) {
+    const iframe = this;
+    const marker = ${JSON.stringify(OWNER_IFRAME_HIT_MARKER)};
+    const doc = iframe && iframe.ownerDocument;
+    const px = Number(x) || 0;
+    const py = Number(y) || 0;
+    if (!doc || typeof doc.elementFromPoint !== 'function') {
+      return { marker: marker, covered: true, by: '<none>', x: px, y: py };
+    }
+    let top = null;
+    try { top = doc.elementFromPoint(px, py); } catch (err) { top = null; }
+    if (!top) return { marker: marker, covered: true, by: '<none>', x: px, y: py };
+    let inside = false;
+    for (let node = top, guard = 0; node && guard < 64; node = node.parentNode, guard++) {
+      if (node === iframe) { inside = true; break; }
+    }
+    if (inside) return { marker: marker, covered: false, x: px, y: py };
+    const tag = String(top.tagName || 'node').toUpperCase();
+    const id = top.id ? '#' + top.id : '';
+    const text = String((top.getAttribute && top.getAttribute('aria-label')) || top.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    let position = '';
+    try { position = getComputedStyle(top).position || ''; } catch (err) { position = ''; }
+    const by = '<' + tag + id + '>' + (text ? ' "' + text + '"' : '');
+    const fixed = position === 'fixed' || position === 'sticky';
+    return { marker: marker, covered: true, by: by, byPosition: fixed ? position : '', x: px, y: py };
+  }`;
+}
+
+async function ownerIframeCover(cdp, sid, backendNodeId, rect, frameRef) {
+  if (!backendNodeId) throw crossSiteFrameBoxError(frameRef);
+  const x = (Number(rect?.x) || 0) + (Number(rect?.w) || 0) / 2;
+  const y = (Number(rect?.y) || 0) + (Number(rect?.h) || 0) / 2;
+  const { object } = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, sid);
+  if (!object?.objectId) throw crossSiteFrameBoxError(frameRef);
+  const res = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId: object.objectId,
+    functionDeclaration: ownerIframeHitDeclaration(),
+    arguments: [{ value: x }, { value: y }],
+    returnByValue: true,
+  }, sid);
+  if (res?.exceptionDetails) throw new Error(runtimeExceptionMessage(res.exceptionDetails));
+  const hit = res?.result?.value;
+  if (!hit || typeof hit !== 'object') throw crossSiteFrameBoxError(frameRef);
+  return hit;
+}
+
 export async function frameViewportOffset(cdp, sid, frameEntry, { settle = false } = {}) {
   if (!frameEntry?.frameId || !frameEntry.parentId) return { x: 0, y: 0 };
   let x = 0;
@@ -1765,7 +1938,9 @@ export async function frameViewportOffset(cdp, sid, frameEntry, { settle = false
 }
 export async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, options = {}) {
   const frameParsed = parseFrameRef(ref);
-  const objectId = options.objectId || await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const allowCrossSite = options.allowCrossSite === true;
+  const objectId = options.objectId || await resolveRefNode(cdp, sid, refMap, ref, refState, { allowCrossSite });
+  const nodeSid = resolvedNodeSession(cdp, sid, objectId);
   const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
     functionDeclaration: options.functionDeclaration || `function() {
@@ -1784,16 +1959,14 @@ export async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, op
       };
     }`,
     returnByValue: true,
-  }, sid, REF_RESOLVE_TIMEOUT);
+  }, nodeSid, REF_RESOLVE_TIMEOUT);
   const value = result.result.value || {};
   if (options.functionDeclaration) return value;
   if (frameParsed) {
-    const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
-    const offset = await frameViewportOffset(cdp, sid, entry);
-    value.x = (Number(value.x) || 0) + offset.x;
-    value.y = (Number(value.y) || 0) + offset.y;
+    const offset = await placeFrameRect(cdp, sid, refState, frameParsed, value, { allowCrossSite });
+    return { rect: value, objectId, ownerBackendNodeId: offset.ownerBackendNodeId || 0 };
   }
-  return { rect: value, objectId };
+  return { rect: value, objectId, ownerBackendNodeId: 0 };
 }
 // Wait for DOM mutations to stop after an action (350ms of silence = settled).
 // Bound the CDP evaluate to the settle budget so a document replacement cannot

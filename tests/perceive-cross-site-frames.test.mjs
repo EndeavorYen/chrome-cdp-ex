@@ -402,6 +402,38 @@ describe('cross-site frames', () => {
     expect(ax.at(-1)).toMatchObject({ sessionId: CHILD, params: { frameId: 'oopif-frame' } });
     expect(attachCalls(cdp)).toHaveLength(1);
   });
+
+  it('adopts only an iframe target whose parent is this page', async () => {
+    const foreign = childEntry('foreign-sid', {
+      frame: {
+        id: 'foreign-frame',
+        parentId: 'other-page',
+        url: 'http://localhost:9/foreign.html',
+        name: 'foreign',
+      },
+    });
+    foreign.parentId = 'other-page';
+    const valid = childEntry(CHILD, oopifTree());
+    const cdp = frameCdp([valid, foreign]);
+    // Announce both before the page is watching, so setAutoAttach stays quiet and
+    // adoption is the only way either iframe is attached.
+    for (const child of [valid, foreign]) {
+      cdp.emit('Target.attachedToTarget', {
+        sessionId: child.sessionId,
+        targetInfo: {
+          type: 'iframe',
+          targetId: `${child.sessionId}-target`,
+          url: 'http://localhost:9/inner.html',
+        },
+      }, { sessionId: PAGE });
+    }
+    const listed = await T.framesStr(cdp, PAGE);
+    expect(listed).toContain('oopif-frame');
+    expect(listed).not.toContain('foreign-frame');
+    expect(cdp.calls.filter(call => call.method === 'Target.attachToTarget').map(call => call.params.targetId))
+      .toEqual([`${CHILD}-target`]);
+    expect(cdp.calls.some(call => call.sessionId === 'foreign-sid')).toBe(false);
+  });
 });
 
 function crossSiteRefState() {
@@ -445,14 +477,6 @@ describe('actions inside a cross-site frame', () => {
     expect(cdp.calls.some(call => call.method === 'CSS.getMatchedStylesForNode'), action).toBe(false);
     expect(cdp.calls.some(call => call.method === 'DOM.getDocument'), action).toBe(false);
   }
-
-  it('refuses click on a ref inside a cross-site frame', async () => {
-    await refuse('click', cdp => T.clickStr(cdp, PAGE, '@f3:1', new Map(), crossSiteRefState()));
-  });
-
-  it('refuses fill on a ref inside a cross-site frame', async () => {
-    await refuse('fill', cdp => T.fillStr(cdp, PAGE, '@f3:1', 'hello', new Map(), crossSiteRefState()));
-  });
 
   it('refuses cascade on a ref inside a cross-site frame', async () => {
     await refuse('cascade', cdp => T.cascadeStr(cdp, PAGE, '@f3:1', 'color', new Map(), crossSiteRefState()));

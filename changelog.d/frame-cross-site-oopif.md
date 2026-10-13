@@ -5,4 +5,3 @@
 ### Bug Fixes
 
 * A depth-1 frame that is still `about:blank` or has an empty URL, with an opaque security origin (`://`, empty, or `null`), counts as cross-site in the `Frames:` line and in a selector-miss census while its iframe `src` points at another site. It is not a same-origin frame, it gets no ref, and Next does not point at it. `frame` still lists that frame as Chrome reports it, and same-origin `@fN` numbers stay put. An `about:blank` iframe with no `src`, a same-site `src`, or `srcdoc` stays same-origin ([#716](https://github.com/EndeavorYen/chrome-cdp-ex/issues/716)).
-* `click`, `fill`, `cascade`, and any other action on a ref inside a cross-site frame fail before that frame is used. The error says actions inside cross-site frames are not supported yet, the kind is `usage`, and Next is `cdp frame <target>`. Same-origin `@fN:M` refs are unchanged ([#717](https://github.com/EndeavorYen/chrome-cdp-ex/issues/717)).

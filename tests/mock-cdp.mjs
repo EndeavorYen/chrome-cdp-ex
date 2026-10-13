@@ -127,9 +127,12 @@ export function createMockCDP(handlers = {}) {
           },
         });
       }
+      // A scroll-settled rect also mentions these getters. That call belongs to
+      // the session handler so a child document can return its own box.
       const trustedPresenceCall = method === 'Runtime.callFunctionOn'
         && params.functionDeclaration?.includes('ownerDocumentGetter')
-        && params.functionDeclaration.includes('getClientRects');
+        && params.functionDeclaration.includes('getClientRects')
+        && !params.functionDeclaration.includes('requestAnimationFrame');
       if (trustedPresenceCall) {
         const handler = handlers['Runtime.callFunctionOn:trusted-presence'] || handlers[method];
         return Promise.resolve(handler
