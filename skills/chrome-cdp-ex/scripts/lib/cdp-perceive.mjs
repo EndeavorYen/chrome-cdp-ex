@@ -788,7 +788,13 @@ export async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = fa
     if (isTimeoutError(error, ['Runtime.callFunctionOn'])) {
       // resolveRefRectNoScroll returns { rect, objectId }; callers of resolveRef read the
       // rect fields directly, so unwrap it (#464: x/y were undefined → NaN click point).
-      const resolved = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, { objectId, allowCrossSite });
+      // Leave the rect in the frame. placeFrameRect below is the one page-layer
+      // cover check, and it has to run after the child probe so a page cover wins.
+      const resolved = await resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, {
+        objectId,
+        allowCrossSite,
+        offsetFrame: false,
+      });
       const value = { ...resolved.rect, connected: true, settled: false };
       if (hitTest) {
         // No settle happened, so check the point now: a covered target still fails as
@@ -809,10 +815,9 @@ export async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = fa
         // #468: the disabled check must not be skipped when the settle timed out.
         value.hit = probe?.hit && typeof probe.hit === 'object' ? probe.hit : null;
         value.disabled = typeof probe?.disabled === 'string' ? probe.disabled : '';
-        if (resolved.ownerBackendNodeId) {
-          const parentHit = await ownerIframeCover(cdp, sid, resolved.ownerBackendNodeId, value, frameParsed?.frameRef);
-          if (parentHit?.covered === true) value.hit = parentHit;
-        }
+      }
+      if (frameParsed) {
+        await placeFrameRect(cdp, sid, refState, frameParsed, value, { allowCrossSite, hitTest });
       }
       return value;
     }
@@ -1939,6 +1944,8 @@ async function placeFrameRect(cdp, sid, refState, frameParsed, value, { allowCro
   const offset = await framePointOffset(cdp, sid, entry, frameParsed.frameRef, { settle });
   value.x = (Number(value.x) || 0) + offset.x;
   value.y = (Number(value.y) || 0) + offset.y;
+  // The only page-layer cover check. Dispatch does not repeat it: a frame point is
+  // already in the top viewport, and dropping this check lets the click fail closed.
   if (hitTest && offset.ownerBackendNodeId) {
     const parentHit = await ownerIframeCover(cdp, sid, offset.ownerBackendNodeId, value, frameParsed.frameRef);
     if (parentHit?.covered === true) value.hit = parentHit;
@@ -2074,7 +2081,9 @@ export async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, op
   }, nodeSid, REF_RESOLVE_TIMEOUT);
   const value = result.result.value || {};
   if (options.functionDeclaration) return value;
-  if (frameParsed) {
+  // offsetFrame false keeps the frame-local rect. The settle-timeout path places
+  // it afterwards, through the one page-layer cover check.
+  if (frameParsed && options.offsetFrame !== false) {
     const offset = await placeFrameRect(cdp, sid, refState, frameParsed, value, { allowCrossSite });
     return { rect: value, objectId, ownerBackendNodeId: offset.ownerBackendNodeId || 0 };
   }

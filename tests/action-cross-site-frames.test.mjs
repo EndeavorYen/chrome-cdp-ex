@@ -1,3 +1,4 @@
+import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createMockCDP } from './mock-cdp.mjs';
 
@@ -83,6 +84,39 @@ function callsOn(cdp, method, sessionId) {
   return cdp.calls.filter(call => call.method === method && call.sessionId === sessionId);
 }
 
+function ownerHitCalls(cdp) {
+  return callsOn(cdp, 'Runtime.callFunctionOn', PAGE).filter(call => (
+    String(call.params.functionDeclaration || '').includes(OWNER_HIT)
+  ));
+}
+
+// The page-layer function is the declaration the click sends. Run that text so a
+// cover is decided by elementFromPoint, not by a canned CDP result.
+function runOwnerIframeHit(declaration, { elementFromPoint, positionOf = () => '' } = {}) {
+  const iframe = { nodeType: 1, tagName: 'IFRAME', id: 'guest', parentNode: null };
+  iframe.ownerDocument = { elementFromPoint };
+  const fn = runInContext(`(${declaration})`, createContext({
+    getComputedStyle(node) {
+      return { position: positionOf(node) || '' };
+    },
+  }));
+  return { iframe, fn };
+}
+
+function elementAtPoint(tag, { id = '', parent = null, label = '', text = '', position = '' } = {}) {
+  return {
+    nodeType: 1,
+    tagName: tag,
+    id,
+    parentNode: parent,
+    position,
+    textContent: text,
+    getAttribute(name) {
+      return name === 'aria-label' ? label : null;
+    },
+  };
+}
+
 function actionCdp({
   local = {
     connected: true,
@@ -97,9 +131,11 @@ function actionCdp({
     noClickBox: false,
   },
   parentHit = { covered: false },
+  ownerHit = null,
   outer = { x: 120, y: 80 },
   inner = null,
   live = { value: '' },
+  settleTimeout = false,
 } = {}) {
   return createMockCDP({
     'Page.getFrameTree': () => ({ frameTree: sameOriginTree() }),
@@ -111,7 +147,10 @@ function actionCdp({
     'Runtime.callFunctionOn': (params) => {
       const fn = String(params.functionDeclaration || '');
       if (fn.includes(OWNER_HIT)) {
-        return { result: { value: { marker: OWNER_HIT, ...parentHit } } };
+        const value = ownerHit
+          ? ownerHit(fn, params)
+          : { marker: OWNER_HIT, ...parentHit };
+        return { result: { value } };
       }
       return { result: { value: { connected: true, visible: true } } };
     },
@@ -156,6 +195,9 @@ function actionCdp({
           }
           if (fn.includes('Not a <select>')) {
             return { result: { value: { ok: true, text: 'Visa' } } };
+          }
+          if (settleTimeout && fn.includes('requestAnimationFrame')) {
+            return Promise.reject(new Error('Timeout: Runtime.callFunctionOn'));
           }
           if (fn.includes('requestAnimationFrame') || fn.includes('getBoundingClientRect')) {
             return { result: { value: local } };
@@ -251,6 +293,132 @@ describe('actions inside a cross-site frame', () => {
     expect(callsOn(cdp, 'Runtime.callFunctionOn', PAGE).some(call => (
       String(call.params.functionDeclaration || '').includes(OWNER_HIT)
     ))).toBe(true);
+  });
+
+  it('refuses a cross-site click when the owner-iframe hit sees a page cover, and runs that check once', async () => {
+    const toast = elementAtPoint('DIV', { id: 'toast', label: 'Wait', position: 'fixed' });
+    const cdp = actionCdp({
+      ownerHit: (declaration, params) => {
+        const x = params.arguments?.[0]?.value;
+        const y = params.arguments?.[1]?.value;
+        const { iframe, fn } = runOwnerIframeHit(declaration, {
+          elementFromPoint() { return toast; },
+          positionOf: node => node?.position || '',
+        });
+        return fn.call(iframe, x, y);
+      },
+    });
+    const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/click not sent: <BUTTON> "Pay now" \(@f4:1\) at \(150,95\) is covered by position:fixed <DIV#toast> "Wait"/);
+    expect(T.formatActionFailure(err, {
+      action: 'click',
+      target: { targetId: 'AB12CD34', input: '@f4:1' },
+    })).toContain('Kind: covered');
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    const hits = ownerHitCalls(cdp);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].params.arguments).toEqual([{ value: 150 }, { value: 95 }]);
+    expect(hits[0].sessionId).toBe(PAGE);
+  });
+
+  it('treats the owner iframe and its child as clear, and a miss at the point as a cover', async () => {
+    let declaration = '';
+    const cdp = actionCdp({
+      ownerHit: (source, params) => {
+        declaration = source;
+        const x = params.arguments?.[0]?.value;
+        const y = params.arguments?.[1]?.value;
+        const { iframe, fn } = runOwnerIframeHit(source, {
+          elementFromPoint() { return iframe; },
+        });
+        return fn.call(iframe, x, y);
+      },
+    });
+    const text = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    expect(text).toBe('Clicked <BUTTON> "Pay now" (@f4:1)');
+    expect(mousePressed(cdp)?.params).toMatchObject({ x: 150, y: 95 });
+    expect(ownerHitCalls(cdp)).toHaveLength(1);
+    expect(declaration).toContain(OWNER_HIT);
+
+    let top = null;
+    const clear = runOwnerIframeHit(declaration, {
+      elementFromPoint() { return top; },
+    });
+    top = clear.iframe;
+    expect(clear.fn.call(clear.iframe, 150, 95)).toMatchObject({ marker: OWNER_HIT, covered: false });
+
+    const inner = elementAtPoint('BUTTON', { parent: clear.iframe, text: 'Pay now' });
+    top = inner;
+    expect(clear.fn.call(clear.iframe, 150, 95)).toMatchObject({ marker: OWNER_HIT, covered: false });
+
+    top = null;
+    expect(clear.fn.call(clear.iframe, 150, 95)).toMatchObject({ marker: OWNER_HIT, covered: true, by: '<none>' });
+
+    const blind = runOwnerIframeHit(declaration, {});
+    blind.iframe.ownerDocument = {};
+    expect(blind.fn.call(blind.iframe, 4, 8)).toMatchObject({ marker: OWNER_HIT, covered: true, by: '<none>', x: 4, y: 8 });
+  });
+
+  it('keeps a child-frame cover when the owner iframe is the top element in the page', async () => {
+    const cdp = actionCdp({
+      local: {
+        connected: true,
+        x: 10,
+        y: 6,
+        w: 40,
+        h: 18,
+        tag: 'BUTTON',
+        text: 'Pay now',
+        hit: { covered: true, by: '<DIV#modal> "Pay"', byPosition: 'fixed' },
+        inViewport: true,
+        noClickBox: false,
+      },
+      ownerHit: (declaration, params) => {
+        const x = params.arguments?.[0]?.value;
+        const y = params.arguments?.[1]?.value;
+        const { iframe, fn } = runOwnerIframeHit(declaration, {
+          elementFromPoint() { return iframe; },
+        });
+        return fn.call(iframe, x, y);
+      },
+    });
+    const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/covered by position:fixed <DIV#modal> "Pay"/);
+    expect(T.formatActionFailure(err, {
+      action: 'click',
+      target: { targetId: 'AB12CD34', input: '@f4:1' },
+    })).toContain('Kind: covered');
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    expect(ownerHitCalls(cdp)).toHaveLength(1);
+  });
+
+  it('keeps a page cover when the cross-site scroll settle times out, and still checks the owner iframe once', async () => {
+    const toast = elementAtPoint('DIV', { id: 'toast', label: 'Wait', position: 'fixed' });
+    const cdp = actionCdp({
+      settleTimeout: true,
+      ownerHit: (declaration, params) => {
+        const x = params.arguments?.[0]?.value;
+        const y = params.arguments?.[1]?.value;
+        const { iframe, fn } = runOwnerIframeHit(declaration, {
+          elementFromPoint() { return toast; },
+          positionOf: node => node?.position || '',
+        });
+        return fn.call(iframe, x, y);
+      },
+    });
+    const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/click not sent: <BUTTON> "Pay now" \(@f4:1\) at \(150,95\) is covered by position:fixed <DIV#toast> "Wait"/);
+    expect(T.formatActionFailure(err, {
+      action: 'click',
+      target: { targetId: 'AB12CD34', input: '@f4:1' },
+    })).toContain('Kind: covered');
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    const hits = ownerHitCalls(cdp);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].params.arguments).toEqual([{ value: 150 }, { value: 95 }]);
   });
 
   it('fills a cross-site ref through the child session', async () => {
