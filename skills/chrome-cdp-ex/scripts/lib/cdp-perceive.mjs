@@ -907,11 +907,17 @@ function oopifDocument(cdp, sid) {
   }
   let doc = docs.get(sid);
   if (!doc) {
-    doc = { attached: false, children: [], frames: new Map() };
+    doc = { attached: false, children: [], frames: new Map(), byTarget: new Map() };
     docs.set(sid, doc);
     watchOopifDocument(cdp, sid, doc);
   }
   return doc;
+}
+
+function rememberOopifSession(doc, sessionId, targetId) {
+  if (!sessionId) return;
+  if (!doc.children.includes(sessionId)) doc.children.push(sessionId);
+  if (targetId) doc.byTarget.set(targetId, sessionId);
 }
 
 function watchOopifDocument(cdp, sid, doc) {
@@ -921,13 +927,17 @@ function watchOopifDocument(cdp, sid, doc) {
     if (!forThisPage(msg)) return;
     const child = params?.sessionId;
     if (!child || child === sid || params?.targetInfo?.type !== 'iframe') return;
-    if (!doc.children.includes(child)) doc.children.push(child);
+    rememberOopifSession(doc, child, params?.targetInfo?.targetId || '');
   });
   cdp.onEvent('Target.detachedFromTarget', (params, msg) => {
     if (!forThisPage(msg)) return;
     const child = params?.sessionId;
     if (!child || child === sid || !doc.children.includes(child)) return;
     doc.children = doc.children.filter(id => id !== child);
+    if (params?.targetId) doc.byTarget.delete(params.targetId);
+    for (const [targetId, mapped] of doc.byTarget) {
+      if (mapped === child) doc.byTarget.delete(targetId);
+    }
     for (const [frameId, mapped] of doc.frames) {
       if (mapped === child) doc.frames.delete(frameId);
     }
@@ -935,10 +945,49 @@ function watchOopifDocument(cdp, sid, doc) {
   });
   cdp.onEvent('Page.frameNavigated', (params, msg) => {
     if (!forThisPage(msg) || params?.frame?.parentId) return;
+    // The previous document's iframe sessions are not this document's. Drop them
+    // here; a later attachedToTarget, or Target.getTargets on the next list, finds
+    // the iframes that belong to the new document.
     doc.children = [];
     doc.frames.clear();
+    doc.byTarget.clear();
     doc.attached = false;
   });
+}
+
+function iframeTargetOfPage(info, rootId) {
+  if (!info || info.type !== 'iframe' || !info.targetId || !rootId) return false;
+  const parent = info.parentId || info.parentFrameId || info.openerId || '';
+  return parent === rootId;
+}
+
+// setAutoAttach does not send attachedToTarget again for an iframe this client
+// already attached. After navigation clears the cache, ask for the page's iframe
+// targets and attach any whose session we no longer have.
+async function adoptPageIframeTargets(cdp, sid, doc, rootId) {
+  if (!rootId || doc.children.length >= OOPIF_MAX_EXTRA) return;
+  let infos = [];
+  try {
+    const result = await cdpDomains(cdp).Target.getTargets({ filter: [{ type: 'iframe' }] }, sid);
+    infos = Array.isArray(result?.targetInfos) ? result.targetInfos : [];
+  } catch {
+    return;
+  }
+  for (const info of infos) {
+    if (doc.children.length >= OOPIF_MAX_EXTRA) break;
+    if (!iframeTargetOfPage(info, rootId) || doc.byTarget.has(info.targetId)) continue;
+    try {
+      const attached = await cdpDomains(cdp).Target.attachToTarget({
+        targetId: info.targetId,
+        flatten: true,
+      }, sid);
+      const child = attached?.sessionId;
+      if (!child || doc.byTarget.has(info.targetId)) continue;
+      rememberOopifSession(doc, child, info.targetId);
+    } catch {
+      // The target left, or this client is already attached and the event kept the session.
+    }
+  }
 }
 
 function appendCrossSiteFrames(sameOriginFrames, childTrees, { maxExtra = OOPIF_MAX_EXTRA, maxDepth = OOPIF_MAX_DEPTH } = {}) {
@@ -1002,13 +1051,14 @@ function appendCrossSiteFrames(sameOriginFrames, childTrees, { maxExtra = OOPIF_
 async function loadCrossSiteFrames(cdp, sid, sameOriginFrames) {
   const doc = oopifDocument(cdp, sid);
   if (!doc.attached) {
-    doc.children = [];
     await cdpDomains(cdp).Target.setAutoAttach({
       autoAttach: true,
       waitForDebuggerOnStart: false,
       flatten: true,
       filter: [{ type: 'iframe' }],
     }, sid);
+    const rootId = sameOriginFrames.find(frame => frame && frame.depth === 0)?.id || '';
+    await adoptPageIframeTargets(cdp, sid, doc, rootId);
     doc.attached = true;
   }
   const trees = [];
@@ -1501,6 +1551,7 @@ export function storeFrameScopedRefs(refState, frame, frames, scopedRefMap) {
     parentRef: frame.parentRef || null,
     name: frame.name || '',
     url: frame.url || '',
+    process: frame.process || '',
     refs: new Map(scopedRefMap),
     frames: frames || [],
   });
@@ -1515,10 +1566,36 @@ export function frameScopedBackendNode(refState, parsed) {
   if (!entry) {
     throw new Error(`Unknown frame ref: ${parsed.frameRef}. Run "frame", then "perceive --frame ${parsed.frameRef}" to assign iframe-local refs.`);
   }
+  rejectCrossSiteFrameEntry(entry, parsed.frameRef);
   if (!(entry.refs instanceof Map) || !entry.refs.has(parsed.refIndex)) {
     throw new Error(`Unknown ref: ${parsed.frameRef}:${parsed.refIndex}. Run "perceive --frame ${parsed.frameRef}" to refresh refs inside that frame.`);
   }
   return { entry, backendNodeId: entry.refs.get(parsed.refIndex) };
+}
+function crossSiteFrameProcess(entry, frameRef) {
+  if (entry?.process === 'oopif') return 'oopif';
+  const frames = entry?.frames;
+  if (!Array.isArray(frames)) return '';
+  const match = frames.find(frame => frame && (frame.ref === frameRef || frame.id === entry.frameId));
+  return match?.process === 'oopif' ? 'oopif' : '';
+}
+export function crossSiteFrameActionError(frameRef) {
+  const err = new Error(`Actions inside cross-site frames are not supported yet (${frameRef}).`);
+  err.crossSiteFrameAction = { frameRef };
+  return err;
+}
+function rejectCrossSiteFrameEntry(entry, frameRef) {
+  if (crossSiteFrameProcess(entry, frameRef) === 'oopif') throw crossSiteFrameActionError(frameRef);
+}
+// #717: click, fill, cascade, and every other action resolve the ref through
+// frameScopedBackendNode. Refuse before Page.createIsolatedWorld on the parent
+// session, which reports "No frame for given id found" for an OOPIF.
+export function rejectCrossSiteFrameAction(refState, ref) {
+  const parsed = parseFrameRef(ref);
+  if (!parsed) return;
+  const entry = frameScopedRefEntry(refState || {}, parsed);
+  if (!entry) return;
+  rejectCrossSiteFrameEntry(entry, parsed.frameRef);
 }
 export function qualifyFrameRefsInLines(lines, frameRef) {
   return lines.map(line => line.replace(/@(\d+)(?=\s*(?:\(|$))/, `${frameRef}:$1`));

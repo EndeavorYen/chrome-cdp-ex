@@ -614,6 +614,21 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     hints: [`Refresh page perception with \`${perceiveCommand}\`, then choose the next action from fresh refs.`],
   };
 
+  // #717: a ref inside a cross-site frame is refused before CDP. Next must not
+  // be `perceive --frame @fN`: that read lists the same ref and the action loops.
+  if (err?.crossSiteFrameAction || lower.includes('actions inside cross-site frames are not supported yet')) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'Actions inside cross-site frames are not supported yet.',
+      nextCommand: `cdp frame ${targetId}`,
+      hints: [
+        `List frames with \`cdp frame ${targetId}\`.`,
+        'Read the frame with perceive --frame. Acting inside it is not supported yet.',
+      ],
+    };
+  }
+
   // #658: a dismissed confirm, prompt, or beforeunload is the action's result.
   // It stays ahead of fill's value check and the not-delivered matchers, so
   // --accept-dialog is not replaced by jsclick, perceive, or a value inspection.

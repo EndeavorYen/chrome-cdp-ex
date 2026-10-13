@@ -171,6 +171,54 @@ describe('cross-site frames', () => {
     expect(afterNav.some(call => call.method === 'Page.getFrameTree' && call.sessionId === 'child-2')).toBe(true);
   });
 
+  it('lists the new cross-site frame after navigation when setAutoAttach does not reattach', async () => {
+    const stale = childEntry(CHILD, oopifTree('http://localhost:9/inner.html'));
+    const fresh = childEntry('child-2', {
+      frame: {
+        id: 'oopif-2',
+        parentId: 'main-frame',
+        url: 'http://localhost:9/next-inner.html',
+        name: 'cross',
+        securityOrigin: 'http://localhost:9',
+      },
+    });
+    const live = [stale];
+    const retained = [];
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: sameOriginTree() }),
+      childSessions: live,
+      retainedSessions: retained,
+    });
+    const first = await T.framesStr(cdp, PAGE);
+    expect(first).toContain('oopif-frame');
+    expect(first).toContain('process:oopif');
+
+    // The new iframe is already attached, so a repeated setAutoAttach stays quiet.
+    // The stale session still answers if the navigation clear is skipped.
+    live.splice(0, live.length, fresh);
+    retained.push(stale);
+    cdp.emit('Target.attachedToTarget', {
+      sessionId: fresh.sessionId,
+      targetInfo: { ...fresh.targetInfo, type: 'iframe' },
+      waitingForDebugger: false,
+    }, { sessionId: PAGE });
+    cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html' },
+    }, { sessionId: PAGE });
+
+    const before = cdp.calls.length;
+    const listed = await T.framesStr(cdp, PAGE);
+    const after = cdp.calls.slice(before);
+    expect(listed).toContain('@f4 cross oopif-2 parent:@f1 http://localhost:9/next-inner.html origin:http://localhost:9 process:oopif');
+    expect(listed).not.toContain('oopif-frame');
+    expect(after.some(call => call.method === 'Page.getFrameTree' && call.sessionId === CHILD)).toBe(false);
+    expect(after.some(call => call.method === 'Target.getTargets' && call.sessionId === PAGE)).toBe(true);
+    expect(after.some(call => (
+      call.method === 'Target.attachToTarget' && call.params?.targetId === 'child-2-target' && call.sessionId === PAGE
+    ))).toBe(true);
+    expect(after.some(call => call.method === 'Page.getFrameTree' && call.sessionId === 'child-2')).toBe(true);
+  });
+
   it('drops a detached child session and reattaches on the next frame list', async () => {
     const children = [childEntry(CHILD, oopifTree('http://localhost:9/inner.html'))];
     const cdp = frameCdp(children);
@@ -353,5 +401,60 @@ describe('cross-site frames', () => {
     const ax = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree');
     expect(ax.at(-1)).toMatchObject({ sessionId: CHILD, params: { frameId: 'oopif-frame' } });
     expect(attachCalls(cdp)).toHaveLength(1);
+  });
+});
+
+function crossSiteRefState() {
+  return {
+    frameRefs: new Map([['@f3', {
+      frameRef: '@f3',
+      frameId: 'oopif-frame',
+      process: 'oopif',
+      refs: new Map([[1, 55]]),
+      frames: [{ ref: '@f3', id: 'oopif-frame', process: 'oopif' }],
+    }]]),
+  };
+}
+
+describe('actions inside a cross-site frame', () => {
+  const target = { targetId: 'AB12CD34', input: '@f3:1' };
+
+  async function refuse(action, run) {
+    const cdp = createMockCDP();
+    const err = await run(cdp).catch(error => error);
+    expect(err, action).toBeInstanceOf(Error);
+    expect(err.message, action).toBe('Actions inside cross-site frames are not supported yet (@f3).');
+    const text = T.formatActionFailure(err, { action, target });
+    expect(text, action).toBe([
+      'Error: Actions inside cross-site frames are not supported yet (@f3).',
+      'Kind: usage',
+      'Next: cdp frame AB12CD34',
+    ].join('\n'));
+    expect(text, action).not.toContain('perceive --frame');
+    expect(text, action).not.toContain('wrong-frame');
+    const cli = T.formatCliError(err, { cmd: action, targetPrefix: 'AB12CD34', args: ['@f3:1'] });
+    expect(cli, action).toContain('Kind: usage');
+    expect(cli, action).toContain('Next: cdp frame AB12CD34');
+    expect(cli, action).not.toContain('perceive --frame');
+    expect(cli, action).not.toContain('cdp status');
+    expect(cli, action).not.toContain('wrong-frame');
+    const forwarded = T.formatDaemonCommandError(text, { cmd: action, targetPrefix: 'AB12CD34', args: ['@f3:1'] });
+    expect(forwarded, action).toBe(text);
+    expect(cdp.calls.some(call => call.method === 'Page.createIsolatedWorld'), action).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'DOM.pushNodesByBackendIdsToFrontend'), action).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'CSS.getMatchedStylesForNode'), action).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'DOM.getDocument'), action).toBe(false);
+  }
+
+  it('refuses click on a ref inside a cross-site frame', async () => {
+    await refuse('click', cdp => T.clickStr(cdp, PAGE, '@f3:1', new Map(), crossSiteRefState()));
+  });
+
+  it('refuses fill on a ref inside a cross-site frame', async () => {
+    await refuse('fill', cdp => T.fillStr(cdp, PAGE, '@f3:1', 'hello', new Map(), crossSiteRefState()));
+  });
+
+  it('refuses cascade on a ref inside a cross-site frame', async () => {
+    await refuse('cascade', cdp => T.cascadeStr(cdp, PAGE, '@f3:1', 'color', new Map(), crossSiteRefState()));
   });
 });

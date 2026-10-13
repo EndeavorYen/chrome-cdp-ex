@@ -29,11 +29,41 @@ function filterAcceptsChild(filter, info) {
   return filter.some(entry => entry && entry.exclude !== true && (!entry.type || entry.type === info.type));
 }
 
+function retainedSessionsOf(handlers) {
+  return Array.isArray(handlers.retainedSessions) ? handlers.retainedSessions : [];
+}
+
+function sessionFor(handlers, sessionId) {
+  return childSessionFor(handlers, sessionId)
+    || retainedSessionsOf(handlers).find(child => child && child.sessionId === sessionId)
+    || null;
+}
+
+function announceKey(parentSessionId, targetId) {
+  return `${parentSessionId || ''}\0${targetId || ''}`;
+}
+
+function iframeTargetInfo(child) {
+  const info = childTargetInfo(child);
+  const parentId = child.parentId || info.parentId || 'main-frame';
+  return {
+    ...info,
+    parentId,
+    parentFrameId: child.parentFrameId || info.parentFrameId || parentId,
+  };
+}
+
 export function createMockCDP(handlers = {}) {
   const calls = [];
   const clickProbe = { seen: [] };
   const listeners = new Map();
+  // Chrome announces an iframe target once. A later Target.setAutoAttach does not
+  // send Target.attachedToTarget again for a target this client already attached.
+  const announcedTargets = new Set();
   function emit(method, params = {}, msg = {}) {
+    if (method === 'Target.attachedToTarget' && params?.targetInfo?.targetId) {
+      announcedTargets.add(announceKey(msg?.sessionId, params.targetInfo.targetId));
+    }
     const set = listeners.get(method);
     if (!set) return;
     for (const handler of [...set]) handler(params, msg);
@@ -43,6 +73,7 @@ export function createMockCDP(handlers = {}) {
       if (!child?.sessionId) continue;
       const targetInfo = childTargetInfo(child);
       if (!filterAcceptsChild(params?.filter, targetInfo)) continue;
+      if (announcedTargets.has(announceKey(parentSessionId, targetInfo.targetId))) continue;
       emit('Target.attachedToTarget', {
         sessionId: child.sessionId,
         targetInfo,
@@ -119,7 +150,17 @@ export function createMockCDP(handlers = {}) {
         if (handlers[method]) return recordClickProbeMouse(method, params, timeout, handlers[method](params, sessionId));
         return Promise.resolve({});
       }
-      const child = childSessionFor(handlers, sessionId);
+      if (method === 'Target.getTargets' && !handlers[method]) {
+        const targetInfos = childSessionsOf(handlers)
+          .map(child => iframeTargetInfo(child))
+          .filter(info => filterAcceptsChild(params?.filter, info));
+        return Promise.resolve({ targetInfos });
+      }
+      if (method === 'Target.attachToTarget' && !handlers[method]) {
+        const child = childSessionsOf(handlers).find(item => childTargetInfo(item).targetId === params?.targetId);
+        return Promise.resolve(child ? { sessionId: child.sessionId } : {});
+      }
+      const child = sessionFor(handlers, sessionId);
       if (child) {
         if (child.handlers?.[method]) {
           return recordClickProbeMouse(method, params, timeout, child.handlers[method](params, sessionId));
