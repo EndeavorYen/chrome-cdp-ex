@@ -110,8 +110,15 @@ export function rewriteBatchInput(input, cwd, depth) {
       next.push(segment);
       continue;
     }
+    // Batch tokenization understands only ' and ". Backticks would stay in the
+    // value. tokenizeCommandLine has no escape, so an unquotable step stays as written.
+    const rejoined = rejoinRewrittenCommand(head, rewritten, '"\'');
+    if (rejoined == null) {
+      next.push(segment);
+      continue;
+    }
     changed = true;
-    next.push(rejoinRewrittenCommand(head, rewritten));
+    next.push(rejoined);
   }
   return changed ? next.join('|') : input;
 }
