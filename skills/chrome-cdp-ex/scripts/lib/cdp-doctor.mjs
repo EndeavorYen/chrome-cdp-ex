@@ -2253,7 +2253,7 @@ function shadowTreeSource() {
         try { root = typeof current.getRootNode === 'function' ? current.getRootNode() : null; } catch (err) { return false; }
         const host = root && root.host;
         if (!host || host === current) return false;
-        if (host === ancestor) return true;
+        // contains() is inclusive, so this is also true when the ancestor is the host itself.
         try { if (typeof ancestor.contains === 'function' && ancestor.contains(host)) return true; } catch (err) {}
         current = host;
       }
