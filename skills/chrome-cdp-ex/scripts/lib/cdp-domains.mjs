@@ -73,6 +73,7 @@ export const CDP_METHODS = Object.freeze([
   'Target.closeTarget',
   'Target.createTarget',
   'Target.getTargets',
+  'Target.setAutoAttach',
 ]);
 
 const TRANSPORT_KEYS = new Set(['send']);

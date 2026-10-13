@@ -199,7 +199,109 @@ describe('selector miss on a page with frames', () => {
     expectRunnableNext(text);
   });
 
-  it('does not probe frames for a non-unique name or a miss already inside a frame', async () => {
+  function blankFrame(id, { url = 'about:blank', origin = '://', parentId = 'root' } = {}) {
+  return { frame: { id, parentId, url, name: id, securityOrigin: origin } };
+}
+
+it('counts a pending cross-site about:blank frame and does not point Next at it', async () => {
+  const crossEl = frameEl(CROSS, { title: 'Other', host: 'localhost:9' });
+  for (const origin of ['://', '', 'null']) {
+    for (const url of ['about:blank', '']) {
+      const cdp = pageCdp({
+        frameElementCount: 2,
+        frameElements: [
+          frameEl(SAME, { title: 'Inner', host: '127.0.0.1:9' }),
+          crossEl,
+        ],
+        tree: frameTree([
+          childFrame('inner', SAME),
+          blankFrame('pending', { url, origin }),
+        ]),
+      });
+      const text = await miss(cdp, NAMED);
+      expect(text, `${url} ${origin}`).toBe([
+        `Error: ${NAMED} The page has 1 frame and the control may be inside one. 1 cross-site frame is not reachable yet.`,
+        'Kind: selector',
+        `Next: cdp perceive ${PREFIX} --frame @f2`,
+      ].join('\n'));
+      expect(text).not.toContain('@f3');
+      expect(methods(cdp)).not.toContain('DOM.getFrameOwner');
+      expect(methods(cdp)).not.toContain('Target.setAutoAttach');
+    }
+  }
+
+  const only = pageCdp({
+    frameElementCount: 1,
+    frameElements: [crossEl],
+    tree: frameTree([blankFrame('pending', { origin: 'null' })]),
+  });
+  const onlyText = await miss(only, CSS, '#pay');
+  expect(onlyText).toBe([
+    `Error: ${CSS} The page has 1 cross-site frame and the control may be inside one. 1 cross-site frame is not reachable yet.`,
+    'Kind: selector',
+    `Next: cdp perceive ${PREFIX} -C -d 8`,
+  ].join('\n'));
+  expect(onlyText).not.toContain('--frame');
+  expect(onlyText).not.toMatch(/Next: cdp frame /);
+
+  // Placeholder first: the same-origin frame keeps @f3, and Next uses that ref.
+  const reversed = pageCdp({
+    frameElementCount: 2,
+    frameElements: [
+      frameEl(SAME, { title: 'Inner', host: '127.0.0.1:9' }),
+      crossEl,
+    ],
+    tree: frameTree([
+      blankFrame('pending'),
+      childFrame('inner', SAME),
+    ]),
+  });
+  const reversedText = await miss(reversed, NAMED);
+  expect(reversedText).toContain('The page has 1 frame and the control may be inside one. 1 cross-site frame is not reachable yet.');
+  expect(reversedText).toContain(`Next: cdp perceive ${PREFIX} --frame @f3`);
+  expect(reversedText).not.toContain('--frame @f2');
+});
+
+it('keeps a same-origin about:blank iframe as a frame Next can enter', async () => {
+  const cases = [
+    { src: '', host: '', url: 'about:blank', origin: '://' },
+    { src: 'about:blank', host: '', url: 'about:blank', origin: '' },
+    { src: 'about:srcdoc', host: '', url: 'about:srcdoc', origin: 'null' },
+    { src: 'http://127.0.0.1:9/other.html', host: '127.0.0.1:9', url: 'about:blank', origin: 'null' },
+    { src: 'http://127.0.0.1:10/other.html', host: '127.0.0.1:10', url: '', origin: '://' },
+  ];
+  for (const item of cases) {
+    const cdp = pageCdp({
+      frameElementCount: 1,
+      frameElements: [frameEl(item.src, { host: item.host })],
+      tree: frameTree([blankFrame('blank', { url: item.url, origin: item.origin })]),
+    });
+    const text = await miss(cdp, NAMED);
+    expect(text, item.src || '(no src)').toBe([
+      `Error: ${NAMED} The page has 1 frame and the control may be inside one.`,
+      'Kind: selector',
+      `Next: cdp perceive ${PREFIX} --frame @f2`,
+    ].join('\n'));
+    expect(text, item.src || '(no src)').not.toContain('cross-site');
+  }
+
+  const beside = pageCdp({
+    frameElementCount: 2,
+    frameElements: [
+      frameEl('', { title: 'Blank', host: '' }),
+      frameEl(CROSS, { title: 'Other', host: 'localhost:9' }),
+    ],
+    tree: frameTree([blankFrame('blank', { origin: '://' })]),
+  });
+  const besideText = await miss(beside, NAMED);
+  expect(besideText).toBe([
+    `Error: ${NAMED} The page has 1 frame and the control may be inside one. 1 cross-site frame is not reachable yet.`,
+    'Kind: selector',
+    `Next: cdp perceive ${PREFIX} --frame @f2`,
+  ].join('\n'));
+});
+
+it('does not probe frames for a non-unique name or a miss already inside a frame', async () => {
     const framed = pageCdp({
       frameElementCount: 1,
       frameElements: [frameEl(SAME, { host: '127.0.0.1:9' })],

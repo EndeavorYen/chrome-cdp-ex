@@ -92,6 +92,7 @@ const EXPECTED_METHODS = Object.freeze([
   'Target.closeTarget',
   'Target.createTarget',
   'Target.getTargets',
+  'Target.setAutoAttach',
 ]);
 
 function adapter(send = vi.fn(async () => ({ ok: true }))) {

@@ -4,9 +4,52 @@ process.env.NODE_ENV = 'test';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
+function childSessionsOf(handlers) {
+  return Array.isArray(handlers.childSessions) ? handlers.childSessions : [];
+}
+
+function childSessionFor(handlers, sessionId) {
+  if (!sessionId) return null;
+  return childSessionsOf(handlers).find(child => child && child.sessionId === sessionId) || null;
+}
+
+function childTargetInfo(child) {
+  return {
+    type: 'iframe',
+    targetId: child.targetId || child.sessionId,
+    url: child.url || '',
+    title: child.title || '',
+    attached: true,
+    ...(child.targetInfo || {}),
+  };
+}
+
+function filterAcceptsChild(filter, info) {
+  if (!Array.isArray(filter) || filter.length === 0) return info.type === 'iframe';
+  return filter.some(entry => entry && entry.exclude !== true && (!entry.type || entry.type === info.type));
+}
+
 export function createMockCDP(handlers = {}) {
   const calls = [];
   const clickProbe = { seen: [] };
+  const listeners = new Map();
+  function emit(method, params = {}, msg = {}) {
+    const set = listeners.get(method);
+    if (!set) return;
+    for (const handler of [...set]) handler(params, msg);
+  }
+  function emitAttachedChildren(parentSessionId, params) {
+    for (const child of childSessionsOf(handlers)) {
+      if (!child?.sessionId) continue;
+      const targetInfo = childTargetInfo(child);
+      if (!filterAcceptsChild(params?.filter, targetInfo)) continue;
+      emit('Target.attachedToTarget', {
+        sessionId: child.sessionId,
+        targetInfo,
+        waitingForDebugger: false,
+      }, { sessionId: parentSessionId });
+    }
+  }
   function recordClickProbeMouse(method, params, timeout, result) {
     return Promise.resolve(result).then((value) => {
       if (method !== 'Input.dispatchMouseEvent') return value;
@@ -71,6 +114,22 @@ export function createMockCDP(handlers = {}) {
           ? handler(params, sessionId)
           : { result: { value: { connected: true } } });
       }
+      if (method === 'Target.setAutoAttach') {
+        if (params?.autoAttach) emitAttachedChildren(sessionId, params);
+        if (handlers[method]) return recordClickProbeMouse(method, params, timeout, handlers[method](params, sessionId));
+        return Promise.resolve({});
+      }
+      const child = childSessionFor(handlers, sessionId);
+      if (child) {
+        if (child.handlers?.[method]) {
+          return recordClickProbeMouse(method, params, timeout, child.handlers[method](params, sessionId));
+        }
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({ frameTree: { frame: { id: `mock-child-${child.sessionId}` } } });
+        }
+        if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 901 });
+        return Promise.resolve({});
+      }
       if (handlers[method]) return recordClickProbeMouse(method, params, timeout, handlers[method](params, sessionId));
       if (method === 'Page.getFrameTree') {
         return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
@@ -80,7 +139,16 @@ export function createMockCDP(handlers = {}) {
       }
       return recordClickProbeMouse(method, params, timeout, {});
     },
-    onEvent() { return () => {}; },
+    emit,
+    onEvent(method, handler) {
+      if (!listeners.has(method)) listeners.set(method, new Set());
+      const set = listeners.get(method);
+      set.add(handler);
+      return () => {
+        set.delete(handler);
+        if (set.size === 0) listeners.delete(method);
+      };
+    },
     waitForEvent(method, _timeout) {
       let timer;
       return {
