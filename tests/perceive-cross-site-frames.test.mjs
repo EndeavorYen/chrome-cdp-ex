@@ -403,6 +403,124 @@ describe('cross-site frames', () => {
     expect(attachCalls(cdp)).toHaveLength(1);
   });
 
+  it('reads a same-process frame nested in a cross-site frame through that frame\'s child session and clicks its ref', async () => {
+    const OWNER_BACKEND = 333;
+    const INNER_BACKEND = 444;
+    const BUTTON_BACKEND = 55;
+    const nestedMeta = {
+      title: 'Nested',
+      url: 'http://localhost:9/nested.html',
+      contentType: 'text/html',
+      vw: 200,
+      vh: 100,
+      scrollY: 0,
+      scrollMax: 0,
+      counts: { button: 1 },
+      focused: 'none',
+      layoutMap: {},
+      styleHints: {},
+      cursorInteractives: [],
+    };
+    const local = {
+      connected: true,
+      x: 10,
+      y: 6,
+      w: 40,
+      h: 18,
+      tag: 'BUTTON',
+      text: 'Pay now',
+      hit: { covered: false },
+      inViewport: true,
+      noClickBox: false,
+    };
+    const contentQuad = (x, y, w = 400, h = 300) => [x, y, x + w, y, x + w, y + h, x, y + h];
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: sameOriginTree() }),
+      // The nested frame's <iframe> is in the OOPIF document. The page session
+      // has no such frame id; only the child session can own it.
+      'DOM.getFrameOwner': ({ frameId }) => {
+        if (frameId === 'oopif-nested') throw new Error('No frame for given id found');
+        if (frameId === 'oopif-frame') return { backendNodeId: OWNER_BACKEND };
+        return { backendNodeId: 0 };
+      },
+      'DOM.getBoxModel': ({ backendNodeId }) => (
+        backendNodeId === OWNER_BACKEND
+          ? { model: { content: contentQuad(120, 80) } }
+          : { model: {} }
+      ),
+      'DOM.resolveNode': () => ({ object: { objectId: 'owner-iframe' } }),
+      'Runtime.callFunctionOn': (params) => {
+        const fn = String(params.functionDeclaration || '');
+        if (fn.includes('chrome-cdp-ex.owner-iframe-hit.v1')) {
+          return { result: { value: { marker: 'chrome-cdp-ex.owner-iframe-hit.v1', covered: false } } };
+        }
+        return { result: { value: { connected: true, visible: true } } };
+      },
+      childSessions: [childEntry(CHILD, oopifTree(), {
+        'Page.createIsolatedWorld': (params) => {
+          expect(params.frameId).toBe('oopif-nested');
+          return { executionContextId: 77 };
+        },
+        'Runtime.evaluate': (params) => {
+          expect(params.contextId).toBe(77);
+          return { result: { value: JSON.stringify(nestedMeta) } };
+        },
+        'Accessibility.getFullAXTree': (params) => {
+          expect(params.frameId).toBe('oopif-nested');
+          return { nodes: [
+            { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Nested' }, childIds: ['2'] },
+            { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'Pay now' }, backendDOMNodeId: BUTTON_BACKEND },
+          ] };
+        },
+        'DOM.resolveNode': () => ({ object: { objectId: 'pay-btn' } }),
+        'DOM.getFrameOwner': ({ frameId }) => (
+          frameId === 'oopif-nested' ? { backendNodeId: INNER_BACKEND } : { backendNodeId: 0 }
+        ),
+        'DOM.getBoxModel': ({ backendNodeId }) => (
+          backendNodeId === INNER_BACKEND
+            ? { model: { content: contentQuad(8, 4) } }
+            : { model: {} }
+        ),
+        'Runtime.callFunctionOn': (params) => {
+          const fn = String(params.functionDeclaration || '');
+          if (fn.includes('getBoundingClientRect') || fn.includes('requestAnimationFrame')) {
+            return { result: { value: { ...local, hit: { ...local.hit } } } };
+          }
+          return { result: { value: { connected: true } } };
+        },
+      })],
+    });
+    const refState = {};
+    const out = await T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null }, { frameRef: '@f5' }, refState,
+    );
+    expect(out).toContain('Frame: @f5 nested-cross oopif-nested http://localhost:9/nested.html');
+    expect(out).toContain('[button] Pay now  @f5:1');
+    // Page owner (120, 80) plus the nested iframe's box in the child session (8, 4).
+    expect(out).toContain('(138,90 40×18)');
+    expect(out).not.toContain('Frames:');
+    const ax = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree');
+    expect(ax.at(-1)).toMatchObject({ sessionId: CHILD, params: { frameId: 'oopif-nested' } });
+    expect(cdp.calls.filter(call => (
+      call.method === 'Page.createIsolatedWorld' && call.params?.frameId === 'oopif-nested'
+    )).every(call => call.sessionId === CHILD)).toBe(true);
+    expect(cdp.calls.some(call => (
+      call.method === 'DOM.getFrameOwner' && call.sessionId === CHILD && call.params?.frameId === 'oopif-nested'
+    ))).toBe(true);
+    expect(cdp.calls.some(call => (
+      call.method === 'DOM.getFrameOwner' && call.sessionId === PAGE && call.params?.frameId === 'oopif-nested'
+    ))).toBe(false);
+
+    const clicked = await T.clickStr(cdp, PAGE, '@f5:1', new Map(), refState);
+    expect(clicked).toBe('Clicked <BUTTON> "Pay now" (@f5:1)');
+    const pressed = cdp.calls.find(call => call.method === 'Input.dispatchMouseEvent' && call.params?.type === 'mousePressed');
+    expect(pressed?.sessionId).toBe(PAGE);
+    expect(pressed?.params).toMatchObject({ x: 158, y: 99 });
+    expect(cdp.calls.some(call => (
+      call.method === 'DOM.resolveNode' && call.sessionId === CHILD && call.params?.backendNodeId === BUTTON_BACKEND
+    ))).toBe(true);
+  });
+
   it('adopts only an iframe target whose parent is this page', async () => {
     const foreign = childEntry('foreign-sid', {
       frame: {
