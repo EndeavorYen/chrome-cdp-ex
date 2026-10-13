@@ -275,16 +275,17 @@ describe('perceive frame notice', () => {
       tree: frameTree([childFrame('inner', same, 'inner')]),
     }));
     expect(framesLines(out)).toEqual([
-      `Frames: 1 (1 visible), 1 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f2`,
+      `Frames: 1 (1 visible), 1 cross-site not read. Next: cdp perceive ${TARGET} --frame @f2`,
     ]);
     expect(out).toContain('  [iframe] "Inner" @f2');
-    expect(out).toContain('  [iframe] "localhost:9"');
-    expect(out).not.toMatch(/\[iframe\] "localhost:9" @f/);
-    expect(out).not.toContain('[iframe] "Other"');
+    expect(out).toContain('  [iframe] (cross-site, not read: opaque origin)');
+    expect(out).not.toMatch(/\[iframe\] \(cross-site[^\n]*@f/);
+    expect(out).not.toContain('localhost:9');
+    expect(out).not.toContain('"Other"');
     expect(out).not.toContain('@f3');
   });
 
-  it('does not point Next at frame when every iframe is cross-site', async () => {
+  it('points Next at frame, not perceive --frame, when every iframe is cross-site', async () => {
     const cross = 'http://localhost:9/inner.html';
     const out = await perceive(pageCdp({
       nodes: axTree([
@@ -293,10 +294,11 @@ describe('perceive frame notice', () => {
       frameElements: [frameEl({ title: 'Other', src: cross, host: 'localhost:9' })],
       tree: frameTree(),
     }));
-    expect(framesLines(out)).toEqual(['Frames: 0 (0 visible), 1 cross-site not reachable yet']);
-    expect(out).not.toMatch(/Next: cdp frame/);
-    expect(out).toContain('  [iframe] "localhost:9"');
-    expect(out).not.toMatch(/\[iframe\] "localhost:9" @f/);
+    expect(framesLines(out)).toEqual([`Frames: 0 (0 visible), 1 cross-site not read. Next: cdp frame ${TARGET}`]);
+    expect(out).not.toMatch(/--frame/);
+    expect(out).toContain('  [iframe] (cross-site, not read: opaque origin)');
+    expect(out).not.toContain('localhost:9');
+    expect(out).not.toContain('"Other"');
   });
 
   it('does not add a Frames line inside perceive --frame', async () => {
@@ -357,11 +359,12 @@ describe('perceive frame notice', () => {
       tree,
     }));
     expect(framesLines(out)).toEqual([
-      `Frames: 2 (2 visible), 1 cross-site not reachable yet. Next: cdp frame ${TARGET}`,
+      `Frames: 2 (2 visible), 1 cross-site not read. Next: cdp frame ${TARGET}`,
     ]);
     expect(out).toContain('  [iframe] "Outer" @f2');
-    expect(out).toContain('  [iframe] "localhost:9"');
-    expect(out).not.toMatch(/\[iframe\] "localhost:9" @f/);
+    expect(out).toContain('  [iframe] (cross-site, not read: opaque origin)');
+    expect(out).not.toMatch(/\[iframe\] \(cross-site[^\n]*@f/);
+    expect(out).not.toContain('localhost:9');
     expect(out).not.toContain('[iframe] "Inner"');
     expect(out).not.toContain('@f3');
 
@@ -490,11 +493,12 @@ it('counts a pending cross-site about:blank frame as cross-site and does not poi
       ]);
       const out = await perceive(pageCdp({ nodes, frameElements: elements, tree }));
       expect(framesLines(out), label).toEqual([
-        `Frames: 1 (1 visible), 1 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f2`,
+        `Frames: 1 (1 visible), 1 cross-site not read. Next: cdp perceive ${TARGET} --frame @f2`,
       ]);
       expect(out, label).toContain('  [iframe] "Inner" @f2');
-      expect(out, label).toContain('  [iframe] "localhost:9"');
-      expect(out, label).not.toMatch(/\[iframe\] "localhost:9" @f/);
+      expect(out, label).toContain('  [iframe] (cross-site, not read: opaque origin)');
+      expect(out, label).not.toMatch(/\[iframe\] \(cross-site[^\n]*@f/);
+      expect(out, label).not.toContain('localhost:9');
       expect(out, label).not.toContain('@f3');
       expect(out, label).not.toContain('--frame @f3');
     }
@@ -507,10 +511,12 @@ it('counts a pending cross-site about:blank frame as cross-site and does not poi
   ]);
   const reversedOut = await perceive(pageCdp({ nodes, frameElements: elements, tree: reversed }));
   expect(framesLines(reversedOut)).toEqual([
-    `Frames: 1 (1 visible), 1 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f3`,
+    `Frames: 1 (1 visible), 1 cross-site not read. Next: cdp perceive ${TARGET} --frame @f3`,
   ]);
   expect(reversedOut).toContain('  [iframe] "Inner" @f3');
-  expect(reversedOut).not.toMatch(/\[iframe\] "localhost:9" @f/);
+  expect(reversedOut).toContain('  [iframe] (cross-site, not read: opaque origin)');
+  expect(reversedOut).not.toMatch(/\[iframe\] \(cross-site[^\n]*@f/);
+  expect(reversedOut).not.toContain('localhost:9');
   expect(reversedOut).not.toContain('--frame @f2');
 
   const listed = await T.framesStr(pageCdp({ tree: reversed }), 'sid');
@@ -525,10 +531,10 @@ it('counts a pending cross-site about:blank frame as cross-site and does not poi
     frameElements: [frameEl({ title: 'Other', src: cross, host: 'localhost:9' })],
     tree: onlyPending,
   }));
-  expect(framesLines(onlyOut)).toEqual(['Frames: 0 (0 visible), 1 cross-site not reachable yet']);
-  expect(onlyOut).not.toMatch(/Next:/);
-  expect(onlyOut).toContain('  [iframe] "localhost:9"');
-  expect(onlyOut).not.toMatch(/\[iframe\] "localhost:9" @f/);
+  expect(framesLines(onlyOut)).toEqual([`Frames: 0 (0 visible), 1 cross-site not read. Next: cdp frame ${TARGET}`]);
+  expect(onlyOut).not.toMatch(/--frame/);
+  expect(onlyOut).toContain('  [iframe] (cross-site, not read: opaque origin)');
+  expect(onlyOut).not.toContain('localhost:9');
 
   // A nested child of the placeholder is not a same-origin target.
   const nested = frameTree([
@@ -542,8 +548,10 @@ it('counts a pending cross-site about:blank frame as cross-site and does not poi
     frameElements: [frameEl({ title: 'Other', src: cross, host: 'localhost:9' })],
     tree: nested,
   }));
-  expect(framesLines(nestedOut)).toEqual(['Frames: 0 (0 visible), 1 cross-site not reachable yet']);
+  expect(framesLines(nestedOut)).toEqual([`Frames: 0 (0 visible), 1 cross-site not read. Next: cdp frame ${TARGET}`]);
   expect(nestedOut).not.toContain('--frame');
+  expect(nestedOut).toContain('  [iframe] (cross-site, not read: opaque origin)');
+  expect(nestedOut).not.toContain('localhost:9');
   const nestedListed = await T.framesStr(pageCdp({ tree: nested }), 'sid');
   expect(nestedListed).toContain('@f2 (anonymous) pending parent:@f1 about:blank origin:://');
   expect(nestedListed).toContain('@f3 inner inner parent:@f2 http://localhost:9/nested.html');
@@ -608,11 +616,12 @@ it('keeps a same-origin about:blank iframe in the frame census', async () => {
     tree: frameTree([blankFrame('blank', { origin: '://' })]),
   }));
   expect(framesLines(beside)).toEqual([
-    `Frames: 1 (1 visible), 1 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f2`,
+    `Frames: 1 (1 visible), 1 cross-site not read. Next: cdp perceive ${TARGET} --frame @f2`,
   ]);
   expect(beside).toContain('  [iframe] "Blank" @f2');
-  expect(beside).toContain('  [iframe] "localhost:9"');
-  expect(beside).not.toMatch(/\[iframe\] "localhost:9" @f/);
+  expect(beside).toContain('  [iframe] (cross-site, not read: opaque origin)');
+  expect(beside).not.toMatch(/\[iframe\] \(cross-site[^\n]*@f/);
+  expect(beside).not.toContain('localhost:9');
 });
 
 it('counts cross-site iframes past the 50-element detail list', async () => {
@@ -647,7 +656,7 @@ it('counts cross-site iframes past the 50-element detail list', async () => {
       tree: frameTree([childFrame('outer', same, 'outer')]),
     }));
     expect(framesLines(out)).toEqual([
-      `Frames: 1 (1 visible), 51 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f2`,
+      `Frames: 1 (1 visible), 51 cross-site not read. Next: cdp perceive ${TARGET} --frame @f2`,
     ]);
     const iframeLines = out.split('\n').filter(line => line.includes('[iframe]'));
     expect(iframeLines).toHaveLength(50);

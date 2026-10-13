@@ -11,6 +11,7 @@
 // so a tab daemon started earlier, under other variables, still applies the current policy.
 import { randomBytes } from 'crypto';
 import { COMMAND_SURFACE } from './command-surface.mjs';
+import { FRAME_SITES_ENV, parseFrameSiteEntry, parseFrameSites } from './frame-sites.mjs';
 import { formatNextLine } from './next-line.mjs';
 
 export const POLICY_ENV_VARS = Object.freeze({
@@ -59,7 +60,7 @@ const POLICY_CONFIG_PREFIX = 'policy config: ';
 const MAX_POLICY_ENTRIES = 64;
 const MAX_ORIGIN_DISPLAY_CHARS = 100;
 const MAX_COMPOSITE_DEPTH = 3;
-const POLICY_WIRE_KEYS = new Set(['denyActions', 'allowedOrigins', 'contentBoundary']);
+const POLICY_WIRE_KEYS = new Set(['denyActions', 'allowedOrigins', 'contentBoundary', 'frameSites']);
 const CONTENT_BOUNDARY_NONCE_RE = /^[0-9a-f]{16}$/;
 
 function policyConfigError(message) {
@@ -151,14 +152,15 @@ function expandDenyList(listed) {
   });
 }
 
-function freezePolicy({ contentBoundaries = false, allowedOrigins = null, denyActions = null }) {
-  if (!contentBoundaries && !allowedOrigins && !denyActions) return null;
+function freezePolicy({ contentBoundaries = false, allowedOrigins = null, denyActions = null, frameSites = null }) {
+  if (!contentBoundaries && !allowedOrigins && !denyActions && !frameSites) return null;
   const listed = denyActions ? [...new Set(denyActions)] : null;
   return Object.freeze({
     contentBoundaries: Boolean(contentBoundaries),
     allowedOrigins: allowedOrigins ? Object.freeze(allowedOrigins) : null,
     denyActions: listed ? Object.freeze(listed) : null,
     deny: expandDenyList(listed),
+    frameSites: frameSites ? Object.freeze([...frameSites]) : null,
   });
 }
 
@@ -168,10 +170,12 @@ export function readSessionPolicy(env = process.env, { surface = COMMAND_SURFACE
   const contentBoundaries = readSwitch(env, POLICY_ENV_VARS.contentBoundaries);
   const origins = readList(env, POLICY_ENV_VARS.allowedOrigins);
   const denies = readList(env, POLICY_ENV_VARS.denyActions);
+  const frameSites = parseFrameSites(env?.[FRAME_SITES_ENV]);
   return freezePolicy({
     contentBoundaries,
     allowedOrigins: origins.length ? origins.map(parseOriginPattern) : null,
     denyActions: denies.length ? denies.map(name => resolveDenyAction(name, surface)) : null,
+    frameSites,
   });
 }
 
@@ -193,6 +197,7 @@ export function policyRequestFields(policy, cmd, { contentBoundary = true, args 
   const wire = {};
   if (policy.denyActions) wire.denyActions = [...policy.denyActions];
   if (policy.allowedOrigins) wire.allowedOrigins = policy.allowedOrigins.map(pattern => pattern.source);
+  if (policy.frameSites?.length) wire.frameSites = policy.frameSites.map(entry => entry.source);
   if (contentBoundary && policy.contentBoundaries && wantsContentBoundary(cmd, args)) wire.contentBoundary = true;
   return Object.keys(wire).length ? { policy: wire } : {};
 }
@@ -217,15 +222,18 @@ export function parsePolicyWire(input, { surface = COMMAND_SURFACE } = {}) {
   }
   const origins = Object.hasOwn(input, 'allowedOrigins') ? stringList(input.allowedOrigins, 'daemon request.policy.allowedOrigins') : [];
   const denies = Object.hasOwn(input, 'denyActions') ? stringList(input.denyActions, 'daemon request.policy.denyActions') : [];
+  const siteSources = Object.hasOwn(input, 'frameSites') ? stringList(input.frameSites, 'daemon request.policy.frameSites') : [];
   const policy = freezePolicy({
     allowedOrigins: origins.length ? origins.map(parseOriginPattern) : null,
     denyActions: denies.length ? denies.map(name => resolveDenyAction(name, surface)) : null,
+    frameSites: siteSources.length ? siteSources.map(entry => parseFrameSiteEntry(entry)) : null,
   });
   return Object.freeze({
     denyActions: policy?.denyActions || null,
     deny: policy?.deny || null,
     allowedOrigins: policy?.allowedOrigins || null,
     contentBoundary: input.contentBoundary === true,
+    frameSites: policy?.frameSites || null,
   });
 }
 
@@ -234,6 +242,7 @@ export function snapshotPolicyWire(input) {
   const wire = {};
   if (policy.denyActions) wire.denyActions = Object.freeze([...policy.denyActions]);
   if (policy.allowedOrigins) wire.allowedOrigins = Object.freeze(policy.allowedOrigins.map(pattern => pattern.source));
+  if (policy.frameSites) wire.frameSites = Object.freeze(policy.frameSites.map(entry => entry.source));
   if (policy.contentBoundary) wire.contentBoundary = true;
   return Object.freeze(wire);
 }
@@ -580,7 +589,7 @@ export function policyRecovery(message, { targetPrefix = '' } = {}) {
       kind: 'usage',
       strategy: 'fix-policy-env',
       ask: 'Fix or unset the variable named in the error, then rerun the command.',
-      reason: 'CDP_CONTENT_BOUNDARIES, CDP_ALLOWED_ORIGINS and CDP_DENY_ACTIONS are checked before any command runs.',
+      reason: 'CDP_CONTENT_BOUNDARIES, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS and CDP_FRAME_SITES are checked before any command runs.',
     };
   }
   const info = classifyPolicyMessage(message);

@@ -22,6 +22,7 @@ import { clickDispatchEffects, clickStr, fillFeedbackPolicy, isNamedClickQuery, 
 import { assertNotPdfViewerPage, cdpDomains, collectPageHealth, createScreenshotTierState, evalStr, formatPdfViewerOutput, isHiddenTabCaptureError, isPdfViewerContentType, pdfViewerError, pdfViewerHandoffModel, pdfViewerNextCommand, pdfViewerReportRecommendation, runtimeMetricsStr, shotStr, webVitalsModelOrUnavailable } from './cdp-page.mjs';
 import { applyViewportOverride, formatClockSummary, formatNetworkMocksSummary, formatThrottleSummary } from './cdp-page-commands.mjs';
 import { attachSelectorFrameMiss, perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
+import { relocateCrossSiteActionFields } from './frame-sites.mjs';
 
 export function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } = {}) {
   const model = buildCliErrorModel(err, { cmd, targetPrefix });
@@ -1378,9 +1379,9 @@ export function compactActionHandoffForJson(result = {}) {
 }
 export function compactActionResultForJson(result, { compact: compactMode = false } = {}) {
   const compact = JSON.parse(JSON.stringify(result));
-  compact.target = sanitizeActionTargetForLog(compact.action, result.target || null);
+  compact.target = relocateCrossSiteActionFields(sanitizeActionTargetForLog(compact.action, result.target || null));
   if (compact.effects?.failure?.target) {
-    compact.effects.failure.target = sanitizeActionTargetForLog(compact.action, result.target || null);
+    compact.effects.failure.target = relocateCrossSiteActionFields(sanitizeActionTargetForLog(compact.action, result.target || null));
   }
   compact.receipt = receiptForActionJson(compact.receipt);
   const effects = compact.effects || {};

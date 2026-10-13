@@ -621,6 +621,48 @@ describe('#466 review: more wrapping and checks', () => {
     expect(policyRequestFields(policy, 'forward')).toEqual({ policy: { contentBoundary: true } });
   });
 
+  it('keeps the MCP CDP_FRAME_SITES value from server start', async () => {
+    const seen = [];
+    const env = { CDP_FRAME_SITES: 'https://pay.example.com' };
+    const handle = createMcpRequestHandler({
+      runtimeClient: createRuntimeClient({
+        executeCli: async () => {
+          seen.push(process.env.CDP_FRAME_SITES);
+          return { code: 0, stdout: 'ok', stderr: '' };
+        },
+      }),
+      sendMessage: () => {},
+      env,
+    });
+    env.CDP_FRAME_SITES = '*';
+    const previous = process.env.CDP_FRAME_SITES;
+    process.env.CDP_FRAME_SITES = '*';
+    try {
+      await handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'list_tabs', arguments: {} },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.CDP_FRAME_SITES;
+      else process.env.CDP_FRAME_SITES = previous;
+    }
+    expect(seen).toEqual(['https://pay.example.com']);
+  });
+
+  it('rejects a CDP_FRAME_SITES value the parser cannot use before a command runs', async () => {
+    expect(() => readSessionPolicy({ CDP_FRAME_SITES: '*' })).toThrow(/^policy config: /);
+    const result = await runCli(['list'], { CDP_FRAME_SITES: '*' });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('Kind: usage');
+    const policy = readSessionPolicy({ CDP_FRAME_SITES: 'https://pay.example.com' });
+    expect(policyRequestFields(policy, 'click')).toEqual({
+      policy: { frameSites: ['https://pay.example.com'] },
+    });
+    expect(policyRequestFields(readSessionPolicy({}), 'perceive')).toEqual({});
+  });
+
   it('checks spawn-debug-browser --url against the allowlist before launching anything', async () => {
     const result = await runCli(['spawn-debug-browser', 'chrome', '--url', 'https://evil.example/'], {
       CDP_ALLOWED_ORIGINS: 'https://app.example.com',

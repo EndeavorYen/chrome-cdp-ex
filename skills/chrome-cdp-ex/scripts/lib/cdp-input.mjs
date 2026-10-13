@@ -15,6 +15,7 @@ import { navigationCancelledError, reloadObservationBuffers, reloadStr } from '.
 import { cdpDomains, evalStr, getPages, navigationDestinationMatches, runtimeExceptionMessage } from './cdp-page.mjs';
 import { clearObservationBuffers } from './cdp-page-commands.mjs';
 import { clickPointHitFunctionSource, clickableBoxHelpersSource, discardHoverIdleBaseline, formatUnknownRefError, frameScopedBackendNode, frameViewportOffset, hoverRecaptureShowsChange, invalidateRefMapping, invalidateSessionRefs, isCursorRef, isRef, isSearchListingHref, isStaleRefError, linkFrameNamePageExpression, linkTargetPageExpression, parseElshotArgs, parseFrameRef, perceiveStr, resolveCursorRef, resolveRef, resolveRefNode, resolveRefRectNoScroll, resolvedNodeSession, scrollSettledRectFunctionDeclaration, searchListingHelpersSource, searchListingSelector, trustedRefPresenceFunctionDeclaration } from './cdp-perceive.mjs';
+import { formatCrossSiteTarget, frameContentOrigin, listedFrame, originHost, wrapFrameContent } from './frame-sites.mjs';
 import { clickDownloadBrowser, isSensitiveActionTarget } from './cdp-session-report.mjs';
 
 // The daemon keeps the working directory of the CLI that started it; send the file absolute (#526).
@@ -1796,19 +1797,50 @@ export function cssClickMissMessage(selector, error) {
 // #436: the real mouse event goes to whatever is on top at the click point. When that is not the
 // target (see clickPointHitFunctionSource), fail before dispatch and name the covering element,
 // instead of sending the click into it and reporting `Clicked <target>`.
-export function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '' } = {}) {
+function crossSiteListed(cdp, sid, selector, refState) {
+  const parsed = parseFrameRef(selector);
+  if (!parsed || !refState?.frameRefs?.get) return null;
+  const entry = refState.frameRefs.get(parsed.frameRef);
+  if (!entry) return null;
+  const listedByRef = Array.isArray(entry.frames) && entry.frames.some(frame => frame?.ref === parsed.frameRef && frame.process === 'oopif');
+  if (entry.process !== 'oopif' && !listedByRef) return null;
+  const listed = listedFrame(cdp, sid, entry.frameId) || listedFrame(cdp, sid, parsed.frameRef);
+  const rawOrigin = listed?.securityOrigin || '';
+  return {
+    host: originHost(rawOrigin),
+    origin: frameContentOrigin(rawOrigin),
+    rawOrigin: rawOrigin || frameContentOrigin(rawOrigin),
+  };
+}
+
+function crossSitePageBlock(facts, text) {
+  const label = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!facts || !label) return '';
+  return `\n${wrapFrameContent(label, { origin: facts.origin })}`;
+}
+
+export function assertClickPointNotCovered(hit, { x, y, tag, text, ref = '', crossSiteHost = null, coverScope = '', frameOrigin = '' } = {}) {
   if (!hit || hit.covered !== true) return;
   const label = String(text || '').replace(/\s+/g, ' ').trim();
-  const target = `<${tag || '?'}>${label ? ` "${label}"` : ''}${ref ? ` (${ref})` : ''}`;
-  const by = !hit.within && (hit.byPosition === 'fixed' || hit.byPosition === 'sticky')
+  const crossSite = coverScope === 'page' || coverScope === 'frame';
+  const target = crossSite
+    ? formatCrossSiteTarget({ tag, ref, host: crossSiteHost || '' })
+    : `<${tag || '?'}>${label ? ` "${label}"` : ''}${ref ? ` (${ref})` : ''}`;
+  let by = !hit.within && (hit.byPosition === 'fixed' || hit.byPosition === 'sticky')
     ? `position:${hit.byPosition} ${hit.by}`
     : String(hit.by || '<unknown>');
+  if (crossSite && coverScope === 'page') by = by.replace(/\s+"[^"]*"/g, '');
+  else if (crossSite && coverScope === 'frame') {
+    const tagMatch = /<([A-Za-z0-9]+)/.exec(String(hit.by || by));
+    by = tagMatch ? `<${tagMatch[1]}> ` : '<unknown> ';
+  }
   const within = hit.within ? ` (inside position:${hit.withinPosition} ${hit.within})` : '';
   const recentred = hit.recentred ? ' (also after scrolling to centre)' : '';
   // #551: the target's scroll container cuts it off at the click point.
   const clipped = hit.clipped ? ', clipped by its scroll container,' : '';
   const point = `(${Math.round(Number(x) || 0)},${Math.round(Number(y) || 0)})`;
   const err = new Error(`click not sent: ${target} at ${point}${clipped} is covered by ${by}${within}${recentred}.`);
+  if (crossSite && label) err.frameContentBlock = wrapFrameContent(label, { origin: frameContentOrigin(frameOrigin) });
   err.clickCovered = {
     by: String(hit.by || ''),
     within: hit.within || null,
@@ -2045,6 +2077,13 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
     }
     const r = res.result.value || {};
     rememberClickTrust(options.clickTrust, r);
+    const facts = isRef(selector) ? crossSiteListed(cdp, sid, selector, refState) : null;
+    if (facts && options.clickTrust) {
+      options.clickTrust.frameContent = { origin: facts.rawOrigin, host: facts.host, name: r.text || '' };
+    }
+    if (facts) {
+      return `JS-clicked ${formatCrossSiteTarget({ tag: r.tag, ref: selector, host: facts.host })}${crossSitePageBlock(facts, r.text)}`;
+    }
     return `JS-clicked <${r.tag || '?'}> "${r.text || ''}"${isRef(selector) ? ` (${selector})` : ''}`;
   } catch (e) {
     if (isTimeoutError(e, ['Runtime.callFunctionOn'])) {
@@ -2322,11 +2361,26 @@ export async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) 
   }
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true, allowCrossSite: true });
-    if (r.disabled) throw actionDisabledError('click', { tag: r.tag, text: r.text, reason: r.disabled }, selector);
+    const facts = crossSiteListed(cdp, sid, selector, refState);
+    if (r.disabled) {
+      const err = actionDisabledError('click', { tag: r.tag, text: facts ? '' : r.text, reason: r.disabled }, selector);
+      if (facts && r.text) err.frameContentBlock = wrapFrameContent(String(r.text), { origin: facts.origin });
+      throw err;
+    }
     const refPoint = { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     if (clickMeasurementUnusable(r, refPoint)) throw noClickBoxError(selector, r);
     rememberClickTrust(opts.clickTrust, r);
-    assertClickPointNotCovered(r.hit, { x: r.x + r.w / 2, y: r.y + r.h / 2, tag: r.tag, text: r.text, ref: selector });
+    if (facts && opts.clickTrust) {
+      opts.clickTrust.frameContent = { origin: facts.rawOrigin, host: facts.host, name: r.text || '' };
+    }
+    assertClickPointNotCovered(r.hit, {
+      x: r.x + r.w / 2,
+      y: r.y + r.h / 2,
+      tag: r.tag,
+      text: r.text,
+      ref: selector,
+      ...(facts ? { crossSiteHost: facts.host, coverScope: r.coverScope || 'frame', frameOrigin: facts.rawOrigin } : {}),
+    });
     let objectId = null;
     try {
       objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { returnRealm: 'page', allowCrossSite: true });
@@ -2341,6 +2395,9 @@ export async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) 
       objectId,
       framed: Boolean(parseFrameRef(selector)),
     }, r, opts);
+    if (facts) {
+      return `Clicked ${formatCrossSiteTarget({ tag: r.tag, ref: selector, host: facts.host })}${suffix}${crossSitePageBlock(facts, r.text)}`;
+    }
     return `Clicked <${r.tag}> "${r.text}" (${selector})${suffix}`;
   }
   const waitMs = normalizeActionabilityWaitMs(opts.waitMs);
@@ -4892,6 +4949,8 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
     }
   }
   const after = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
+  const facts = ref ? crossSiteListed(cdp, sid, selector, refState) : null;
+  if (facts) before = null;
   const secretName = opts.secretName || null;
   // One display rule: a named secret (#469) shows <secret:NAME>; any other sensitive field <redacted>.
   const sensitive = Boolean(secretName)
@@ -4920,7 +4979,9 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
     }
     throw fillValueRejectedError(selector, secretName ? secretMarker(secretName) : wanted, state);
   }
-  const label = ref ? selector : `<${tag}>`;
+  const label = facts
+    ? `${selector}${facts.host ? ` in ${facts.host}` : ''}`
+    : (ref ? selector : `<${tag}>`);
   return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state, secretName })}${waitNote}`;
 }
 // An @ref names one node (#633). Apply it on that node; there is no selector to wait for.
@@ -4947,8 +5008,12 @@ export async function selectByRef(cdp, sid, selector, wanted, refMap, refState) 
   }, resolvedNodeSession(cdp, sid, objectId));
   if (evaluated.exceptionDetails) throw new Error(runtimeExceptionMessage(evaluated.exceptionDetails));
   const r = evaluated.result?.value || {};
+  const facts = crossSiteListed(cdp, sid, selector, refState);
   if (!r.ok && r.disabled) throw actionDisabledError('select', r.disabled, selector);
   if (!r.ok) throw new Error(actionabilityMissMessage(r.error, r));
+  if (facts) {
+    return `Selected ${formatCrossSiteTarget({ tag: 'SELECT', ref: selector, host: facts.host })}${crossSitePageBlock(facts, r.text)}`;
+  }
   return `Selected "${r.text}"`;
 }
 // The selector first waits up to `opts.waitMs` for an attached, enabled element (#468). Visibility is

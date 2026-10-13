@@ -1,5 +1,6 @@
 import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { compactActionResultForJson } from '../skills/chrome-cdp-ex/scripts/lib/cdp-session-report.mjs';
 import { createMockCDP } from './mock-cdp.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -80,6 +81,54 @@ function refStateFor({ ref, id, parentId, frames }) {
 const DIRECT = { ref: '@f4', id: 'oopif-frame', parentId: 'main-frame', frames: DIRECT_FRAMES };
 const NESTED = { ref: '@f5', id: 'oopif-nested', parentId: 'oopif-frame', frames: NESTED_FRAMES };
 
+function outsideFrameBlocks(text) {
+  const lines = String(text).split('\n');
+  const out = [];
+  let inside = false;
+  let nonce = '';
+  for (const line of lines) {
+    const open = line.match(/^--- FRAME CONTENT \(untrusted\) origin=\S+ nonce=([0-9a-f]{32}) ---$/);
+    if (open && !inside) {
+      inside = true;
+      nonce = open[1];
+      continue;
+    }
+    const close = line.match(/^--- END FRAME CONTENT nonce=([0-9a-f]{32}) ---$/);
+    if (close && inside && close[1] === nonce) {
+      inside = false;
+      nonce = '';
+      continue;
+    }
+    if (!inside) out.push(line);
+  }
+  return out.join('\n');
+}
+
+function insideFrameBlocks(text) {
+  const lines = String(text).split('\n');
+  const chunks = [];
+  let inside = false;
+  let nonce = '';
+  let buf = [];
+  for (const line of lines) {
+    const open = line.match(/^--- FRAME CONTENT \(untrusted\) origin=\S+ nonce=([0-9a-f]{32}) ---$/);
+    if (open && !inside) {
+      inside = true;
+      nonce = open[1];
+      buf = [];
+      continue;
+    }
+    const close = line.match(/^--- END FRAME CONTENT nonce=([0-9a-f]{32}) ---$/);
+    if (close && inside && close[1] === nonce) {
+      chunks.push(buf.join('\n'));
+      inside = false;
+      continue;
+    }
+    if (inside) buf.push(line);
+  }
+  return chunks.join('\n');
+}
+
 function callsOn(cdp, method, sessionId) {
   return cdp.calls.filter(call => call.method === method && call.sessionId === sessionId);
 }
@@ -159,6 +208,32 @@ function actionCdp({
       targetInfo: { type: 'iframe', url: 'http://localhost:9/inner.html', targetId: `${CHILD}-target` },
       handlers: {
         'Page.getFrameTree': () => ({ frameTree: oopifTree() }),
+        'Accessibility.getFullAXTree': () => ({
+          nodes: [
+            { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Cross' }, childIds: ['2'] },
+            { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'Pay now' }, backendDOMNodeId: BUTTON_BACKEND },
+          ],
+        }),
+        'Runtime.evaluate': () => ({
+          result: {
+            value: JSON.stringify({
+              title: 'Cross',
+              url: 'http://localhost:9/inner.html',
+              contentType: 'text/html',
+              vw: 200,
+              vh: 100,
+              scrollY: 0,
+              scrollMax: 0,
+              counts: { button: 1 },
+              focused: 'none',
+              layoutMap: {},
+              styleHints: {},
+              cursorInteractives: [],
+              frameElements: [],
+              frameElementCount: 0,
+            }),
+          },
+        }),
         'DOM.resolveNode': () => ({ object: { objectId: 'pay-btn' } }),
         'DOM.getFrameOwner': ({ frameId }) => (
           frameId === 'oopif-nested' ? { backendNodeId: INNER_BACKEND } : { backendNodeId: 0 }
@@ -217,7 +292,8 @@ describe('actions inside a cross-site frame', () => {
   it('translates a cross-site click by the owner iframe content box and routes it through the child session', async () => {
     const cdp = actionCdp();
     const text = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
-    expect(text).toBe('Clicked <BUTTON> "Pay now" (@f4:1)');
+    expect(outsideFrameBlocks(text)).toBe('Clicked <BUTTON> (@f4:1) in localhost:9');
+    expect(insideFrameBlocks(text)).toContain('Pay now');
 
     const pressed = mousePressed(cdp);
     expect(pressed?.sessionId).toBe(PAGE);
@@ -244,7 +320,8 @@ describe('actions inside a cross-site frame', () => {
   it('adds the nested child box to the page owner box', async () => {
     const cdp = actionCdp({ inner: { x: 8, y: 4 } });
     const text = await T.clickStr(cdp, PAGE, '@f5:1', new Map(), refStateFor(NESTED));
-    expect(text).toBe('Clicked <BUTTON> "Pay now" (@f5:1)');
+    expect(outsideFrameBlocks(text)).toBe('Clicked <BUTTON> (@f5:1)');
+    expect(insideFrameBlocks(text)).toContain('Pay now');
     expect(mousePressed(cdp)?.params).toMatchObject({ x: 158, y: 99 });
     expect(mousePressed(cdp)?.sessionId).toBe(PAGE);
     expect(callsOn(cdp, 'DOM.getFrameOwner', CHILD).some(call => call.params.frameId === 'oopif-nested')).toBe(true);
@@ -259,7 +336,8 @@ describe('actions inside a cross-site frame', () => {
     });
     const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/covered by position:fixed <DIV#toast> "Wait"/);
+    expect(err.message).toMatch(/covered by position:fixed <DIV#toast>/);
+    expect(err.message).not.toContain('Wait');
     const text = T.formatActionFailure(err, { action: 'click', target: { targetId: 'AB12CD34', input: '@f4:1' } });
     expect(text).toContain('Kind: covered');
     expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
@@ -284,7 +362,8 @@ describe('actions inside a cross-site frame', () => {
     });
     const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/covered by position:fixed <DIV#modal> "Pay"/);
+    expect(err.message).toMatch(/covered by <DIV> /);
+    expect(err.message).not.toContain('Pay');
     expect(T.formatActionFailure(err, {
       action: 'click',
       target: { targetId: 'AB12CD34', input: '@f4:1' },
@@ -310,7 +389,9 @@ describe('actions inside a cross-site frame', () => {
     });
     const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/click not sent: <BUTTON> "Pay now" \(@f4:1\) at \(150,95\) is covered by position:fixed <DIV#toast> "Wait"/);
+    expect(err.message).toMatch(/click not sent: <BUTTON> \(@f4:1\) in localhost:9 at \(150,95\) is covered by position:fixed <DIV#toast>/);
+    expect(err.message).not.toContain('Pay now');
+    expect(err.message).not.toContain('Wait');
     expect(T.formatActionFailure(err, {
       action: 'click',
       target: { targetId: 'AB12CD34', input: '@f4:1' },
@@ -336,7 +417,7 @@ describe('actions inside a cross-site frame', () => {
       },
     });
     const text = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
-    expect(text).toBe('Clicked <BUTTON> "Pay now" (@f4:1)');
+    expect(outsideFrameBlocks(text)).toBe('Clicked <BUTTON> (@f4:1) in localhost:9');
     expect(mousePressed(cdp)?.params).toMatchObject({ x: 150, y: 95 });
     expect(ownerHitCalls(cdp)).toHaveLength(1);
     expect(declaration).toContain(OWNER_HIT);
@@ -385,7 +466,8 @@ describe('actions inside a cross-site frame', () => {
     });
     const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/covered by position:fixed <DIV#modal> "Pay"/);
+    expect(err.message).toMatch(/covered by <DIV> /);
+    expect(err.message).not.toContain('#modal');
     expect(T.formatActionFailure(err, {
       action: 'click',
       target: { targetId: 'AB12CD34', input: '@f4:1' },
@@ -410,7 +492,9 @@ describe('actions inside a cross-site frame', () => {
     });
     const err = await T.clickStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/click not sent: <BUTTON> "Pay now" \(@f4:1\) at \(150,95\) is covered by position:fixed <DIV#toast> "Wait"/);
+    expect(err.message).toMatch(/click not sent: <BUTTON> \(@f4:1\) in localhost:9 at \(150,95\) is covered by position:fixed <DIV#toast>/);
+    expect(err.message).not.toContain('Pay now');
+    expect(err.message).not.toContain('Wait');
     expect(T.formatActionFailure(err, {
       action: 'click',
       target: { targetId: 'AB12CD34', input: '@f4:1' },
@@ -425,7 +509,7 @@ describe('actions inside a cross-site frame', () => {
     const live = { value: '' };
     const cdp = actionCdp({ live });
     const text = await T.fillStr(cdp, PAGE, '@f4:1', 'tok_123', new Map(), refStateFor(DIRECT));
-    expect(text).toBe('Filled @f4:1 with "tok_123"');
+    expect(text).toBe('Filled @f4:1 in localhost:9 with "tok_123"');
     const inserted = cdp.calls.filter(call => call.method === 'Input.insertText');
     expect(inserted).toEqual([expect.objectContaining({
       sessionId: CHILD,
@@ -442,7 +526,8 @@ describe('actions inside a cross-site frame', () => {
   it('runs jsclick and select for a cross-site ref in the child session', async () => {
     const clickCdp = actionCdp();
     const clicked = await T.jsClickStr(clickCdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
-    expect(clicked).toBe('JS-clicked <BUTTON> "Pay now" (@f4:1)');
+    expect(outsideFrameBlocks(clicked)).toBe('JS-clicked <BUTTON> (@f4:1) in localhost:9');
+    expect(insideFrameBlocks(clicked)).toContain('Pay now');
     expect(callsOn(clickCdp, 'Runtime.callFunctionOn', CHILD).some(call => (
       String(call.params.functionDeclaration || '').includes('this.click()')
     ))).toBe(true);
@@ -450,13 +535,146 @@ describe('actions inside a cross-site frame', () => {
 
     const selectCdp = actionCdp();
     const selected = await T.selectStr(selectCdp, PAGE, '@f4:1', 'Visa', {}, new Map(), refStateFor(DIRECT));
-    expect(selected).toBe('Selected "Visa"');
+    expect(outsideFrameBlocks(selected)).toBe('Selected <SELECT> (@f4:1) in localhost:9');
+    expect(insideFrameBlocks(selected)).toContain('Visa');
     expect(callsOn(selectCdp, 'Runtime.callFunctionOn', CHILD).some(call => (
       String(call.params.functionDeclaration || '').includes('Not a <select>')
     ))).toBe(true);
     expect(callsOn(selectCdp, 'Runtime.callFunctionOn', PAGE).some(call => (
       String(call.params.functionDeclaration || '').includes('Not a <select>')
     ))).toBe(false);
+  });
+
+  it('keeps cross-site click, fill, select, and covered-click page text inside a frame block', async () => {
+    const clickTrust = {};
+    const clicked = await T.clickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT), { clickTrust });
+    const clickedOutside = outsideFrameBlocks(clicked);
+    expect(clickedOutside).toContain('Clicked <BUTTON> (@f4:1) in localhost:9');
+    expect(clickedOutside).not.toContain('Pay now');
+    expect(insideFrameBlocks(clicked)).toContain('Pay now');
+    expect(clickTrust.frameContent).toMatchObject({ name: 'Pay now', origin: 'http://localhost:9', host: 'localhost:9' });
+
+    const filled = await T.fillStr(actionCdp(), PAGE, '@f4:1', 'tok_123', new Map(), refStateFor(DIRECT));
+    expect(outsideFrameBlocks(filled)).toContain('Filled @f4:1 in localhost:9 with "tok_123"');
+    expect(outsideFrameBlocks(filled)).not.toContain('Pay now');
+    expect(filled).not.toMatch(/\(was /);
+
+    const selected = await T.selectStr(actionCdp(), PAGE, '@f4:1', 'Visa', {}, new Map(), refStateFor(DIRECT));
+    expect(outsideFrameBlocks(selected)).toContain('Selected <SELECT> (@f4:1) in localhost:9');
+    expect(outsideFrameBlocks(selected)).not.toContain('Visa');
+    expect(insideFrameBlocks(selected)).toContain('Visa');
+
+    const js = await T.jsClickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    expect(outsideFrameBlocks(js)).toContain('JS-clicked <BUTTON> (@f4:1) in localhost:9');
+    expect(outsideFrameBlocks(js)).not.toContain('Pay now');
+    expect(insideFrameBlocks(js)).toContain('Pay now');
+
+    const covered = await T.clickStr(actionCdp({
+      parentHit: { covered: true, by: '<DIV#toast> "Wait"', byPosition: 'fixed' },
+    }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
+    expect(covered).toBeInstanceOf(Error);
+    expect(covered.message).not.toContain('Pay now');
+    expect(covered.message).not.toContain('Wait');
+    expect(covered.message).toMatch(/click not sent: <BUTTON> \(@f4:1\) in localhost:9 at \(150,95\) is covered by position:fixed <DIV#toast>/);
+    const printed = T.formatActionFailure(covered, { action: 'click', target: { targetId: 'AB12CD34', input: '@f4:1' } });
+    expect(printed).toContain('Kind: covered');
+    expect(outsideFrameBlocks(printed)).not.toContain('Pay now');
+    expect(outsideFrameBlocks(printed)).not.toContain('Wait');
+    expect(insideFrameBlocks(printed)).toContain('Pay now');
+
+    const inner = await T.clickStr(actionCdp({
+      local: {
+        connected: true, x: 10, y: 6, w: 40, h: 18, tag: 'BUTTON', text: 'Pay now',
+        hit: { covered: true, by: '<DIV#modal> "Pay"', byPosition: 'fixed' },
+        inViewport: true, noClickBox: false,
+      },
+    }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
+    expect(inner.message).toMatch(/covered by <DIV> /);
+    expect(inner.message).not.toContain('Pay now');
+    expect(inner.message).not.toContain('#modal');
+    expect(insideFrameBlocks(T.formatActionFailure(inner, {
+      action: 'click',
+      target: { targetId: 'AB12CD34', input: '@f4:1' },
+    }))).toContain('Pay now');
+  });
+
+  it('puts cross-site page fields behind frameContent in action JSON', () => {
+    const result = {
+      schema: 'chrome-cdp-ex.action.v1',
+      action: 'click',
+      target: {
+        input: '@f4:1',
+        label: '@f4:1',
+        tag: 'BUTTON',
+        ref: '@f4:1',
+        host: 'localhost:9',
+        kind: 'click',
+        next: 'cdp perceive AB12CD34 --since-action',
+        crossSiteOrigin: 'http://localhost:9',
+        name: 'Pay now',
+        text: 'Pay now',
+      },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 1 },
+      effects: {},
+      outcome: { status: 'changed' },
+      verdict: { primaryNextStep: 'cdp perceive AB12CD34 --since-action' },
+    };
+    const model = compactActionResultForJson(result);
+    expect(model.target.name).toBeUndefined();
+    expect(model.target.text).toBeUndefined();
+    expect(model.target.tag).toBe('BUTTON');
+    expect(model.target.ref).toBe('@f4:1');
+    expect(model.target.host).toBe('localhost:9');
+    expect(model.target.kind).toBe('click');
+    expect(model.target.frameContent.contentBoundary).toMatchObject({
+      kind: 'frame',
+      origin: 'http://localhost:9',
+    });
+    expect(model.target.frameContent.name).toBe('Pay now');
+    expect(model.target.frameContent.contentBoundary.nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.stringify({ ...model, target: { ...model.target, frameContent: undefined } })).not.toContain('Pay now');
+  });
+
+  it('wraps a cross-site since-action diff and leaves a top-page diff unwrapped', async () => {
+    const baseline = [
+      'Page: Old — http://localhost:9/inner.html',
+      'Frame: @f4 cross oopif-frame http://localhost:9/inner.html',
+      'Viewport: 200×100 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      '',
+      '[button] Old label  @f4:1',
+    ].join('\n');
+    const cdp = actionCdp();
+    const diff = await T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: baseline },
+      { frameRef: '@f3', sinceAction: true, diffBaseline: baseline, targetPrefix: 'AB12CD34' },
+      refStateFor(DIRECT),
+    );
+    expect(diff).toMatch(/--- FRAME CONTENT \(untrusted\) origin=http:\/\/localhost:9 nonce=[0-9a-f]{32} ---/);
+    expect(outsideFrameBlocks(diff)).not.toContain('Pay now');
+    expect(insideFrameBlocks(diff)).toContain('Pay now');
+
+    const top = await T.perceiveStr(
+      createMockCDP({
+        'Runtime.evaluate': () => ({ result: { value: JSON.stringify({
+          title: 'Host', url: 'http://127.0.0.1:9/host.html', contentType: 'text/html',
+          vw: 800, vh: 600, scrollY: 0, scrollMax: 0, counts: {}, focused: 'none',
+          layoutMap: {}, styleHints: {}, cursorInteractives: [], frameElements: [], frameElementCount: 0,
+        }) } }),
+        'Accessibility.getFullAXTree': () => ({ nodes: [
+          { nodeId: '1', role: { value: 'button' }, name: { value: 'Outer' }, backendDOMNodeId: 1 },
+        ] }),
+        'Page.getFrameTree': () => ({ frameTree: sameOriginTree() }),
+        'DOM.resolveNode': () => ({ object: { objectId: 'n' } }),
+        'Runtime.callFunctionOn': () => ({ result: { value: { x: 1, y: 2, w: 3, h: 4, position: '' } } }),
+      }),
+      PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: 'Page: Host — http://127.0.0.1:9/host.html\n\n[button] Outer  @1' },
+      { sinceAction: true, diffBaseline: 'Page: Host — http://127.0.0.1:9/host.html\n\n[button] Gone  @1', targetPrefix: 'AB12CD34' },
+    );
+    expect(top).not.toContain('FRAME CONTENT');
+    expect(top).toContain('Outer');
   });
 
   it('still refuses hover on a cross-site ref', async () => {

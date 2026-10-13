@@ -14,6 +14,7 @@ import {
   resolveMcpResource,
   snapshotMcpData,
 } from './lib/mcp-adapter.mjs';
+import { FRAME_SITES_ENV } from './lib/frame-sites.mjs';
 import { createRuntimeClient, isRuntimeClient } from './lib/runtime-client.mjs';
 import { resolveRuntimeDir } from './lib/runtime-dir.mjs';
 
@@ -115,6 +116,27 @@ export function createMcpRequestHandler({
   env = process.env,
 } = {}) {
   if (!isRuntimeClient(runtimeClient)) throw new Error('mcp.runtimeClient: must be a branded RuntimeClient');
+  // CDP_FRAME_SITES is read once, when this server starts. Later changes to the
+  // process environment or to this env object do not apply to tool calls.
+  const frameSitesAtStart = env?.[FRAME_SITES_ENV];
+  const policyEnv = new Proxy(env, {
+    get(target, prop, receiver) {
+      if (prop === FRAME_SITES_ENV) return frameSitesAtStart;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  async function executePinned(command) {
+    const had = Object.hasOwn(process.env, FRAME_SITES_ENV);
+    const previous = process.env[FRAME_SITES_ENV];
+    if (frameSitesAtStart === undefined) delete process.env[FRAME_SITES_ENV];
+    else process.env[FRAME_SITES_ENV] = frameSitesAtStart;
+    try {
+      return await runtimeClient.execute(command);
+    } finally {
+      if (!had) delete process.env[FRAME_SITES_ENV];
+      else process.env[FRAME_SITES_ENV] = previous;
+    }
+  }
   return async function handleRequest(message) {
     if (!message || typeof message !== 'object') {
       sendMessage({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'mcp.request: must be a JSON-RPC request object' } });
@@ -153,12 +175,12 @@ export function createMcpRequestHandler({
         if (!isServedMcpTool(name)) throw new Error(`Unknown MCP tool: ${name}`);
         const command = buildMcpToolCommand(name, args);
         const startedAtMs = Date.now();
-        const denial = mcpPolicyDenial(command, env);
+        const denial = mcpPolicyDenial(command, policyEnv);
         if (denial) {
           sendMessage({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: denial }], isError: true } });
           return;
         }
-        const result = await runtimeClient.execute(command);
+        const result = await executePinned(command);
         sendMessage({
           jsonrpc: '2.0',
           id,
@@ -182,7 +204,7 @@ export function createMcpRequestHandler({
         const uri = message.params?.uri;
         if (typeof uri !== 'string' || !uri.trim()) throw new Error('resources/read requires uri');
         const resource = resolveMcpResource(uri.trim());
-        const result = await runtimeClient.execute(resource.command);
+        const result = await executePinned(resource.command);
         const text = result.code === 0
           ? result.stdout
           : [result.stderr, result.stdout].filter(Boolean).join('\n');

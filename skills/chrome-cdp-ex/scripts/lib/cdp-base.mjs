@@ -1748,7 +1748,7 @@ Window size: viewport|resize <target> WxH; responsive-audit <target> --viewport 
 
 First step: chrome://inspect/#remote-debugging (keeps logins). spawn-debug-browser, --daily-profile, and isolated profiles have no user logins; ask first.
 Electron or a browser on its own port: CDP_PORT=<port> (example 9333, not 9222).
-Opt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_ISOLATED_ONLY=1.
+Opt-in guardrails (not a security boundary): CDP_CONTENT_BOUNDARIES=1, CDP_ALLOWED_ORIGINS, CDP_DENY_ACTIONS, CDP_FRAME_SITES, CDP_ISOLATED_ONLY=1.
 
 cdp help <command> prints leftover topic help.
 `;
