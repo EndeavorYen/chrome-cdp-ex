@@ -61,8 +61,10 @@ function frameTree(children = []) {
   };
 }
 
-function childFrame(id, url, name = '') {
-  return { frame: { id, parentId: 'root', url, name } };
+function childFrame(id, url, name = '', parentId = 'root', nested = []) {
+  const node = { frame: { id, parentId, url, name } };
+  if (nested.length) node.childFrames = nested;
+  return node;
 }
 
 function frameEl({ title = '', src, host, visible = true }) {
@@ -78,9 +80,12 @@ function axTree(iframeNodes) {
   ];
 }
 
-function pageCdp({ nodes, frameElements, tree = frameTree() } = {}) {
+function pageCdp({ nodes, frameElements, frameElementCount, tree = frameTree() } = {}) {
+  const pageMeta = {};
+  if (frameElements) pageMeta.frameElements = frameElements;
+  if (frameElementCount != null) pageMeta.frameElementCount = frameElementCount;
   return createMockCDP({
-    'Runtime.evaluate': () => ({ result: { value: JSON.stringify(meta(frameElements ? { frameElements } : {})) } }),
+    'Runtime.evaluate': () => ({ result: { value: JSON.stringify(meta(pageMeta)) } }),
     'Accessibility.getFullAXTree': () => ({ nodes: nodes || axTree([]) }),
     'Page.getFrameTree': () => ({ frameTree: tree }),
     'DOM.resolveNode': ({ backendNodeId }) => ({ object: { objectId: `obj-${backendNodeId}` } }),
@@ -102,6 +107,71 @@ function perceive(cdp, opts = {}) {
 
 function framesLines(output) {
   return String(output).split('\n').filter(line => line.startsWith('Frames:'));
+}
+
+function pageFrameElement({
+  tagName = 'IFRAME', title = '', name = '', src = 'http://localhost:9/x.html', width = 300, height = 150,
+} = {}) {
+  return {
+    tagName,
+    src,
+    id: '',
+    className: '',
+    textContent: '',
+    children: [],
+    getAttribute(attr) {
+      if (attr === 'title') return title;
+      if (attr === 'name') return name;
+      return null;
+    },
+    hasAttribute() { return false; },
+    getClientRects() { return [{ width, height }]; },
+    getBoundingClientRect() {
+      return { x: 0, y: 0, top: 0, left: 0, bottom: height, right: width, width, height };
+    },
+    checkVisibility() { return true; },
+  };
+}
+
+// Run the browser-side perceive collector against a fake document. The frame
+// list is what querySelectorAll('iframe, frame') returns; everything else is
+// empty so the collector still finishes.
+function runPerceivePage(frames) {
+  const script = T.perceivePageScript(false);
+  const getComputedStyle = () => ({
+    overflowY: 'visible',
+    display: 'block',
+    visibility: 'visible',
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    fontSize: '16px',
+    fontWeight: '400',
+    color: 'rgb(0, 0, 0)',
+    gap: 'normal',
+    opacity: '1',
+  });
+  const scrollingElement = { scrollTop: 0, scrollHeight: 600, clientHeight: 600, children: [] };
+  const document = {
+    title: 'Host',
+    contentType: 'text/html',
+    scrollingElement,
+    documentElement: { scrollTop: 0, scrollHeight: 600, clientHeight: 600, children: [] },
+    body: { tagName: 'BODY', id: '', scrollTop: 0, scrollHeight: 0, clientHeight: 0, children: [] },
+    activeElement: null,
+    querySelectorAll(selector) {
+      if (selector === 'iframe, frame') return frames;
+      return [];
+    },
+  };
+  document.activeElement = document.body;
+  const window = {
+    innerWidth: 800,
+    innerHeight: 600,
+    scrollY: 0,
+    location: { href: 'http://127.0.0.1:9/host.html' },
+    getComputedStyle,
+  };
+  const run = new Function('document', 'window', 'getComputedStyle', 'URL', 'return ' + script);
+  return JSON.parse(run(document, window, getComputedStyle, URL));
 }
 
 describe('perceive frame notice', () => {
@@ -266,10 +336,117 @@ describe('perceive frame notice', () => {
     expect(out).not.toMatch(/^Frames: /m);
   });
 
-  it('counts iframe and frame elements in the page script and leaves frames.v1 unchanged', async () => {
-    const script = T.perceivePageScript(false);
-    expect(script).toContain("querySelectorAll('iframe, frame')");
-    expect(script).toContain('frameElements');
+  it('does not pair a nested same-origin frame with a top-level cross-site iframe', async () => {
+    const outer = 'http://127.0.0.1:9/outer.html';
+    const inner = 'http://127.0.0.1:9/child.html';
+    const cross = 'http://localhost:9/child.html';
+    const tree = frameTree([
+      childFrame('outer', outer, 'outer', 'root', [
+        childFrame('inner', inner, 'inner', 'outer'),
+      ]),
+    ]);
+    const out = await perceive(pageCdp({
+      nodes: axTree([
+        { nodeId: 'ifr1', name: { value: 'Outer' }, backendDOMNodeId: 21 },
+        { nodeId: 'ifr2', name: { value: 'Other' }, backendDOMNodeId: 22 },
+      ]),
+      frameElements: [
+        frameEl({ title: 'Outer', src: outer, host: '127.0.0.1:9' }),
+        frameEl({ title: 'Other', src: cross, host: 'localhost:9' }),
+      ],
+      tree,
+    }));
+    expect(framesLines(out)).toEqual([
+      `Frames: 2 (2 visible), 1 cross-site not reachable yet. Next: cdp frame ${TARGET}`,
+    ]);
+    expect(out).toContain('  [iframe] "Outer" @f2');
+    expect(out).toContain('  [iframe] "localhost:9"');
+    expect(out).not.toMatch(/\[iframe\] "localhost:9" @f/);
+    expect(out).not.toContain('[iframe] "Inner"');
+    expect(out).not.toContain('@f3');
+
+    const listed = await T.framesStr(pageCdp({ tree }), 'sid');
+    expect(listed).toContain('Frames: 3\n');
+    expect(listed).toContain('@f2 outer outer parent:@f1');
+    expect(listed).toContain('@f3 inner inner parent:@f2');
+  });
+
+  it('prefers the frame owner visibility when it disagrees with the element', async () => {
+    const hiddenSrc = 'https://hidden.example/a';
+    const shownSrc = 'https://shown.example/b';
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: {
+          value: JSON.stringify(meta({
+            frameElements: [
+              frameEl({ title: 'Hidden', src: hiddenSrc, host: 'hidden.example', visible: true }),
+              frameEl({ title: 'Shown', src: shownSrc, host: 'shown.example', visible: false }),
+            ],
+          })),
+        },
+      }),
+      'Accessibility.getFullAXTree': () => ({
+        nodes: axTree([
+          { nodeId: 'ifr1', name: { value: 'Hidden' }, backendDOMNodeId: 21 },
+          { nodeId: 'ifr2', name: { value: 'Shown' }, backendDOMNodeId: 22 },
+        ]),
+      }),
+      'Page.getFrameTree': () => ({
+        frameTree: frameTree([
+          childFrame('hidden', hiddenSrc),
+          childFrame('shown', shownSrc),
+        ]),
+      }),
+      'DOM.getFrameOwner': ({ frameId }) => {
+        if (frameId === 'hidden') return { backendNodeId: 501 };
+        if (frameId === 'shown') return { backendNodeId: 502 };
+        return {};
+      },
+      'DOM.resolveNode': ({ backendNodeId }) => {
+        if (backendNodeId === 501) return { object: { objectId: 'owner-hidden' } };
+        if (backendNodeId === 502) return { object: { objectId: 'owner-shown' } };
+        return { object: { objectId: `obj-${backendNodeId}` } };
+      },
+      'Runtime.callFunctionOn': (params) => {
+        if (String(params.functionDeclaration || '').includes('chrome-cdp-ex.frame-owner.v1')) {
+          const visible = params.objectId === 'owner-shown';
+          return {
+            result: {
+              value: {
+                marker: 'chrome-cdp-ex.frame-owner.v1',
+                title: '',
+                src: '',
+                host: '',
+                visible,
+              },
+            },
+          };
+        }
+        return { result: { value: { x: 10, y: 20, w: 80, h: 24, position: 'static' } } };
+      },
+    });
+    const out = await perceive(cdp);
+    expect(framesLines(out)).toEqual([
+      `Frames: 2 (1 visible). Next: cdp perceive ${TARGET} --frame @f3`,
+    ]);
+    expect(out).toContain('  [iframe] "Hidden" @f2');
+    expect(out).toContain('  [iframe] "Shown" @f3');
+  });
+
+  it('collects iframe and frame elements from the page and leaves frames.v1 unchanged', async () => {
+    const collected = runPerceivePage([
+      pageFrameElement({ tagName: 'IFRAME', title: 'Inner', src: 'http://127.0.0.1:9/inner.html' }),
+      pageFrameElement({ tagName: 'FRAME', title: 'Classic', name: 'classic', src: 'http://127.0.0.1:9/classic.html' }),
+    ]);
+    expect(collected.frameElementCount).toBe(2);
+    expect(collected.frameElements).toEqual([
+      expect.objectContaining({
+        title: 'Inner', src: 'http://127.0.0.1:9/inner.html', host: '127.0.0.1:9', name: '', visible: true,
+      }),
+      expect.objectContaining({
+        title: 'Classic', src: 'http://127.0.0.1:9/classic.html', host: '127.0.0.1:9', name: 'classic', visible: true,
+      }),
+    ]);
 
     const tree = frameTree([
       childFrame('checkout', 'https://pay.example.com/a', 'checkout'),
@@ -284,5 +461,46 @@ describe('perceive frame notice', () => {
     const text = await T.framesStr(cdp, 'sid');
     expect(text.startsWith('Frames: 3\n')).toBe(true);
     expect(text).not.toContain('cross-site');
+  });
+
+  it('counts cross-site iframes past the 50-element detail list', async () => {
+    const same = 'http://127.0.0.1:9/outer.html';
+    const frames = [
+      pageFrameElement({ title: 'Outer', src: same }),
+      ...Array.from({ length: 50 }, (_, index) => pageFrameElement({
+        src: `http://localhost:9/c${index}.html`,
+      })),
+      pageFrameElement({
+        tagName: 'FRAME',
+        title: 'Classic',
+        name: 'classic',
+        src: 'http://localhost:9/classic.html',
+      }),
+    ];
+    const collected = runPerceivePage(frames);
+    expect(collected.frameElementCount).toBe(52);
+    expect(collected.frameElements).toHaveLength(50);
+    expect(collected.frameElements[0]).toMatchObject({ title: 'Outer', host: '127.0.0.1:9' });
+    expect(collected.frameElements.some(el => el.title === 'Classic')).toBe(false);
+
+    const nodes = collected.frameElements.map((el, index) => ({
+      nodeId: `ifr${index}`,
+      name: { value: el.title },
+      backendDOMNodeId: 30 + index,
+    }));
+    const out = await perceive(pageCdp({
+      nodes: axTree(nodes),
+      frameElements: collected.frameElements,
+      frameElementCount: collected.frameElementCount,
+      tree: frameTree([childFrame('outer', same, 'outer')]),
+    }));
+    expect(framesLines(out)).toEqual([
+      `Frames: 1 (1 visible), 51 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f2`,
+    ]);
+    const iframeLines = out.split('\n').filter(line => line.includes('[iframe]'));
+    expect(iframeLines).toHaveLength(50);
+    expect(iframeLines[0]).toBe('  [iframe] "Outer" @f2');
+    expect(out).not.toContain('Classic');
+    expect(out).not.toContain('@f3');
   });
 });

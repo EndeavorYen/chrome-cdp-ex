@@ -935,16 +935,25 @@ function frameUrlsEqual(a, b) {
     return false;
   }
 }
-function frameElementsFromMeta(meta) {
-  if (!Array.isArray(meta?.frameElements)) return [];
+function frameInventoryFromMeta(meta) {
   const elements = [];
-  for (const el of meta.frameElements) {
-    if (!el || typeof el !== 'object') continue;
-    elements.push(el);
-    if (elements.length >= PERCEIVE_FRAME_ELEMENT_CAP) break;
+  if (Array.isArray(meta?.frameElements)) {
+    for (const el of meta.frameElements) {
+      if (!el || typeof el !== 'object') continue;
+      elements.push(el);
+      if (elements.length >= PERCEIVE_FRAME_ELEMENT_CAP) break;
+    }
   }
-  return elements;
+  // The detail list is capped. The page reports the full iframe/frame count
+  // separately so a page with more than the cap still gets an honest X.
+  const reported = Number(meta?.frameElementCount);
+  const count = Number.isInteger(reported) && reported >= elements.length
+    ? reported
+    : elements.length;
+  return { elements, count };
 }
+// Pair only frames whose parent is the top frame. Callers pass depth-1 frames;
+// a nested frame must never take a leftover top-level element's ref.
 function matchPerceiveFrameElements(childFrames, frameElements) {
   const paired = new Map();
   const used = new Set();
@@ -979,13 +988,27 @@ function perceiveFrameLabel(element, owner, crossSite) {
   if (title) return title;
   return String(owner?.host || element?.host || frameUrlHost(owner?.src || element?.src) || '').trim();
 }
-function buildPerceiveFrameNotice({ childFrames, frameElements, owners, target }) {
+// N and M count every child frame Page.getFrameTree reports (depth > 0),
+// including nested frames. `frame <t>` lists those same frames and prints
+// Frames as N+1 because it also counts the top frame (@f1). Pairing and the
+// cross-site count use only depth-1 frames against the top document's
+// iframe/frame elements. A nested frame is not a top-level element, so it
+// never matches one and never gets a top-level [iframe] line.
+function perceiveTopLevelFrames(childFrames) {
+  return childFrames.filter(frame => frame && frame.depth === 1);
+}
+function buildPerceiveFrameNotice({ childFrames, frameElements, frameElementCount, owners, target }) {
   const children = Array.isArray(childFrames) ? childFrames : [];
   const elements = Array.isArray(frameElements) ? frameElements : [];
   const ownerMap = owners instanceof Map ? owners : new Map();
-  const crossSiteCount = Math.max(0, elements.length - children.length);
+  const topLevel = perceiveTopLevelFrames(children);
+  const reported = Number(frameElementCount);
+  const elementCount = Number.isInteger(reported) && reported >= elements.length
+    ? reported
+    : elements.length;
+  const crossSiteCount = Math.max(0, elementCount - topLevel.length);
   if (children.length === 0 && crossSiteCount === 0) return null;
-  const paired = matchPerceiveFrameElements(children, elements);
+  const paired = matchPerceiveFrameElements(topLevel, elements);
   const refByElement = new Map();
   for (const [ref, index] of paired) refByElement.set(index, ref);
   const slots = elements.map((element, index) => {
@@ -3438,8 +3461,10 @@ ${visibleControlsCollectorSource()}
       }
 
       const frameElements = [];
+      let frameElementCount = 0;
       for (const el of document.querySelectorAll('iframe, frame')) {
-        if (frameElements.length >= 50) break;
+        frameElementCount += 1;
+        if (frameElements.length >= ${PERCEIVE_FRAME_ELEMENT_CAP}) continue;
         const src = el.src || '';
         let host = '';
         try { if (src) host = new URL(src).host; } catch {}
@@ -3462,7 +3487,7 @@ ${visibleControlsCollectorSource()}
         contentType: document.contentType || '',
         vw, vh, scrollY, scrollMax,
         counts, focused: focusDesc, layoutMap, styleHints, cursorInteractives,
-        visibleControls, visibleControlsTruncated, cardWindows, frameElements
+        visibleControls, visibleControlsTruncated, cardWindows, frameElements, frameElementCount
       });
     })()`;
 }
@@ -3616,15 +3641,16 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
     return output;
   }
   let frameNotice = null;
-  const frameElements = frame ? [] : frameElementsFromMeta(meta);
-  if (frameElements.length) {
+  const frameInventory = frame ? { elements: [], count: 0 } : frameInventoryFromMeta(meta);
+  if (frameInventory.count > 0) {
     try {
       const model = await framesModel(cdp, sid);
       const childFrames = (model.frames || []).filter(item => item && item.depth > 0);
       const owners = await describePerceiveFrameOwners(cdp, sid, childFrames);
       frameNotice = buildPerceiveFrameNotice({
         childFrames,
-        frameElements,
+        frameElements: frameInventory.elements,
+        frameElementCount: frameInventory.count,
         owners,
         target: opts.targetPrefix || '<target>',
       });
