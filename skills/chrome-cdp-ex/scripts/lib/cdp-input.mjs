@@ -2827,12 +2827,18 @@ export function splitScrollEdgeArgs(args = []) {
   if (words.length < 2 || words[0].toLowerCase() !== 'to') return list;
   return [...words, ...list.slice(1)];
 }
+function scrollDirectionError(message) {
+  const err = new Error(message);
+  err.usage = true;
+  err.code = 'usage';
+  return err;
+}
 export function parseScrollEdge(direction, amount) {
   const first = String(direction || '').trim().toLowerCase();
   if (first !== 'to') return null;
   const second = String(amount || '').trim().toLowerCase();
   if (second === 'top' || second === 'bottom') return second;
-  throw new Error('Direction required: to top or to bottom');
+  throw scrollDirectionError('Direction required: to top or to bottom');
 }
 export function parseScrollContainerArg(args = []) {
   const list = Array.isArray(args) ? args : [];
@@ -3304,7 +3310,7 @@ export async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
     [dx, dy] = direction.split(',').map(Number);
     if (isNaN(dx) || isNaN(dy)) throw new Error('Invalid coordinates. Use "down", "up", or "x,y"');
   } else {
-    throw new Error('Direction required: down, up, left, right, x,y, or to top/to bottom');
+    throw scrollDirectionError('Direction required: down, up, left, right, x,y, or to top/to bottom');
   }
   const pos = parseScrollEdgePayload(await evalStr(cdp, sid, scrollByExpression(dx, dy, container)));
   if (pos && pos.ok === false) throw new Error(pos.error || 'scroll failed');

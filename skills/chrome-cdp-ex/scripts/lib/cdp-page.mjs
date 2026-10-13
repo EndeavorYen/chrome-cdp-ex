@@ -288,6 +288,17 @@ export function runtimeExceptionMessage(exceptionDetails) {
   if (description && (text === 'Uncaught' || text === 'Uncaught (in promise)' || !text)) return description;
   return text || description || 'Unknown runtime exception';
 }
+function runtimeExceptionError(exceptionDetails, { pageException = false } = {}) {
+  const err = new Error(runtimeExceptionMessage(exceptionDetails));
+  if (pageException) err.pageException = true;
+  return err;
+}
+function navigationFailureError(message) {
+  const text = String(message ?? '');
+  const err = new Error(text);
+  if (/^net::ERR_[A-Z0-9_]+$/.test(text.trim())) err.navigationFailure = true;
+  return err;
+}
 export function formatEvalValue(val, { raw = false } = {}) {
   // Preserve historical evalStr behavior: undefined prints as empty string.
   if (val === undefined) return '';
@@ -595,7 +606,7 @@ export async function evalStr(cdp, sid, expression, autoWrap = false, options = 
   if (options.uniqueContextId != null) params.uniqueContextId = options.uniqueContextId;
   const result = await cdpDomains(cdp).Runtime.evaluate( params, sid, options.timeoutMs);
   if (result.exceptionDetails) {
-    throw new Error(runtimeExceptionMessage(result.exceptionDetails));
+    throw runtimeExceptionError(result.exceptionDetails, { pageException: options.pageException === true });
   }
   const val = result.result.value;
   return formatEvalValue(val, { raw: options.raw === true });
@@ -635,7 +646,7 @@ export async function callStr(cdp, sid, expression) {
     awaitPromise: true,
   }, sid);
   if (result.exceptionDetails) {
-    throw new Error(runtimeExceptionMessage(result.exceptionDetails));
+    throw runtimeExceptionError(result.exceptionDetails, { pageException: true });
   }
   return formatCallResult(result.result);
 }
@@ -1863,7 +1874,7 @@ export async function navStr(cdp, sid, url, opts = {}) {
         navigatePromise.catch(() => null),
         sleep(opts.confirmNavigateMs).then(() => null),
       ]);
-      if (answer?.result?.errorText) throw new Error(answer.result.errorText);
+      if (answer?.result?.errorText) throw navigationFailureError(answer.result.errorText);
     }
     await settleObservedNavigation(cdp, sid, {
       targetId,
@@ -1877,7 +1888,7 @@ export async function navStr(cdp, sid, url, opts = {}) {
   const result = outcome.result;
   if (result.errorText) {
     cancelNavWaiters();
-    throw new Error(result.errorText);
+    throw navigationFailureError(result.errorText);
   }
   try {
     await waitForCommittedDocumentReady(cdp, sid, url, opts.readyTimeoutMs ?? 5000, {

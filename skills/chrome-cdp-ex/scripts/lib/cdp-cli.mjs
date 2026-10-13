@@ -10,7 +10,7 @@ import { assertSecretName } from './secrets.mjs';
 import { policyRecovery } from './session-policy.mjs';
 import { parseTableArgs, parseTableContinuationToken } from './table-contract.mjs';
 import { createHash } from 'crypto';
-import { ALLOW_STALE_DAEMON_FLAG, COMMANDS, DEFAULT_OPEN_ATTACH_TIMEOUT_MS, DEFAULT_OPEN_READY_TIMEOUT_MS, FILE_URL_HTTP_SERVER, HALT_TRAILER_RE, HIDDEN_TAB_RERUN_COMMANDS, OPEN_CREATED_TARGET_URL, STEP_HEADER_RE, TIMEOUT, USAGE, isFileUrlRefusalMessage, sleep } from './cdp-base.mjs';
+import { ALLOW_STALE_DAEMON_FLAG, COMMANDS, DEFAULT_OPEN_ATTACH_TIMEOUT_MS, DEFAULT_OPEN_READY_TIMEOUT_MS, FILE_URL_HTTP_SERVER, HALT_TRAILER_RE, HIDDEN_TAB_RERUN_COMMANDS, OPEN_CREATED_TARGET_URL, STEP_HEADER_RE, TIMEOUT, USAGE, isFileUrlRefusalMessage, sealErrorRecovery, sleep, sourceFailureRecovery } from './cdp-base.mjs';
 import { CDP, discoverWsUrl, formatDuration, formatJson, isBlankPageUrl, parseCompactFormatArgs, parseFormatArgs } from './cdp-browser.mjs';
 import { explicitBackgroundChoice, isBackgroundMode, shellQuoteCliArg, tokenizeCommandLine, tokenizeFlowCommandLine } from './cdp-core.mjs';
 import { connectToSocket, sendCommand } from './cdp-daemon.mjs';
@@ -716,9 +716,58 @@ export function jsclickSelectorFromCliError(message, { cmd = '', args = [], err 
   }
   return '';
 }
-export function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null, args = [] } = {}) {
+// Page prose such as "Field is required" is not a missing argument. Tool errors are
+// "selector required", "Expression required", "restore requires …", or "<cmd>: … required".
+function toolMissingArgumentMessage(message) {
+  const text = String(message || '').trim();
+  if (!/required/i.test(text)) return false;
+  if (/^[a-z0-9-]+:\s/i.test(text)) return true;
+  if (/\b(?:is|are|was|were|be)\s+required\b/i.test(text)) return false;
+  return true;
+}
+
+const CLI_ERROR_SOURCE_FLAGS = ['pageException', 'navigationFailure', 'usage', 'selectorMiss', 'unknownFrame'];
+
+// The daemon returns a string. A source tag rides along as errorSource so the CLI
+// can classify a page exception without reading the page's message.
+export function cliErrorFromDaemonResponse(response) {
+  const message = response?.error;
+  const source = response?.errorSource;
+  if (typeof message !== 'string' || !source || typeof source !== 'object' || Array.isArray(source)) {
+    return message;
+  }
+  const err = new Error(message);
+  let tagged = false;
+  for (const flag of CLI_ERROR_SOURCE_FLAGS) {
+    if (source[flag] === true) {
+      err[flag] = true;
+      tagged = true;
+    }
+  }
+  if (source.code === 'usage') {
+    err.code = 'usage';
+    tagged = true;
+  }
+  return tagged ? err : message;
+}
+
+export function buildCliErrorRecovery(message, options) {
+  return sealErrorRecovery(buildCliErrorRecoveryBody(message, options));
+}
+
+function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null, args = [] } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
+  // #636: page exception, net::ERR_*, unknown @fN, and a missing scroll direction.
+  const source = sourceFailureRecovery(err, message, target);
+  if (source) {
+    return {
+      kind: source.kind,
+      strategy: source.strategy,
+      run: source.next,
+      reason: source.reason,
+    };
+  }
   // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refusals (Kind: policy) and bad policy variables.
   const sessionPolicyRecovery = policyRecovery(message, { targetPrefix });
   if (sessionPolicyRecovery) return sessionPolicyRecovery;
@@ -1227,7 +1276,15 @@ export function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', pl
       reason: 'Navigation commands need an explicit http or https URL.',
     };
   }
-  if (cmd && lower.includes('required')) {
+  if (err?.selectorMiss === true || /no element matched/i.test(String(message || ''))) {
+    return {
+      kind: 'selector',
+      strategy: 'refresh-perception',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'No current element matched the selector. Refresh perception and choose the control again.',
+    };
+  }
+  if (cmd && (err?.usage === true || err?.code === 'usage' || toolMissingArgumentMessage(message))) {
     return {
       kind: 'usage',
       strategy: 'provide-required-argument',

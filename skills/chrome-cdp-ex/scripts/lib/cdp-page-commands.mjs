@@ -2591,7 +2591,9 @@ export async function textStr(cdp, sid, args, extra = {}) {
   try { parsed = JSON.parse(result); }
   catch { return result; }
   if (!parsed.ok) {
-    throw new Error(formatTextNoMatchError(parsed, opts));
+    const err = new Error(formatTextNoMatchError(parsed, opts));
+    err.selectorMiss = true;
+    throw err;
   }
   const out = parsed.text || '';
   // Hint when no scope was given and text is large.

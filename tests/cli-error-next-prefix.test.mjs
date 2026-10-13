@@ -17,8 +17,8 @@ describe('#559 action failure Next uses the 8-character target prefix', () => {
     expect(text).not.toContain(FULL_ID);
   });
 
-  it('T2 an unknown-kind failure (scroll direction) names the prefix', () => {
-    const text = formatActionFailure(new Error('Direction required: down, up, left, right, x,y, or to top/to bottom'), {
+  it('T2 an unknown-kind failure names the prefix', () => {
+    const text = formatActionFailure(new Error('something odd happened'), {
       action: 'scroll',
       target: { targetId: FULL_ID, input: 'sideways' },
     });
@@ -27,14 +27,14 @@ describe('#559 action failure Next uses the 8-character target prefix', () => {
   });
 
   it('T3 the JSON recovery holds no full target id', () => {
-    for (const err of [disabledError(), new Error('Element not found: #nope'), new Error('Direction required: down')]) {
+    for (const err of [disabledError(), new Error('Element not found: #nope'), new Error('something odd happened')]) {
       const failure = classifyActionFailure(err, { action: 'click', target: { targetId: FULL_ID, input: '#x' } });
       expect(JSON.stringify({ ...failure, target: null }), err.message).not.toContain(FULL_ID);
     }
   });
 
   it('T4 an alias, a short prefix and the placeholder are unchanged', () => {
-    const err = new Error('Direction required: down');
+    const err = new Error('something odd happened');
     expect(classifyActionFailure(err, { action: 'scroll', target: { targetId: '@app' } }).nextCommand).toBe('cdp perceive @app -C -d 8');
     expect(classifyActionFailure(err, { action: 'scroll', target: { targetId: 'C3573E' } }).nextCommand).toBe('cdp perceive C3573E -C -d 8');
     expect(classifyActionFailure(err, { action: 'scroll', target: {} }).nextCommand).toBe('cdp perceive <target> -C -d 8');
