@@ -560,3 +560,27 @@ describe('#698 unclosed quote example names the script step command', () => {
     expect(firstLine('fill #p "abc').endsWith("e.g. fill #p 'abc'")).toBe(true);
   });
 });
+
+describe('#698 the step head is split on any whitespace', () => {
+  const firstLine = input => {
+    try {
+      T.parseFlowSteps(input);
+    } catch (caught) {
+      return caught.message.split('\n')[0];
+    }
+    throw new Error(`expected ${input} to fail`);
+  };
+  it.each([
+    ['eval\t"const x = 1; x', "e.g. eval 'const x = 1; x'"],
+    ["call\t'() => document.title", 'e.g. call "() => document.title"'],
+    ['fill #p "a"; eval64\t"eCA9', "e.g. eval64 'eCA9IDE7IHg='"],
+    // A tab between the command and a flag: a split on spaces only reads `eval\t--raw`.
+    ['eval\t--raw "x', "e.g. eval 'const x = 1; x'"],
+    ['fill #p "a"; call\tfn "x', "e.g. call '() => document.title'"],
+  ])('%j', (input, example) => {
+    expect(firstLine(input).endsWith(example)).toBe(true);
+  });
+  it('fixes a backtick opener with single quotes', () => {
+    expect(firstLine('eval `const x = 1; x').endsWith("e.g. eval 'const x = 1; x'")).toBe(true);
+  });
+});

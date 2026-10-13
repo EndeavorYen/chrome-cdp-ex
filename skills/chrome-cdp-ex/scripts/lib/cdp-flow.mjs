@@ -1356,8 +1356,8 @@ export function ambiguousEscapedSemicolonError(nextWord) {
     'Next: cdp help flow',
   ].join('\n'));
 }
-// #698: a script step gets an example in its own command. A `"` opener is
-// fixed with single quotes; a `'` or backtick opener with double quotes.
+// #698: a script step gets an example in its own command. A `"` or backtick
+// opener is fixed with single quotes; a `'` opener with double quotes.
 const FLOW_UNCLOSED_SCRIPT_EXAMPLES = {
   eval: { double: "eval 'const x = 1; x'", single: 'eval "const x = 1; x"' },
   eval64: { double: "eval64 'eCA9IDE7IHg='", single: 'eval64 "eCA9IDE7IHg="' },
