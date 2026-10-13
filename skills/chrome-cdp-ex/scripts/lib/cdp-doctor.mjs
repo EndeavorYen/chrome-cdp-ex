@@ -2147,21 +2147,175 @@ function soleRenderedChainSource() {
       for (let guard = 0; node && node !== ancestor && guard < 64; guard++) {
         let parent = null;
         try { parent = node.parentElement; } catch (err) { return true; }
-        if (!parent) return true;
+        let next = parent;
+        // #709: a shadow child has no parentElement. Siblings live on the shadow root;
+        // the walk then continues at the host so a light-DOM sibling of the host still counts.
+        if (!parent) {
+          let root = null;
+          try { root = typeof node.getRootNode === 'function' ? node.getRootNode() : null; } catch (err) { root = null; }
+          if (root && root.host && root.host !== node) {
+            parent = root;
+            next = root.host;
+          }
+        }
+        if (!parent || !next) return true;
         let kids = null;
         try { kids = parent.children; } catch (err) { return true; }
         if (!kids || typeof kids.length !== 'number') return true;
         for (let i = 0; i < kids.length; i++) {
           if (kids[i] !== node && renderedSibling(kids[i])) return false;
         }
-        node = parent;
+        if (next === node) return true;
+        node = next;
       }
       return true;
+    }`;
+}
+
+// #709: querySelectorAll does not enter an open shadow root. The page scripts below inline
+// this once. contains() stops at the shadow boundary; document hit-testing retargets to the host.
+function shadowTreeSource() {
+  return `function querySelectorDeep(selector) {
+      const matched = [];
+      const seen = new Set();
+      function remember(el) {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        matched.push(el);
+      }
+      function matchesSel(el) {
+        if (selector === 'body *' || selector === '*') return true;
+        try { return typeof el.matches === 'function' && !!el.matches(selector); }
+        catch (err) { return false; }
+      }
+      const walkedRoots = new Set();
+      function walkShadow(root) {
+        if (!root || walkedRoots.has(root)) return;
+        walkedRoots.add(root);
+        const listed = [];
+        const listedSet = new Set();
+        function take(el) {
+          if (!el || listedSet.has(el)) return;
+          listedSet.add(el);
+          listed.push(el);
+        }
+        if (typeof root.querySelectorAll === 'function') {
+          try {
+            const list = root.querySelectorAll('*');
+            if (list && typeof list.length === 'number') {
+              for (let i = 0; i < list.length; i++) take(list[i]);
+            }
+          } catch (err) {}
+        }
+        function walkChildren(node) {
+          const kids = node && node.children;
+          if (!kids || typeof kids.length !== 'number') return;
+          for (let i = 0; i < kids.length; i++) {
+            const child = kids[i];
+            const before = listedSet.has(child);
+            take(child);
+            if (!before) walkChildren(child);
+          }
+        }
+        if (listed.length === 0) walkChildren(root);
+        else {
+          for (let i = 0; i < listed.length; i++) walkChildren(listed[i]);
+        }
+        for (let i = 0; i < listed.length; i++) {
+          const el = listed[i];
+          if (matchesSel(el)) remember(el);
+          if (el && el.shadowRoot) walkShadow(el.shadowRoot);
+        }
+      }
+      function fromQuery(sel, trust) {
+        let list = null;
+        try { list = document.querySelectorAll(sel); } catch (err) { list = null; }
+        if (!list || typeof list.length !== 'number') return;
+        for (let i = 0; i < list.length; i++) {
+          const el = list[i];
+          if (!el) continue;
+          if (trust || matchesSel(el)) remember(el);
+          if (el.shadowRoot) walkShadow(el.shadowRoot);
+        }
+      }
+      fromQuery(selector, true);
+      if (selector !== 'body *') fromQuery('body *', false);
+      return matched;
+    }
+    function composedContains(ancestor, node) {
+      if (!ancestor || !node || ancestor === node) return false;
+      try { if (typeof ancestor.contains === 'function' && ancestor.contains(node)) return true; } catch (err) {}
+      let current = node;
+      const seen = new Set();
+      while (current && !seen.has(current)) {
+        seen.add(current);
+        let root = null;
+        try { root = typeof current.getRootNode === 'function' ? current.getRootNode() : null; } catch (err) { return false; }
+        const host = root && root.host;
+        if (!host || host === current) return false;
+        if (host === ancestor) return true;
+        try { if (typeof ancestor.contains === 'function' && ancestor.contains(host)) return true; } catch (err) {}
+        current = host;
+      }
+      return false;
+    }
+    function sameLayer(el, node) {
+      if (!el || !node) return false;
+      if (node === el) return true;
+      let current = el;
+      const seen = new Set();
+      while (current && !seen.has(current)) {
+        seen.add(current);
+        let root = null;
+        try { root = typeof current.getRootNode === 'function' ? current.getRootNode() : null; } catch (err) { return false; }
+        const host = root && root.host;
+        if (!host || host === current) return false;
+        if (host === node) return true;
+        current = host;
+      }
+      return false;
+    }
+    function pierceStack(stack, x, y) {
+      const out = [];
+      const seen = new Set();
+      function push(node) {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+        out.push(node);
+      }
+      for (let i = 0; i < stack.length; i++) {
+        const node = stack[i];
+        const root = node && node.shadowRoot;
+        if (root && typeof root.elementsFromPoint === 'function') {
+          let inner = null;
+          try { inner = root.elementsFromPoint(x, y); } catch (err) { inner = null; }
+          if (inner && typeof inner.length === 'number') {
+            for (let j = 0; j < inner.length; j++) push(inner[j]);
+          }
+        }
+        push(node);
+      }
+      return out;
+    }
+    function elementFromPointDeep(x, y) {
+      if (typeof document.elementFromPoint !== 'function') return null;
+      let top = null;
+      try { top = document.elementFromPoint(x, y); } catch (err) { return null; }
+      let guard = 0;
+      while (top && top.shadowRoot && typeof top.shadowRoot.elementFromPoint === 'function' && guard < 8) {
+        let inner = null;
+        try { inner = top.shadowRoot.elementFromPoint(x, y); } catch (err) { break; }
+        if (!inner || inner === top) break;
+        top = inner;
+        guard += 1;
+      }
+      return top;
     }`;
 }
 export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false } = {}) {
   const targetJson = JSON.stringify(targetPoint && ['input', 'x', 'y', 'descriptor'].reduce((snapshot, key) => { const property = Object.getOwnPropertyDescriptor(targetPoint, key); if (property && Object.hasOwn(property, 'value')) snapshot[key] = property.value; return snapshot; }, Object.create(null))); return `(function() {
     const targetPoint = ${targetJson};
+    ${shadowTreeSource()}
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
     const layoutW = (document.documentElement && document.documentElement.clientWidth) || vw;
@@ -2195,11 +2349,12 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
       const cs = getComputedStyle(el);
       const cx = Math.min(Math.max(r.left + r.width / 2, 0), Math.max(vw - 1, 0));
       const cy = Math.min(Math.max(r.top + r.height / 2, 0), Math.max(vh - 1, 0));
-      const topAtCenter = document.elementFromPoint(cx, cy);
-      const topAtTarget = target ? document.elementFromPoint(target.x, target.y) : null;
+      const topAtCenter = elementFromPointDeep(cx, cy);
+      const topAtTarget = target ? elementFromPointDeep(target.x, target.y) : null;
       // #629: a fixed shell that contains the target also contains the hit. That is not "on top".
-      const ancestorOfTarget = !!(targetElement && el !== targetElement && typeof el.contains === 'function' && el.contains(targetElement));
-      const onTarget = !!topAtTarget && !ancestorOfTarget && (topAtTarget === el || (typeof el.contains === 'function' && el.contains(topAtTarget)));
+      // #709: composedContains crosses an open shadow root; sameLayer treats the host as the inner element.
+      const ancestorOfTarget = !!(targetElement && el !== targetElement && composedContains(el, targetElement));
+      const onTarget = !!topAtTarget && !ancestorOfTarget && (sameLayer(el, topAtTarget) || composedContains(el, topAtTarget));
       return {
         kind,
         selector: selectorFor(el),
@@ -2214,7 +2369,7 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
         coversViewport: (r.left <= slackX && r.top <= slackY && r.right >= vw - slackX && r.bottom >= vh - slackY)
           || (r.left <= 8 && r.top <= 8 && r.right >= layoutW - 8 && r.bottom >= layoutH - 8),
         coversTarget: pointInRect(target, r),
-        topAtCenter: topAtCenter === el || el.contains(topAtCenter),
+        topAtCenter: sameLayer(el, topAtCenter) || composedContains(el, topAtCenter),
         topAtTarget: onTarget,
       };
     }
@@ -2231,13 +2386,15 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
       let stack = null;
       try { stack = document.elementsFromPoint(fx, fy); } catch (err) { return true; }
       if (!stack || typeof stack.length !== 'number') return true;
+      stack = pierceStack(stack, fx, fy);
       let seenEl = false;
       for (let i = 0; i < stack.length; i++) {
         const node = stack[i];
-        if (node === el) { seenEl = true; continue; }
+        // A retargeted host stands in for the shadow element that was actually hit.
+        if (sameLayer(el, node)) { seenEl = true; continue; }
         if (!seenEl) continue;
-        if (typeof el.contains === 'function' && el.contains(node)) continue;
-        if (node && typeof node.contains === 'function' && node.contains(el) && soleRenderedChain(node, el)) continue;
+        if (composedContains(el, node)) continue;
+        if (composedContains(node, el) && soleRenderedChain(node, el)) continue;
         return true;
       }
       return false;
@@ -2250,8 +2407,8 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
     function add(el, kind) {
       const dialog = isDialog(el);
       if (!visible(el) || seen.has(el)) return;
-      if (targetElement && !dialog && (el === targetElement || (typeof targetElement.contains === 'function' && targetElement.contains(el)))) return;
-      const ancestorOfTarget = !!(targetElement && el !== targetElement && typeof el.contains === 'function' && el.contains(targetElement));
+      if (targetElement && !dialog && (el === targetElement || composedContains(targetElement, el))) return;
+      const ancestorOfTarget = !!(targetElement && el !== targetElement && composedContains(el, targetElement));
       // #629: the target's own fixed/sticky shell is not a cover.
       if (ancestorOfTarget && !dialog) return;
       seen.add(el);
@@ -2265,8 +2422,8 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
       Object.defineProperty(record, 'ancestorOfTarget', { value: ancestorOfTarget });
       overlays.push(record);
     }
-    for (const el of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
-    for (const el of document.querySelectorAll('body *')) {
+    for (const el of querySelectorDeep('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
+    for (const el of querySelectorDeep('body *')) {
       const cs = getComputedStyle(el);
       if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
       add(el, el.getAttribute('aria-modal') === 'true' ? 'dialog' : 'overlay');
@@ -2275,10 +2432,10 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
     // A layer over the hit point that is not fixed/sticky (an absolute popover) is still the cover
     // when it does not contain the target. Skip it when a real fixed cover is already named.
     if (targetPoint && targetElement && typeof document.elementFromPoint === 'function') {
-      const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
+      const top = elementFromPointDeep(targetPoint.x, targetPoint.y);
       const separate = !!(top && top !== targetElement
-        && !(typeof targetElement.contains === 'function' && targetElement.contains(top))
-        && !(typeof top.contains === 'function' && top.contains(targetElement)));
+        && !composedContains(targetElement, top)
+        && !composedContains(top, targetElement));
       if (separate && !overlays.some(entry => entry.topAtTarget && entry.coversTarget && !entry.ancestorOfTarget)) {
         let pointer = 'auto';
         try { pointer = getComputedStyle(top).pointerEvents || 'auto'; } catch (err) { pointer = 'auto'; }
@@ -2294,7 +2451,7 @@ export function overlayDetectorScript({ targetPoint = null, objectBoundTarget = 
     });
     const target = targetPoint ? { ...targetPoint, blocked: false, topElement: null } : null;
     if (targetPoint) {
-      const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
+      const top = elementFromPointDeep(targetPoint.x, targetPoint.y);
       if (top) target.topElement = elementInfo(top, isDialog(top) ? 'dialog' : 'top-element', targetPoint);
       const blocker = overlays.find(o => !o.targetSelf && !o.ancestorOfTarget && o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
       if (blocker) {
@@ -2424,6 +2581,7 @@ export function dismissModalScript() {
   return `(function() {
     ${dialogVisibleFunctionSource()}
     ${soleRenderedChainSource()}
+    ${shadowTreeSource()}
     // #653: only a control whose job is to close counts. Accept words (OK, 確認, Continue) and labels
     // that merely contain a close word ("Cancel subscription", "Book") are the user's decision.
     // A Chinese close label is the whole string: 關閉 or 取消, optionally followed by 對話框, 視窗,
@@ -2483,7 +2641,7 @@ export function dismissModalScript() {
         .slice(0, 6)
         .map(name => name.slice(0, 40));
     }
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')).filter(visible);
+    const dialogs = querySelectorDeep('[role="dialog"], dialog, [aria-modal="true"]').filter(visible);
     if (dialogs.length === 0) {
       const vw = window.innerWidth || 0;
       const vh = window.innerHeight || 0;
@@ -2492,7 +2650,7 @@ export function dismissModalScript() {
       const slackX = Math.max(8, vw - layoutW);
       const slackY = Math.max(8, vh - layoutH);
       const overlays = [];
-      for (const el of document.querySelectorAll('body *')) {
+      for (const el of querySelectorDeep('body *')) {
         if (!el || el.id === '__cdp_annot_overlay__') continue;
         const cs = getComputedStyle(el);
         if ((cs.position !== 'fixed' && cs.position !== 'sticky') || !visible(el) || cs.pointerEvents === 'none') continue;
@@ -2510,14 +2668,15 @@ export function dismissModalScript() {
           let stack = null;
           try { stack = document.elementsFromPoint(cx, cy); } catch (err) { stack = null; }
           if (stack && typeof stack.length === 'number') {
+            stack = pierceStack(stack, cx, cy);
             let seenEl = false;
             let foreign = false;
             for (let i = 0; i < stack.length; i++) {
               const node = stack[i];
-              if (node === el) { seenEl = true; continue; }
+              if (sameLayer(el, node)) { seenEl = true; continue; }
               if (!seenEl) continue;
-              if (typeof el.contains === 'function' && el.contains(node)) continue;
-              if (node && typeof node.contains === 'function' && node.contains(el) && soleRenderedChain(node, el)) continue;
+              if (composedContains(el, node)) continue;
+              if (composedContains(node, el) && soleRenderedChain(node, el)) continue;
               foreign = true;
               break;
             }
@@ -2547,7 +2706,8 @@ export function dismissModalScript() {
 export function openDialogCountScript() {
   return `(function() {
     ${dialogVisibleFunctionSource()}
-    return Array.from(document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')).filter(visible).length;
+    ${shadowTreeSource()}
+    return querySelectorDeep('[role="dialog"], dialog, [aria-modal="true"]').filter(visible).length;
   })()`;
 }
 export async function dismissModalStr(cdp, sid, { checkDelayMs = DISMISS_MODAL_ESCAPE_CHECK_MS } = {}) {

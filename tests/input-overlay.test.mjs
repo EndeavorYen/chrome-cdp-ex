@@ -1389,6 +1389,24 @@ describe('overlay detector', () => {
     return child;
   }
 
+  // Open shadow root. parentElement does not cross into the shadow tree, and contains()
+  // walks parentElement only, matching the platform. getRootNode().host is the way out.
+  function attachOpenShadow(host, topNodes) {
+    const root = { host, children: topNodes };
+    host.shadowRoot = root;
+    const pending = [...topNodes];
+    const seen = new Set();
+    while (pending.length) {
+      const node = pending.pop();
+      if (!node || seen.has(node)) continue;
+      seen.add(node);
+      node.getRootNode = () => root;
+      for (const child of node.children || []) pending.push(child);
+    }
+    for (const node of topNodes) node.parentElement = null;
+    return root;
+  }
+
   const FULL = { x: 0, y: 0, w: 1440, h: 900 };
 
   function shortPageRoots() {
@@ -1630,7 +1648,7 @@ describe('overlay detector', () => {
     expect(dismissed).toMatchObject({ ok: false, reason: 'overlay-not-dialog', overlays: ['#veil'] });
   });
 
-  it('does not detect a shadow-DOM backdrop inside a host (out of scope, tracked separately)', () => {
+  it('reports a role-less fixed inset:0 backdrop inside an open shadow root as blocking', () => {
     const { html, body } = shortPageRoots();
     const host = paintedNode({
       id: 'host',
@@ -1644,17 +1662,115 @@ describe('overlay detector', () => {
       rect: FULL,
       text: 'Scrim',
     });
+    const panel = paintedNode({
+      id: 'panel',
+      text: 'Details',
+      rect: { x: 1300, y: 12, w: 120, h: 64 },
+    });
     adopt(body, host);
-    // Real querySelectorAll('body *') does not enter the shadow root. parentElement of a
-    // shadow child is null; the host does not contain it.
-    host.shadowRoot = { host, children: [backdrop] };
+    adopt(body, panel);
+    // The light list is the host and the corner panel. The scrim lives only in the shadow tree.
+    // document.elementsFromPoint retargets the scrim to the host; the shadow root's own list
+    // still names the scrim. contains() does not see across that boundary.
+    const root = attachOpenShadow(host, [backdrop]);
+    root.elementsFromPoint = () => [backdrop, host, body, html];
+    const { model, dismissed } = runPainted({
+      elements: [host, panel],
+      topElement: host,
+      elementsFromPoint: () => [host, body, html],
+    });
+    expect(model).toMatchObject({
+      blocking: true,
+      overlayCount: 1,
+      target: null,
+    });
+    expect(model.overlays).toContainEqual(expect.objectContaining({
+      kind: 'overlay',
+      selector: '#backdrop',
+      role: '',
+      blocking: true,
+      coversViewport: true,
+    }));
+    expect(dismissed).toEqual({ ok: false, reason: 'overlay-not-dialog', overlays: ['#backdrop'] });
+  });
+
+  it('does not report a fixed app shell inside an open shadow root when it contains the page content', () => {
+    const { html, body } = shortPageRoots();
+    const host = paintedNode({
+      id: 'host',
+      text: 'widget',
+      rect: { x: 0, y: 0, w: 1440, h: 900 },
+    });
+    const shell = paintedNode({
+      id: 'shell',
+      text: 'App',
+      position: 'fixed',
+      zIndex: '1',
+      rect: FULL,
+    });
+    const button = paintedNode({
+      id: 'submit',
+      tagName: 'BUTTON',
+      text: 'Submit',
+      rect: { x: 100, y: 120, w: 120, h: 40 },
+    });
+    adopt(body, host);
+    adopt(shell, button);
+    const root = attachOpenShadow(host, [shell]);
+    root.elementsFromPoint = () => [button, shell, host, body, html];
     const { model, dismissed } = runPainted({
       elements: [host],
       topElement: host,
-      elementsFromPoint: () => [backdrop, host, body, html],
+      elementsFromPoint: () => [host, body, html],
     });
     expect(model).toMatchObject({ blocking: false, overlayCount: 0, overlays: [] });
-    expect(JSON.stringify(model)).not.toContain('#backdrop');
+    expect(JSON.stringify(model)).not.toContain('#shell');
+    expect(JSON.stringify(model)).not.toContain('#submit');
     expect(dismissed).toEqual({ ok: false, reason: 'no-dialog' });
+  });
+
+  it('finds a dialog nested inside an open shadow root', () => {
+    const { body } = shortPageRoots();
+    const host = paintedNode({
+      id: 'host',
+      text: 'widget',
+      rect: { x: 16, y: 16, w: 200, h: 40 },
+    });
+    const wrap = paintedNode({
+      id: 'wrap',
+      rect: { x: 420, y: 180, w: 600, h: 400 },
+    });
+    const dialog = paintedNode({
+      id: 'settings',
+      role: 'dialog',
+      text: 'Settings',
+      position: 'fixed',
+      zIndex: '6',
+      rect: { x: 420, y: 180, w: 600, h: 400 },
+    });
+    dialog.getAttribute = (name) => (name === 'role' ? 'dialog' : name === 'aria-label' ? 'Settings' : null);
+    dialog.querySelector = () => null;
+    dialog.querySelectorAll = () => [];
+    adopt(body, host);
+    adopt(wrap, dialog);
+    attachOpenShadow(host, [wrap]);
+    const { model, dismissed } = runPainted({
+      elements: [host],
+      topElement: host,
+      elementsFromPoint: () => [host, body],
+    });
+    expect(model.blocking).toBe(true);
+    expect(model.overlays).toContainEqual(expect.objectContaining({
+      kind: 'dialog',
+      selector: '#settings',
+      role: 'dialog',
+    }));
+    expect(dismissed).toEqual({
+      ok: false,
+      reason: 'no-close-button',
+      dialogs: 1,
+      name: 'Settings',
+      buttons: [],
+    });
   });
 });

@@ -162,6 +162,108 @@ describe('issues #276-#277 overlay detector and parallel cookies', () => {
     expect(/no visible modal\/dialog detected/i.test(out)).toBe(false);
   });
 
+  it('sees a fixed inset:0 backdrop rendered inside an open shadow root', () => {
+    const host = {
+      id: 'host',
+      tagName: 'DIV',
+      className: '',
+      textContent: 'widget',
+      parentElement: null,
+      children: [],
+      __style: {
+        display: 'block', visibility: 'visible', opacity: '1',
+        position: 'static', pointerEvents: 'auto', zIndex: 'auto',
+      },
+      getBoundingClientRect: () => ({ x: 16, y: 16, left: 16, top: 16, right: 216, bottom: 56, width: 200, height: 40 }),
+      getAttribute: () => null,
+      matches: () => false,
+      contains(other) {
+        for (let current = other; current; current = current.parentElement) {
+          if (current === host) return true;
+        }
+        return false;
+      },
+    };
+    const backdrop = {
+      id: 'backdrop',
+      tagName: 'DIV',
+      className: '',
+      textContent: 'Scrim',
+      parentElement: null,
+      children: [],
+      __style: {
+        display: 'block', visibility: 'visible', opacity: '1',
+        position: 'fixed', pointerEvents: 'auto', zIndex: '5',
+      },
+      getBoundingClientRect: () => ({ x: 0, y: 0, left: 0, top: 0, right: 1027, bottom: 632, width: 1027, height: 632 }),
+      getAttribute: () => null,
+      matches: () => false,
+      contains(other) { return other === backdrop; },
+    };
+    const panel = {
+      id: 'panel',
+      tagName: 'DIV',
+      className: '',
+      textContent: 'Details',
+      parentElement: null,
+      children: [],
+      __style: {
+        display: 'block', visibility: 'visible', opacity: '1',
+        position: 'static', pointerEvents: 'auto', zIndex: 'auto',
+      },
+      getBoundingClientRect: () => ({ x: 900, y: 12, left: 900, top: 12, right: 1020, bottom: 76, width: 120, height: 64 }),
+      getAttribute: () => null,
+      matches: () => false,
+      contains(other) { return other === panel; },
+    };
+    const body = {
+      tagName: 'BODY',
+      children: [host, panel],
+      parentElement: null,
+      contains(other) {
+        return other === body || other === host || other === panel;
+      },
+    };
+    host.parentElement = body;
+    panel.parentElement = body;
+    const root = { host, children: [backdrop], elementsFromPoint: () => [backdrop, host, body] };
+    host.shadowRoot = root;
+    backdrop.getRootNode = () => root;
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    const previousCss = globalThis.CSS;
+    const previousGetComputedStyle = globalThis.getComputedStyle;
+    globalThis.window = { innerWidth: 1042, innerHeight: 632, devicePixelRatio: 1 };
+    globalThis.CSS = { escape: (value) => String(value) };
+    globalThis.getComputedStyle = (element) => element.__style;
+    globalThis.document = {
+      documentElement: { clientWidth: 1027, clientHeight: 632 },
+      body: { clientWidth: 1027, clientHeight: 632 },
+      querySelector: () => null,
+      querySelectorAll: (selector) => (selector === 'body *' ? [host, panel] : []),
+      elementFromPoint: () => host,
+      elementsFromPoint: () => [host, body],
+    };
+    try {
+      const runPageScript = Function('source', 'return eval(source);');
+      const model = JSON.parse(runPageScript.call(null, T.overlayDetectorScript({})));
+      expect(model.blocking).toBe(true);
+      expect(model.overlays).toContainEqual(expect.objectContaining({
+        kind: 'overlay',
+        selector: '#backdrop',
+        blocking: true,
+        coversViewport: true,
+      }));
+      const dismissed = JSON.parse(runPageScript.call(null, T.dismissModalScript()));
+      expect(dismissed).toEqual({ ok: false, reason: 'overlay-not-dialog', overlays: ['#backdrop'] });
+    } finally {
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.CSS = previousCss;
+      globalThis.getComputedStyle = previousGetComputedStyle;
+    }
+  });
+
   function guardParallelBatch(commands) {
     const unsafe = commands.filter(command => T.isBatchParallelUnsafeCommand(command.cmd, command.args || []));
     if (unsafe.length) {

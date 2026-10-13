@@ -241,4 +241,168 @@ describe('#653 dismiss-modal exits 0 only when the dialog is gone', () => {
     });
     expect(count).toBe(1);
   });
+
+  it('counts a dialog nested in an open shadow root', () => {
+    const shown = {
+      getBoundingClientRect: () => BOX,
+      matches: () => true,
+      children: [],
+    };
+    const wrap = { matches: () => false, children: [shown], shadowRoot: null };
+    const host = { matches: () => false, children: [] };
+    host.shadowRoot = { host, children: [wrap] };
+    const count = runInNewContext(T.openDialogCountScript(), {
+      document: {
+        querySelectorAll: (selector) => (selector === 'body *' ? [host] : []),
+      },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+    });
+    expect(count).toBe(1);
+  });
+
+  it('counts a dialog two open shadow roots deep', () => {
+    const shown = { getBoundingClientRect: () => BOX, matches: () => true, children: [] };
+    const inner = { matches: () => false, children: [] };
+    inner.shadowRoot = { host: inner, children: [shown] };
+    const outer = { matches: () => false, children: [] };
+    outer.shadowRoot = { host: outer, children: [inner] };
+    const count = runInNewContext(T.openDialogCountScript(), {
+      document: {
+        querySelectorAll: (selector) => (selector === 'body *' ? [outer] : []),
+      },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+    });
+    expect(count).toBe(1);
+  });
+});
+
+describe('dismiss-modal sees an open shadow root', () => {
+  const FULL = { x: 0, y: 0, left: 0, top: 0, right: 1440, bottom: 900, width: 1440, height: 900 };
+
+  function node({ id = '', tag = 'DIV', role = null, position = 'static', rect = FULL, text = '' } = {}) {
+    const el = {
+      id,
+      tagName: tag,
+      textContent: text,
+      className: '',
+      parentElement: null,
+      children: [],
+      shadowRoot: null,
+      __style: {
+        display: 'block', visibility: 'visible', opacity: '1',
+        position, pointerEvents: 'auto', zIndex: '1',
+      },
+      getBoundingClientRect: () => rect,
+      getAttribute: (name) => (name === 'role' ? role : name === 'aria-label' ? text : null),
+      matches: () => role === 'dialog' || tag === 'DIALOG',
+      contains(other) {
+        for (let current = other; current; current = current.parentElement) {
+          if (current === el) return true;
+        }
+        return false;
+      },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    };
+    return el;
+  }
+
+  function runDismiss(document) {
+    return JSON.parse(runInNewContext(T.dismissModalScript(), {
+      document,
+      window: { innerWidth: 1440, innerHeight: 900 },
+      getComputedStyle: (el) => el.__style,
+      CSS: { escape: (value) => String(value) },
+    }));
+  }
+
+  it('returns overlay-not-dialog for a fixed inset:0 backdrop in an open shadow root', () => {
+    const host = node({ id: 'host', rect: { x: 16, y: 16, left: 16, top: 16, right: 216, bottom: 56, width: 200, height: 40 } });
+    const backdrop = node({ id: 'backdrop', position: 'fixed', text: 'Scrim' });
+    const panel = node({
+      id: 'panel',
+      text: 'Details',
+      rect: { x: 1300, y: 12, left: 1300, top: 12, right: 1420, bottom: 76, width: 120, height: 64 },
+    });
+    const body = node({ id: 'body', tag: 'BODY' });
+    const html = node({ id: 'html', tag: 'HTML' });
+    body.children = [host, panel];
+    host.parentElement = body;
+    panel.parentElement = body;
+    body.parentElement = html;
+    const root = { host, children: [backdrop], elementsFromPoint: () => [backdrop, host, body, html] };
+    host.shadowRoot = root;
+    backdrop.getRootNode = () => root;
+    backdrop.parentElement = null;
+    const parsed = runDismiss({
+      documentElement: { clientWidth: 1440, clientHeight: 900 },
+      querySelectorAll: (selector) => (selector === 'body *' ? [host, panel] : []),
+      elementsFromPoint: () => [host, body, html],
+      getElementById: () => null,
+    });
+    expect(parsed).toEqual({ ok: false, reason: 'overlay-not-dialog', overlays: ['#backdrop'] });
+  });
+
+  it('finds a dialog inside an open shadow root', () => {
+    const host = node({ id: 'host', rect: { x: 16, y: 16, left: 16, top: 16, right: 216, bottom: 56, width: 200, height: 40 } });
+    const wrap = node({ id: 'wrap', rect: { x: 420, y: 180, left: 420, top: 180, right: 1020, bottom: 580, width: 600, height: 400 } });
+    const dialog = node({
+      id: 'settings',
+      role: 'dialog',
+      text: 'Settings',
+      position: 'fixed',
+      rect: { x: 420, y: 180, left: 420, top: 180, right: 1020, bottom: 580, width: 600, height: 400 },
+    });
+    wrap.children = [dialog];
+    dialog.parentElement = wrap;
+    const root = { host, children: [wrap] };
+    host.shadowRoot = root;
+    wrap.getRootNode = () => root;
+    dialog.getRootNode = () => root;
+    wrap.parentElement = null;
+    const parsed = runDismiss({
+      documentElement: { clientWidth: 1440, clientHeight: 900 },
+      querySelectorAll: (selector) => (selector === 'body *' ? [host] : []),
+      getElementById: () => null,
+    });
+    expect(parsed).toEqual({
+      ok: false,
+      reason: 'no-close-button',
+      dialogs: 1,
+      name: 'Settings',
+      buttons: [],
+    });
+  });
+
+  it('finds a dialog inside a shadow root that is inside another open shadow root', () => {
+    const outer = node({ id: 'outer', rect: { x: 16, y: 16, left: 16, top: 16, right: 216, bottom: 56, width: 200, height: 40 } });
+    const inner = node({ id: 'inner', rect: { x: 16, y: 16, left: 16, top: 16, right: 216, bottom: 56, width: 200, height: 40 } });
+    const dialog = node({
+      id: 'settings',
+      role: 'dialog',
+      text: 'Settings',
+      position: 'fixed',
+      rect: { x: 420, y: 180, left: 420, top: 180, right: 1020, bottom: 580, width: 600, height: 400 },
+    });
+    const outerRoot = { host: outer, children: [inner] };
+    const innerRoot = { host: inner, children: [dialog] };
+    outer.shadowRoot = outerRoot;
+    inner.shadowRoot = innerRoot;
+    inner.getRootNode = () => outerRoot;
+    inner.parentElement = null;
+    dialog.getRootNode = () => innerRoot;
+    dialog.parentElement = null;
+    const parsed = runDismiss({
+      documentElement: { clientWidth: 1440, clientHeight: 900 },
+      querySelectorAll: (selector) => (selector === 'body *' ? [outer] : []),
+      getElementById: () => null,
+    });
+    expect(parsed).toEqual({
+      ok: false,
+      reason: 'no-close-button',
+      dialogs: 1,
+      name: 'Settings',
+      buttons: [],
+    });
+  });
 });
