@@ -7,7 +7,7 @@ import { actionDomDiffShowsChange, countTypeaheadLabels, extractTypeaheadLabels,
 import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, fileUrlRefusedMessage, sleep } from './cdp-base.mjs';
 import { formatJson, isBlankPageUrl, parseFormatArgs, takeUnsafeFullArg } from './cdp-browser.mjs';
 import { consoleDocumentEntries, cutDocumentConsoleBuffers, displayUrl } from './cdp-core.mjs';
-import { actionabilityFunctionSource } from './cdp-input.mjs';
+import { actionabilityFunctionSource, namedClickQueryName } from './cdp-input.mjs';
 import { cdpDomains, evalStr, formatAxNode, formatPdfViewerOutput, getPages, isPdfViewerContentType, isPriorityPerceiveTextLine, orderedAxChildren, pdfViewerHandoffModelFromOutput, runtimeExceptionMessage, shouldShowAxNode } from './cdp-page.mjs';
 
 export function invalidateSessionRefs(session, reason, options = {}) {
@@ -1409,24 +1409,107 @@ function buildPerceiveFrameNotice({
     singleChildRef: children.length === 1 ? children[0]?.ref || null : null,
   };
 }
+// Named click matches buttons and links. A heading or ignored node with the
+// same text is not a place that click would have found the control.
+const NAMED_FRAME_MISS_ROLES = new Set(['button', 'link']);
+function namedFrameMissLabel(message, target) {
+  if (!/^Named control not found\b/.test(String(message || ''))) return '';
+  const input = String(target?.input || '').trim();
+  if (input) {
+    const name = String(namedClickQueryName(input) || '').trim();
+    if (name) return name;
+  }
+  const quoted = String(message).match(/^Named control not found:\s+("(?:\\.|[^"\\])*")/);
+  if (!quoted) return '';
+  try {
+    const parsed = JSON.parse(quoted[1]);
+    return typeof parsed === 'string' ? parsed.trim() : '';
+  } catch {
+    return '';
+  }
+}
+function accessibleNameMatches(actual, wanted) {
+  const name = String(actual ?? '');
+  const label = String(wanted ?? '');
+  if (!label) return false;
+  if (name === label) return true;
+  const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const wantedNorm = normalize(label);
+  return wantedNorm !== '' && normalize(name) === wantedNorm;
+}
+function frameNameHits(nodes, label) {
+  const hits = [];
+  for (const node of nodes || []) {
+    if (!node || node.ignored === true) continue;
+    const role = String(node.role?.value || '').toLowerCase();
+    if (!NAMED_FRAME_MISS_ROLES.has(role)) continue;
+    if (!accessibleNameMatches(axNodeAccessibleName(node), label)) continue;
+    hits.push(node);
+  }
+  return hits;
+}
+async function axNodesForFrame(cdp, sid, frame) {
+  if (!frame?.id) return [];
+  const sessionId = frame.process === 'oopif' ? crossSiteFrameSession(cdp, sid, frame.id) : sid;
+  if (!sessionId) return [];
+  const result = await cdpDomains(cdp).Accessibility.getFullAXTree({ frameId: frame.id }, sessionId);
+  return Array.isArray(result?.nodes) ? result.nodes : [];
+}
+// Stop once two frames match: Next stays on the slice C command either way.
+async function uniqueNamedFrameMatch(cdp, sid, frames, label) {
+  const matches = [];
+  for (const frame of frames) {
+    let hits = [];
+    try {
+      hits = frameNameHits(await axNodesForFrame(cdp, sid, frame), label);
+    } catch {
+      continue;
+    }
+    if (!hits.length) continue;
+    matches.push({ frame, hits });
+    if (matches.length > 1) return null;
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+function knownFrameElementRef(refState, frame, node) {
+  if (!frame || frame.process === 'oopif') return '';
+  const backendNodeId = node?.backendDOMNodeId;
+  if (!Number.isInteger(backendNodeId)) return '';
+  const entry = frameScopedRefEntry(refState, { frameRef: frame.ref });
+  if (!entry || !(entry.refs instanceof Map)) return '';
+  if (entry.frameId && frame.id && entry.frameId !== frame.id) return '';
+  if (crossSiteFrameProcess(entry, frame.ref) === 'oopif') return '';
+  let found = '';
+  for (const [index, id] of entry.refs) {
+    if (id !== backendNodeId || !Number.isInteger(index) || index < 1) continue;
+    if (found) return '';
+    found = `${frame.ref}:${index}`;
+  }
+  return found;
+}
 // A top-document selector miss. Count comes from the same census as the Frames
 // line. Zero iframe/frame elements skip Page.getFrameTree: that page has nothing
-// a later --frame could enter.
-export async function attachSelectorFrameMiss(cdp, sid, err, target = {}) {
+// a later --frame could enter. A named miss then reads accessible names in
+// same-origin frames. An already-attached cross-site frame is included; this
+// does not call setAutoAttach, and it does not read that frame into text or summary.
+export async function attachSelectorFrameMiss(cdp, sid, err, target = {}, refState = null) {
   if (!cdp || !sid || !err || typeof err !== 'object') return err;
   const message = String(err.message || '');
   if (!/^(?:Named control not found|Element not found)\b/.test(message)) return err;
   const input = String(target?.input || target?.label || '').trim();
   if (/^@f\d+:\d+$/.test(input)) return err;
   try {
-    const hint = await readSelectorFrameMiss(cdp, sid);
+    const hint = await readSelectorFrameMiss(cdp, sid, {
+      label: namedFrameMissLabel(message, target),
+      refState,
+    });
     if (hint) err.frameMiss = hint;
   } catch {
     // The original miss still has to be reported if the frame probe fails.
   }
   return err;
 }
-async function readSelectorFrameMiss(cdp, sid) {
+async function readSelectorFrameMiss(cdp, sid, { label = '', refState = null } = {}) {
   const raw = await evalStr(cdp, sid, frameElementInventoryExpression(), false, {
     timeoutMs: STATUS_PAGE_INFO_TIMEOUT,
   });
@@ -1440,20 +1523,50 @@ async function readSelectorFrameMiss(cdp, sid) {
   const model = await framesModel(cdp, sid);
   const frames = model.frames || [];
   const childFrames = frames.filter(item => item && item.depth > 0);
+  const pageUrl = frames.find(item => item && item.depth === 0)?.url || '';
   const notice = buildPerceiveFrameNotice({
     childFrames,
     frameElements: inventory.elements,
     frameElementCount: inventory.count,
     owners: new Map(),
     target: '<target>',
-    pageUrl: frames.find(item => item && item.depth === 0)?.url || '',
+    pageUrl,
   });
   if (!notice) return null;
-  return {
+  const hint = {
     childCount: notice.childCount,
     crossSiteCount: notice.crossSiteCount,
     singleChildRef: notice.singleChildRef,
   };
+  if (!label) return hint;
+  const census = perceiveFrameCensus({
+    childFrames,
+    frameElements: inventory.elements,
+    frameElementCount: inventory.count,
+    pageUrl,
+    owners: new Map(),
+  });
+  const sameOrigin = (census.children || []).filter(frame => frame && frame.depth > 0 && frame.id);
+  let oopifFrames = [];
+  const doc = oopifDocument(cdp, sid);
+  // Already attached only. setAutoAttach stays on the frame command.
+  if (doc.attached && doc.children.length > 0) {
+    try {
+      const merged = await framesModel(cdp, sid, { crossSite: true });
+      oopifFrames = (merged.frames || []).filter(frame => frame?.process === 'oopif' && frame.depth > 0 && frame.id);
+    } catch {
+      oopifFrames = [];
+    }
+  }
+  const match = await uniqueNamedFrameMatch(cdp, sid, sameOrigin.concat(oopifFrames), label);
+  if (!match || !/^@f\d+$/.test(match.frame?.ref || '')) return hint;
+  hint.matchedFrameRef = match.frame.ref;
+  if (match.frame.process === 'oopif') hint.matchedProcess = 'oopif';
+  if (match.hits.length === 1) {
+    const elementRef = knownFrameElementRef(refState, match.frame, match.hits[0]);
+    if (elementRef) hint.matchedElementRef = elementRef;
+  }
+  return hint;
 }
 function formatPerceiveIframeLine(depth, label, ref) {
   const indent = '  '.repeat(Math.min(depth, 10));

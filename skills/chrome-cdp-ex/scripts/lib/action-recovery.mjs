@@ -544,7 +544,7 @@ function classifyDownloadFailure(err, { base, targetId, input }) {
   };
 }
 
-function frameMissSentence(childCount, crossSiteCount) {
+function frameMissSentence(childCount, crossSiteCount, { reachedCrossSite = false } = {}) {
   const frameWord = count => (count === 1 ? 'frame' : 'frames');
   const parts = [];
   if (childCount > 0) {
@@ -552,8 +552,11 @@ function frameMissSentence(childCount, crossSiteCount) {
   } else if (crossSiteCount > 0) {
     parts.push(`The page has ${crossSiteCount} cross-site ${frameWord(crossSiteCount)} and the control may be inside one.`);
   }
-  if (crossSiteCount === 1) parts.push('1 cross-site frame is not reachable yet.');
-  else if (crossSiteCount > 1) parts.push(`${crossSiteCount} cross-site frames are not reachable yet.`);
+  // A unique name inside an already-attached cross-site frame is reachable.
+  if (!reachedCrossSite) {
+    if (crossSiteCount === 1) parts.push('1 cross-site frame is not reachable yet.');
+    else if (crossSiteCount > 1) parts.push(`${crossSiteCount} cross-site frames are not reachable yet.`);
+  }
   return parts.join(' ');
 }
 // fill and select misses end on the wait note, which has no period.
@@ -565,9 +568,10 @@ function joinFrameMissSentence(originalMessage, sentence) {
   return /[.!?]$/.test(text) ? `${text} ${sentence}` : `${text}. ${sentence}`;
 }
 
-// #715: only the two miss prefixes. A cross-site frame never becomes Next;
-// zero same-origin children keep the existing perceive command.
-function frameMissRecovery(err, targetId, originalMessage) {
+// #715 / #718: only the two miss prefixes. A unique accessible-name match points
+// at that frame (or a known same-origin @fN:M). Otherwise a cross-site frame
+// does not become Next, and zero same-origin children keep the perceive command.
+function frameMissRecovery(err, targetId, originalMessage, action = 'click') {
   const head = String(originalMessage || '').replace(/^Error:\s*/i, '');
   if (!/^(?:Named control not found|Element not found)\b/.test(head)) return null;
   const hint = err?.frameMiss;
@@ -577,14 +581,23 @@ function frameMissRecovery(err, targetId, originalMessage) {
   if (!Number.isInteger(childCount) || childCount < 0) return null;
   if (!Number.isInteger(crossSiteCount) || crossSiteCount < 0) return null;
   if (childCount === 0 && crossSiteCount === 0) return null;
-  const ref = typeof hint.singleChildRef === 'string' ? hint.singleChildRef : '';
+  const matchedFrame = typeof hint.matchedFrameRef === 'string' ? hint.matchedFrameRef : '';
+  const matchedElement = typeof hint.matchedElementRef === 'string' ? hint.matchedElementRef : '';
+  const reachedCrossSite = hint.matchedProcess === 'oopif' && /^@f\d+$/.test(matchedFrame);
+  const singleChild = typeof hint.singleChildRef === 'string' ? hint.singleChildRef : '';
   let nextCommand = null;
-  if (childCount === 1 && /^@f\d+$/.test(ref)) {
-    nextCommand = `cdp perceive ${targetId} --frame ${ref}`;
+  if (/^@f\d+:\d+$/.test(matchedElement) && !reachedCrossSite) {
+    nextCommand = action === 'jsclick'
+      ? `cdp jsclick ${targetId} ${matchedElement}`
+      : `cdp click ${targetId} ${matchedElement}`;
+  } else if (/^@f\d+$/.test(matchedFrame)) {
+    nextCommand = `cdp perceive ${targetId} --frame ${matchedFrame}`;
+  } else if (childCount === 1 && /^@f\d+$/.test(singleChild)) {
+    nextCommand = `cdp perceive ${targetId} --frame ${singleChild}`;
   } else if (childCount >= 1) {
     nextCommand = `cdp frame ${targetId}`;
   }
-  const sentence = frameMissSentence(childCount, crossSiteCount);
+  const sentence = frameMissSentence(childCount, crossSiteCount, { reachedCrossSite });
   if (!sentence) return null;
   return { sentence, nextCommand };
 }
@@ -1035,7 +1048,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     lower.includes('named control not found') ||
     lower.includes('named control is not unique')
   ) {
-    const frameMiss = frameMissRecovery(err, targetId, originalMessage);
+    const frameMiss = frameMissRecovery(err, targetId, originalMessage, action);
     const nextCommand = frameMiss?.nextCommand || perceiveCommand;
     return {
       ...base,

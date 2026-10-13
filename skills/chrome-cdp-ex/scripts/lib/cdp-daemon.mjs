@@ -291,7 +291,7 @@ export async function daemonCommandCatchResult(e, {
   });
   const rawError = actionFailureMessage(actionError);
   const alreadyClassified = isClassifiedActionFailureText(rawError);
-  if (!alreadyClassified) await attachSelectorFrameMiss(cdp, sessionId, actionError, context.target);
+  if (!alreadyClassified) await attachSelectorFrameMiss(cdp, sessionId, actionError, context.target, session?.refs);
   const failure = classifyActionFailure(actionError, context);
   // #717: this usage refusal must stay a classified action failure. Other usage
   // errors stay raw so the CLI can name help; this one would otherwise become
@@ -556,6 +556,7 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
           format,
           cdp,
           sid: sessionId,
+          refState,
         });
       }
     }
@@ -724,6 +725,7 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
       observe: observeThenFlush,
       cdp,
       sid: sessionId,
+      refState,
       enrichActionResult: async (actionResult) => {
         await pageInfoPromise;
         applyActionObservationDelta(actionResult, await buildLocatedActionObservationDelta(
