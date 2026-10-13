@@ -259,6 +259,21 @@ describe('#653 dismiss-modal exits 0 only when the dialog is gone', () => {
     });
     expect(count).toBe(1);
   });
+
+  it('counts a dialog two open shadow roots deep', () => {
+    const shown = { getBoundingClientRect: () => BOX, matches: () => true, children: [] };
+    const inner = { matches: () => false, children: [] };
+    inner.shadowRoot = { host: inner, children: [shown] };
+    const outer = { matches: () => false, children: [] };
+    outer.shadowRoot = { host: outer, children: [inner] };
+    const count = runInNewContext(T.openDialogCountScript(), {
+      document: {
+        querySelectorAll: (selector) => (selector === 'body *' ? [outer] : []),
+      },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+    });
+    expect(count).toBe(1);
+  });
 });
 
 describe('dismiss-modal sees an open shadow root', () => {
@@ -348,6 +363,38 @@ describe('dismiss-modal sees an open shadow root', () => {
     const parsed = runDismiss({
       documentElement: { clientWidth: 1440, clientHeight: 900 },
       querySelectorAll: (selector) => (selector === 'body *' ? [host] : []),
+      getElementById: () => null,
+    });
+    expect(parsed).toEqual({
+      ok: false,
+      reason: 'no-close-button',
+      dialogs: 1,
+      name: 'Settings',
+      buttons: [],
+    });
+  });
+
+  it('finds a dialog inside a shadow root that is inside another open shadow root', () => {
+    const outer = node({ id: 'outer', rect: { x: 16, y: 16, left: 16, top: 16, right: 216, bottom: 56, width: 200, height: 40 } });
+    const inner = node({ id: 'inner', rect: { x: 16, y: 16, left: 16, top: 16, right: 216, bottom: 56, width: 200, height: 40 } });
+    const dialog = node({
+      id: 'settings',
+      role: 'dialog',
+      text: 'Settings',
+      position: 'fixed',
+      rect: { x: 420, y: 180, left: 420, top: 180, right: 1020, bottom: 580, width: 600, height: 400 },
+    });
+    const outerRoot = { host: outer, children: [inner] };
+    const innerRoot = { host: inner, children: [dialog] };
+    outer.shadowRoot = outerRoot;
+    inner.shadowRoot = innerRoot;
+    inner.getRootNode = () => outerRoot;
+    inner.parentElement = null;
+    dialog.getRootNode = () => innerRoot;
+    dialog.parentElement = null;
+    const parsed = runDismiss({
+      documentElement: { clientWidth: 1440, clientHeight: 900 },
+      querySelectorAll: (selector) => (selector === 'body *' ? [outer] : []),
       getElementById: () => null,
     });
     expect(parsed).toEqual({
