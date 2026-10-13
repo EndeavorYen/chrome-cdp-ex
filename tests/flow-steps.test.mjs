@@ -529,3 +529,34 @@ describe('flow step rule documentation (#616 #617)', () => {
     expect(reference).toContain("'twas");
   });
 });
+
+describe('#698 unclosed quote example names the script step command', () => {
+  const firstLine = input => {
+    try {
+      T.parseFlowSteps(input);
+    } catch (caught) {
+      return caught.message.split('\n')[0];
+    }
+    throw new Error(`expected ${input} to fail`);
+  };
+  it.each([
+    ['eval "const x = 1; x', "e.g. eval 'const x = 1; x'"],
+    ["eval 'const x = 1; x", 'e.g. eval "const x = 1; x"'],
+    ['eval64 "eCA9IDE7IHg', "e.g. eval64 'eCA9IDE7IHg='"],
+    ["eval64 'eCA9IDE7IHg", 'e.g. eval64 "eCA9IDE7IHg="'],
+    ['call "() => document.title', "e.g. call '() => document.title'"],
+    ["call '() => document.title", 'e.g. call "() => document.title"'],
+  ])('%s', (input, example) => {
+    const line = firstLine(input);
+    expect(line).toContain('flow: unclosed quote in steps');
+    expect(line.endsWith(example)).toBe(true);
+    expect(line).not.toContain('fill #p');
+  });
+  it('uses the step that holds the opener, not the first step', () => {
+    expect(firstLine('fill #p "a;b"; eval "x').endsWith("e.g. eval 'const x = 1; x'")).toBe(true);
+    expect(firstLine('eval "a;b"; fill #p "x').endsWith("e.g. fill #p 'abc'")).toBe(true);
+  });
+  it('keeps the fill example for a fill step', () => {
+    expect(firstLine('fill #p "abc').endsWith("e.g. fill #p 'abc'")).toBe(true);
+  });
+});

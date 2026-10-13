@@ -1356,20 +1356,36 @@ export function ambiguousEscapedSemicolonError(nextWord) {
     'Next: cdp help flow',
   ].join('\n'));
 }
+// #698: a script step gets an example in its own command. A `"` opener is
+// fixed with single quotes; a `'` or backtick opener with double quotes.
+const FLOW_UNCLOSED_SCRIPT_EXAMPLES = {
+  eval: { double: "eval 'const x = 1; x'", single: 'eval "const x = 1; x"' },
+  eval64: { double: "eval64 'eCA9IDE7IHg='", single: 'eval64 "eCA9IDE7IHg="' },
+  call: { double: "call '() => document.title'", single: 'call "() => document.title"' },
+};
+// The command word of the step that holds the opener. `stepStart` is where
+// that step begins; a single segment starts at 0.
+function flowStepHeadAt(text, openIndex, stepStart = 0) {
+  const head = text.slice(stepStart, openIndex).trim().split(/\s+/)[0] || '';
+  return Object.hasOwn(FLOW_UNCLOSED_SCRIPT_EXAMPLES, head) ? head : '';
+}
 // Name the opener and a spelling that parses. A leading apostrophe is the
 // opener, so 'twas is closed by switching quote kind: type "'twas".
-export function unclosedFlowQuoteError(source, openIndex) {
+export function unclosedFlowQuoteError(source, openIndex, stepStart = 0) {
   const text = String(source || '');
   const quote = text[openIndex] || '';
   const rawExcerpt = text.length <= 48
     ? text
     : text.slice(Math.max(0, openIndex - 10), Math.min(text.length, openIndex + 18));
   const excerpt = rawExcerpt.replace(/\s+/g, ' ');
-  const example = quote === "'"
-    ? 'type "\'twas"'
-    : quote === '"'
-      ? "fill #p 'abc'"
-      : 'type "hello"';
+  const scriptExample = FLOW_UNCLOSED_SCRIPT_EXAMPLES[flowStepHeadAt(text, openIndex, stepStart)];
+  const example = scriptExample
+    ? scriptExample[quote === "'" ? 'single' : 'double']
+    : quote === "'"
+      ? 'type "\'twas"'
+      : quote === '"'
+        ? "fill #p 'abc'"
+        : 'type "hello"';
   return new Error([
     `flow: unclosed quote in steps: ${quote} opened at index ${openIndex} (${excerpt}). Close it, or use a different quote kind, e.g. ${example}`,
     'Kind: usage',
@@ -1428,7 +1444,7 @@ export function splitFlowSegmentsRaw(input) {
     }
     atTokenStart = /\s/.test(ch);
   }
-  if (quote) throw unclosedFlowQuoteError(input, quoteAt);
+  if (quote) throw unclosedFlowQuoteError(input, quoteAt, start);
   segments.push(input.slice(start));
   return segments;
 }
