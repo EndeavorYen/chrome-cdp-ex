@@ -1767,3 +1767,107 @@ export const STEP_HEADER_RE = /^\[(?:env )?\d+\/\d+\]/;
 // `open` always creates a blank tab, then navigates only after the tab daemon is attached.
 // The created URL is the signal for whether that navigation has already been requested (#644).
 export const OPEN_CREATED_TARGET_URL = 'about:blank';
+
+// Kinds printed on a CLI or action failure. Both classifiers return only these.
+// A page exception is the page's own error. It is not tool usage.
+export const ERROR_KINDS = Object.freeze([
+  'assertion',
+  'browser-cdp',
+  'click-no-change',
+  'covered',
+  'daemon-disconnect',
+  'dialog-open',
+  'disabled',
+  'dom-rewrite',
+  'download-canceled',
+  'download-missing',
+  'download-save-failed',
+  'download-unsupported',
+  'drag-incomplete',
+  'drag-not-started',
+  'eval',
+  'fd-limit',
+  'fill-no-change',
+  'fill-value-mismatch',
+  'hidden-tab',
+  'hover-not-delivered',
+  'invalid-selector',
+  'loading',
+  'misdirected',
+  'native-dialog',
+  'navigation',
+  'navigation-cancelled',
+  'no-click-box',
+  'no-input-events',
+  'no-navigation',
+  'not-fillable',
+  'not-in-viewport',
+  'not-scrollable',
+  'opener-blocked',
+  'overlay',
+  'page-exception',
+  'pdf-viewer',
+  'policy',
+  'popup-uncommitted',
+  'press-not-delivered',
+  'profile-in-use',
+  'runtime-dir',
+  'screenshot-capture',
+  'selector',
+  'stale-daemon',
+  'stale-ref',
+  'target-closed',
+  'target-resolution',
+  'timeout',
+  'unknown',
+  'usage',
+  'wrong-frame',
+]);
+const ERROR_KIND_SET = new Set(ERROR_KINDS);
+
+export function sealErrorRecovery(recovery) {
+  const kind = recovery?.kind;
+  if (!ERROR_KIND_SET.has(kind)) throw new Error(`unlisted error kind: ${kind}`);
+  return recovery;
+}
+
+// Failures whose Kind is decided by where they were raised, not by page prose.
+// Returns null when a later specialist (a dismissed navigation, a selector miss) owns it.
+export function sourceFailureRecovery(err, message, target = '<target>') {
+  const text = String(message ?? '').trim();
+  const where = String(target || '<target>');
+  if (err?.pageException === true) {
+    return {
+      kind: 'page-exception',
+      next: `cdp console ${where}`,
+      strategy: 'read-page-exception',
+      reason: 'The page script threw. The tab is still live. Read the exception; the message is the page\'s, not a command-usage error.',
+    };
+  }
+  if (err?.navigationCancelled) return null;
+  if (err?.navigationFailure === true || /^net::ERR_[A-Z0-9_]+$/.test(text)) {
+    return {
+      kind: 'navigation',
+      next: `cdp status ${where}`,
+      strategy: 'check-current-page',
+      reason: 'Chrome reported a network error (net::ERR_*). The navigation did not finish. Check the tab before retrying with a reachable URL.',
+    };
+  }
+  if (err?.unknownFrame === true || /^unknown frame\b/i.test(text)) {
+    return {
+      kind: 'wrong-frame',
+      next: `cdp frame ${where}`,
+      strategy: 'list-frames',
+      reason: 'That @fN ref is not in the current frame tree. List frames, then perceive a listed frame.',
+    };
+  }
+  if (/^direction required\b/i.test(text)) {
+    return {
+      kind: 'usage',
+      next: 'cdp help scroll',
+      strategy: 'show-help',
+      reason: 'scroll needs a direction: down, up, left, right, x,y, or to top / to bottom.',
+    };
+  }
+  return null;
+}

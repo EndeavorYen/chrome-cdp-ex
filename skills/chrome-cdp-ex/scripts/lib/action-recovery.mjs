@@ -1,4 +1,4 @@
-import { FILE_URL_HTTP_SERVER, isFileUrlRefusalMessage } from './cdp-base.mjs';
+import { FILE_URL_HTTP_SERVER, isFileUrlRefusalMessage, sealErrorRecovery, sourceFailureRecovery } from './cdp-base.mjs';
 import { classifyPolicyMessage } from './session-policy.mjs';
 
 export function isTimeoutError(err, methods = []) {
@@ -603,7 +603,7 @@ function frameMissRecovery(err, targetId, originalMessage, action = 'click') {
 }
 
 export function classifyActionFailure(err, context = {}) {
-  return applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {});
+  return sealErrorRecovery(applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {}));
 }
 
 function classifyActionFailureKind(err, { action = 'action', target = {} } = {}) {
@@ -626,6 +626,19 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     nextCommand: perceiveCommand,
     hints: [`Refresh page perception with \`${perceiveCommand}\`, then choose the next action from fresh refs.`],
   };
+
+  // #636: a page exception, a Chrome net::ERR_*, an unknown @fN, or a missing scroll
+  // direction is classified from its source. Page text must not pick the kind.
+  const source = sourceFailureRecovery(err, originalMessage, targetId);
+  if (source) {
+    return {
+      ...base,
+      kind: source.kind,
+      reason: source.reason,
+      nextCommand: source.next,
+      hints: [source.reason],
+    };
+  }
 
   // #717: a ref inside a cross-site frame is refused before CDP. Next must not
   // be `perceive --frame @fN`: that read lists the same ref and the action loops.
@@ -1041,6 +1054,8 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   }
 
   if (
+    err?.selectorMiss === true ||
+    lower.includes('no element matched') ||
     lower.includes('element not found') ||
     lower.includes('could not resolve selector') ||
     lower.includes('failed to find element') ||

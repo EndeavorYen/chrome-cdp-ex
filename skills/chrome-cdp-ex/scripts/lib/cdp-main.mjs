@@ -10,7 +10,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { format as formatValue } from 'util';
 import { ALLOW_STALE_DAEMON_FLAG, CDP_SCRIPT_PATH, DAEMON_ALLOW_DELAY, DEFAULT_CDP_HOST, NEEDS_TARGET, OPEN_CREATED_TARGET_URL, PAGES_CACHE, sleep } from './cdp-base.mjs';
 import { CDP, _browserInfo, aliasEnv, bindAndSaveTargetAlias, buildBroadcastModel, cdpUnreachableError, collectDaemonMetadata, createIsolatedMemberGate, deleteTabGroup, forgetTargetAlias, formatAliasRecord, formatBroadcastResult, formatCurrentAlias, formatJson, formatTabGroup, formatTabGroupStore, formatTargetSelect, getTabGroup, getWsUrl, isolatedOnlyEnabled, listDaemonSockets, listKnownLiveTargetIds, looksLikeAliasToken, normalizeTabGroupName, parseAliasCommandArgs, parseBroadcastArgs, parseFormatArgs, parseListArgs, parseTabGroupArgs, parseTargetSelectArgs, readCachedPages, readTabGroups, recordCommandUsage, rememberLiveCdpEndpointFromSession, removeTabGroupMember, resolvePageCommandTarget, resolvePrefix, resolveTabGroupMembers, resolveTargetAlias, selectPageTarget, takeFollowUrlFlag, unknownAliasError, upsertTabGroup, waitStr, writeTabGroups } from './cdp-browser.mjs';
-import { CliExitSignal, absolutizeCallerFileArgs, argsWithoutFormat, backgroundDaemonEnv, buildExactTargetSupervisorCandidates, buildOpenModel, createOpenTarget, detectCliErrorFormat, fillCliArgError, formatArgSuffix, formatCliError, formatDaemonCommandError, formatOpenAttachWaitMessage, formatOpenAutoPerceiveFailure, formatOpenNextPerceiveCommand, formatOpenReadyMessage, formatOpenTimeoutMessage, helpStr, helpTopicStr, isDeterministicTableContinuationResult, navigateOpenTarget, normalizeTargetCommandArgs, parseOpenArgs, parseTargetAndCommandArgs, shouldAnnounceOpenAttachWait, targetCommandCliErrorFormat, targetPrefixForDisplay, unknownCommandMessage, waitForOpenReady } from './cdp-cli.mjs';
+import { CliExitSignal, absolutizeCallerFileArgs, argsWithoutFormat, backgroundDaemonEnv, buildExactTargetSupervisorCandidates, buildOpenModel, createOpenTarget, detectCliErrorFormat, fillCliArgError, formatArgSuffix, formatCliError, formatDaemonCommandError, cliErrorFromDaemonResponse, formatOpenAttachWaitMessage, formatOpenAutoPerceiveFailure, formatOpenNextPerceiveCommand, formatOpenReadyMessage, formatOpenTimeoutMessage, helpStr, helpTopicStr, isDeterministicTableContinuationResult, navigateOpenTarget, normalizeTargetCommandArgs, parseOpenArgs, parseTargetAndCommandArgs, shouldAnnounceOpenAttachWait, targetCommandCliErrorFormat, targetPrefixForDisplay, unknownCommandMessage, waitForOpenReady } from './cdp-cli.mjs';
 import { ensureRuntimeDir, normalizeAliasName, readTargetAliases, sockPath, writeTabBackgroundMode, writeTargetAliases } from './cdp-core.mjs';
 import { assertFreshDaemonForCommand, cliRequestSecrets, connectToSocket, discoverLivePagesForTargetResolution, foregroundActivationRequest, formatStopResult, getOrStartTabDaemon, listPagesFromMatchingDaemon, preflightDaemonApplication, runDaemon, sendCommand, stopDaemons } from './cdp-daemon.mjs';
 import { checkCdpReachability, formatDoctorOutput, runDoctorChecks, spawnDebugBrowserStr } from './cdp-doctor.mjs';
@@ -121,6 +121,9 @@ export function emitTargetCommandResponse(response, {
     let error = response.error;
     const prefix = notice ? `${notice}\n` : '';
     if (prefix && typeof error === 'string' && error.startsWith(prefix)) error = error.slice(prefix.length);
+    if (response.errorSource && typeof error === 'string') {
+      error = cliErrorFromDaemonResponse({ ...response, error });
+    }
     // The arguments let a recovery rerun the same command (#488 hidden-tab).
     console.error(formatDaemonCommandError(error, { cmd, targetPrefix, format, args }));
     process.exitCode = 1;

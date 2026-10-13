@@ -1660,6 +1660,11 @@ export async function framesStr(cdp, sid, { format = 'text', unsafeFull = false 
   if (format === 'json') return formatJson({ ...model, frames });
   return formatFrameTreeText(frames);
 }
+function unknownFrameError(message) {
+  const err = new Error(message);
+  err.unknownFrame = true;
+  return err;
+}
 export async function resolveFrameRef(cdp, sid, frameRef) {
   const parsed = parseFrameOnlyRef(frameRef);
   if (!parsed) throw new Error(`Frame ref required (example: @f2), got: ${frameRef || '(empty)'}`);
@@ -1670,7 +1675,7 @@ export async function resolveFrameRef(cdp, sid, frameRef) {
   const model = await framesModel(cdp, sid, { crossSite: true });
   const frame = model.frames[parsed.frameIndex - 1];
   if (!frame || frame.ref !== parsed.frameRef) {
-    throw new Error(`Unknown frame: ${parsed.frameRef}. Run "frame" to refresh the frame tree, then use a listed @fN ref.`);
+    throw unknownFrameError(`Unknown frame: ${parsed.frameRef}. Run "frame" to refresh the frame tree, then use a listed @fN ref.`);
   }
   return { frame, frames: model.frames };
 }
@@ -1706,7 +1711,7 @@ export function frameScopedRefEntry(refState, parsed) {
 export function frameScopedBackendNode(refState, parsed, { allowCrossSite = false } = {}) {
   const entry = frameScopedRefEntry(refState, parsed);
   if (!entry) {
-    throw new Error(`Unknown frame ref: ${parsed.frameRef}. Run "frame", then "perceive --frame ${parsed.frameRef}" to assign iframe-local refs.`);
+    throw unknownFrameError(`Unknown frame ref: ${parsed.frameRef}. Run "frame", then "perceive --frame ${parsed.frameRef}" to assign iframe-local refs.`);
   }
   if (!allowCrossSite) rejectCrossSiteFrameEntry(entry, parsed.frameRef);
   if (!(entry.refs instanceof Map) || !entry.refs.has(parsed.refIndex)) {

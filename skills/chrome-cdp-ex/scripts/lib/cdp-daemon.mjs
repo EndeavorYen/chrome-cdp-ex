@@ -261,6 +261,17 @@ export async function revealHiddenTab(cdp, sid, targetId, {
 }
 // Command failures that runActionWithFeedback has not already printed. A selector
 // miss is probed for frames here; classified text already includes that sentence.
+function errorSourceFrom(err) {
+  if (!err || typeof err !== 'object') return null;
+  const source = {};
+  if (err.pageException === true) source.pageException = true;
+  if (err.navigationFailure === true) source.navigationFailure = true;
+  if (err.usage === true) source.usage = true;
+  if (err.code === 'usage') source.code = 'usage';
+  if (err.selectorMiss === true) source.selectorMiss = true;
+  if (err.unknownFrame === true) source.unknownFrame = true;
+  return Object.keys(source).length ? source : null;
+}
 export async function daemonCommandCatchResult(e, {
   cdp,
   sessionId,
@@ -301,7 +312,8 @@ export async function daemonCommandCatchResult(e, {
   const error = alreadyClassified || failure.kind === 'native-dialog' || crossSiteAction || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
     ? formatActionFailure(actionError, context)
     : rawError;
-  return { ok: false, error };
+  const errorSource = errorSourceFrom(actionError);
+  return errorSource ? { ok: false, error, errorSource } : { ok: false, error };
 }
 export async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
   const exitLog = { current: null };
@@ -935,12 +947,12 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
         value = await evalFireAndForgetStr(cdp, sessionId, eopts.expression, true);
         value += `\n${extendKeepalive(FIRE_AND_FORGET_KEEPALIVE)} (fire-and-forget default)`;
       } else {
-        value = await evalStr(cdp, sessionId, eopts.expression, true, { raw: eopts.raw });
+        value = await evalStr(cdp, sessionId, eopts.expression, true, { raw: eopts.raw, pageException: true });
       }
       return commandResult(value, null);
     },
     eval64: async args => commandResult(
-      await evalStr(cdp, sessionId, evalBase64Decode(args[0]), true),
+      await evalStr(cdp, sessionId, evalBase64Decode(args[0]), true, { pageException: true }),
       null,
     ),
     call: async args => commandResult(await callStr(cdp, sessionId, args.join(' ')), null),
