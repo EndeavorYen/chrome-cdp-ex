@@ -259,6 +259,45 @@ export async function revealHiddenTab(cdp, sid, targetId, {
   if (state) state.activationIneffective = visibility !== 'visible';
   return { activated: true, visibility, polled: true };
 }
+// Command failures that runActionWithFeedback has not already printed. A selector
+// miss is probed for frames here; classified text already includes that sentence.
+export async function daemonCommandCatchResult(e, {
+  cdp,
+  sessionId,
+  cmd,
+  args,
+  targetId,
+  session,
+  dialogBuf,
+  dialogSince,
+  jsDialogs,
+}) {
+  if (jsDialogs.hasPending()) await jsDialogs.waitForPending(1500).catch(() => {});
+  const commandMeta = COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd));
+  const isMutatingCommand = commandMeta?.mutates === true;
+  const lastAction = session.lastAction || {};
+  const context = {
+    action: isMutatingCommand && lastAction.action ? lastAction.action : cmd,
+    target: isMutatingCommand && lastAction.target ? lastAction.target : { targetId, input: args?.[0], label: args?.[0] },
+  };
+  // click-no-change is thrown after dispatch returns. The dialog buffer still
+  // shows the confirm that click opened, so the --accept-dialog Next stays.
+  // A new binding: ESLint no-ex-assign forbids writing the catch parameter.
+  const actionError = errorYieldingToDismissedDialog(e, {
+    dialogBuf,
+    sinceSeq: dialogSince,
+    action: context.action,
+    target: context.target,
+  });
+  const rawError = actionFailureMessage(actionError);
+  const alreadyClassified = isClassifiedActionFailureText(rawError);
+  if (!alreadyClassified) await attachSelectorFrameMiss(cdp, sessionId, actionError, context.target);
+  const failure = classifyActionFailure(actionError, context);
+  const error = alreadyClassified || failure.kind === 'native-dialog' || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
+    ? formatActionFailure(actionError, context)
+    : rawError;
+  return { ok: false, error };
+}
 export async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
   const exitLog = { current: null };
   installDaemonCrashRecorder(targetId, {
@@ -1523,31 +1562,17 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
       await throwIfDecisionDialogDismissed(cmd, args, dialogSince);
       return { ok: true, result: result ?? '' };
     } catch (e) {
-      if (jsDialogs.hasPending()) await jsDialogs.waitForPending(1500).catch(() => {});
-      const commandMeta = COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd));
-      const isMutatingCommand = commandMeta?.mutates === true;
-      const lastAction = session.lastAction || {};
-      const context = {
-        action: isMutatingCommand && lastAction.action ? lastAction.action : cmd,
-        target: isMutatingCommand && lastAction.target ? lastAction.target : { targetId, input: args?.[0], label: args?.[0] },
-      };
-      // click-no-change is thrown after dispatch returns. The dialog buffer still
-      // shows the confirm that click opened, so the --accept-dialog Next stays.
-      // A new binding: ESLint no-ex-assign forbids writing the catch parameter.
-      const actionError = errorYieldingToDismissedDialog(e, {
+      return daemonCommandCatchResult(e, {
+        cdp,
+        sessionId,
+        cmd,
+        args,
+        targetId,
+        session,
         dialogBuf,
-        sinceSeq: dialogSince,
-        action: context.action,
-        target: context.target,
+        dialogSince,
+        jsDialogs,
       });
-      const rawError = actionFailureMessage(actionError);
-      const alreadyClassified = isClassifiedActionFailureText(rawError);
-      if (!alreadyClassified) await attachSelectorFrameMiss(cdp, sessionId, actionError, context.target);
-      const failure = classifyActionFailure(actionError, context);
-      const error = alreadyClassified || failure.kind === 'native-dialog' || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
-        ? formatActionFailure(actionError, context)
-        : rawError;
-      return { ok: false, error };
     }
   }
 
