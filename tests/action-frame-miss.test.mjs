@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
+import { actionabilityMissMessage } from '../skills/chrome-cdp-ex/scripts/lib/cdp-input.mjs';
 import { createMockCDP } from './mock-cdp.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -48,9 +49,9 @@ function methods(cdp) {
   return cdp.calls.map(call => call.method);
 }
 
-async function miss(cdp, message, input = 'text=Pay now') {
+async function miss(cdp, message, input = 'text=Pay now', action = 'click') {
   const error = await T.runActionWithFeedback({
-    action: 'click',
+    action,
     target: { targetId: TARGET, input, commandArgs: [input] },
     dispatch: async () => { throw new Error(message); },
     feedbackPolicy: 'none',
@@ -220,5 +221,29 @@ describe('selector miss on a page with frames', () => {
     expect(methods(inside)).not.toContain('Runtime.evaluate');
     expect(methods(inside)).not.toContain('Page.getFrameTree');
     expectRunnableNext(text);
+  });
+
+  it('puts a period before the frame sentence on a fill or select miss', async () => {
+    const oneFrame = () => pageCdp({
+      frameElementCount: 1,
+      frameElements: [frameEl(SAME, { title: 'Inner', host: '127.0.0.1:9' })],
+      tree: frameTree([childFrame('inner', SAME)]),
+    });
+    const fillMessage = actionabilityMissMessage('Element not found: #email', { waited: true, waitedMs: 2001 });
+    const selectMessage = actionabilityMissMessage('Element not found: #country', { waited: true, waitedMs: 2001 });
+    const fillText = await miss(oneFrame(), fillMessage, '#email', 'fill');
+    const selectText = await miss(oneFrame(), selectMessage, '#country', 'select');
+    expect(fillText).toBe([
+      `Error: ${fillMessage}. The page has 1 frame and the control may be inside one.`,
+      'Kind: selector',
+      `Next: cdp perceive ${PREFIX} --frame @f2`,
+    ].join('\n'));
+    expect(selectText).toBe([
+      `Error: ${selectMessage}. The page has 1 frame and the control may be inside one.`,
+      'Kind: selector',
+      `Next: cdp perceive ${PREFIX} --frame @f2`,
+    ].join('\n'));
+    expectRunnableNext(fillText);
+    expectRunnableNext(selectText);
   });
 });

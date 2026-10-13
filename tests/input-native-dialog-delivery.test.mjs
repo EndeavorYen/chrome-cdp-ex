@@ -260,7 +260,12 @@ describe('#658 dismissed dialog stays native-dialog on click, fill, and press', 
       source.indexOf('async function handleCommand('),
       source.indexOf('// Unix socket server'),
     );
-    expect(handler).toContain('const actionError = errorYieldingToDismissedDialog(e,');
-    expect(handler.indexOf('errorYieldingToDismissedDialog')).toBeLessThan(handler.indexOf('formatActionFailure(actionError, context)'));
+    expect(handler).toContain('return daemonCommandCatchResult(');
+    const caught = source.slice(
+      source.indexOf('async function daemonCommandCatchResult('),
+      source.indexOf('async function handleCommand('),
+    );
+    expect(caught).toContain('const actionError = errorYieldingToDismissedDialog(e,');
+    expect(caught.indexOf('errorYieldingToDismissedDialog')).toBeLessThan(caught.indexOf('formatActionFailure(actionError, context)'));
   });
 });

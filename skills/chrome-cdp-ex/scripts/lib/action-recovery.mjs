@@ -556,6 +556,14 @@ function frameMissSentence(childCount, crossSiteCount) {
   else if (crossSiteCount > 1) parts.push(`${crossSiteCount} cross-site frames are not reachable yet.`);
   return parts.join(' ');
 }
+// fill and select misses end on the wait note, which has no period.
+// Click misses already end with one. Either way the frame sentence is its own sentence.
+function joinFrameMissSentence(originalMessage, sentence) {
+  const text = String(originalMessage ?? '').replace(/\s+$/, '');
+  if (!sentence) return text;
+  if (!text) return sentence;
+  return /[.!?]$/.test(text) ? `${text} ${sentence}` : `${text}. ${sentence}`;
+}
 
 // #715: only the two miss prefixes. A cross-site frame never becomes Next;
 // zero same-origin children keep the existing perceive command.
@@ -1016,7 +1024,7 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     const nextCommand = frameMiss?.nextCommand || perceiveCommand;
     return {
       ...base,
-      originalMessage: frameMiss ? `${originalMessage} ${frameMiss.sentence}` : originalMessage,
+      originalMessage: frameMiss ? joinFrameMissSentence(originalMessage, frameMiss.sentence) : originalMessage,
       kind: 'selector',
       reason: 'No current element matched the requested selector, @ref, or visible name.',
       nextCommand,
