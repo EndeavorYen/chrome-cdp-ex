@@ -1104,14 +1104,14 @@ export async function finishObservedAction(result, { output, dispatchText, enric
   }
   return formatActionResultOutput(result, { ...output, dispatchText });
 }
-export async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = GENERIC_SINCE_ACTION_HINT, enrichActionResult = null, onActionResult = null, format = 'text', cdp = null, sid = null }) {
+export async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = GENERIC_SINCE_ACTION_HINT, enrichActionResult = null, onActionResult = null, format = 'text', cdp = null, sid = null, refState = null }) {
   const output = normalizeActionOutputOptions(format);
   const startedAt = Date.now();
   let dispatchText;
   try {
     dispatchText = await dispatch();
   } catch (e) {
-    if (cdp && sid) await attachSelectorFrameMiss(cdp, sid, e, target || {});
+    if (cdp && sid) await attachSelectorFrameMiss(cdp, sid, e, target || {}, refState);
     const failure = classifyActionFailure(e, { action, target });
     if (failure.kind === 'usage') throw e;
     const result = createActionResult({
