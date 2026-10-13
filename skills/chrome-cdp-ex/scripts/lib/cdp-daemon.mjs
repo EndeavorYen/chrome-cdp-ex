@@ -30,7 +30,7 @@ import { autoActionJsonArgs, cascadeStr, closetabStr, createNavigationCancelWatc
 import { applyFillValueState, applyLateClickDownload, batchCommandLookahead, clickStr, clickXyStr, dispatchHoverWithLeftoverPolicy, dragStr, evalPageHref, fillStr, formControlStateChanged, formatFormControlStateDiff, jsClickStr, jsclickFeedbackPolicy, markSensitiveFillTarget, namedClickActionTarget, normalizeScrollArgs, openerUnusableError, parseActionabilityWaitArgs, parseClickOpenedTab, parseDragArgs, parsePressArgs, pointerClickStr, pressFeedbackPolicy, pressSearchSubmitPlan, pressStr, pressUsageError, probePageVisibility, probeSearchSubmit, reloadActionDispatch, rememberSessionTarget, runWithBatchLookahead, scrollActionTarget, scrollFeedbackPolicy, scrollStr, selectStr, shouldSnapshotFormControlState, snapshotFormControlState, stuckOpenerBeforeClick, typeStr, waitForSearchSubmitProbe, waitForStr } from './cdp-input.mjs';
 import { annotshotStr, callStr, cdpDomains, collectPageHealth, diffShotStr, elshotStr, emulateStr, evalBase64Decode, evalFireAndForgetStr, evalStr, formatPageList, formatPdfViewerOutput, fullshotStr, getPages, htmlStr, isPdfViewerContentType, netStr, parseConsoleArgs, parseDiffShotArgs, parseEvalArgs, parseShotArgs, pdfViewerHandoffModel, resetScreenshotTier, runtimeMetricsStr, scanshotStr, setBackgroundCaptureGuard, shotStr, snapshotStr, webVitalsModelOrUnavailable } from './cdp-page.mjs';
 import { actionNetworkQuietOptions, appendPendingActionNetworkEntries, checkpointSessionEvent, checkpointStr, clearObservationBuffers, clockStr, componentsStr, cookieDelStr, cookieSetStr, cookiesStr, createJavaScriptDialogSession, dismissedDecisionDialogSince, errorYieldingToDismissedDialog, evalRawStr, handleMockRequestPaused, handleOpeningJavaScriptDialog, loadAllStr, mockStr, nativeDialogDismissedError, nativeDialogShouldAccept, netlogRequestStr, netlogStr, observeAfterActionGuardingDialogs, parseCheckpointArgs, parseCookieArgs, parseLoadAllArgs, readNetlogResponseBody, redactExternalInputActionError, redactRestoreActionError, redactRestoreCommandArgs, rememberViewportReadback, restoreCheckpointStr, setDialogMode, shouldSkipActionPageEvaluate, stylesStr, tableCollectionStr, tableObservationStr, takeAcceptDialogFlag, textStr, throttleStr, uploadStr, viewportStr, waitForActionNetworkQuiet } from './cdp-page-commands.mjs';
-import { controlsStr, ensurePerceiveTargetReady, frameRefFromActionTarget, framesStr, invalidateSessionRefs, isRef, parseControlsArgs, parseElshotArgs, parseFrameArgs, parsePerceiveArgs, perceiveDiffModel, perceiveModel, perceiveStr, resolveSinceActionPerceiveOpts, waitForSettle } from './cdp-perceive.mjs';
+import { attachSelectorFrameMiss, controlsStr, ensurePerceiveTargetReady, frameRefFromActionTarget, framesStr, invalidateSessionRefs, isRef, parseControlsArgs, parseElshotArgs, parseFrameArgs, parsePerceiveArgs, perceiveDiffModel, perceiveModel, perceiveStr, resolveSinceActionPerceiveOpts, waitForSettle } from './cdp-perceive.mjs';
 import { appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot, buildConsoleModel, buildSemanticInteractionModel, buildStatusModel, clearConsoleBaseline, clickDownloadBrowser, consoleStr, countNetworkFailures, createDaemonExitLog, createDaemonFillCapability, createRuntimePruneScheduler, createSessionState, currentSessionActionSequence, ensureSessionScreenshotDir, formatActionWorkflowCommandOutput, formatExportPlaywright, formatRecordActions, formatSemanticInteractionResult, formatSessionReport, initializeSessionLog, markSessionActionsPolicyFailed, nextSessionScreenshotPath, pageContainsText, pageInfoModel, parseExportPlaywrightArgs, parseReportArgs, pruneDaemonRuntimeArtifacts, qaPageStr, responsiveAuditStr, runActionWithFeedback, runDaemonRequestScope, selectConsoleEntries, sessionDownloadDir, statusStr, summaryModel, summaryStr } from './cdp-session-report.mjs';
 
 // ---------------------------------------------------------------------------
@@ -510,6 +510,8 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
           feedbackPolicy: 'none',
           observe: async () => '',
           format,
+          cdp,
+          sid: sessionId,
         });
       }
     }
@@ -676,6 +678,8 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
       dispatchMethod: actionTarget.dispatchMethod || action,
       feedbackPolicy,
       observe: observeThenFlush,
+      cdp,
+      sid: sessionId,
       enrichActionResult: async (actionResult) => {
         await pageInfoPromise;
         applyActionObservationDelta(actionResult, await buildLocatedActionObservationDelta(
@@ -1538,6 +1542,7 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
       });
       const rawError = actionFailureMessage(actionError);
       const alreadyClassified = isClassifiedActionFailureText(rawError);
+      if (!alreadyClassified) await attachSelectorFrameMiss(cdp, sessionId, actionError, context.target);
       const failure = classifyActionFailure(actionError, context);
       const error = alreadyClassified || failure.kind === 'native-dialog' || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
         ? formatActionFailure(actionError, context)

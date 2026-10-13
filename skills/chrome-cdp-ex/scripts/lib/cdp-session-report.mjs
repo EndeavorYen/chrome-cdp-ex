@@ -21,7 +21,7 @@ import { actionDispatchFailureMessage, actionDispatchSemanticsFromModel, compact
 import { clickDispatchEffects, clickStr, fillFeedbackPolicy, isNamedClickQuery, namedClickQueryName, parseDragArgs, parseScrollContainerArg, parseScrollEdge, splitScrollEdgeArgs } from './cdp-input.mjs';
 import { assertNotPdfViewerPage, cdpDomains, collectPageHealth, createScreenshotTierState, evalStr, formatPdfViewerOutput, isHiddenTabCaptureError, isPdfViewerContentType, pdfViewerError, pdfViewerHandoffModel, pdfViewerNextCommand, pdfViewerReportRecommendation, runtimeMetricsStr, shotStr, webVitalsModelOrUnavailable } from './cdp-page.mjs';
 import { applyViewportOverride, formatClockSummary, formatNetworkMocksSummary, formatThrottleSummary } from './cdp-page-commands.mjs';
-import { perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
+import { attachSelectorFrameMiss, perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
 
 export function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } = {}) {
   const model = buildCliErrorModel(err, { cmd, targetPrefix });
@@ -1104,13 +1104,14 @@ export async function finishObservedAction(result, { output, dispatchText, enric
   }
   return formatActionResultOutput(result, { ...output, dispatchText });
 }
-export async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = GENERIC_SINCE_ACTION_HINT, enrichActionResult = null, onActionResult = null, format = 'text' }) {
+export async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = GENERIC_SINCE_ACTION_HINT, enrichActionResult = null, onActionResult = null, format = 'text', cdp = null, sid = null }) {
   const output = normalizeActionOutputOptions(format);
   const startedAt = Date.now();
   let dispatchText;
   try {
     dispatchText = await dispatch();
   } catch (e) {
+    if (cdp && sid) await attachSelectorFrameMiss(cdp, sid, e, target || {});
     const failure = classifyActionFailure(e, { action, target });
     if (failure.kind === 'usage') throw e;
     const result = createActionResult({

@@ -544,6 +544,43 @@ function classifyDownloadFailure(err, { base, targetId, input }) {
   };
 }
 
+function frameMissSentence(childCount, crossSiteCount) {
+  const frameWord = count => (count === 1 ? 'frame' : 'frames');
+  const parts = [];
+  if (childCount > 0) {
+    parts.push(`The page has ${childCount} ${frameWord(childCount)} and the control may be inside one.`);
+  } else if (crossSiteCount > 0) {
+    parts.push(`The page has ${crossSiteCount} cross-site ${frameWord(crossSiteCount)} and the control may be inside one.`);
+  }
+  if (crossSiteCount === 1) parts.push('1 cross-site frame is not reachable yet.');
+  else if (crossSiteCount > 1) parts.push(`${crossSiteCount} cross-site frames are not reachable yet.`);
+  return parts.join(' ');
+}
+
+// #715: only the two miss prefixes. A cross-site frame never becomes Next;
+// zero same-origin children keep the existing perceive command.
+function frameMissRecovery(err, targetId, originalMessage) {
+  const head = String(originalMessage || '').replace(/^Error:\s*/i, '');
+  if (!/^(?:Named control not found|Element not found)\b/.test(head)) return null;
+  const hint = err?.frameMiss;
+  if (!hint || typeof hint !== 'object') return null;
+  const childCount = hint.childCount;
+  const crossSiteCount = hint.crossSiteCount;
+  if (!Number.isInteger(childCount) || childCount < 0) return null;
+  if (!Number.isInteger(crossSiteCount) || crossSiteCount < 0) return null;
+  if (childCount === 0 && crossSiteCount === 0) return null;
+  const ref = typeof hint.singleChildRef === 'string' ? hint.singleChildRef : '';
+  let nextCommand = null;
+  if (childCount === 1 && /^@f\d+$/.test(ref)) {
+    nextCommand = `cdp perceive ${targetId} --frame ${ref}`;
+  } else if (childCount >= 1) {
+    nextCommand = `cdp frame ${targetId}`;
+  }
+  const sentence = frameMissSentence(childCount, crossSiteCount);
+  if (!sentence) return null;
+  return { sentence, nextCommand };
+}
+
 export function classifyActionFailure(err, context = {}) {
   return applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {});
 }
@@ -975,13 +1012,16 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     lower.includes('named control not found') ||
     lower.includes('named control is not unique')
   ) {
+    const frameMiss = frameMissRecovery(err, targetId, originalMessage);
+    const nextCommand = frameMiss?.nextCommand || perceiveCommand;
     return {
       ...base,
+      originalMessage: frameMiss ? `${originalMessage} ${frameMiss.sentence}` : originalMessage,
       kind: 'selector',
       reason: 'No current element matched the requested selector, @ref, or visible name.',
-      nextCommand: perceiveCommand,
+      nextCommand,
       hints: [
-        `Refresh available controls with \`${perceiveCommand}\`.`,
+        `Refresh available controls with \`${nextCommand}\`.`,
         'Check whether the element is below the fold, inside a modal, or renamed by the framework.',
       ],
     };
