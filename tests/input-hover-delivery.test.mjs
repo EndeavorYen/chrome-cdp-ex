@@ -5,12 +5,15 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { detectBrowserPath } from '../skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs';
+import { createMockCDP } from './mock-cdp.mjs';
 
 process.env.NODE_ENV = 'test';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const { hoverNotDeliveredError } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-input.mjs');
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CDP = join(REPO, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -149,6 +152,203 @@ const FIXTURE_HTML = `<!doctype html>
   button.addEventListener('mouseover', () => { window.__hoverDelivery.over += 1; });
   button.addEventListener('mousemove', () => { window.__hoverDelivery.move += 1; });
 </script>`;
+
+const COVER_LABEL = '<DIV#cover role="dialog"> "Cookies"';
+// #621: a visible tab that will never match :hover must not spend the ~7s
+// background-tab window. About 1s when the point is on the target; a few polls
+// when another element is at that point.
+const VISIBLE_HOVER_BOUND_MS = 1000;
+
+function hoverDeliveryMock({ visibility = 'visible', pointHit = null, landedAfterMs = null } = {}) {
+  const started = Date.now();
+  let pointReads = 0;
+  const cdp = createMockCDP({
+    'Runtime.evaluate': (params) => {
+      const expr = String(params.expression || '');
+      if (expr.trim() === 'document.visibilityState') {
+        return { result: { type: 'string', value: visibility } };
+      }
+      if (!expr.includes(MARKER)) return { result: { value: '' } };
+      // The geometry read also embeds the reveal marker. The point probe is the
+      // later poll, which asks what is at the hover point.
+      const asksPoint = (expr.includes('elementFromPoint') || expr.includes('DOM.getNodeForLocation'))
+        && !expr.includes('rect.width / 2');
+      if (asksPoint) pointReads += 1;
+      const matchesHover = landedAfterMs != null && Date.now() - started >= landedAfterMs;
+      const value = {
+        ...revealValue({ matchesHover, tag: 'BUTTON' }),
+        x: 108,
+        y: 48,
+      };
+      if (asksPoint && pointHit) value.pointHit = pointHit;
+      return { result: { value } };
+    },
+    'Input.dispatchMouseEvent': () => ({}),
+  });
+  return {
+    cdp,
+    get pointReads() { return pointReads; },
+  };
+}
+
+function pageHitTarget() {
+  const target = {
+    nodeType: 1,
+    tagName: 'BUTTON',
+    id: 'go',
+    className: '',
+    textContent: 'Go',
+    shadowRoot: null,
+    parentNode: null,
+    matches: () => false,
+    closest: () => null,
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ x: 100, y: 40, width: 16, height: 16, left: 100, top: 40 }),
+  };
+  const child = {
+    nodeType: 1,
+    tagName: 'SPAN',
+    id: '',
+    className: '',
+    textContent: 'Go',
+    shadowRoot: null,
+    parentNode: target,
+    getAttribute: () => null,
+  };
+  const cover = {
+    nodeType: 1,
+    tagName: 'DIV',
+    id: 'cover',
+    className: '',
+    textContent: 'Cookies',
+    shadowRoot: null,
+    parentNode: null,
+    getAttribute: (name) => (name === 'role' ? 'dialog' : name === 'aria-label' ? 'Cookies' : null),
+  };
+  const inner = {
+    nodeType: 1,
+    tagName: 'SPAN',
+    id: '',
+    className: '',
+    textContent: 'In shadow',
+    shadowRoot: null,
+    parentNode: null,
+    getAttribute: () => null,
+  };
+  const root = { nodeType: 11, host: target, elementFromPoint: () => inner };
+  inner.parentNode = root;
+  let top = cover;
+  const doc = {
+    querySelector: () => target,
+    elementFromPoint: () => top,
+  };
+  target.ownerDocument = doc;
+  child.ownerDocument = doc;
+  cover.ownerDocument = doc;
+  inner.ownerDocument = doc;
+  return {
+    target,
+    child,
+    cover,
+    root,
+    setTop(node) { top = node; },
+  };
+}
+
+function readPageHit(hit) {
+  return runInNewContext(T.hoverRevealStateExpression('#go'), {
+    document: hit.target.ownerDocument,
+    getComputedStyle: () => ({ opacity: '1', visibility: 'visible', display: 'inline' }),
+    location: { href: 'http://fixture.invalid/hover' },
+  });
+}
+
+describe('hover fails fast on a visible tab when the point is not the target (#621)', () => {
+  it('names the element at the point and fails in under 1.5s when a visible tab is covered', async () => {
+    const mock = hoverDeliveryMock({
+      visibility: 'visible',
+      pointHit: { onTarget: false, label: COVER_LABEL },
+    });
+    const started = Date.now();
+    const err = await T.hoverStr(mock.cdp, 'sid', '#a', new Map(), {}).catch(error => error);
+    const elapsed = Date.now() - started;
+    expect(err).toBeInstanceOf(Error);
+    expect(elapsed).toBeLessThan(1500);
+    expect(mock.pointReads).toBeGreaterThanOrEqual(2);
+    expect(mock.pointReads).toBeLessThanOrEqual(3);
+    expect(err.message).toMatch(/did not match :hover/);
+    expect(err.message).toMatch(new RegExp(`is covered by ${COVER_LABEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    expect(err.hoverCovered).toBe(true);
+    expect(err.message).toMatch(/The hover was not delivered/);
+    expect(err.message).not.toMatch(/visibilityState is hidden/);
+    const cli = T.formatCliError(err, { cmd: 'hover', targetPrefix: 'ABCD1234', args: ['#a'] });
+    expect(cli).toMatch(/Kind: hover-not-delivered/);
+    expect(nextLines(cli)).toEqual([
+      'Next: cdp perceive ABCD1234 -C -d 8',
+    ]);
+  });
+
+  it('succeeds when a visible tab is on the target and :hover arrives within the short bound', async () => {
+    const mock = hoverDeliveryMock({
+      visibility: 'visible',
+      pointHit: { onTarget: true, label: '' },
+      landedAfterMs: 300,
+    });
+    const started = Date.now();
+    const text = await T.hoverStr(mock.cdp, 'sid', '#a', new Map(), {});
+    expect(Date.now() - started).toBeLessThan(VISIBLE_HOVER_BOUND_MS);
+    expect(text).toMatch(/Hovering over <BUTTON>/);
+  });
+
+  it('stops a visible on-target miss after about 1s instead of the background window', async () => {
+    const mock = hoverDeliveryMock({
+      visibility: 'visible',
+      pointHit: { onTarget: true, label: '' },
+    });
+    const started = Date.now();
+    const err = await T.hoverStr(mock.cdp, 'sid', '#a', new Map(), {}).catch(error => error);
+    const elapsed = Date.now() - started;
+    expect(err).toBeInstanceOf(Error);
+    // Above the covered-point polls (~200ms) and under the old ~7s window.
+    expect(elapsed).toBeGreaterThanOrEqual(700);
+    expect(elapsed).toBeLessThan(1500);
+    expect(elapsed).toBeLessThan(T.HOVER_DELIVERY_WAIT_MS);
+    expect(err.message).toMatch(/did not match :hover/);
+    expect(err.message).not.toMatch(/is covered by/);
+    const cli = T.formatCliError(err, { cmd: 'hover', targetPrefix: 'ABCD1234', args: ['#a'] });
+    expect(nextLines(cli)).toEqual([
+      'Next: cdp perceive ABCD1234 -C -d 8',
+    ]);
+  });
+
+  it('still accepts late :hover on a hidden tab after the visible bound', async () => {
+    const mock = hoverDeliveryMock({
+      visibility: 'hidden',
+      pointHit: { onTarget: false, label: COVER_LABEL },
+      landedAfterMs: VISIBLE_HOVER_BOUND_MS + 250,
+    });
+    const started = Date.now();
+    const text = await T.hoverStr(mock.cdp, 'sid', '#a', new Map(), {});
+    const elapsed = Date.now() - started;
+    expect(text).toMatch(/Hovering over <BUTTON>/);
+    expect(elapsed).toBeGreaterThan(VISIBLE_HOVER_BOUND_MS);
+    expect(elapsed).toBeLessThan(T.HOVER_DELIVERY_WAIT_MS);
+  });
+
+  it('treats a child or shadow child as the target and names an element that is not inside it', () => {
+    const hit = pageHitTarget();
+    hit.setTop(hit.cover);
+    const covered = readPageHit(hit);
+    expect(covered.pointHit).toEqual({ onTarget: false, label: COVER_LABEL });
+    hit.setTop(hit.target);
+    expect(readPageHit(hit).pointHit.onTarget).toBe(true);
+    hit.setTop(hit.child);
+    expect(readPageHit(hit).pointHit.onTarget).toBe(true);
+    hit.target.shadowRoot = hit.root;
+    hit.setTop(hit.target);
+    expect(readPageHit(hit).pointHit.onTarget).toBe(true);
+  });
+});
 
 describe('headless background tab hover (#608)', () => {
   const browser = browserPath();
@@ -309,4 +509,25 @@ describe('headless background tab hover (#608)', () => {
       try { rmSync(profile, { recursive: true, force: true }); } catch { /* profile may still be closing */ }
     }
   }, 120000);
+});
+
+describe('#621 the covered hover reason follows the source tag', () => {
+  it('uses the covered reason for a tagged error, also after the daemon round trip', () => {
+    const err = hoverNotDeliveredError('#m', { x: 10, y: 10 }, 'visible', { coveredBy: '<DIV#cover>' });
+    expect(err.hoverCovered).toBe(true);
+    const direct = T.buildCliErrorRecovery(err.message, { cmd: 'hover', targetPrefix: 'ABCD1234', err });
+    expect(direct.kind).toBe('hover-not-delivered');
+    expect(direct.reason).toMatch(/Another element is at the hover point/);
+    const forwarded = T.cliErrorFromDaemonResponse({ ok: false, error: err.message, errorSource: { hoverCovered: true } });
+    expect(forwarded.hoverCovered).toBe(true);
+    const viaDaemon = T.buildCliErrorRecovery(forwarded.message, { cmd: 'hover', targetPrefix: 'ABCD1234', err: forwarded });
+    expect(viaDaemon.reason).toMatch(/Another element is at the hover point/);
+  });
+
+  it('does not read "is covered by" from untagged text', () => {
+    const message = 'hover: [aria-label="Menu is covered by default"] did not match :hover. The hover was not delivered.';
+    const recovery = T.buildCliErrorRecovery(message, { cmd: 'hover', targetPrefix: 'ABCD1234' });
+    expect(recovery.kind).toBe('hover-not-delivered');
+    expect(recovery.reason).not.toMatch(/Another element/);
+  });
 });

@@ -91,7 +91,7 @@ The failure receipt says `dispatched: false` for `no-input-events` (the page saw
 
 A `clickxy` into a cross-origin frame is not that failure when the frame saw the events (`→ child-frame delivered`) or when the frame cannot be probed (`→ child-frame unobserved`). Both exit 0 and Next is `cdp shot <target>`. If the frame is probed and sees no events, `Kind: no-input-events` stays, and Next is `shot` rather than another click.
 
-`hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take about 5s for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and exactly one Next command: `CDP_BACKGROUND=0 cdp hover <target> <sel>` when the tab is hidden, otherwise `cdp perceive <target> -C -d 8`.
+`hover` prints `Hovering over …` only after the target matches `:hover`. A background tab can take about 5s for Chrome to apply `mouseMoved`; the command waits for that evidence and does not activate the tab or raise the window. On a visible tab, if the element at the point is neither the target nor inside it, the command fails within a few polls and names that element (`is covered by <DIV…>`). If the point is on the target but `:hover` still does not match, the wait is about 1s. If `:hover` never matches, it exits 1 with `Kind: hover-not-delivered` and exactly one Next command: `CDP_BACKGROUND=0 cdp hover <target> <sel>` when the tab is hidden, otherwise `cdp perceive <target> -C -d 8`.
 
 ## `eval` says Identifier has already been declared
 

@@ -7,7 +7,7 @@ import { secretMarker } from './secrets.mjs';
 import { statSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { actionObservationPerceiveOpts } from './cdp-action-result.mjs';
-import { ACTIONABILITY_POLL_MS, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS, ACTION_DISABLED_NOT_SENT, ARIA_CONTROL_STATE_ATTRS, CHILD_FRAME_CLICK_RE, CLICK_DOWNLOAD_STARTED_RE, CLICK_DOWNLOAD_UNOBSERVED_RE, CLICK_EVENT_PROBE_KEY, CLICK_HREF_PROBE_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_NAVIGATION_WAIT_MS, CLICK_OPENED_TAB_RE, CLICK_OPENER_BLOCK_GRACE_MS, CLICK_OPENER_RESPOND_TIMEOUT_MS, CLICK_OPENER_TERMINATE_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS, CLICK_POPUP_NAVIGATION_CAP_MS, CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS, CLICK_STUCK_OPENER_BUDGET_MS, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_OUTCOME, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DRAG_DEFAULT_STEPS, DRAG_EVENT_PROBE_KEY, DRAG_INTERCEPT_WAIT_MS, DRAG_LATE_START_GRACE_MS, DRAG_LATE_START_SYNC_MS, DRAG_MAX_STEPS, DRAG_POINT_RE, DRAG_PRESS_HOLD_MS, DRAG_PROBE_EVENT_ORDER, DRAG_STEP_DELAY_MS, FILL_VALUE_PREVIEW_MAX, HOVER_DELIVERY_POLL_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_REVEAL_MARKER, KEY_MAP, NAMED_IN_VIEWPORT_CLICK_OUTCOME, NAMED_IN_VIEWPORT_CLICK_SELECTOR, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, NON_FILLABLE_INPUT_TYPES, POINTER_CLICK_SETTLE_MS, PRESS_DELIVERY_POLL_MS, PRESS_DELIVERY_WAIT_MS, PRESS_PROBE_KEY, PRESS_PROBE_MARKER, PRESS_SEARCH_SUBMIT_FLAG, PUNCT_KEY_MAP, REF_RESOLVE_TIMEOUT, SEARCH_SUBMIT_PROBE_WAIT_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_TARGET_IDS, SHIFTED_PUNCT_KEY_MAP, TEXT_SELECTOR_PREFIX_RE, TIMEOUT, sleep } from './cdp-base.mjs';
+import { ACTIONABILITY_POLL_MS, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS, ACTION_DISABLED_NOT_SENT, ARIA_CONTROL_STATE_ATTRS, CHILD_FRAME_CLICK_RE, CLICK_DOWNLOAD_STARTED_RE, CLICK_DOWNLOAD_UNOBSERVED_RE, CLICK_EVENT_PROBE_KEY, CLICK_HREF_PROBE_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_NAVIGATION_WAIT_MS, CLICK_OPENED_TAB_RE, CLICK_OPENER_BLOCK_GRACE_MS, CLICK_OPENER_RESPOND_TIMEOUT_MS, CLICK_OPENER_TERMINATE_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS, CLICK_POPUP_NAVIGATION_CAP_MS, CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS, CLICK_STUCK_OPENER_BUDGET_MS, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_OUTCOME, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DRAG_DEFAULT_STEPS, DRAG_EVENT_PROBE_KEY, DRAG_INTERCEPT_WAIT_MS, DRAG_LATE_START_GRACE_MS, DRAG_LATE_START_SYNC_MS, DRAG_MAX_STEPS, DRAG_POINT_RE, DRAG_PRESS_HOLD_MS, DRAG_PROBE_EVENT_ORDER, DRAG_STEP_DELAY_MS, FILL_VALUE_PREVIEW_MAX, HOVER_DELIVERY_POLL_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_VISIBLE_COVER_POLLS, HOVER_VISIBLE_DELIVERY_WAIT_MS, HOVER_REVEAL_MARKER, KEY_MAP, NAMED_IN_VIEWPORT_CLICK_OUTCOME, NAMED_IN_VIEWPORT_CLICK_SELECTOR, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, NON_FILLABLE_INPUT_TYPES, POINTER_CLICK_SETTLE_MS, PRESS_DELIVERY_POLL_MS, PRESS_DELIVERY_WAIT_MS, PRESS_PROBE_KEY, PRESS_PROBE_MARKER, PRESS_SEARCH_SUBMIT_FLAG, PUNCT_KEY_MAP, REF_RESOLVE_TIMEOUT, SEARCH_SUBMIT_PROBE_WAIT_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_TARGET_IDS, SHIFTED_PUNCT_KEY_MAP, TEXT_SELECTOR_PREFIX_RE, TIMEOUT, sleep } from './cdp-base.mjs';
 import { isBlankPageUrl, parseCompactFormatArgs } from './cdp-browser.mjs';
 import { parseNonNegativeInteger, targetPrefixForDisplay } from './cdp-cli.mjs';
 import { cutDocumentConsoleBuffersAt, documentConsoleCutSeq, shellQuoteCliArg } from './cdp-core.mjs';
@@ -3359,6 +3359,50 @@ export async function dispatchHoverMove(cdp, sid, x, y) {
     if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
   }
 }
+// The centre of the target, in its own document. A child or an open-shadow
+// descendant is the target. Anything else is the element at that point.
+function hoverPointHitJs() {
+  return [
+    'let pointHit = null;',
+    'try {',
+    '  const hoverDoc = hoverEl.ownerDocument || document;',
+    '  const hoverBox = hoverEl.getBoundingClientRect();',
+    '  const hoverX = Number(hoverBox.x) + Number(hoverBox.width) * 0.5;',
+    '  const hoverY = Number(hoverBox.y) + Number(hoverBox.height) * 0.5;',
+    '  if (hoverDoc && typeof hoverDoc.elementFromPoint === "function" && Number.isFinite(hoverX) && Number.isFinite(hoverY)) {',
+    '    let hoverTop = hoverDoc.elementFromPoint(hoverX, hoverY);',
+    '    for (let hoverDepth = 0; hoverTop && hoverTop.shadowRoot && hoverDepth < 32; hoverDepth++) {',
+    '      const hoverInner = hoverTop.shadowRoot.elementFromPoint(hoverX, hoverY);',
+    '      if (!hoverInner || hoverInner === hoverTop) break;',
+    '      hoverTop = hoverInner;',
+    '    }',
+    '    const hoverParent = node => {',
+    '      const parent = node && node.parentNode;',
+    '      return parent && parent.nodeType === 11 && parent.host ? parent.host : parent;',
+    '    };',
+    '    let hoverOnTarget = false;',
+    '    for (let node = hoverTop, guard = 0; node && guard < 4096; node = hoverParent(node), guard++) {',
+    '      if (node === hoverEl) { hoverOnTarget = true; break; }',
+    '    }',
+    '    const hoverDescribe = node => {',
+    '      if (!node || !node.tagName) return "";',
+    '      const tag = String(node.tagName).toUpperCase();',
+    '      const id = node.id ? "#" + String(node.id).replace(/\\s+/g, "") : "";',
+    '      const className = !id && typeof node.className === "string" ? node.className.trim() : "";',
+    '      const classes = className ? "." + className.split(/\\s+/).slice(0, 2).join(".") : "";',
+    '      const role = node.getAttribute ? String(node.getAttribute("role") || "").replace(/\\s+/g, " ").trim() : "";',
+    '      const rolePart = role ? " role=\\"" + role.replace(/"/g, "") + "\\"" : "";',
+    '      const rawName = (node.getAttribute && (node.getAttribute("aria-label") || node.getAttribute("title"))) || node.textContent || "";',
+    '      const name = String(rawName).replace(/\\s+/g, " ").trim().slice(0, 40).replace(/"/g, "\'");',
+    '      return "<" + tag + id + classes + rolePart + ">" + (name ? " \\"" + name + "\\"" : "");',
+    '    };',
+    '    pointHit = hoverOnTarget ? { onTarget: true, label: "" } : { onTarget: false, label: hoverDescribe(hoverTop) };',
+    '  }',
+    '} catch (hoverPointErr) {',
+    '  pointHit = null;',
+    '}',
+  ].join('\n');
+}
 export function hoverRevealStateJs(elExpr) {
   return `
     const hoverEl = ${elExpr};
@@ -3374,6 +3418,7 @@ export function hoverRevealStateJs(elExpr) {
       matchesHover = hoverEl.matches(':hover') === true;
       groupHover = matchesHover || !!hoverEl.closest(':hover');
     } catch {}
+    ${hoverPointHitJs()}
     return {
       ok: true,
       marker: ${JSON.stringify(HOVER_REVEAL_MARKER)},
@@ -3385,6 +3430,7 @@ export function hoverRevealStateJs(elExpr) {
       matchesHover,
       href: String(location.href || ''),
       tag: hoverEl.tagName,
+      pointHit,
     };
   `;
 }
@@ -3434,6 +3480,15 @@ export function parseHoverRevealState(raw) {
     tag: value.tag,
     x: value.x,
     y: value.y,
+    pointHit: parseHoverPointHit(value.pointHit),
+  };
+}
+function parseHoverPointHit(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const label = raw.label != null ? String(raw.label).replace(/\s+/g, ' ').trim().slice(0, 160) : '';
+  return {
+    onTarget: raw.onTarget === true,
+    label,
   };
 }
 export function hoverDeliveryLanded(after) {
@@ -3443,28 +3498,55 @@ export function hoverDeliveryLanded(after) {
   if (after.matchesHover == null && after.groupHover === true) return true;
   return false;
 }
-export function hoverNotDeliveredError(selector, point, visibility) {
+export function hoverNotDeliveredError(selector, point, visibility, { coveredBy = '' } = {}) {
   const target = selector ? String(selector) : 'the target';
   const where = point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))
     ? ` at CSS (${Math.round(Number(point.x))}, ${Math.round(Number(point.y))})`
     : '';
+  const cover = coveredBy ? ` It is covered by ${coveredBy}.` : '';
   const hidden = visibility === 'hidden'
     ? " The tab's document.visibilityState is hidden."
     : '';
-  return new Error(`hover: ${target}${where} did not match :hover.${hidden} The hover was not delivered.`);
+  const err = new Error(`hover: ${target}${where} did not match :hover.${cover}${hidden} The hover was not delivered.`);
+  // Tagged at the source (#636): the Recovery reason reads this, not the message text.
+  if (coveredBy) err.hoverCovered = true;
+  return err;
+}
+function hoverDeliveryBudgetMs(visibility, waitMs) {
+  const requested = Number.isFinite(Number(waitMs)) ? Number(waitMs) : null;
+  if (visibility === 'visible') {
+    return requested == null ? HOVER_VISIBLE_DELIVERY_WAIT_MS : Math.min(requested, HOVER_VISIBLE_DELIVERY_WAIT_MS);
+  }
+  return requested == null ? HOVER_DELIVERY_WAIT_MS : requested;
 }
 export async function confirmHoverDelivered(cdp, sid, readState, { selector = '', point = null, waitMs } = {}) {
-  const budget = Number.isFinite(Number(waitMs)) ? Number(waitMs) : HOVER_DELIVERY_WAIT_MS;
+  const visibility = await probePageVisibility(cdp, sid);
+  const budget = hoverDeliveryBudgetMs(visibility, waitMs);
   const started = Date.now();
+  let coverStreak = 0;
+  let coveredBy = '';
   for (;;) {
     const after = await readState();
     if (hoverDeliveryLanded(after)) return after;
+    const hit = visibility === 'visible' ? after?.pointHit : null;
+    if (hit && hit.onTarget === false && hit.label) {
+      coverStreak += 1;
+      coveredBy = hit.label;
+      if (coverStreak >= HOVER_VISIBLE_COVER_POLLS) {
+        throw hoverNotDeliveredError(selector, point, visibility, { coveredBy });
+      }
+    } else {
+      coverStreak = 0;
+      coveredBy = '';
+    }
     const elapsed = Date.now() - started;
     if (elapsed >= budget) break;
     const pause = Math.min(HOVER_DELIVERY_POLL_MS, budget - elapsed);
     if (pause > 0) await sleep(pause);
   }
-  throw hoverNotDeliveredError(selector, point, await probePageVisibility(cdp, sid));
+  throw hoverNotDeliveredError(selector, point, visibility, {
+    coveredBy: coverStreak > 0 ? coveredBy : '',
+  });
 }
 export async function readHoverRevealOnObject(cdp, sid, objectId) {
   if (!objectId) return null;

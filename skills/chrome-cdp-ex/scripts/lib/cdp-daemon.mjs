@@ -270,6 +270,7 @@ function errorSourceFrom(err) {
   if (err.code === 'usage') source.code = 'usage';
   if (err.selectorMiss === true) source.selectorMiss = true;
   if (err.unknownFrame === true) source.unknownFrame = true;
+  if (err.hoverCovered === true) source.hoverCovered = true;
   return Object.keys(source).length ? source : null;
 }
 export async function daemonCommandCatchResult(e, {
