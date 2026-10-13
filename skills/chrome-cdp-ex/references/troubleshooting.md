@@ -138,7 +138,8 @@ when the first fixed or sticky layer that does not contain the target and can re
 of the viewport: look at that blocker before clicking through it. A `pointer-events: none` shell around a small
 toast, and a fixed app shell that contains the target, are not that layer. `overlay` does not name that shell
 either: the cover is the element at the hit point that does not contain the target, such as an absolutely
-positioned popover. If it is small page layout such as a
+positioned popover. If that overlay report is clear, Next is `cdp click <target> <sel> --js`, not `continue`.
+When the cover is small page layout such as a
 fixed sidebar, sticky header, toast, or bottom strip (common in narrow headless windows), use
 `cdp click <target> <sel> --js`, or widen the window with `cdp viewport`. The hints still name `--js` for that
 layout case.

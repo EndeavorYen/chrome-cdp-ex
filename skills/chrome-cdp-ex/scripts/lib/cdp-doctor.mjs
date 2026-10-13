@@ -1,5 +1,5 @@
 // Moved from cdp.mjs without changes (#688). cdp.mjs is the entry point and re-exports for tests.
-import { actionTargetCommandPrefix } from './action-recovery.mjs';
+import { actionTargetCommandPrefix, recoveryCommandArg } from './action-recovery.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './browser-paths.mjs';
 import { ASK_HUMAN_FIRST_LINE, formatNextLine } from './next-line.mjs';
 import { NODE22_MISSING_HINT, discoverNode22, formatNodeRerunCommand, nodeMajor } from './node-runtime.mjs';
@@ -2321,6 +2321,12 @@ export function overlayElementLabel(element = {}) {
   const label = element.label || element.text || element.tag || '';
   return `[${element.kind || 'overlay'}] ${selector}${label ? ` "${label}"` : ''}`;
 }
+// #630: nothing to dismiss. Next is still one command: click --js for a named target, perceive otherwise.
+function overlayClearNextCommand(model, targetId) {
+  const prefix = actionTargetCommandPrefix({ targetId });
+  const arg = recoveryCommandArg(model?.target?.input || '');
+  return arg ? `cdp click ${prefix} ${arg} --js` : `cdp perceive ${prefix} -C -d 8`;
+}
 export function formatOverlayReport(model, targetId) {
   const lines = [`Overlay detector: ${model.blocking ? 'blocking' : 'clear'}`];
   if (model.target) {
@@ -2347,7 +2353,7 @@ export function formatOverlayReport(model, targetId) {
   const prefix = actionTargetCommandPrefix({ targetId });
   const next = model.blocking
     ? (model.nextCommand || `cdp dismiss-modal ${prefix}`)
-    : 'continue; if click still fails, run `status` or `perceive --since-action` before retrying';
+    : overlayClearNextCommand(model, targetId);
   lines.push(`Next: ${next}`);
   return lines.join('\n');
 }
@@ -2386,7 +2392,11 @@ export async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map
     ? await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState, { objectId, functionDeclaration: `function() { return ${overlayDetectorScript({ targetPoint, objectBoundTarget: true })}; }` })
     : await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
   const model = JSON.parse(raw);
-  if (model.blocking && !model.nextCommand) model.nextCommand = `cdp dismiss-modal ${actionTargetCommandPrefix({ targetId })}`;
+  if (model.blocking) {
+    if (!model.nextCommand) model.nextCommand = `cdp dismiss-modal ${actionTargetCommandPrefix({ targetId })}`;
+  } else {
+    model.nextCommand = overlayClearNextCommand(model, targetId);
+  }
   if (fopts.format === 'json') return formatJson(model);
   return formatOverlayReport(model, targetId);
 }
