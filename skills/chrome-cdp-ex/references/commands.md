@@ -1406,7 +1406,7 @@ fallback; unquoted `text=` is not Playwright's case-insensitive substring match.
 to force a name when the word is an HTML tag (`text=button` vs `button`). A word that is not
 a tag, such as `Save`, is already a label. A real selector (`#form #delete`, `div span`, `nav a`)
 stays a selector. A miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
-`Kind: selector`, and Next `perceive -C -d 8` for an `@ref`. An unclosed quote in the target
+`Kind: selector`, and Next `perceive -C -d 8` for an `@ref`. On a page with child frames, `Named control not found` and `Element not found` say the page has N frames and the control may be inside one; Next is `perceive <target> --frame @fN` when exactly one same-origin child frame exists, and `frame <target>` when more do. A cross-site frame is not reachable yet, and Next never points at it. A page with no frames keeps that message and Next. An unclosed quote in the target
 is an error.
 
 When a successful one-line receipt has no diagnosis-specific Next, it points at the same tab: `perceive

@@ -952,6 +952,38 @@ function frameInventoryFromMeta(meta) {
     : elements.length;
   return { elements, count };
 }
+// One collector for the perceive Frames line and for a selector miss. The cap,
+// the iframe/frame selector, and the fields stay the same list.
+function frameElementInventorySource(visibleExpression = 'renderedInteractive(el)') {
+  return `const frameElements = [];
+    let frameElementCount = 0;
+    for (const el of document.querySelectorAll('iframe, frame')) {
+      frameElementCount += 1;
+      if (frameElements.length >= ${PERCEIVE_FRAME_ELEMENT_CAP}) continue;
+      const src = el.src || '';
+      let host = '';
+      try { if (src) host = new URL(src).host; } catch {}
+      let visible = ${visibleExpression};
+      try {
+        const rect = el.getBoundingClientRect();
+        if (!(rect.width >= 1) || !(rect.height >= 1)) visible = false;
+      } catch { visible = false; }
+      frameElements.push({
+        title: el.getAttribute('title') || '',
+        src,
+        host,
+        name: el.getAttribute('name') || '',
+        visible,
+      });
+    }`;
+}
+const FRAME_INVENTORY_MARKER = 'chrome-cdp-ex.frame-inventory.v1';
+function frameElementInventoryExpression() {
+  return `(function() {
+    ${frameElementInventorySource('true')}
+    return { marker: ${JSON.stringify(FRAME_INVENTORY_MARKER)}, frameElements, frameElementCount };
+  })()`;
+}
 // Pair only frames whose parent is the top frame. Callers pass depth-1 frames;
 // a nested frame must never take a leftover top-level element's ref.
 function matchPerceiveFrameElements(childFrames, frameElements) {
@@ -997,18 +1029,26 @@ function perceiveFrameLabel(element, owner, crossSite) {
 function perceiveTopLevelFrames(childFrames) {
   return childFrames.filter(frame => frame && frame.depth === 1);
 }
-function buildPerceiveFrameNotice({ childFrames, frameElements, frameElementCount, owners, target }) {
+function perceiveFrameCensus({ childFrames, frameElements, frameElementCount }) {
   const children = Array.isArray(childFrames) ? childFrames : [];
   const elements = Array.isArray(frameElements) ? frameElements : [];
-  const ownerMap = owners instanceof Map ? owners : new Map();
   const topLevel = perceiveTopLevelFrames(children);
   const reported = Number(frameElementCount);
   const elementCount = Number.isInteger(reported) && reported >= elements.length
     ? reported
     : elements.length;
   const crossSiteCount = Math.max(0, elementCount - topLevel.length);
-  if (children.length === 0 && crossSiteCount === 0) return null;
   const paired = matchPerceiveFrameElements(topLevel, elements);
+  return { children, elements, crossSiteCount, paired };
+}
+function buildPerceiveFrameNotice({ childFrames, frameElements, frameElementCount, owners, target }) {
+  const { children, elements, crossSiteCount, paired } = perceiveFrameCensus({
+    childFrames,
+    frameElements,
+    frameElementCount,
+  });
+  if (children.length === 0 && crossSiteCount === 0) return null;
+  const ownerMap = owners instanceof Map ? owners : new Map();
   const refByElement = new Map();
   for (const [ref, index] of paired) refByElement.set(index, ref);
   const slots = elements.map((element, index) => {
@@ -1030,7 +1070,57 @@ function buildPerceiveFrameNotice({ childFrames, frameElements, frameElementCoun
   if (crossSiteCount > 0) line += `, ${crossSiteCount} cross-site not reachable yet`;
   if (visibleRefs.length === 1) line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
   else if (children.length >= 1) line += `. Next: cdp frame ${target}`;
-  return { line, slots };
+  return {
+    line,
+    slots,
+    childCount: children.length,
+    crossSiteCount,
+    singleChildRef: children.length === 1 ? children[0]?.ref || null : null,
+  };
+}
+// A top-document selector miss. Count comes from the same census as the Frames
+// line. Zero iframe/frame elements skip Page.getFrameTree: that page has nothing
+// a later --frame could enter.
+export async function attachSelectorFrameMiss(cdp, sid, err, target = {}) {
+  if (!cdp || !sid || !err || typeof err !== 'object') return err;
+  const message = String(err.message || '');
+  if (!/^(?:Named control not found|Element not found)\b/.test(message)) return err;
+  const input = String(target?.input || target?.label || '').trim();
+  if (/^@f\d+:\d+$/.test(input)) return err;
+  try {
+    const hint = await readSelectorFrameMiss(cdp, sid);
+    if (hint) err.frameMiss = hint;
+  } catch {
+    // The original miss still has to be reported if the frame probe fails.
+  }
+  return err;
+}
+async function readSelectorFrameMiss(cdp, sid) {
+  const raw = await evalStr(cdp, sid, frameElementInventoryExpression(), false, {
+    timeoutMs: STATUS_PAGE_INFO_TIMEOUT,
+  });
+  let parsed = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { return null; }
+  }
+  if (!parsed || parsed.marker !== FRAME_INVENTORY_MARKER) return null;
+  const inventory = frameInventoryFromMeta(parsed);
+  if (!inventory.count) return null;
+  const model = await framesModel(cdp, sid);
+  const childFrames = (model.frames || []).filter(item => item && item.depth > 0);
+  const notice = buildPerceiveFrameNotice({
+    childFrames,
+    frameElements: inventory.elements,
+    frameElementCount: inventory.count,
+    owners: new Map(),
+    target: '<target>',
+  });
+  if (!notice) return null;
+  return {
+    childCount: notice.childCount,
+    crossSiteCount: notice.crossSiteCount,
+    singleChildRef: notice.singleChildRef,
+  };
 }
 function formatPerceiveIframeLine(depth, label, ref) {
   const indent = '  '.repeat(Math.min(depth, 10));
@@ -3460,27 +3550,7 @@ ${visibleControlsCollectorSource()}
         if (cardWindows.length >= 40) break;
       }
 
-      const frameElements = [];
-      let frameElementCount = 0;
-      for (const el of document.querySelectorAll('iframe, frame')) {
-        frameElementCount += 1;
-        if (frameElements.length >= ${PERCEIVE_FRAME_ELEMENT_CAP}) continue;
-        const src = el.src || '';
-        let host = '';
-        try { if (src) host = new URL(src).host; } catch {}
-        let visible = renderedInteractive(el);
-        try {
-          const rect = el.getBoundingClientRect();
-          if (!(rect.width >= 1) || !(rect.height >= 1)) visible = false;
-        } catch { visible = false; }
-        frameElements.push({
-          title: el.getAttribute('title') || '',
-          src,
-          host,
-          name: el.getAttribute('name') || '',
-          visible,
-        });
-      }
+      ${frameElementInventorySource()}
 
       return JSON.stringify({
         title: document.title, url: window.location.href,
