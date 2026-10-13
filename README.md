@@ -95,7 +95,11 @@ This runs against the browser you are logged into, so the defaults lean careful:
 
 ## Daily browser CDP
 
-From Chrome 136, `--remote-debugging-port` is ignored on the default profile. chrome-cdp-ex cannot silently attach to an already-running default Chrome or Edge. Use a persistent non-default user-data-dir that you always launch with remote debugging, then sign in once. See [Daily browser CDP](docs/daily-browser-cdp.md) for the launch line (it includes `--disable-backgrounding-occluded-windows`, so a browser window behind your terminal keeps rendering).
+The first step for the user's own browser is the `chrome://inspect/#remote-debugging` toggle (Edge: `edge://inspect`). That keeps their logins, including the default profile. Then `doctor` and `list`.
+
+`spawn-debug-browser`, `--daily-profile`, and an isolated or persistent non-default profile are fallbacks. Each is a profile without the user's logins. Ask first. From Chrome 136, `--remote-debugging-port` is ignored on the default user-data-dir, so that flag does not attach to an already-running default Chrome or Edge. The inspect toggle does.
+
+For cron or another unattended run, launch a persistent non-default user-data-dir with remote debugging and sign in once in that profile. See [Daily browser CDP](docs/daily-browser-cdp.md) for the launch line (it includes `--disable-backgrounding-occluded-windows`, so a browser window behind your terminal keeps rendering).
 
 Grok Bot from-zero setup (replace computer use / browser use): [docs/integrations/grok-bot.md](docs/integrations/grok-bot.md).
 

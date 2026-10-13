@@ -1,3 +1,4 @@
+import { resolve } from 'path';
 import { describe, it, expect } from 'vitest';
 import { createMockCDP } from './mock-cdp.mjs';
 
@@ -260,6 +261,24 @@ describe('absolutizeFlowArgs backtick quotes', () => {
       expect(parseFlowSteps(out[0])).toEqual(before);
       expect(before).toEqual([{ kind: 'command', cmd: before[0].cmd, args }]);
     }
+  });
+
+  it('absolutizes a shot or upload path and keeps a backtick apostrophe as one argument', () => {
+    const cwd = '/tmp/caller';
+    const step = "shot T1 `it 's a note` `my file.png`; upload T1 `other file.png` `it 's fine`";
+    const out = absolutizeFlowArgs([step], cwd);
+    expect(parseFlowSteps(out[0])).toEqual([
+      {
+        kind: 'command',
+        cmd: 'shot',
+        args: ['T1', "it 's a note", resolve(cwd, 'my file.png')],
+      },
+      {
+        kind: 'command',
+        cmd: 'upload',
+        args: ['T1', resolve(cwd, 'other file.png'), "it 's fine"],
+      },
+    ]);
   });
 });
 

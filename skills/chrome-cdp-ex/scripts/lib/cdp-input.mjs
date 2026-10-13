@@ -37,14 +37,21 @@ export function sameArgList(left, right) {
     && left.every((value, index) => value === right[index]);
 }
 // Rejoin a rewritten flow or batch step. Quote only values the tokenizer would
-// split or drop. A selector such as #f stays bare so the step text is stable.
-// A backslash is not whitespace, so a Windows path with no spaces stays bare.
+// split or drop. Those tokenizers do not treat shell `'\''` as one apostrophe,
+// so a value that contains `'` uses a quote kind it does not contain. A selector
+// such as #f stays bare so the step text is stable. A backslash is not
+// whitespace, so a Windows path with no spaces stays bare.
+export function quoteRewrittenArg(text) {
+  const value = String(text ?? '');
+  if (value === '') return "''";
+  if (!/[\s"';|]/.test(value)) return value;
+  if (!value.includes("'")) return `'${value}'`;
+  if (!value.includes('"')) return `"${value}"`;
+  if (!value.includes('`')) return `\`${value}\``;
+  return shellQuoteCliArg(value);
+}
 export function rejoinRewrittenCommand(head, args) {
-  const parts = [head, ...args.map(arg => {
-    const text = String(arg ?? '');
-    if (text === '' || /[\s"';|]/.test(text)) return shellQuoteCliArg(text);
-    return text;
-  })];
+  const parts = [head, ...args.map(arg => quoteRewrittenArg(arg))];
   return parts.join(' ');
 }
 export function canonicalCallerCommand(cmd) {
