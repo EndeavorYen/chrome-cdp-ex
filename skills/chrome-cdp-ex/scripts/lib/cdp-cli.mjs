@@ -726,7 +726,7 @@ function toolMissingArgumentMessage(message) {
   return true;
 }
 
-const CLI_ERROR_SOURCE_FLAGS = ['pageException', 'navigationFailure', 'usage', 'selectorMiss', 'unknownFrame'];
+const CLI_ERROR_SOURCE_FLAGS = ['pageException', 'navigationFailure', 'usage', 'selectorMiss', 'unknownFrame', 'hoverCovered'];
 
 // The daemon returns a string. A source tag rides along as errorSource so the CLI
 // can classify a page exception without reading the page's message.
@@ -1383,13 +1383,16 @@ function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platf
     const run = hidden
       ? `CDP_BACKGROUND=0 cdp hover ${target} ${arg}`
       : `cdp perceive ${target} -C -d 8`;
+    const covered = !hidden && err?.hoverCovered === true;
     return {
       kind: 'hover-not-delivered',
       strategy: hidden ? 'activate-tab' : 'refresh-perception',
       run,
       reason: hidden
         ? 'The tab is hidden, so the target did not match :hover. CDP_BACKGROUND=0 activates that tab before hover and does not raise a covered window.'
-        : 'The target did not match :hover after the mouse move. Refresh perception and choose the control again.',
+        : covered
+          ? 'Another element is at the hover point, so the target did not match :hover. The Error line names that element. Uncover it or hover it, then refresh perception.'
+          : 'The target did not match :hover after the mouse move. Refresh perception and choose the control again.',
     };
   }
   if (lower.includes('cross-origin frame received no')) {

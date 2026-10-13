@@ -34,6 +34,11 @@ export const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
 // Poll page evidence after the short ack swallow; do not lengthen that swallow.
 export const HOVER_DELIVERY_WAIT_MS = 6500;
 export const HOVER_DELIVERY_POLL_MS = 100;
+// A visible tab applies mouseMoved quickly. When the point is on the target and
+// :hover still does not match, stop after about 1s. A point another element
+// covers fails after a few polls (#621). A hidden tab keeps HOVER_DELIVERY_WAIT_MS.
+export const HOVER_VISIBLE_DELIVERY_WAIT_MS = 1000;
+export const HOVER_VISIBLE_COVER_POLLS = 3;
 export const HOVER_MUTATION_TIMEOUT_MS = 3000;
 export const HOVER_MUTATION_MARKER = 'chrome-cdp-ex.hover-mutation.v1';
 export const HOVER_REVEAL_MARKER = 'chrome-cdp-ex.hover-reveal.v1';
@@ -1624,9 +1629,13 @@ ACTION FEEDBACK
   leftover typeahead AX / quicksearch is not the success signal.
   Sequential batch hover then eval is report-only on the hover:
   leftover AX recapture races CSS :hover and is not the success signal.
-  hover prints its receipt only after the target matches :hover. If it never
-  matches, the command fails with Kind: hover-not-delivered and one Next
-  command (CDP_BACKGROUND=0 cdp hover when the tab is hidden).
+  hover prints its receipt only after the target matches :hover. On a visible
+  tab, a point another element covers fails within a few polls and names that
+  element (is covered by <…>); if the point is on the target and :hover still
+  does not match, the wait is about 1s. A hidden tab keeps the longer wait so
+  a late compositor delivery can succeed. If :hover never matches, the command
+  fails with Kind: hover-not-delivered and one Next command
+  (CDP_BACKGROUND=0 cdp hover when the tab is hidden).
   Search-submit press probes once or opens /models?search=<filled>,
   then returns on the listing URL. No 1500 ms typeahead poll.
   qa returns a semantic QA report and includes action evidence when --click is used.

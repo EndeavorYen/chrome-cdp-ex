@@ -650,7 +650,7 @@ scripts/cdp.mjs scroll  <target> to bottom [--format json] [--compact] # documen
 scripts/cdp.mjs scroll  <target> to top [--format json] [--compact]    # document start, or nested overflow when the document cannot scroll; skinny scrollY or scrollTop / scrollMax / at-top
 scripts/cdp.mjs scroll  <target> to bottom --scroll-container SELECTOR [--format json] # explicit overflow container (same idea as table --scroll-container)
 scripts/cdp.mjs loadall <target> <selector> [interval-ms] [--timeout-ms N]  # click "load more" until gone (interval default 1500ms, timeout default 30000ms)
-scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element; waits until :hover matches, or fails closed (Kind: hover-not-delivered)
+scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element; waits until :hover matches, or fails closed (Kind: hover-not-delivered, one Next). A visible tab names the element at the point and fails within a few polls when that element is not the target or inside it (is covered by <…>); a visible on-target miss stops after about 1s. A hidden tab keeps the longer wait for late delivery.
 scripts/cdp.mjs drag    <target> <from sel|@ref> <to sel|@ref|x,y> [--steps N] [--html5|--pointer] [--format json] # real mouse drag (auto-returns perceive diff)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
 scripts/cdp.mjs waitfor <target> --gone <sel|@ref> [ms]  # wait for element to DISAPPEAR (streaming end)
