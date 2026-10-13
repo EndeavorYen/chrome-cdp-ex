@@ -1,20 +1,16 @@
 # Daily browser CDP (Chromium 136+)
 
-From Chrome 136, `--remote-debugging-port` and `--remote-debugging-pipe` are ignored on the browser's **default** user-data-dir ([Chrome security change](https://developer.chrome.com/blog/remote-debugging-port)). Edge inherits this. A process can show the flag in `edge://version` and still listen on nothing.
+The first step for the user's own browser is the `chrome://inspect/#remote-debugging` toggle (Edge: `edge://inspect`). That keeps their logins, including the default profile. Then `./bin/chrome-cdp doctor` and `./bin/chrome-cdp list`.
 
-chrome-cdp-ex cannot silently attach to an already-running Dock or default Chrome or Edge (no debug port, default profile) without quitting that browser or asking a human to click Allow. Isolated spawn is not that session. Detecting the failure is not a fix. See [#368](https://github.com/EndeavorYen/chrome-cdp-ex/issues/368).
+From Chrome 136, `--remote-debugging-port` and `--remote-debugging-pipe` are ignored on the browser's **default** user-data-dir ([Chrome security change](https://developer.chrome.com/blog/remote-debugging-port)). Edge inherits this. A process can show the flag in `edge://version` and still listen on nothing. Leave Dock and default Chrome or Edge running. The inspect toggle is what enables CDP on that profile. See [#635](https://github.com/EndeavorYen/chrome-cdp-ex/issues/635) and [#368](https://github.com/EndeavorYen/chrome-cdp-ex/issues/368).
 
-## What this project does
+`spawn-debug-browser`, `--daily-profile`, and an isolated or persistent non-default profile are fallbacks. Each is a profile without the user's logins. Ask first. `--daily-profile` still means the **browser default** dir, where Chrome 136+ ignores `--remote-debugging-port`.
 
-Use a **fixed** non-default user-data-dir, always started with remote debugging. Sign in once in that dir. Later launches of the same dir keep the login. Re-login only if the dir is deleted, the path changes, or the site expires the session.
+When nothing answers on the probe ports, `doctor` names `chrome://inspect/#remote-debugging` first, then `CDP_PORT=<port>` for Electron or a browser on its own port. It says the spawn suggestion is a profile without the user's logins.
 
-Do not target Dock or default Edge. Do not kill it. Do not wait for an inspect Allow click.
+## Persistent dir (fallback / cron)
 
-`--daily-profile` still means the **browser default** dir. That path cannot enable CDP on 136+. Do not use `--daily-profile` as a substitute for the persistent dir below.
-
-Empty 9222: `doctor` first step is that persistent dir (ask first), not `--daily-profile`, not `/tmp` isolated, not inspect Allow.
-
-## Attach
+A fixed non-default user-data-dir, always started with remote debugging, is the fallback that can run unattended. It does not have the user's existing logins. Sign in once in that dir. Later launches of the same dir keep that login. Sign in again only if the dir is deleted, the path changes, or the site expires the session.
 
 Pick one machine-local path and keep it. macOS Edge example:
 
@@ -40,12 +36,12 @@ Or:
 
 ## Other approaches
 
-| Approach | Zero click? | Keeps Dock/default cookies? | Survives restart without re-login? | Cron / unattended? | Notes |
+| Approach | Zero click? | Keeps the user's logins? | Survives restart without re-login? | Cron / unattended? | Notes |
 |---|---|---|---|---|---|
-| 1. Silent CDP on already-open **default** profile | Yes | Yes | n/a | Would be ideal | Impossible on Chromium 136+. Not a chrome-cdp-ex bug. |
-| 2. Persistent non-default dir **as the daily browser**, always launched with `--remote-debugging-port` | Yes after first launch | No. This dir **is** daily for the agent | Yes (same dir) | Yes | One-time sign-in in that profile. Dock default Edge/Chrome is no longer the attach target. Do not delete the dir. |
-| 3. Chrome 144+ `chrome://inspect/#remote-debugging` (Allow dialog) | No. Click every connect | Yes if the UI exists | n/a | No | Unusable for cron. Edge 151 has no proven equivalent silent API. |
-| 4. Fresh isolated `--user-data-dir` under `/tmp` each run | Yes | No | No | Only after re-login every run | Fine for throwaway automation. Not daily. |
-| 5. Second always-on debug window, leave Dock Edge untouched | Yes after first launch | No (copy of login in the second profile) | Yes | Yes | Same mechanism as (2), but daily human browsing stays on default. Two browsers. |
+| 1. `chrome://inspect/#remote-debugging` (Edge: `edge://inspect`) on the browser already open | Turn the toggle on | Yes, including the default profile | While that browser stays open | No | First step. |
+| 2. Persistent non-default dir, always launched with `--remote-debugging-port` | Yes after first launch | No. Sign in once in that dir | Yes (same dir) | Yes | Fallback. Ask first. |
+| 3. `--daily-profile` | No on Chrome 136+ | No. The port does not come up on the default dir | n/a | No | Fallback. The flag is ignored on the default user-data-dir. Ask first. |
+| 4. Fresh isolated `--user-data-dir` under `/tmp` | Yes | No | No | Only after signing in every run | Fallback for throwaway automation. Ask first. |
+| 5. `spawn-debug-browser` | Yes after launch | No | With a persistent dir | Yes, with that dir | Same fallback family. Ask first. |
 
-This project uses approach 2.
+The first step is approach 1. Approach 2 is the launch line above.
