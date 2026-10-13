@@ -899,6 +899,181 @@ export async function framesModel(cdp, sid) {
     frames,
   };
 }
+const PERCEIVE_FRAME_ELEMENT_CAP = 50;
+const PERCEIVE_FRAME_OWNER_MARKER = 'chrome-cdp-ex.frame-owner.v1';
+const PERCEIVE_FRAME_OWNER_FN = `function() {
+  const el = this;
+  const title = el.getAttribute ? (el.getAttribute('title') || '') : '';
+  const src = el.src || '';
+  let host = '';
+  try { if (src) host = new URL(src).host; } catch {}
+  let visible = false;
+  try {
+    const rects = typeof el.getClientRects === 'function' ? el.getClientRects() : [];
+    visible = rects.length > 0;
+    if (visible && typeof el.checkVisibility === 'function') visible = !!el.checkVisibility({ visibilityProperty: true });
+    const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+    if (!rect || !(rect.width >= 1) || !(rect.height >= 1)) visible = false;
+  } catch {}
+  return { marker: '${PERCEIVE_FRAME_OWNER_MARKER}', title: String(title).trim(), src: String(src), host, visible };
+}`;
+function frameUrlHost(url) {
+  try {
+    return new URL(String(url || '')).host || '';
+  } catch {
+    return '';
+  }
+}
+function frameUrlsEqual(a, b) {
+  const left = String(a || '');
+  const right = String(b || '');
+  if (!left || !right) return false;
+  if (left === right) return true;
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return false;
+  }
+}
+function frameInventoryFromMeta(meta) {
+  const elements = [];
+  if (Array.isArray(meta?.frameElements)) {
+    for (const el of meta.frameElements) {
+      if (!el || typeof el !== 'object') continue;
+      elements.push(el);
+      if (elements.length >= PERCEIVE_FRAME_ELEMENT_CAP) break;
+    }
+  }
+  // The detail list is capped. The page reports the full iframe/frame count
+  // separately so a page with more than the cap still gets an honest X.
+  const reported = Number(meta?.frameElementCount);
+  const count = Number.isInteger(reported) && reported >= elements.length
+    ? reported
+    : elements.length;
+  return { elements, count };
+}
+// Pair only frames whose parent is the top frame. Callers pass depth-1 frames;
+// a nested frame must never take a leftover top-level element's ref.
+function matchPerceiveFrameElements(childFrames, frameElements) {
+  const paired = new Map();
+  const used = new Set();
+  for (const frame of childFrames) {
+    const urls = [frame.url, frame.unreachableUrl].filter(Boolean);
+    const index = frameElements.findIndex((el, elIndex) => (
+      !used.has(elIndex) && urls.some(url => frameUrlsEqual(url, el.src))
+    ));
+    if (index >= 0) {
+      used.add(index);
+      paired.set(frame.ref, index);
+    }
+  }
+  const leftoverFrames = childFrames.filter(frame => !paired.has(frame.ref));
+  const leftoverElements = [];
+  frameElements.forEach((_, index) => {
+    if (!used.has(index)) leftoverElements.push(index);
+  });
+  if (leftoverFrames.length > 0 && leftoverFrames.length === leftoverElements.length) {
+    leftoverFrames.forEach((frame, index) => paired.set(frame.ref, leftoverElements[index]));
+  }
+  return paired;
+}
+function frameChildVisible(element, owner) {
+  if (owner && typeof owner.visible === 'boolean') return owner.visible;
+  if (element && typeof element.visible === 'boolean') return element.visible;
+  return true;
+}
+function perceiveFrameLabel(element, owner, crossSite) {
+  if (crossSite) return String(element?.host || frameUrlHost(element?.src) || '').trim();
+  const title = String(owner?.title || element?.title || '').trim();
+  if (title) return title;
+  return String(owner?.host || element?.host || frameUrlHost(owner?.src || element?.src) || '').trim();
+}
+// N and M count every child frame Page.getFrameTree reports (depth > 0),
+// including nested frames. `frame <t>` lists those same frames and prints
+// Frames as N+1 because it also counts the top frame (@f1). Pairing and the
+// cross-site count use only depth-1 frames against the top document's
+// iframe/frame elements. A nested frame is not a top-level element, so it
+// never matches one and never gets a top-level [iframe] line.
+function perceiveTopLevelFrames(childFrames) {
+  return childFrames.filter(frame => frame && frame.depth === 1);
+}
+function buildPerceiveFrameNotice({ childFrames, frameElements, frameElementCount, owners, target }) {
+  const children = Array.isArray(childFrames) ? childFrames : [];
+  const elements = Array.isArray(frameElements) ? frameElements : [];
+  const ownerMap = owners instanceof Map ? owners : new Map();
+  const topLevel = perceiveTopLevelFrames(children);
+  const reported = Number(frameElementCount);
+  const elementCount = Number.isInteger(reported) && reported >= elements.length
+    ? reported
+    : elements.length;
+  const crossSiteCount = Math.max(0, elementCount - topLevel.length);
+  if (children.length === 0 && crossSiteCount === 0) return null;
+  const paired = matchPerceiveFrameElements(topLevel, elements);
+  const refByElement = new Map();
+  for (const [ref, index] of paired) refByElement.set(index, ref);
+  const slots = elements.map((element, index) => {
+    const ref = refByElement.get(index) || null;
+    const owner = ref ? ownerMap.get(ref) : null;
+    return {
+      ref,
+      label: perceiveFrameLabel(element, owner, !ref),
+      backendNodeId: owner?.backendNodeId || null,
+    };
+  });
+  const visibleRefs = [];
+  for (const frame of children) {
+    const index = paired.get(frame.ref);
+    const element = index == null ? null : elements[index];
+    if (frameChildVisible(element, ownerMap.get(frame.ref))) visibleRefs.push(frame.ref);
+  }
+  let line = `Frames: ${children.length} (${visibleRefs.length} visible)`;
+  if (crossSiteCount > 0) line += `, ${crossSiteCount} cross-site not reachable yet`;
+  if (visibleRefs.length === 1) line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
+  else if (children.length >= 1) line += `. Next: cdp frame ${target}`;
+  return { line, slots };
+}
+function formatPerceiveIframeLine(depth, label, ref) {
+  const indent = '  '.repeat(Math.min(depth, 10));
+  const quoted = JSON.stringify(String(label ?? ''));
+  return `${indent}[iframe] ${quoted}${ref ? ` ${ref}` : ''}`;
+}
+async function describeOnePerceiveFrameOwner(cdp, sid, frame) {
+  if (!frame?.id) return null;
+  try {
+    const owner = await cdpDomains(cdp).DOM.getFrameOwner( { frameId: frame.id }, sid);
+    const backendNodeId = owner?.backendNodeId;
+    if (!backendNodeId) return null;
+    const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid);
+    if (!object?.objectId) return null;
+    const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
+      objectId: object.objectId,
+      functionDeclaration: PERCEIVE_FRAME_OWNER_FN,
+      returnByValue: true,
+    }, sid);
+    const value = res?.result?.value;
+    if (!value || value.marker !== PERCEIVE_FRAME_OWNER_MARKER) return null;
+    return {
+      ref: frame.ref,
+      owner: {
+        backendNodeId,
+        title: value.title || '',
+        src: value.src || '',
+        host: value.host || '',
+        visible: value.visible === true,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+async function describePerceiveFrameOwners(cdp, sid, childFrames) {
+  const entries = await Promise.all(childFrames.map(frame => describeOnePerceiveFrameOwner(cdp, sid, frame)));
+  const owners = new Map();
+  for (const entry of entries) {
+    if (entry) owners.set(entry.ref, entry.owner);
+  }
+  return owners;
+}
 export function displayedFrame(frame, { unsafeFull = false } = {}) {
   if (!frame || unsafeFull) return frame;
   const url = typeof frame.url === 'string' ? displayUrl(frame.url) : frame.url;
@@ -2697,6 +2872,29 @@ export function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const visited = new Set();
   let chromeLinesEmitted = 0;
   let chromeTruncationNoted = false;
+  const iframeSlots = Array.isArray(opts.iframeSlots) && opts.iframeSlots.length
+    ? opts.iframeSlots.map(slot => ({ ...slot, consumed: false }))
+    : null;
+  const iframeByBackend = new Map();
+  if (iframeSlots) {
+    for (const slot of iframeSlots) {
+      if (slot.backendNodeId) iframeByBackend.set(slot.backendNodeId, slot);
+    }
+  }
+
+  function takeIframeSlot(node) {
+    if (!iframeSlots) return null;
+    const bound = node?.backendDOMNodeId != null ? iframeByBackend.get(node.backendDOMNodeId) : null;
+    if (bound) {
+      if (bound.consumed) return null;
+      bound.consumed = true;
+      return bound;
+    }
+    const next = iframeSlots.find(slot => !slot.consumed);
+    if (!next) return null;
+    next.consumed = true;
+    return next;
+  }
 
   function markSubtreeVisited(nodeId) {
     visited.add(nodeId);
@@ -2746,6 +2944,26 @@ export function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     const overChrome = inChrome && chromeDepth > PERCEIVE_CHROME_MAX_RELATIVE_DEPTH;
     const overContent = inContent && contentDepth > maxDepth;
     const overGlobal = !inContent && depth > maxDepth;
+    if (String(role).toLowerCase() === 'iframe' && iframeSlots) {
+      const slot = takeIframeSlot(node);
+      const overDepth = overChrome || overContent || overGlobal;
+      if (slot && !overDepth) {
+        const chromeCapped = inChrome && chromeLinesEmitted >= PERCEIVE_CHROME_LINE_CAP;
+        if (chromeCapped) {
+          if (!chromeTruncationNoted) {
+            treeLines.push(formatAxNode({ role: { value: 'note' }, name: { value: '... chrome truncated' } }, depth));
+            chromeTruncationNoted = true;
+          }
+        } else {
+          treeLines.push(formatPerceiveIframeLine(depth, slot.label, slot.ref));
+          if (inChrome) chromeLinesEmitted++;
+        }
+      }
+      for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
+        visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
+      }
+      return;
+    }
     if (overChrome || overContent || overGlobal) {
       if ((INTERACTIVE_ROLES.has(role) || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId) {
         queueRef(node, -1, refKind(node, skipLink, inChrome));
@@ -3242,12 +3460,34 @@ ${visibleControlsCollectorSource()}
         if (cardWindows.length >= 40) break;
       }
 
+      const frameElements = [];
+      let frameElementCount = 0;
+      for (const el of document.querySelectorAll('iframe, frame')) {
+        frameElementCount += 1;
+        if (frameElements.length >= ${PERCEIVE_FRAME_ELEMENT_CAP}) continue;
+        const src = el.src || '';
+        let host = '';
+        try { if (src) host = new URL(src).host; } catch {}
+        let visible = renderedInteractive(el);
+        try {
+          const rect = el.getBoundingClientRect();
+          if (!(rect.width >= 1) || !(rect.height >= 1)) visible = false;
+        } catch { visible = false; }
+        frameElements.push({
+          title: el.getAttribute('title') || '',
+          src,
+          host,
+          name: el.getAttribute('name') || '',
+          visible,
+        });
+      }
+
       return JSON.stringify({
         title: document.title, url: window.location.href,
         contentType: document.contentType || '',
         vw, vh, scrollY, scrollMax,
         counts, focused: focusDesc, layoutMap, styleHints, cursorInteractives,
-        visibleControls, visibleControlsTruncated, cardWindows
+        visibleControls, visibleControlsTruncated, cardWindows, frameElements, frameElementCount
       });
     })()`;
 }
@@ -3400,6 +3640,24 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
     }
     return output;
   }
+  let frameNotice = null;
+  const frameInventory = frame ? { elements: [], count: 0 } : frameInventoryFromMeta(meta);
+  if (frameInventory.count > 0) {
+    try {
+      const model = await framesModel(cdp, sid);
+      const childFrames = (model.frames || []).filter(item => item && item.depth > 0);
+      const owners = await describePerceiveFrameOwners(cdp, sid, childFrames);
+      frameNotice = buildPerceiveFrameNotice({
+        childFrames,
+        frameElements: frameInventory.elements,
+        frameElementCount: frameInventory.count,
+        owners,
+        target: opts.targetPrefix || '<target>',
+      });
+    } catch {
+      frameNotice = null;
+    }
+  }
   const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, {
     maxDepth,
     interactiveOnly,
@@ -3412,6 +3670,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
     preserveRefs: shouldPreservePerceiveRefs(opts),
     consoleErrors: errors + exceptions,
     targetPrefix: opts.targetPrefix || '<target>',
+    iframeSlots: frameNotice?.slots?.length ? frameNotice.slots : null,
   });
   let treeLines = builtTree.treeLines;
   const { refNodeIds, hiddenTextLines } = builtTree;
@@ -3547,6 +3806,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   if (warnings > 0) healthParts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
   if (exceptions > 0) healthParts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
   lines.push(`Console: ${healthParts.length > 0 ? healthParts.join(', ') : 'clean'}`);
+  if (frameNotice?.line) lines.push(frameNotice.line);
   // Coordinate hint — top-level viewport CSS pixels match clickxy/Input events.
   // Fixed/sticky elements include a "fixed"/"sticky" tag so agents do not
   // misread negative scroll-relative Ys as off-screen.
