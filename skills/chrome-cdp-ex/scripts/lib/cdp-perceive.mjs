@@ -1910,6 +1910,28 @@ async function ownerIframeCover(cdp, sid, backendNodeId, rect, frameRef) {
   return hit;
 }
 
+function parentFrameOf(frame, frames) {
+  if (!frame?.parentId || !Array.isArray(frames)) return null;
+  return frames.find(item => item && item.id === frame.parentId) || null;
+}
+
+// A same-process frame nested in a cross-site frame shares that frame's child
+// session. Its owner iframe is not in the page session: DOM.getFrameOwner there
+// throws "No frame for given id found".
+async function perceiveFrameOffset(cdp, sid, frame, frames) {
+  const entry = {
+    ...frame,
+    frameRef: frame.ref,
+    frameId: frame.id,
+    frames,
+  };
+  if (frame?.process === 'oopif' && parentFrameOf(frame, frames)?.process === 'oopif') {
+    const offset = await crossSiteFramePageOffset(cdp, sid, entry, frame.ref);
+    return { x: offset.x, y: offset.y };
+  }
+  return frameViewportOffset(cdp, sid, entry);
+}
+
 export async function frameViewportOffset(cdp, sid, frameEntry, { settle = false } = {}) {
   if (!frameEntry?.frameId || !frameEntry.parentId) return { x: 0, y: 0 };
   let x = 0;
@@ -4465,12 +4487,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   // and assumed elements were off-screen.
   const refRects = new Map(); // ref number → {x, y, w, h, position?}
   const frameOffset = frame
-    ? await frameViewportOffset(cdp, sid, {
-        ...frame,
-        frameRef: frame.ref,
-        frameId: frame.id,
-        frames: frameContext.frames,
-      })
+    ? await perceiveFrameOffset(cdp, sid, frame, frameContext.frames)
     : { x: 0, y: 0 };
   if (frame && (frameOffset.x || frameOffset.y)) {
     if (Array.isArray(meta.cursorInteractives)) {
