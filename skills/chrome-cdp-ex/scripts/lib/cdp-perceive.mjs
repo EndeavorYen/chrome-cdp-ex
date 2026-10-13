@@ -1735,7 +1735,7 @@ export async function waitForHoverDomChange(cdp, sid, timeoutMs = HOVER_MUTATION
 export function hoverRecaptureShowsChange(before, after) {
   if (before == null || after == null) return false;
   if (before === after) return false;
-  return actionDomDiffShowsChange(formatPerceiveDiffOutput(before, after, { mode: 'since-action' }));
+  return actionDomDiffShowsChange(formatPerceiveDiffOutput(stripPerceiveNodeIdentity(before), stripPerceiveNodeIdentity(after), { mode: 'since-action' }));
 }
 export function discardHoverIdleBaseline(lastPerceiveStore) {
   if (!lastPerceiveStore || typeof lastPerceiveStore !== 'object') return;
@@ -3002,6 +3002,33 @@ export function formatVisibleControlCapSwapLines(swap) {
   }
   return lines;
 }
+// Private-use mark at the end of a diff-source line. It is not part of the
+// printed tree. The number is the DOM backend node id of that @ref.
+const PERCEIVE_NODE_MARK = '\uE000';
+const PERCEIVE_NODE_MARK_RE = new RegExp(`${PERCEIVE_NODE_MARK}(\\d+)$`);
+export function splitPerceiveNodeIdentity(line) {
+  const text = String(line ?? '');
+  const mark = text.match(PERCEIVE_NODE_MARK_RE);
+  if (!mark) return { line: text, id: null };
+  return { line: text.slice(0, mark.index), id: mark[1] };
+}
+export function stripPerceiveNodeIdentity(text) {
+  return String(text ?? '').replace(new RegExp(`${PERCEIVE_NODE_MARK}\\d+$`, 'gm'), '');
+}
+export function annotatePerceiveIdentityLines(lines, refNodeIds) {
+  const idByRef = new Map();
+  for (const item of refNodeIds || []) {
+    if (item?.backendDOMNodeId == null || item.ref == null) continue;
+    idByRef.set(String(item.ref), String(item.backendDOMNodeId));
+  }
+  if (idByRef.size === 0) return lines;
+  return lines.map(line => {
+    const refs = [...String(line).matchAll(/\s+@(?:f\d+:)?(\d+)(?=\s|$)/g)];
+    const ref = refs.length ? refs[refs.length - 1][1] : null;
+    if (!ref || !idByRef.has(ref)) return line;
+    return `${line}${PERCEIVE_NODE_MARK}${idByRef.get(ref)}`;
+  });
+}
 export function computePerceiveDiff(previousOutput, currentOutput) {
   const prev = previousOutput.split('\n');
   const curr = currentOutput.split('\n');
@@ -3011,28 +3038,50 @@ export function computePerceiveDiff(previousOutput, currentOutput) {
   const currHeaderEnd = curr.findIndex(line => line === '');
   const prevTreeStart = prevHeaderEnd >= 0 ? prevHeaderEnd + 1 : 5;
   const currTreeStart = currHeaderEnd >= 0 ? currHeaderEnd + 1 : 5;
-  const prevTree = prev.slice(prevTreeStart).map(stripPerceiveIdentityChrome);
-  const currTree = curr.slice(currTreeStart).map(stripPerceiveIdentityChrome);
-  // Line-level diff with StaticText noise filtering. A ref number is not page identity: an action
-  // settle, --since-action, and --diff keep numbers (#548, #642) and a later plain perceive
-  // renumbers, so lines compare without `@N`. Reported lines keep their refs.
+  // A ref number is not page identity: an action settle, --since-action, and
+  // --diff keep numbers (#548, #642) and a later plain perceive renumbers, so
+  // lines compare without `@N`. A backend-node mark is identity (#651): when
+  // both copies of a line carry one and they differ, the node was replaced
+  // even if the text matches, and the diff prints the old line and the new @ref.
+  // A line with no mark still matches on text, so an older baseline does not
+  // report every ref as changed. The mark is removed before the line is shown.
+  const prevSplit = prev.slice(prevTreeStart).map(splitPerceiveNodeIdentity);
+  const currSplit = curr.slice(currTreeStart).map(splitPerceiveNodeIdentity);
+  const prevTree = prevSplit.map(item => stripPerceiveIdentityChrome(item.line));
+  const currTree = currSplit.map(item => stripPerceiveIdentityChrome(item.line));
+  const prevIds = prevSplit.map(item => item.id);
+  const currIds = currSplit.map(item => item.id);
   const refFreeKey = line => line.replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
   // Count each key, so one of two identical lines going away is still reported.
-  const unmatched = (lines, other) => {
-    const left = new Map();
-    for (const line of other) left.set(refFreeKey(line), (left.get(refFreeKey(line)) || 0) + 1);
-    return lines.filter(line => {
-      const key = refFreeKey(line);
-      const count = left.get(key) || 0;
-      if (count > 0) {
-        left.set(key, count - 1);
-        return false;
-      }
-      return true;
-    });
-  };
-  const removed = unmatched(prevTree, currTree);
-  const added = unmatched(currTree, prevTree);
+  // Same text with two different backend ids does not pair.
+  const currItems = currTree.map((line, index) => ({
+    line,
+    id: currIds[index],
+    key: refFreeKey(line),
+    used: false,
+  }));
+  const byKey = new Map();
+  for (const item of currItems) {
+    const bucket = byKey.get(item.key);
+    if (bucket) bucket.push(item);
+    else byKey.set(item.key, [item]);
+  }
+  const removed = [];
+  for (let index = 0; index < prevTree.length; index++) {
+    const line = prevTree[index];
+    const id = prevIds[index];
+    const bucket = byKey.get(refFreeKey(line)) || [];
+    let match = -1;
+    if (id != null) {
+      match = bucket.findIndex(item => !item.used && item.id === id);
+      if (match === -1) match = bucket.findIndex(item => !item.used && item.id == null);
+    } else {
+      match = bucket.findIndex(item => !item.used);
+    }
+    if (match === -1) removed.push(line);
+    else bucket[match].used = true;
+  }
+  const added = currItems.filter(item => !item.used).map(item => item.line);
   const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
   const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
   const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
@@ -4259,10 +4308,14 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   lines.push(...treeLines);
 
   const output = lines.join('\n');
+  const identityTree = annotatePerceiveIdentityLines(treeLines, refNodeIds);
+  const identityOutput = identityTree === treeLines
+    ? output
+    : [...lines.slice(0, lines.length - treeLines.length), ...identityTree].join('\n');
 
   const markPerceived = () => {
     lastPerceiveStore.output = output;
-    rememberPerceiveDiffSource(lastPerceiveStore, output, hiddenTextLines);
+    rememberPerceiveDiffSource(lastPerceiveStore, output, hiddenTextLines, identityOutput);
     lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
     if (frame) rememberFramePerceiveOutput(refState, frame.ref, perceiveStoreDiffSource(lastPerceiveStore));
     // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
@@ -4279,7 +4332,14 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
     if (!diffBaseline) {
       return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
     }
-    return formatPerceiveDiffOutput(diffBaseline, perceiveStoreDiffSource(lastPerceiveStore), { mode: 'since-action' });
+    const currentSource = perceiveStoreDiffSource(lastPerceiveStore);
+    // An action receipt judges whether the page reacted. A node redrawn with
+    // the same content is no reaction there (click-no-change stays), so the
+    // settle diff drops backend-node marks; perceive --since-action keeps them (#651).
+    if (opts.ignoreNodeIdentity) {
+      return formatPerceiveDiffOutput(stripPerceiveNodeIdentity(diffBaseline), stripPerceiveNodeIdentity(currentSource), { mode: 'since-action' });
+    }
+    return formatPerceiveDiffOutput(diffBaseline, currentSource, { mode: 'since-action' });
   }
 
   // Diff mode: compare with previous perceive output.

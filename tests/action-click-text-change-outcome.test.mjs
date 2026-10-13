@@ -185,7 +185,9 @@ describe('#487 click receipt after perceive -i sees a text-only change', () => {
     const store = { output: null, snapshotOpts: null, cards: null };
     const out = await perceive(cdp, store, T.parsePerceiveArgs(['-d', '8']));
     expect(out).toContain('[StaticText] smooth:not-clicked');
-    expect(T.perceiveStoreDiffSource(store)).toBe(store.output);
+    // The diff source adds a backend-node mark on @ref lines (#651). It does
+    // not append the page text the default tree already prints.
+    expect(T.stripPerceiveNodeIdentity(T.perceiveStoreDiffSource(store))).toBe(store.output);
   });
 });
 

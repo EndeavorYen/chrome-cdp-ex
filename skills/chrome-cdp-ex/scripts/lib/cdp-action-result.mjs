@@ -462,10 +462,13 @@ export function perceiveDiffSourceText(output, hiddenTextLines = []) {
   if (!output || !hiddenTextLines?.length) return output;
   return `${output}\n${hiddenTextLines.join('\n')}`;
 }
-export function rememberPerceiveDiffSource(store, output, hiddenTextLines = []) {
-  store.diffSource = hiddenTextLines?.length
-    ? { output, text: perceiveDiffSourceText(output, hiddenTextLines) }
-    : null;
+export function rememberPerceiveDiffSource(store, output, hiddenTextLines = [], identityOutput = null) {
+  // `identityOutput` is the same tree with a backend-node mark on each @ref
+  // line. Diffs use it so a replaced node is not the same line as its twin
+  // (#651). The printed perceive stays `output`.
+  const base = identityOutput && identityOutput !== output ? identityOutput : output;
+  const text = perceiveDiffSourceText(base, hiddenTextLines);
+  store.diffSource = text !== output ? { output, text } : null;
 }
 // Paths that overwrite `store.output` without a tree (cards, pdf-viewer, hover
 // discard) leave a stale diffSource behind; it only applies to its own output.
@@ -2272,6 +2275,8 @@ export function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOut
     // Never inherit leftover perceive --frame mode; only the action's @fN target
     // (or an explicit --frame) may settle inside an iframe.
     frameRef: targetFrameRef || null,
+    // Receipts ignore backend-node identity: an identical redraw is not a reaction (#651).
+    ignoreNodeIdentity: true,
   });
   // actionObservationPerceiveOpts forces cards:false so leftover 0-card
   // recapture stays default AX (#257/#279). Re-enable cards only when the
