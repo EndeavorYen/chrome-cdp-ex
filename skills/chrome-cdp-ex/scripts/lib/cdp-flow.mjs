@@ -14,7 +14,7 @@ import { parseFillArgs } from './cdp-cli.mjs';
 import { boundedConsoleLineText, commandArgsFromTokens, consoleEntryFromEvent, exceptionEntryFromEvent, removeTabEnvironment, removeTabMode, tokenizeCommandLine, tokenizeFlowCommandLine } from './cdp-core.mjs';
 import { clickStr, fillStr, normalizeScrollArgs, pressStr, scrollStr, selectStr, typeStr } from './cdp-input.mjs';
 import { assertNotPdfViewerPage, cdpDomains, evalStr, getPages, navStr, runtimeExceptionMessage, waitForDocumentReady } from './cdp-page.mjs';
-import { formatUnknownRefError, frameScopedBackendNode, isRef, parseFrameRef, validateUrl, waitForSettle } from './cdp-perceive.mjs';
+import { formatUnknownRefError, frameScopedBackendNode, isRef, parseFrameRef, rejectCrossSiteFrameAction, validateUrl, waitForSettle } from './cdp-perceive.mjs';
 import { formatCommandLine, redactedCommandNeedsInput, resolveRequestSecret } from './cdp-session-report.mjs';
 
 // --- Navigation history ---
@@ -502,6 +502,7 @@ export function cascadeDeclarationRank(rule = {}) {
 }
 export async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
+  rejectCrossSiteFrameAction(refState, selector);
   const targetPrefix = opts.targetPrefix || '<target>';
   await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
 

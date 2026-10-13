@@ -722,6 +722,16 @@ export function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', pl
   // #466: CDP_DENY_ACTIONS / CDP_ALLOWED_ORIGINS refusals (Kind: policy) and bad policy variables.
   const sessionPolicyRecovery = policyRecovery(message, { targetPrefix });
   if (sessionPolicyRecovery) return sessionPolicyRecovery;
+  // #717: the daemon forwards this usage refusal as text. Next is `frame`, not
+  // `perceive --frame` (that read lists the same ref and the action loops) and not `status`.
+  if (lower.includes('actions inside cross-site frames are not supported yet')) {
+    return {
+      kind: 'usage',
+      strategy: 'list-frames',
+      run: `cdp frame ${target}`,
+      reason: 'Actions inside cross-site frames are not supported yet.',
+    };
+  }
   // #587: file: is refused on purpose. The Next command serves that file's folder.
   if (isFileUrlRefusalMessage(message)) {
     return {

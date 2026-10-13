@@ -463,7 +463,159 @@ describe('perceive frame notice', () => {
     expect(text).not.toContain('cross-site');
   });
 
-  it('counts cross-site iframes past the 50-element detail list', async () => {
+  function blankFrame(id, { url = 'about:blank', origin = '://', parentId = 'root', name = '', nested = [] } = {}) {
+  const node = { frame: { id, parentId, url, name, securityOrigin: origin } };
+  if (nested.length) node.childFrames = nested;
+  return node;
+}
+
+it('counts a pending cross-site about:blank frame as cross-site and does not point Next at it', async () => {
+  const same = 'http://127.0.0.1:9/inner.html';
+  const cross = 'http://localhost:9/inner.html';
+  const elements = [
+    frameEl({ title: 'Inner', src: same, host: '127.0.0.1:9' }),
+    frameEl({ title: 'Other', src: cross, host: 'localhost:9' }),
+  ];
+  const nodes = axTree([
+    { nodeId: 'ifr1', name: { value: 'Inner' }, backendDOMNodeId: 21 },
+    { nodeId: 'ifr2', name: { value: 'Other' }, backendDOMNodeId: 22 },
+  ]);
+
+  for (const origin of ['://', '', 'null']) {
+    for (const url of ['about:blank', '']) {
+      const label = `url ${JSON.stringify(url)} origin ${JSON.stringify(origin)}`;
+      const tree = frameTree([
+        childFrame('same', same, 'same'),
+        blankFrame('pending', { url, origin }),
+      ]);
+      const out = await perceive(pageCdp({ nodes, frameElements: elements, tree }));
+      expect(framesLines(out), label).toEqual([
+        `Frames: 1 (1 visible), 1 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f2`,
+      ]);
+      expect(out, label).toContain('  [iframe] "Inner" @f2');
+      expect(out, label).toContain('  [iframe] "localhost:9"');
+      expect(out, label).not.toMatch(/\[iframe\] "localhost:9" @f/);
+      expect(out, label).not.toContain('@f3');
+      expect(out, label).not.toContain('--frame @f3');
+    }
+  }
+
+  // The placeholder sits ahead of the same-origin frame. Dropping it would renumber @f3 to @f2.
+  const reversed = frameTree([
+    blankFrame('pending', { origin: '://' }),
+    childFrame('same', same, 'same'),
+  ]);
+  const reversedOut = await perceive(pageCdp({ nodes, frameElements: elements, tree: reversed }));
+  expect(framesLines(reversedOut)).toEqual([
+    `Frames: 1 (1 visible), 1 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f3`,
+  ]);
+  expect(reversedOut).toContain('  [iframe] "Inner" @f3');
+  expect(reversedOut).not.toMatch(/\[iframe\] "localhost:9" @f/);
+  expect(reversedOut).not.toContain('--frame @f2');
+
+  const listed = await T.framesStr(pageCdp({ tree: reversed }), 'sid');
+  expect(listed).toContain('Frames: 3\n');
+  expect(listed).toContain('@f2 (anonymous) pending parent:@f1 about:blank origin:://');
+  expect(listed).toContain('@f3 same same parent:@f1 http://127.0.0.1:9/inner.html');
+  expect(listed).not.toContain('process:oopif');
+
+  const onlyPending = frameTree([blankFrame('pending', { origin: 'null' })]);
+  const onlyOut = await perceive(pageCdp({
+    nodes: axTree([{ nodeId: 'ifr', name: { value: 'Other' }, backendDOMNodeId: 21 }]),
+    frameElements: [frameEl({ title: 'Other', src: cross, host: 'localhost:9' })],
+    tree: onlyPending,
+  }));
+  expect(framesLines(onlyOut)).toEqual(['Frames: 0 (0 visible), 1 cross-site not reachable yet']);
+  expect(onlyOut).not.toMatch(/Next:/);
+  expect(onlyOut).toContain('  [iframe] "localhost:9"');
+  expect(onlyOut).not.toMatch(/\[iframe\] "localhost:9" @f/);
+
+  // A nested child of the placeholder is not a same-origin target.
+  const nested = frameTree([
+    blankFrame('pending', {
+      origin: '://',
+      nested: [childFrame('inner', 'http://localhost:9/nested.html', 'inner', 'pending')],
+    }),
+  ]);
+  const nestedOut = await perceive(pageCdp({
+    nodes: axTree([{ nodeId: 'ifr', name: { value: 'Other' }, backendDOMNodeId: 21 }]),
+    frameElements: [frameEl({ title: 'Other', src: cross, host: 'localhost:9' })],
+    tree: nested,
+  }));
+  expect(framesLines(nestedOut)).toEqual(['Frames: 0 (0 visible), 1 cross-site not reachable yet']);
+  expect(nestedOut).not.toContain('--frame');
+  const nestedListed = await T.framesStr(pageCdp({ tree: nested }), 'sid');
+  expect(nestedListed).toContain('@f2 (anonymous) pending parent:@f1 about:blank origin:://');
+  expect(nestedListed).toContain('@f3 inner inner parent:@f2 http://localhost:9/nested.html');
+});
+
+it('keeps a same-origin about:blank iframe in the frame census', async () => {
+  const cases = [
+    { title: 'no src', src: '', host: '', frameUrl: 'about:blank', origin: '://' },
+    { title: 'about:blank', src: 'about:blank', host: '', frameUrl: 'about:blank', origin: '' },
+    { title: 'srcdoc', src: 'about:srcdoc', host: '', frameUrl: 'about:srcdoc', origin: 'null' },
+    {
+      title: 'same site',
+      src: 'http://127.0.0.1:9/other.html',
+      host: '127.0.0.1:9',
+      frameUrl: 'about:blank',
+      origin: 'null',
+    },
+    {
+      title: 'same site other port',
+      src: 'http://127.0.0.1:10/other.html',
+      host: '127.0.0.1:10',
+      frameUrl: '',
+      origin: '://',
+    },
+    {
+      title: 'same site subdomain',
+      src: 'https://pay.example.com/checkout',
+      host: 'pay.example.com',
+      frameUrl: 'about:blank',
+      origin: 'null',
+      pageUrl: 'https://app.example.com/host',
+    },
+  ];
+  for (const item of cases) {
+    const pageUrl = item.pageUrl || 'http://127.0.0.1:9/host.html';
+    const tree = {
+      frame: { id: 'root', url: pageUrl, name: 'top', securityOrigin: new URL(pageUrl).origin },
+      childFrames: [blankFrame('blank', { url: item.frameUrl, origin: item.origin, name: 'blank' })],
+    };
+    const out = await perceive(pageCdp({
+      nodes: axTree([{ nodeId: 'ifr', name: { value: item.title }, backendDOMNodeId: 21 }]),
+      frameElements: [frameEl({ title: item.title, src: item.src, host: item.host })],
+      tree,
+    }));
+    expect(framesLines(out), item.title).toEqual([
+      `Frames: 1 (1 visible). Next: cdp perceive ${TARGET} --frame @f2`,
+    ]);
+    expect(out, item.title).toContain(`  [iframe] ${JSON.stringify(item.title)} @f2`);
+    expect(out, item.title).not.toContain('cross-site');
+  }
+
+  const cross = 'http://localhost:9/inner.html';
+  const beside = await perceive(pageCdp({
+    nodes: axTree([
+      { nodeId: 'ifr1', name: { value: 'Blank' }, backendDOMNodeId: 21 },
+      { nodeId: 'ifr2', name: { value: 'Other' }, backendDOMNodeId: 22 },
+    ]),
+    frameElements: [
+      frameEl({ title: 'Blank', src: '', host: '' }),
+      frameEl({ title: 'Other', src: cross, host: 'localhost:9' }),
+    ],
+    tree: frameTree([blankFrame('blank', { origin: '://' })]),
+  }));
+  expect(framesLines(beside)).toEqual([
+    `Frames: 1 (1 visible), 1 cross-site not reachable yet. Next: cdp perceive ${TARGET} --frame @f2`,
+  ]);
+  expect(beside).toContain('  [iframe] "Blank" @f2');
+  expect(beside).toContain('  [iframe] "localhost:9"');
+  expect(beside).not.toMatch(/\[iframe\] "localhost:9" @f/);
+});
+
+it('counts cross-site iframes past the 50-element detail list', async () => {
     const same = 'http://127.0.0.1:9/outer.html';
     const frames = [
       pageFrameElement({ title: 'Outer', src: same }),

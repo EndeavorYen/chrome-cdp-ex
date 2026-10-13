@@ -293,7 +293,12 @@ export async function daemonCommandCatchResult(e, {
   const alreadyClassified = isClassifiedActionFailureText(rawError);
   if (!alreadyClassified) await attachSelectorFrameMiss(cdp, sessionId, actionError, context.target);
   const failure = classifyActionFailure(actionError, context);
-  const error = alreadyClassified || failure.kind === 'native-dialog' || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
+  // #717: this usage refusal must stay a classified action failure. Other usage
+  // errors stay raw so the CLI can name help; this one would otherwise become
+  // Kind: unknown / Next: cdp status.
+  const crossSiteAction = Boolean(actionError?.crossSiteFrameAction)
+    || /actions inside cross-site frames are not supported yet/i.test(rawError);
+  const error = alreadyClassified || failure.kind === 'native-dialog' || crossSiteAction || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
     ? formatActionFailure(actionError, context)
     : rawError;
   return { ok: false, error };

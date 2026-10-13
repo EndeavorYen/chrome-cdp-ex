@@ -885,18 +885,212 @@ export function formatFrameTreeText(frames = []) {
     const parent = frame.parentRef ? ` parent:${frame.parentRef}` : '';
     const origin = frame.securityOrigin ? ` origin:${frame.securityOrigin}` : '';
     const url = frame.url || frame.unreachableUrl || '(no url)';
-    lines.push(`${indent}${frame.ref} ${label} ${frame.id}${parent} ${url}${origin}`);
+    const process = frame.process === 'oopif' ? ' process:oopif' : '';
+    lines.push(`${indent}${frame.ref} ${label} ${frame.id}${parent} ${url}${origin}${process}`);
   }
   lines.push('Hint: use frame refs to diagnose wrong-frame errors; element refs inside frames will use @fN:M syntax.');
   return lines.join('\n');
 }
-export async function framesModel(cdp, sid) {
+// Cross-site (out-of-process) iframes are not in the page session's
+// Page.getFrameTree. The first `frame` command, or a cross-site @fN, attaches
+// iframe targets once per document and appends those frames after the
+// same-origin numbers. 50 extra frames and depth 8 bound the child walk.
+const OOPIF_MAX_EXTRA = 50;
+const OOPIF_MAX_DEPTH = 8;
+const oopifClients = new WeakMap();
+
+function oopifDocument(cdp, sid) {
+  let docs = oopifClients.get(cdp);
+  if (!docs) {
+    docs = new Map();
+    oopifClients.set(cdp, docs);
+  }
+  let doc = docs.get(sid);
+  if (!doc) {
+    doc = { attached: false, children: [], frames: new Map(), byTarget: new Map() };
+    docs.set(sid, doc);
+    watchOopifDocument(cdp, sid, doc);
+  }
+  return doc;
+}
+
+function rememberOopifSession(doc, sessionId, targetId) {
+  if (!sessionId) return;
+  if (!doc.children.includes(sessionId)) doc.children.push(sessionId);
+  if (targetId) doc.byTarget.set(targetId, sessionId);
+}
+
+function watchOopifDocument(cdp, sid, doc) {
+  if (typeof cdp.onEvent !== 'function') return;
+  const forThisPage = msg => !msg?.sessionId || msg.sessionId === sid;
+  cdp.onEvent('Target.attachedToTarget', (params, msg) => {
+    if (!forThisPage(msg)) return;
+    const child = params?.sessionId;
+    if (!child || child === sid || params?.targetInfo?.type !== 'iframe') return;
+    rememberOopifSession(doc, child, params?.targetInfo?.targetId || '');
+  });
+  cdp.onEvent('Target.detachedFromTarget', (params, msg) => {
+    if (!forThisPage(msg)) return;
+    const child = params?.sessionId;
+    if (!child || child === sid || !doc.children.includes(child)) return;
+    doc.children = doc.children.filter(id => id !== child);
+    if (params?.targetId) doc.byTarget.delete(params.targetId);
+    for (const [targetId, mapped] of doc.byTarget) {
+      if (mapped === child) doc.byTarget.delete(targetId);
+    }
+    for (const [frameId, mapped] of doc.frames) {
+      if (mapped === child) doc.frames.delete(frameId);
+    }
+    doc.attached = false;
+  });
+  cdp.onEvent('Page.frameNavigated', (params, msg) => {
+    if (!forThisPage(msg) || params?.frame?.parentId) return;
+    // The previous document's iframe sessions are not this document's. Drop them
+    // here; a later attachedToTarget, or Target.getTargets on the next list, finds
+    // the iframes that belong to the new document.
+    doc.children = [];
+    doc.frames.clear();
+    doc.byTarget.clear();
+    doc.attached = false;
+  });
+}
+
+function iframeTargetOfPage(info, rootId) {
+  if (!info || info.type !== 'iframe' || !info.targetId || !rootId) return false;
+  const parent = info.parentId || info.parentFrameId || info.openerId || '';
+  return parent === rootId;
+}
+
+// setAutoAttach does not send attachedToTarget again for an iframe this client
+// already attached. After navigation clears the cache, ask for the page's iframe
+// targets and attach any whose session we no longer have.
+async function adoptPageIframeTargets(cdp, sid, doc, rootId) {
+  if (!rootId || doc.children.length >= OOPIF_MAX_EXTRA) return;
+  let infos = [];
+  try {
+    const result = await cdpDomains(cdp).Target.getTargets({ filter: [{ type: 'iframe' }] }, sid);
+    infos = Array.isArray(result?.targetInfos) ? result.targetInfos : [];
+  } catch {
+    return;
+  }
+  for (const info of infos) {
+    if (doc.children.length >= OOPIF_MAX_EXTRA) break;
+    if (!iframeTargetOfPage(info, rootId) || doc.byTarget.has(info.targetId)) continue;
+    try {
+      const attached = await cdpDomains(cdp).Target.attachToTarget({
+        targetId: info.targetId,
+        flatten: true,
+      }, sid);
+      const child = attached?.sessionId;
+      if (!child || doc.byTarget.has(info.targetId)) continue;
+      rememberOopifSession(doc, child, info.targetId);
+    } catch {
+      // The target left, or this client is already attached and the event kept the session.
+    }
+  }
+}
+
+function appendCrossSiteFrames(sameOriginFrames, childTrees, { maxExtra = OOPIF_MAX_EXTRA, maxDepth = OOPIF_MAX_DEPTH } = {}) {
+  const frames = sameOriginFrames.map(frame => ({ ...frame }));
+  const byId = new Map();
+  for (const frame of frames) if (frame.id) byId.set(frame.id, frame);
+  const extras = [];
+  const sessionByFrame = new Map();
+  const pending = [];
+  function visit(node, sessionId) {
+    if (!node?.frame || extras.length >= maxExtra) return;
+    const raw = node.frame;
+    const id = raw.id || '';
+    if (id && byId.has(id)) {
+      for (const child of node.childFrames || []) visit(child, sessionId);
+      return;
+    }
+    const parent = raw.parentId ? byId.get(raw.parentId) : null;
+    if (raw.parentId && !parent) {
+      pending.push({ node, sessionId });
+      return;
+    }
+    const depth = parent ? parent.depth + 1 : 1;
+    if (depth > maxDepth) return;
+    const index = frames.length + extras.length + 1;
+    const entry = {
+      ref: `@f${index}`,
+      index,
+      id,
+      parentId: raw.parentId || null,
+      parentRef: parent ? parent.ref : null,
+      depth,
+      name: raw.name || '',
+      url: raw.url || '',
+      securityOrigin: raw.securityOrigin || '',
+      unreachableUrl: raw.unreachableUrl || '',
+      mimeType: raw.mimeType || '',
+      process: 'oopif',
+    };
+    extras.push(entry);
+    if (id) {
+      byId.set(id, entry);
+      sessionByFrame.set(id, sessionId);
+    }
+    for (const child of node.childFrames || []) visit(child, sessionId);
+  }
+  for (const tree of childTrees) {
+    if (extras.length >= maxExtra) break;
+    visit(tree?.frameTree, tree?.sessionId);
+  }
+  for (let pass = 0; pass < maxDepth && pending.length && extras.length < maxExtra; pass += 1) {
+    const batch = pending.splice(0, pending.length);
+    for (const item of batch) {
+      if (extras.length >= maxExtra) break;
+      visit(item.node, item.sessionId);
+    }
+  }
+  return { frames: frames.concat(extras), sessionByFrame };
+}
+
+async function loadCrossSiteFrames(cdp, sid, sameOriginFrames) {
+  const doc = oopifDocument(cdp, sid);
+  if (!doc.attached) {
+    await cdpDomains(cdp).Target.setAutoAttach({
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: 'iframe' }],
+    }, sid);
+    const rootId = sameOriginFrames.find(frame => frame && frame.depth === 0)?.id || '';
+    await adoptPageIframeTargets(cdp, sid, doc, rootId);
+    doc.attached = true;
+  }
+  const trees = [];
+  const seen = new Set();
+  for (const childSid of [...doc.children]) {
+    if (!childSid || seen.has(childSid) || trees.length >= OOPIF_MAX_EXTRA) continue;
+    seen.add(childSid);
+    try {
+      const result = await cdpDomains(cdp).Page.getFrameTree({}, childSid);
+      if (result?.frameTree) trees.push({ sessionId: childSid, frameTree: result.frameTree });
+    } catch {
+      // A detached child no longer answers. detachedFromTarget drops the session.
+    }
+  }
+  const merged = appendCrossSiteFrames(sameOriginFrames, trees);
+  doc.frames = merged.sessionByFrame;
+  return merged.frames;
+}
+
+function crossSiteFrameSession(cdp, sid, frameId) {
+  if (!frameId) return null;
+  return oopifDocument(cdp, sid).frames.get(frameId) || null;
+}
+
+export async function framesModel(cdp, sid, { crossSite = false } = {}) {
   const result = await cdpDomains(cdp).Page.getFrameTree( {}, sid);
   const frames = flattenFrameTree(result.frameTree);
+  const listed = crossSite ? await loadCrossSiteFrames(cdp, sid, frames) : frames;
   return {
     schema: 'chrome-cdp-ex.frames.v1',
-    frameCount: frames.length,
-    frames,
+    frameCount: listed.length,
+    frames: listed,
   };
 }
 const PERCEIVE_FRAME_ELEMENT_CAP = 50;
@@ -934,6 +1128,66 @@ function frameUrlsEqual(a, b) {
   } catch {
     return false;
   }
+}
+// Schemeful site is scheme + registrable host. An IP or localhost is its own
+// site; other hosts use the last two labels, or the last three when the tail
+// is a multi-label public suffix. Port is not part of the site. about:blank,
+// about:srcdoc, and an empty src are not another site.
+const MULTI_LABEL_PUBLIC_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'co.jp', 'com.au', 'net.au', 'org.au',
+  'co.nz', 'com.br', 'co.kr', 'com.hk', 'com.sg', 'com.tr', 'co.za', 'com.mx',
+  'co.in', 'com.tw', 'com.cn', 'com.ar',
+]);
+function registrableHost(hostname) {
+  const host = String(hostname || '').replace(/\.+$/, '').toLowerCase();
+  if (!host) return '';
+  if (host === 'localhost' || host.endsWith('.localhost')) return host;
+  if (host.startsWith('[') || host.includes(':')) return host;
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host)) return host;
+  const labels = host.split('.').filter(Boolean);
+  if (labels.length <= 2) return labels.join('.');
+  const tail = labels.slice(-2).join('.');
+  if (MULTI_LABEL_PUBLIC_SUFFIXES.has(tail) && labels.length >= 3) return labels.slice(-3).join('.');
+  return tail;
+}
+function schemefulSite(value, base) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  let url;
+  try {
+    url = base ? new URL(raw, base) : new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  const host = registrableHost(url.hostname);
+  if (!host) return null;
+  return `${url.protocol}//${host}`;
+}
+function srcPointsAtAnotherSite(src, pageUrl) {
+  const srcSite = schemefulSite(src, pageUrl);
+  if (!srcSite) return false;
+  const pageSite = schemefulSite(pageUrl);
+  if (!pageSite) return false;
+  return srcSite !== pageSite;
+}
+// Chrome reports a cross-site iframe whose navigation has not committed as a
+// depth-1 child still at about:blank (or with an empty URL) and an opaque
+// origin. '://', an empty origin, and the string 'null' are that opaque value.
+function isOpaqueSecurityOrigin(origin) {
+  const value = String(origin ?? '').trim().toLowerCase();
+  return value === '' || value === '://' || value === 'null';
+}
+function isUncommittedFrameUrl(url) {
+  const value = String(url || '').trim().toLowerCase();
+  return value === '' || value === 'about:blank';
+}
+function isPendingBlankFrame(frame) {
+  return !!frame
+    && frame.depth === 1
+    && isUncommittedFrameUrl(frame.url)
+    && !frame.unreachableUrl
+    && isOpaqueSecurityOrigin(frame.securityOrigin);
 }
 function frameInventoryFromMeta(meta) {
   const elements = [];
@@ -1020,16 +1274,85 @@ function perceiveFrameLabel(element, owner, crossSite) {
   if (title) return title;
   return String(owner?.host || element?.host || frameUrlHost(owner?.src || element?.src) || '').trim();
 }
-// N and M count every child frame Page.getFrameTree reports (depth > 0),
-// including nested frames. `frame <t>` lists those same frames and prints
-// Frames as N+1 because it also counts the top frame (@f1). Pairing and the
+// N and M count child frames Page.getFrameTree reports (depth > 0), including
+// nested frames. They do not include cross-site frames, and this path does not
+// auto-attach. A depth-1 frame that is still about:blank or has an empty URL,
+// with an opaque origin, is cross-site (pending) when its owner iframe src
+// points at another site: it is not a same-origin child, it gets no ref, and
+// Next does not point at it. `frame <t>` still lists that frame as Chrome
+// reports it, so same-origin @fN numbers stay put. An about:blank iframe with
+// no src, a same-site src, or srcdoc stays same-origin. Pairing and the
 // cross-site count use only depth-1 frames against the top document's
 // iframe/frame elements. A nested frame is not a top-level element, so it
 // never matches one and never gets a top-level [iframe] line.
 function perceiveTopLevelFrames(childFrames) {
   return childFrames.filter(frame => frame && frame.depth === 1);
 }
-function perceiveFrameCensus({ childFrames, frameElements, frameElementCount }) {
+function resolvedOwnerSrc(frame, owners, paired, elements) {
+  if (owners instanceof Map && owners.has(frame.ref)) {
+    const owner = owners.get(frame.ref);
+    if (owner && typeof owner.src === 'string') return owner.src;
+  }
+  const index = paired.get(frame.ref);
+  if (index == null) return '';
+  return elements[index]?.src || '';
+}
+function sameSiteElementIndex(elements, used, pageUrl) {
+  return elements.findIndex((element, index) => (
+    !used.has(index) && !srcPointsAtAnotherSite(element?.src || '', pageUrl)
+  ));
+}
+function pendingCrossSiteRefs(topLevel, elements, paired, pageUrl, owners) {
+  const pending = new Set();
+  const used = new Set(paired.values());
+  for (const frame of topLevel) {
+    if (!isPendingBlankFrame(frame)) continue;
+    const ownerKnown = owners instanceof Map && owners.has(frame.ref);
+    let src = resolvedOwnerSrc(frame, owners, paired, elements);
+    const ownerSaysCrossSite = ownerKnown && srcPointsAtAnotherSite(src, pageUrl);
+    const pairedIndex = paired.get(frame.ref);
+    const pairedSrc = pairedIndex == null ? '' : (elements[pairedIndex]?.src || '');
+    // Positional pairing can attach this blank frame to a cross-site iframe,
+    // or leave it unpaired when a committed cross-site iframe is also on the
+    // page. A free same-site element (no src, about:blank, srcdoc, or a
+    // same-site URL) keeps the frame same-origin. The owner element's src
+    // wins when DOM.getFrameOwner already read it.
+    const pairIsWrong = pairedIndex == null || srcPointsAtAnotherSite(pairedSrc, pageUrl);
+    if (!ownerSaysCrossSite && pairIsWrong) {
+      const friendly = sameSiteElementIndex(elements, used, pageUrl);
+      if (friendly >= 0) {
+        if (pairedIndex != null) used.delete(pairedIndex);
+        used.add(friendly);
+        paired.set(frame.ref, friendly);
+        if (!ownerKnown) src = elements[friendly]?.src || '';
+      }
+    }
+    if (srcPointsAtAnotherSite(src, pageUrl)) pending.add(frame.ref);
+  }
+  return pending;
+}
+function withoutPendingFrames(children, pendingRefs) {
+  if (!pendingRefs.size) return children;
+  const pendingIds = new Set();
+  for (const frame of children) {
+    if (pendingRefs.has(frame.ref) && frame.id) pendingIds.add(frame.id);
+  }
+  const excluded = new Set(pendingRefs);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const frame of children) {
+      if (excluded.has(frame.ref) || !frame.parentId || !pendingIds.has(frame.parentId)) continue;
+      excluded.add(frame.ref);
+      if (frame.id) pendingIds.add(frame.id);
+      grew = true;
+    }
+  }
+  return children.filter(frame => !excluded.has(frame.ref));
+}
+function perceiveFrameCensus({
+  childFrames, frameElements, frameElementCount, pageUrl = '', owners = null,
+}) {
   const children = Array.isArray(childFrames) ? childFrames : [];
   const elements = Array.isArray(frameElements) ? frameElements : [];
   const topLevel = perceiveTopLevelFrames(children);
@@ -1037,15 +1360,23 @@ function perceiveFrameCensus({ childFrames, frameElements, frameElementCount }) 
   const elementCount = Number.isInteger(reported) && reported >= elements.length
     ? reported
     : elements.length;
-  const crossSiteCount = Math.max(0, elementCount - topLevel.length);
   const paired = matchPerceiveFrameElements(topLevel, elements);
-  return { children, elements, crossSiteCount, paired };
+  const pendingRefs = pendingCrossSiteRefs(topLevel, elements, paired, pageUrl, owners);
+  for (const ref of pendingRefs) paired.delete(ref);
+  const sameOriginChildren = withoutPendingFrames(children, pendingRefs);
+  const sameOriginTop = topLevel.filter(frame => !pendingRefs.has(frame.ref));
+  const crossSiteCount = Math.max(0, elementCount - sameOriginTop.length);
+  return { children: sameOriginChildren, elements, crossSiteCount, paired };
 }
-function buildPerceiveFrameNotice({ childFrames, frameElements, frameElementCount, owners, target }) {
+function buildPerceiveFrameNotice({
+  childFrames, frameElements, frameElementCount, owners, target, pageUrl = '',
+}) {
   const { children, elements, crossSiteCount, paired } = perceiveFrameCensus({
     childFrames,
     frameElements,
     frameElementCount,
+    pageUrl,
+    owners,
   });
   if (children.length === 0 && crossSiteCount === 0) return null;
   const ownerMap = owners instanceof Map ? owners : new Map();
@@ -1107,13 +1438,15 @@ async function readSelectorFrameMiss(cdp, sid) {
   const inventory = frameInventoryFromMeta(parsed);
   if (!inventory.count) return null;
   const model = await framesModel(cdp, sid);
-  const childFrames = (model.frames || []).filter(item => item && item.depth > 0);
+  const frames = model.frames || [];
+  const childFrames = frames.filter(item => item && item.depth > 0);
   const notice = buildPerceiveFrameNotice({
     childFrames,
     frameElements: inventory.elements,
     frameElementCount: inventory.count,
     owners: new Map(),
     target: '<target>',
+    pageUrl: frames.find(item => item && item.depth === 0)?.url || '',
   });
   if (!notice) return null;
   return {
@@ -1180,7 +1513,7 @@ export function parseFrameArgs(args = []) {
   return { format: fopts.format, unsafeFull: lifted.unsafeFull };
 }
 export async function framesStr(cdp, sid, { format = 'text', unsafeFull = false } = {}) {
-  const model = await framesModel(cdp, sid);
+  const model = await framesModel(cdp, sid, { crossSite: true });
   const frames = (model.frames || []).map(frame => displayedFrame(frame, { unsafeFull }));
   if (format === 'json') return formatJson({ ...model, frames });
   return formatFrameTreeText(frames);
@@ -1188,7 +1521,11 @@ export async function framesStr(cdp, sid, { format = 'text', unsafeFull = false 
 export async function resolveFrameRef(cdp, sid, frameRef) {
   const parsed = parseFrameOnlyRef(frameRef);
   if (!parsed) throw new Error(`Frame ref required (example: @f2), got: ${frameRef || '(empty)'}`);
-  const model = await framesModel(cdp, sid);
+  // A same-origin @fN is inside Page.getFrameTree. Resolving it must not attach.
+  const same = await framesModel(cdp, sid);
+  const direct = same.frames[parsed.frameIndex - 1];
+  if (direct && direct.ref === parsed.frameRef) return { frame: direct, frames: same.frames };
+  const model = await framesModel(cdp, sid, { crossSite: true });
   const frame = model.frames[parsed.frameIndex - 1];
   if (!frame || frame.ref !== parsed.frameRef) {
     throw new Error(`Unknown frame: ${parsed.frameRef}. Run "frame" to refresh the frame tree, then use a listed @fN ref.`);
@@ -1214,6 +1551,7 @@ export function storeFrameScopedRefs(refState, frame, frames, scopedRefMap) {
     parentRef: frame.parentRef || null,
     name: frame.name || '',
     url: frame.url || '',
+    process: frame.process || '',
     refs: new Map(scopedRefMap),
     frames: frames || [],
   });
@@ -1228,10 +1566,36 @@ export function frameScopedBackendNode(refState, parsed) {
   if (!entry) {
     throw new Error(`Unknown frame ref: ${parsed.frameRef}. Run "frame", then "perceive --frame ${parsed.frameRef}" to assign iframe-local refs.`);
   }
+  rejectCrossSiteFrameEntry(entry, parsed.frameRef);
   if (!(entry.refs instanceof Map) || !entry.refs.has(parsed.refIndex)) {
     throw new Error(`Unknown ref: ${parsed.frameRef}:${parsed.refIndex}. Run "perceive --frame ${parsed.frameRef}" to refresh refs inside that frame.`);
   }
   return { entry, backendNodeId: entry.refs.get(parsed.refIndex) };
+}
+function crossSiteFrameProcess(entry, frameRef) {
+  if (entry?.process === 'oopif') return 'oopif';
+  const frames = entry?.frames;
+  if (!Array.isArray(frames)) return '';
+  const match = frames.find(frame => frame && (frame.ref === frameRef || frame.id === entry.frameId));
+  return match?.process === 'oopif' ? 'oopif' : '';
+}
+export function crossSiteFrameActionError(frameRef) {
+  const err = new Error(`Actions inside cross-site frames are not supported yet (${frameRef}).`);
+  err.crossSiteFrameAction = { frameRef };
+  return err;
+}
+function rejectCrossSiteFrameEntry(entry, frameRef) {
+  if (crossSiteFrameProcess(entry, frameRef) === 'oopif') throw crossSiteFrameActionError(frameRef);
+}
+// #717: click, fill, cascade, and every other action resolve the ref through
+// frameScopedBackendNode. Refuse before Page.createIsolatedWorld on the parent
+// session, which reports "No frame for given id found" for an OOPIF.
+export function rejectCrossSiteFrameAction(refState, ref) {
+  const parsed = parseFrameRef(ref);
+  if (!parsed) return;
+  const entry = frameScopedRefEntry(refState || {}, parsed);
+  if (!entry) return;
+  rejectCrossSiteFrameEntry(entry, parsed.frameRef);
 }
 export function qualifyFrameRefsInLines(lines, frameRef) {
   return lines.map(line => line.replace(/@(\d+)(?=\s*(?:\(|$))/, `${frameRef}:$1`));
@@ -3571,7 +3935,14 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   if (lastPerceiveStore && typeof lastPerceiveStore === 'object') lastPerceiveStore.outputTruncated = false;
   const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
   const frame = frameContext?.frame || null;
-  const frameExecutionContextId = frame ? await createFrameExecutionContext(cdp, sid, frame.id) : null;
+  const crossSiteSid = frame?.process === 'oopif' ? crossSiteFrameSession(cdp, sid, frame.id) : null;
+  if (frame?.process === 'oopif' && !crossSiteSid) {
+    throw new Error(`Cross-site frame ${frame.ref} is not attached. Run "frame" to refresh it, then "perceive --frame ${frame.ref}".`);
+  }
+  // Same-origin frame commands stay on the page session. A cross-site frame's
+  // AX tree and isolated world belong to the attached child session.
+  const contentSid = crossSiteSid || sid;
+  const frameExecutionContextId = frame ? await createFrameExecutionContext(cdp, contentSid, frame.id) : null;
   if (frame && (scopeSelector || excludeSelector)) {
     throw new Error('perceive --frame does not yet support --selector/--exclude; run frame-scoped perceive first, then use the listed @fN:M refs.');
   }
@@ -3585,7 +3956,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
     try {
       const probe = JSON.parse(await evalStr(
         cdp,
-        sid,
+        contentSid,
         'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })',
         false,
         pdfProbeContext,
@@ -3605,7 +3976,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   const docRootPromise = needsDocument ? cdpDomains(cdp).DOM.getDocument( {}, sid) : null;
   let scopeBackendNodeIds = null;
   const axPromise = frame
-    ? cdpDomains(cdp).Accessibility.getFullAXTree( { frameId: frame.id }, sid)
+    ? cdpDomains(cdp).Accessibility.getFullAXTree( { frameId: frame.id }, contentSid)
     : scopeSelector
     ? (async () => {
         const { root } = await docRootPromise;
@@ -3618,7 +3989,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
     : cdpDomains(cdp).Accessibility.getFullAXTree( {}, sid);
   const [axResult, metaJson] = await Promise.all([
     axPromise,
-    evalStr(cdp, sid, perceivePageScript(cursorInteractive), false, frameExecutionContextId != null ? { contextId: frameExecutionContextId } : {})
+    evalStr(cdp, contentSid, perceivePageScript(cursorInteractive), false, frameExecutionContextId != null ? { contextId: frameExecutionContextId } : {})
   ]);
 
   const meta = JSON.parse(metaJson);
@@ -3669,11 +4040,11 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   axNodes = typeaheadFilter.nodes;
 
   if (frame) {
-    const listed = await listDomInteractiveControls(cdp, sid, {
+    const listed = await listDomInteractiveControls(cdp, contentSid, {
       contextId: frameExecutionContextId,
     });
     if (shouldSynthesizeMissingFrameInteractives(frame, axNodes, listed)) {
-      const extras = await collectDomInteractiveControls(cdp, sid, {
+      const extras = await collectDomInteractiveControls(cdp, contentSid, {
         contextId: frameExecutionContextId,
         listed,
       });
@@ -3715,7 +4086,8 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   if (frameInventory.count > 0) {
     try {
       const model = await framesModel(cdp, sid);
-      const childFrames = (model.frames || []).filter(item => item && item.depth > 0);
+      const frames = model.frames || [];
+      const childFrames = frames.filter(item => item && item.depth > 0);
       const owners = await describePerceiveFrameOwners(cdp, sid, childFrames);
       frameNotice = buildPerceiveFrameNotice({
         childFrames,
@@ -3723,6 +4095,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
         frameElementCount: frameInventory.count,
         owners,
         target: opts.targetPrefix || '<target>',
+        pageUrl: frames.find(item => item && item.depth === 0)?.url || meta.url || '',
       });
     } catch {
       frameNotice = null;
@@ -3771,7 +4144,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   }
   if (refNodeIds.length > 0) {
     const results = await Promise.allSettled(refNodeIds.map(async ({ ref, backendDOMNodeId }) => {
-      const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId: backendDOMNodeId }, sid);
+      const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId: backendDOMNodeId }, contentSid);
       const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
         objectId: object.objectId,
         functionDeclaration: `function() {
@@ -3786,7 +4159,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
           };
         }`,
         returnByValue: true,
-      }, sid);
+      }, contentSid);
       const rect = res.result.value || {};
       if (frame) {
         rect.x = (Number(rect.x) || 0) + frameOffset.x;
