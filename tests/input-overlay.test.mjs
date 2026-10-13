@@ -238,6 +238,7 @@ describe('overlay detector', () => {
     zIndex = 'auto',
     role = null,
     ariaModal = null,
+    opacity = '1',
     rect,
     parent = null,
   }) {
@@ -250,7 +251,7 @@ describe('overlay detector', () => {
       __style: {
         display: 'block',
         visibility: 'visible',
-        opacity: '1',
+        opacity,
         position,
         pointerEvents,
         zIndex,
@@ -1005,7 +1006,85 @@ describe('overlay detector', () => {
     const out = await T.overlayStr(cdp, 'sid1', 'abc123', [], new Map(), {});
     expect(out).toContain('Overlay detector: clear');
     expect(out).toContain('No visible blocking overlays/dialogs detected.');
-    expect(out).toContain('Next: continue');
+    expect(out).toContain('Next: cdp perceive abc123 -C -d 8');
+    expect(out).not.toMatch(/^Next: continue/m);
+    const json = JSON.parse(await T.overlayStr(cdp, 'sid1', 'abc123', ['--format', 'json'], new Map(), {}));
+    expect(json.nextCommand).toBe('cdp perceive abc123 -C -d 8');
+  });
+
+  it('names click --js when a targeted overlay finds no dismissable blocker', async () => {
+    const model = {
+      schema: 'chrome-cdp-ex.overlays.v1',
+      viewport: { width: 1042, height: 632 },
+      target: {
+        input: '#submit',
+        x: 170,
+        y: 140,
+        descriptor: '<BUTTON> "Submit transfer"',
+        blocked: false,
+        topElement: { kind: 'top-element', selector: '#ghost', text: 'Invisible hit target' },
+      },
+      overlayCount: 0,
+      blocking: false,
+      overlays: [],
+      nextCommand: null,
+    };
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (!params.expression.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: JSON.stringify({
+            ok: true,
+            input: '#submit',
+            x: 170,
+            y: 140,
+            descriptor: '<BUTTON> "Submit transfer"',
+          }) } };
+        }
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+    const full = 'AB78B41A55F062DF42C6734D8AE8610B';
+    const out = await T.overlayStr(cdp, 'sid1', full, ['#submit'], new Map(), {});
+    expect(out).toContain('Overlay detector: clear');
+    expect(out).toContain('Next: cdp click AB78B41A "#submit" --js');
+    expect(out).not.toMatch(/^Next: continue/m);
+    expect(out.match(/^Next: /gm)).toEqual(['Next: ']);
+    const json = JSON.parse(await T.overlayStr(cdp, 'sid1', full, ['#submit', '--format', 'json'], new Map(), {}));
+    expect(json.nextCommand).toBe('cdp click AB78B41A "#submit" --js');
+  });
+
+  it('keeps click --js when hit-testing sees an opacity-0 cover the detector does not list', () => {
+    const button = overlayFixtureElement({
+      id: 'submit',
+      tagName: 'BUTTON',
+      text: 'Submit transfer',
+      rect: { x: 110, y: 120, w: 120, h: 40 },
+    });
+    const ghost = overlayFixtureElement({
+      id: 'ghost',
+      text: 'Invisible hit target',
+      position: 'fixed',
+      zIndex: '9',
+      opacity: '0',
+      rect: { x: 0, y: 0, w: 1440, h: 900 },
+    });
+    const targetPoint = {
+      input: '#submit',
+      x: 170,
+      y: 140,
+      descriptor: '<BUTTON> "Submit transfer"',
+    };
+    const { model } = runOverlayPageFixture({
+      elements: [button, ghost],
+      targetPoint,
+      topElement: ghost,
+    });
+    expect(model).toMatchObject({ blocking: false, overlayCount: 0, overlays: [] });
+    expect(model.target).toMatchObject({ blocked: false, input: '#submit' });
+    const text = T.formatOverlayReport(model, 'AB78B41A55F062DF42C6734D8AE8610B');
+    expect(text).toContain('Overlay detector: clear');
+    expect(text).toContain('Next: cdp click AB78B41A "#submit" --js');
+    expect(text).not.toMatch(/dismiss-modal|Next: continue/);
   });
 
   it('reports a blocking dialog and concrete dismissal command for a target ref', async () => {
@@ -1111,7 +1190,7 @@ describe('overlay detector', () => {
       schema: 'chrome-cdp-ex.overlays.v1',
       blocking: false,
       target: { input: '@4', blocked: false },
-      nextCommand: null,
+      nextCommand: 'cdp click abc123 @4 --js',
     });
     expect(model.target).not.toHaveProperty('objectId');
   });
