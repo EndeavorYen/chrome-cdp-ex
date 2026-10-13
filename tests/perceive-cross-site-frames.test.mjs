@@ -366,9 +366,9 @@ describe('cross-site frames', () => {
     );
     expect(out).toContain('Frames: 2 (2 visible), 1 cross-site not read. Next: cdp frame AB12CD34');
     expect(out).toContain('[iframe] "Same" @f2');
-    expect(out).toContain('[iframe] (cross-site, not read: opaque origin)');
-    expect(out).not.toMatch(/\[iframe\] \(cross-site[^\n]*@f/);
-    expect(out).not.toContain('localhost:9');
+    expect(out).toContain('[iframe] localhost:9 @f4 (cross-site, not read: CDP_FRAME_SITES not set)');
+    expect(out).not.toContain('opaque origin');
+    expect(out).not.toContain('SECRET_ACCESS_777');
     expect(attachCalls(cdp).length).toBeGreaterThan(0);
     expect(childContentCalls(cdp, CHILD)).toEqual([]);
   });
@@ -790,6 +790,7 @@ function childContentCalls(cdp, sessionId) {
 function hostOnlyPerceiveCdp({
   origin = 'https://pay.example.com',
   url = 'https://pay.example.com/checkout',
+  elementSrc = url,
   frameName = FAKE_MARKER_NAME,
   elementTitle = INSTRUCTION_TITLE,
   axName = 'Pay now\u0001',
@@ -807,7 +808,7 @@ function hostOnlyPerceiveCdp({
     layoutMap: {},
     styleHints: {},
     cursorInteractives: [],
-    frameElements: [{ title: elementTitle, src: url, host: 'pay.example.com', name: frameName, visible: true }],
+    frameElements: [{ title: elementTitle, src: elementSrc, host: 'pay.example.com', name: frameName, visible: true }],
     frameElementCount: 1,
   };
   return createMockCDP({
@@ -894,6 +895,22 @@ describe('slice 1 cross-site frame sites', () => {
     expect(out).toContain('Frames: 0 (0 visible), 1 cross-site not read. Next: cdp frame AB12CD34');
     expect(out).not.toContain('CDP_FRAME_SITES=');
     expect(out).not.toMatch(/Next:.*perceive AB12CD34 --frame @f2/);
+    expect(childContentCalls(cdp, CHILD)).toEqual([]);
+  });
+
+  it('labels a navigated cross-site frame from the current frame-tree origin', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const cdp = hostOnlyPerceiveCdp({
+      origin: 'https://evil.test:8443',
+      url: 'https://evil.test:8443/phish',
+      elementSrc: 'https://pay.example.com/checkout',
+    });
+    const out = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null },
+      { targetPrefix: 'AB12CD34' },
+    ));
+    expect(out).toContain('[iframe] evil.test:8443 @f2 (cross-site, not read: not in CDP_FRAME_SITES; the user can add https://evil.test:8443)');
+    expect(out).not.toContain('opaque origin');
     expect(childContentCalls(cdp, CHILD)).toEqual([]);
   });
 

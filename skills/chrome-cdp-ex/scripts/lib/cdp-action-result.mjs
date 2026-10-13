@@ -1992,6 +1992,11 @@ export function formatDefaultMutatingActionText(result = {}, { dispatchText = ''
   // #648: a request the action sent that failed is evidence for the next step.
   const failed = failedRequestLines(result);
   if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return insertBeforeNextLine(one, failed);
+  // The END marker is a whole line. A receipt tail goes on the line after it.
+  const endMarker = /^--- END FRAME CONTENT nonce=[0-9a-f]{32} ---$/;
+  if (endMarker.test(String(one).split('\n').at(-1) || '')) {
+    return insertBeforeNextLine(`${one}\nNext: ${next}`, failed);
+  }
   return insertBeforeNextLine(`${one}. Next: ${next}`, failed);
 }
 export function formatActionText(result, { compact = false, full = false, dispatchText = '' } = {}) {

@@ -221,6 +221,11 @@ export function frameContentBoundary(nonce, origin) {
   return { kind: 'frame', nonce, origin: origin == null || origin === '' ? 'null' : String(origin) };
 }
 
+function frameContentNonceFromText(text) {
+  const match = /--- FRAME CONTENT \(untrusted\) origin=\S+ nonce=([0-9a-f]{32}) ---/.exec(String(text || ''));
+  return match ? match[1] : '';
+}
+
 export function rememberListedFrames(cdp, sid, frames) {
   if (!cdp || !sid) return;
   let byClient = LISTED_FRAMES.get(cdp);
@@ -262,7 +267,8 @@ export function relocateCrossSiteActionFields(target) {
   const fromTrust = trust?.frameContent && typeof trust.frameContent === 'object' ? trust.frameContent : null;
   if (!target.crossSiteOrigin && !fromTrust) return target;
   const origin = frameContentOrigin(target.crossSiteOrigin || fromTrust?.origin || '');
-  const frameContent = { contentBoundary: frameContentBoundary(createFrameContentNonce(), origin) };
+  const nonce = frameContentNonceFromText(target.dispatchText) || createFrameContentNonce();
+  const frameContent = { contentBoundary: frameContentBoundary(nonce, origin) };
   if (target.crossSiteOrigin) {
     for (const key of ['name', 'label', 'text']) {
       if (target[key] != null && target[key] !== '') frameContent[key] = target[key];

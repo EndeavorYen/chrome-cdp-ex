@@ -1557,6 +1557,19 @@ function buildPerceiveFrameNotice({
       usedOopifs.add(frame.ref);
       oopifByElement.set(index, frame);
     }
+    // The iframe src attribute stays where the page set it. After the frame
+    // navigates, the frame tree has the current origin and that src no longer
+    // matches. Pair the leftovers in order and classify that origin.
+    const freeOopifs = topOopifs.filter(frame => !usedOopifs.has(frame.ref));
+    const freeElements = [];
+    elements.forEach((_, index) => {
+      if (!usedElements.has(index)) freeElements.push(index);
+    });
+    if (freeOopifs.length > 0 && freeOopifs.length === freeElements.length) {
+      freeOopifs.forEach((frame, index) => {
+        oopifByElement.set(freeElements[index], frame);
+      });
+    }
   }
   const records = [];
   let allowed = 0;

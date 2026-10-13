@@ -677,6 +677,82 @@ describe('actions inside a cross-site frame', () => {
     expect(top).toContain('Outer');
   });
 
+  it('prints one covered Kind and one Next for a covered cross-site click', async () => {
+    const covered = await T.clickStr(actionCdp({
+      parentHit: { covered: true, by: '<DIV#toast> "Wait"', byPosition: 'fixed' },
+    }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
+    const printed = T.formatActionFailure(covered, { action: 'click', target: { targetId: 'AB12CD34', input: '@f4:1' } });
+    const text = T.formatCliError(printed, { cmd: 'click', targetPrefix: 'AB12CD34', args: ['@f4:1'] });
+    const kinds = text.split('\n').filter(line => /^Kind:/.test(line));
+    const nexts = text.split('\n').filter(line => /^Next:/.test(line));
+    expect(kinds).toEqual(['Kind: covered']);
+    expect(nexts).toHaveLength(1);
+    expect(nexts[0]).toBe('Next: cdp click AB12CD34 @f4:1 --js');
+  });
+
+  it('keeps END FRAME CONTENT on its own line for click, fill, select, jsclick, and covered click', async () => {
+    const endLine = /^--- END FRAME CONTENT nonce=[0-9a-f]{32} ---$/;
+    const receipt = (action, dispatchText) => T.formatActionResultOutput(T.createActionResult({
+      action,
+      target: { targetId: 'AB12CD34', input: '@f4:1', resolvedBy: 'ref', label: '@f4:1' },
+      dispatch: { ok: true, method: action },
+      settle: { ok: true, durationMs: 1 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+    }), { dispatchText });
+    const clicked = await T.clickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    const filled = await T.fillStr(actionCdp(), PAGE, '@f4:1', 'tok_123', new Map(), refStateFor(DIRECT));
+    const selected = await T.selectStr(actionCdp(), PAGE, '@f4:1', 'Visa', {}, new Map(), refStateFor(DIRECT));
+    const js = await T.jsClickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    const covered = await T.clickStr(actionCdp({
+      parentHit: { covered: true, by: '<DIV#toast> "Wait"', byPosition: 'fixed' },
+    }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
+    const outputs = {
+      click: receipt('click', clicked),
+      fill: receipt('fill', filled),
+      select: receipt('select', selected),
+      jsclick: receipt('jsclick', js),
+      covered: T.formatCliError(
+        T.formatActionFailure(covered, { action: 'click', target: { targetId: 'AB12CD34', input: '@f4:1' } }),
+        { cmd: 'click', targetPrefix: 'AB12CD34', args: ['@f4:1'] },
+      ),
+    };
+    for (const [name, text] of Object.entries(outputs)) {
+      const lines = String(text).split('\n').filter(line => line.includes('END FRAME CONTENT'));
+      if (name !== 'fill') expect(lines.length, name).toBeGreaterThan(0);
+      for (const line of lines) expect(line, name).toMatch(endLine);
+    }
+  });
+
+  it('shares one nonce between dispatch text and the JSON content boundary', async () => {
+    const clickTrust = {};
+    const clicked = await T.clickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT), { clickTrust });
+    const result = {
+      schema: 'chrome-cdp-ex.action.v1',
+      action: 'click',
+      target: {
+        targetId: 'AB12CD34',
+        input: '@f4:1',
+        label: '@f4:1',
+        tag: 'BUTTON',
+        ref: '@f4:1',
+        host: 'localhost:9',
+        dispatchText: clicked,
+        clickTrust,
+        crossSiteOrigin: 'http://localhost:9',
+        name: 'Pay now',
+      },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 1 },
+      effects: {},
+      outcome: { status: 'changed' },
+      verdict: { primaryNextStep: 'cdp perceive AB12CD34 --since-action' },
+    };
+    const model = compactActionResultForJson(result);
+    const nonces = [...clicked.matchAll(/nonce=([0-9a-f]{32})/g)].map(match => match[1]);
+    expect(new Set(nonces).size).toBe(1);
+    expect(model.target.frameContent.contentBoundary.nonce).toBe(nonces[0]);
+  });
+
   it('still refuses hover on a cross-site ref', async () => {
     const cdp = actionCdp();
     const err = await T.hoverStr(cdp, PAGE, '@f4:1', new Map(), refStateFor(DIRECT)).catch(error => error);
