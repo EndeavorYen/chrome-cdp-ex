@@ -43,6 +43,15 @@ function announceKey(parentSessionId, targetId) {
   return `${parentSessionId || ''}\0${targetId || ''}`;
 }
 
+// A child with parentSessionId is a target of that session only. Page
+// auto-attach does not announce it. Children without one belong to the page,
+// so a child session's auto-attach does not announce them again.
+function childBelongsToSession(handlers, child, parentSessionId) {
+  if (!child?.sessionId) return false;
+  if (child.parentSessionId) return child.parentSessionId === parentSessionId;
+  return !childSessionsOf(handlers).some(item => item?.sessionId === parentSessionId);
+}
+
 function iframeTargetInfo(child) {
   const info = childTargetInfo(child);
   const parentId = child.parentId || info.parentId || 'main-frame';
@@ -70,7 +79,7 @@ export function createMockCDP(handlers = {}) {
   }
   function emitAttachedChildren(parentSessionId, params) {
     for (const child of childSessionsOf(handlers)) {
-      if (!child?.sessionId) continue;
+      if (!childBelongsToSession(handlers, child, parentSessionId)) continue;
       const targetInfo = childTargetInfo(child);
       if (!filterAcceptsChild(params?.filter, targetInfo)) continue;
       if (announcedTargets.has(announceKey(parentSessionId, targetInfo.targetId))) continue;
@@ -155,6 +164,7 @@ export function createMockCDP(handlers = {}) {
       }
       if (method === 'Target.getTargets' && !handlers[method]) {
         const targetInfos = childSessionsOf(handlers)
+          .filter(child => childBelongsToSession(handlers, child, sessionId))
           .map(child => iframeTargetInfo(child))
           .filter(info => filterAcceptsChild(params?.filter, info));
         return Promise.resolve({ targetInfos });

@@ -5,6 +5,8 @@ const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
 const PAGE = 'sid';
 const CHILD = 'child-sid';
+const SIBLING = 'sibling-sid';
+const GRAND = 'grand-sid';
 const SECRET_URL = 'http://localhost:9/inner.html?access_token=SECRET_ACCESS_777&user=ada';
 const MASKED_URL = 'http://localhost:9/inner.html?access_token=<redacted>&user=ada';
 
@@ -64,6 +66,45 @@ function childEntry(sessionId, tree, handlers = {}) {
     handlers: {
       'Page.getFrameTree': () => ({ frameTree: tree }),
       ...handlers,
+    },
+  };
+}
+
+function siblingEntry() {
+  return childEntry(SIBLING, {
+    frame: {
+      id: 'sibling-frame',
+      parentId: 'main-frame',
+      url: 'http://192.0.2.8:9/sib.html',
+      name: 'sib',
+      securityOrigin: 'http://192.0.2.8:9',
+    },
+  });
+}
+
+function grandTree() {
+  return {
+    frame: {
+      id: 'grand-frame',
+      parentId: 'oopif-frame',
+      url: 'http://127.0.0.2:9/grand.html',
+      name: 'third',
+      securityOrigin: 'http://127.0.0.2:9',
+    },
+  };
+}
+
+// The grandchild runs in the child session's process boundary. The page's
+// auto-attach does not announce it; only the child session does.
+function grandEntry(sessionId = GRAND, parentSessionId = CHILD) {
+  return {
+    ...childEntry(sessionId, grandTree()),
+    parentSessionId,
+    parentId: 'oopif-frame',
+    targetInfo: {
+      type: 'iframe',
+      url: 'http://127.0.0.2:9/grand.html',
+      targetId: `${sessionId}-target`,
     },
   };
 }
@@ -128,16 +169,15 @@ describe('cross-site frames', () => {
 
     const open = await T.framesStr(cdp, PAGE, { unsafeFull: true });
     expect(open).toContain(SECRET_URL);
+    const autoAttach = {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: 'iframe' }],
+    };
     expect(attachCalls(cdp)).toEqual([
-      expect.objectContaining({
-        sessionId: PAGE,
-        params: {
-          autoAttach: true,
-          waitForDebuggerOnStart: false,
-          flatten: true,
-          filter: [{ type: 'iframe' }],
-        },
-      }),
+      expect.objectContaining({ sessionId: PAGE, params: autoAttach }),
+      expect.objectContaining({ sessionId: CHILD, params: autoAttach }),
     ]);
   });
 
@@ -146,7 +186,7 @@ describe('cross-site frames', () => {
     const cdp = frameCdp(children);
     await T.framesStr(cdp, PAGE);
     await T.framesStr(cdp, PAGE);
-    expect(attachCalls(cdp)).toHaveLength(1);
+    expect(attachCalls(cdp).map(call => call.sessionId)).toEqual([PAGE, CHILD]);
     expect(cdp.calls.filter(call => call.method === 'Page.getFrameTree' && call.sessionId === CHILD).length).toBeGreaterThan(1);
 
     cdp.emit('Page.frameNavigated', {
@@ -163,7 +203,7 @@ describe('cross-site frames', () => {
     const listed = await T.framesStr(cdp, PAGE);
     expect(listed).toContain('@f4 cross oopif-2 parent:@f1 http://localhost:9/next-inner.html process:oopif');
     expect(listed).not.toContain('oopif-frame');
-    expect(attachCalls(cdp)).toHaveLength(2);
+    expect(attachCalls(cdp).map(call => call.sessionId)).toEqual([PAGE, CHILD, PAGE, 'child-2']);
     const afterNav = cdp.calls.slice(cdp.calls.findLastIndex(call => (
       call.method === 'Target.setAutoAttach' && call.sessionId === PAGE
     )));
@@ -230,7 +270,7 @@ describe('cross-site frames', () => {
     expect(second.startsWith('Frames: 3\n')).toBe(true);
     expect(second).not.toContain('process:oopif');
     expect(second).toContain('@f3 nested nested-frame parent:@f2');
-    expect(attachCalls(cdp)).toHaveLength(2);
+    expect(attachCalls(cdp).map(call => call.sessionId)).toEqual([PAGE, CHILD, PAGE]);
   });
 
   it('caps the cross-site walk and leaves same-origin numbers in place', async () => {
@@ -400,7 +440,7 @@ describe('cross-site frames', () => {
     expect(cross).not.toContain('Frames:');
     const ax = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree');
     expect(ax.at(-1)).toMatchObject({ sessionId: CHILD, params: { frameId: 'oopif-frame' } });
-    expect(attachCalls(cdp)).toHaveLength(1);
+    expect(attachCalls(cdp).map(call => call.sessionId)).toEqual([PAGE, CHILD]);
   });
 
   it('reads a same-process frame nested in a cross-site frame through that frame\'s child session and clicks its ref', async () => {
@@ -551,6 +591,86 @@ describe('cross-site frames', () => {
     expect(cdp.calls.filter(call => call.method === 'Target.attachToTarget').map(call => call.params.targetId))
       .toEqual([`${CHILD}-target`]);
     expect(cdp.calls.some(call => call.sessionId === 'foreign-sid')).toBe(false);
+  });
+
+  it('appends a third-site grandchild after other cross-site frames and keeps @fN', async () => {
+    const cdp = frameCdp([
+      childEntry(CHILD, oopifTree('http://localhost:9/inner.html')),
+      siblingEntry(),
+      grandEntry(),
+    ]);
+    const model = JSON.parse(await T.framesStr(cdp, PAGE, { format: 'json' }));
+    expect(model.schema).toBe('chrome-cdp-ex.frames.v1');
+    expect(Object.keys(model).sort()).toEqual(['frameCount', 'frames', 'schema']);
+    expect(model.frameCount).toBe(7);
+    expect(model.frames.slice(0, 3).map(frame => [frame.ref, frame.id])).toEqual([
+      ['@f1', 'main-frame'],
+      ['@f2', 'same-frame'],
+      ['@f3', 'nested-frame'],
+    ]);
+    expect(model.frames.slice(0, 3).some(frame => Object.hasOwn(frame, 'process'))).toBe(false);
+    expect(model.frames[3]).toMatchObject({ ref: '@f4', id: 'oopif-frame', parentRef: '@f1', process: 'oopif' });
+    expect(model.frames[4]).toMatchObject({ ref: '@f5', id: 'oopif-nested', parentRef: '@f4', process: 'oopif' });
+    expect(model.frames[5]).toMatchObject({ ref: '@f6', id: 'sibling-frame', parentRef: '@f1', process: 'oopif' });
+    expect(model.frames[6]).toMatchObject({
+      ref: '@f7',
+      id: 'grand-frame',
+      parentId: 'oopif-frame',
+      parentRef: '@f4',
+      depth: 2,
+      process: 'oopif',
+      url: 'http://127.0.0.2:9/grand.html',
+    });
+
+    const text = await T.framesStr(cdp, PAGE);
+    expect(text.startsWith('Frames: 7\n')).toBe(true);
+    expect(text).toContain('@f2 same same-frame parent:@f1');
+    expect(text).toContain('@f3 nested nested-frame parent:@f2');
+    expect(text).toContain('@f5 nested-cross oopif-nested parent:@f4 http://localhost:9/nested.html process:oopif');
+    expect(text).toContain('@f6 sib sibling-frame parent:@f1 http://192.0.2.8:9/sib.html origin:http://192.0.2.8:9 process:oopif');
+    expect(text).toContain('@f7 third grand-frame parent:@f4 http://127.0.0.2:9/grand.html origin:http://127.0.0.2:9 process:oopif');
+
+    const hosts = attachCalls(cdp).map(call => call.sessionId);
+    expect(hosts[0]).toBe(PAGE);
+    expect(hosts).toContain(CHILD);
+    expect(hosts.indexOf(CHILD)).toBeLessThan(hosts.indexOf(GRAND));
+    const again = JSON.parse(await T.framesStr(cdp, PAGE, { format: 'json' }));
+    expect(again.frames.map(frame => `${frame.ref}:${frame.id}`)).toEqual(
+      model.frames.map(frame => `${frame.ref}:${frame.id}`),
+    );
+    expect(attachCalls(cdp).map(call => call.sessionId)).toEqual(hosts);
+  });
+
+  it('adopts a third-site grandchild from the child session when setAutoAttach stays quiet', async () => {
+    const cdp = frameCdp([
+      childEntry(CHILD, oopifTree('http://localhost:9/inner.html')),
+      grandEntry(),
+    ]);
+    const first = await T.framesStr(cdp, PAGE);
+    expect(first).toContain('@f4 cross oopif-frame parent:@f1');
+    expect(first).toContain('@f5 nested-cross oopif-nested parent:@f4');
+    expect(first).toContain('@f6 third grand-frame parent:@f4 http://127.0.0.2:9/grand.html origin:http://127.0.0.2:9 process:oopif');
+
+    cdp.emit('Page.frameNavigated', {
+      frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html' },
+    }, { sessionId: PAGE });
+    const before = cdp.calls.length;
+    const listed = await T.framesStr(cdp, PAGE);
+    const after = cdp.calls.slice(before);
+    expect(listed).toContain('@f2 same same-frame parent:@f1');
+    expect(listed).toContain('@f6 third grand-frame parent:@f4 http://127.0.0.2:9/grand.html origin:http://127.0.0.2:9 process:oopif');
+    expect(after.some(call => call.method === 'Target.getTargets' && call.sessionId === PAGE)).toBe(true);
+    expect(after.some(call => (
+      call.method === 'Target.attachToTarget' && call.sessionId === PAGE && call.params?.targetId === `${CHILD}-target`
+    ))).toBe(true);
+    expect(after.some(call => call.method === 'Target.getTargets' && call.sessionId === CHILD)).toBe(true);
+    expect(after.some(call => (
+      call.method === 'Target.attachToTarget' && call.sessionId === CHILD && call.params?.targetId === `${GRAND}-target`
+    ))).toBe(true);
+    expect(after.some(call => call.method === 'Page.getFrameTree' && call.sessionId === GRAND)).toBe(true);
+    expect(after.some(call => (
+      call.method === 'Target.attachToTarget' && call.sessionId === PAGE && call.params?.targetId === `${GRAND}-target`
+    ))).toBe(false);
   });
 });
 

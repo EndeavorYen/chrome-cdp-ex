@@ -923,10 +923,25 @@ export function formatFrameTreeText(frames = []) {
 // Cross-site (out-of-process) iframes are not in the page session's
 // Page.getFrameTree. The first `frame` command, or a cross-site @fN, attaches
 // iframe targets once per document and appends those frames after the
-// same-origin numbers. 50 extra frames and depth 8 bound the child walk.
+// same-origin numbers. A cross-site frame can embed a third site in its own
+// process. That grandchild is not in the child session's frame tree, and
+// auto-attach reaches only the targets directly related to the session that
+// called it. The same lazy auto-attach runs on each attached iframe session.
+// Those frames are read after the sessions already known, so they are appended
+// after the other cross-site frames and existing @fN numbers stay put.
+// 50 extra frames and depth 8 bound the child walk.
 const OOPIF_MAX_EXTRA = 50;
 const OOPIF_MAX_DEPTH = 8;
 const oopifClients = new WeakMap();
+
+function oopifAutoAttachParams() {
+  return {
+    autoAttach: true,
+    waitForDebuggerOnStart: false,
+    flatten: true,
+    filter: [{ type: 'iframe' }],
+  };
+}
 
 function oopifDocument(cdp, sid) {
   let docs = oopifClients.get(cdp);
@@ -936,40 +951,82 @@ function oopifDocument(cdp, sid) {
   }
   let doc = docs.get(sid);
   if (!doc) {
-    doc = { attached: false, children: [], frames: new Map(), byTarget: new Map() };
+    doc = {
+      attached: false,
+      children: [],
+      frames: new Map(),
+      byTarget: new Map(),
+      autoAttached: new Set(),
+      hostedBy: new Map(),
+    };
     docs.set(sid, doc);
     watchOopifDocument(cdp, sid, doc);
   }
   return doc;
 }
 
-function rememberOopifSession(doc, sessionId, targetId) {
+function rememberOopifSession(doc, sessionId, targetId, hostSessionId) {
   if (!sessionId) return;
   if (!doc.children.includes(sessionId)) doc.children.push(sessionId);
   if (targetId) doc.byTarget.set(targetId, sessionId);
+  if (hostSessionId) doc.hostedBy.set(sessionId, hostSessionId);
+}
+
+function descendantOopifSessions(doc, sessionId) {
+  const out = [];
+  const pending = [sessionId];
+  const seen = new Set();
+  while (pending.length) {
+    const host = pending.pop();
+    for (const [child, parent] of doc.hostedBy) {
+      if (parent !== host || seen.has(child)) continue;
+      seen.add(child);
+      out.push(child);
+      pending.push(child);
+    }
+  }
+  return out;
+}
+
+function forgetOopifSession(doc, sessionId) {
+  doc.children = doc.children.filter(id => id !== sessionId);
+  doc.autoAttached.delete(sessionId);
+  for (const [targetId, mapped] of doc.byTarget) {
+    if (mapped === sessionId) doc.byTarget.delete(targetId);
+  }
+  for (const [frameId, mapped] of doc.frames) {
+    if (mapped === sessionId) doc.frames.delete(frameId);
+  }
+  doc.hostedBy.delete(sessionId);
+}
+
+function dropOopifSession(doc, sessionId) {
+  for (const child of descendantOopifSessions(doc, sessionId)) forgetOopifSession(doc, child);
+  forgetOopifSession(doc, sessionId);
+}
+
+function eventHostSession(msg, sid) {
+  return msg?.sessionId || sid;
 }
 
 function watchOopifDocument(cdp, sid, doc) {
   if (typeof cdp.onEvent !== 'function') return;
   const forThisPage = msg => !msg?.sessionId || msg.sessionId === sid;
+  const forThisDocument = msg => {
+    const host = eventHostSession(msg, sid);
+    return host === sid || doc.children.includes(host);
+  };
   cdp.onEvent('Target.attachedToTarget', (params, msg) => {
-    if (!forThisPage(msg)) return;
+    if (!forThisDocument(msg)) return;
     const child = params?.sessionId;
     if (!child || child === sid || params?.targetInfo?.type !== 'iframe') return;
-    rememberOopifSession(doc, child, params?.targetInfo?.targetId || '');
+    rememberOopifSession(doc, child, params?.targetInfo?.targetId || '', eventHostSession(msg, sid));
   });
   cdp.onEvent('Target.detachedFromTarget', (params, msg) => {
-    if (!forThisPage(msg)) return;
+    if (!forThisDocument(msg)) return;
     const child = params?.sessionId;
     if (!child || child === sid || !doc.children.includes(child)) return;
-    doc.children = doc.children.filter(id => id !== child);
-    if (params?.targetId) doc.byTarget.delete(params.targetId);
-    for (const [targetId, mapped] of doc.byTarget) {
-      if (mapped === child) doc.byTarget.delete(targetId);
-    }
-    for (const [frameId, mapped] of doc.frames) {
-      if (mapped === child) doc.frames.delete(frameId);
-    }
+    dropOopifSession(doc, child);
     doc.attached = false;
   });
   cdp.onEvent('Page.frameNavigated', (params, msg) => {
@@ -980,21 +1037,29 @@ function watchOopifDocument(cdp, sid, doc) {
     doc.children = [];
     doc.frames.clear();
     doc.byTarget.clear();
+    doc.autoAttached.clear();
+    doc.hostedBy.clear();
     doc.attached = false;
   });
 }
 
-function iframeTargetOfPage(info, rootId) {
-  if (!info || info.type !== 'iframe' || !info.targetId || !rootId) return false;
-  const parent = info.parentId || info.parentFrameId || info.openerId || '';
-  return parent === rootId;
+function iframeTargetParentId(info) {
+  if (!info || info.type !== 'iframe' || !info.targetId) return '';
+  return info.parentId || info.parentFrameId || info.openerId || '';
+}
+
+function frameIdsInTree(node, ids = new Set()) {
+  if (!node?.frame) return ids;
+  if (node.frame.id) ids.add(node.frame.id);
+  for (const child of node.childFrames || []) frameIdsInTree(child, ids);
+  return ids;
 }
 
 // setAutoAttach does not send attachedToTarget again for an iframe this client
-// already attached. After navigation clears the cache, ask for the page's iframe
-// targets and attach any whose session we no longer have.
-async function adoptPageIframeTargets(cdp, sid, doc, rootId) {
-  if (!rootId || doc.children.length >= OOPIF_MAX_EXTRA) return;
+// already attached. After navigation clears the cache, ask for iframe targets
+// whose parent frame is in this session and attach any we no longer have.
+async function adoptPageIframeTargets(cdp, sid, doc, parentIds) {
+  if (!(parentIds instanceof Set) || parentIds.size === 0 || doc.children.length >= OOPIF_MAX_EXTRA) return;
   let infos = [];
   try {
     const result = await cdpDomains(cdp).Target.getTargets({ filter: [{ type: 'iframe' }] }, sid);
@@ -1004,7 +1069,7 @@ async function adoptPageIframeTargets(cdp, sid, doc, rootId) {
   }
   for (const info of infos) {
     if (doc.children.length >= OOPIF_MAX_EXTRA) break;
-    if (!iframeTargetOfPage(info, rootId) || doc.byTarget.has(info.targetId)) continue;
+    if (!parentIds.has(iframeTargetParentId(info)) || doc.byTarget.has(info.targetId)) continue;
     try {
       const attached = await cdpDomains(cdp).Target.attachToTarget({
         targetId: info.targetId,
@@ -1012,11 +1077,24 @@ async function adoptPageIframeTargets(cdp, sid, doc, rootId) {
       }, sid);
       const child = attached?.sessionId;
       if (!child || doc.byTarget.has(info.targetId)) continue;
-      rememberOopifSession(doc, child, info.targetId);
+      rememberOopifSession(doc, child, info.targetId, sid);
     } catch {
       // The target left, or this client is already attached and the event kept the session.
     }
   }
+}
+
+// Known iframe sessions are read before the next level is attached, so a
+// third-site frame is appended after the cross-site frames already listed.
+async function attachChildOopifSessions(cdp, doc, childSid, frameTree) {
+  if (!childSid || !frameTree || doc.autoAttached.has(childSid) || doc.autoAttached.size >= OOPIF_MAX_EXTRA) return;
+  try {
+    await cdpDomains(cdp).Target.setAutoAttach(oopifAutoAttachParams(), childSid);
+  } catch {
+    return;
+  }
+  doc.autoAttached.add(childSid);
+  await adoptPageIframeTargets(cdp, childSid, doc, frameIdsInTree(frameTree));
 }
 
 function appendCrossSiteFrames(sameOriginFrames, childTrees, { maxExtra = OOPIF_MAX_EXTRA, maxDepth = OOPIF_MAX_DEPTH } = {}) {
@@ -1080,27 +1158,34 @@ function appendCrossSiteFrames(sameOriginFrames, childTrees, { maxExtra = OOPIF_
 async function loadCrossSiteFrames(cdp, sid, sameOriginFrames) {
   const doc = oopifDocument(cdp, sid);
   if (!doc.attached) {
-    await cdpDomains(cdp).Target.setAutoAttach({
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true,
-      filter: [{ type: 'iframe' }],
-    }, sid);
+    await cdpDomains(cdp).Target.setAutoAttach(oopifAutoAttachParams(), sid);
     const rootId = sameOriginFrames.find(frame => frame && frame.depth === 0)?.id || '';
-    await adoptPageIframeTargets(cdp, sid, doc, rootId);
+    await adoptPageIframeTargets(cdp, sid, doc, rootId ? new Set([rootId]) : new Set());
     doc.attached = true;
   }
   const trees = [];
   const seen = new Set();
-  for (const childSid of [...doc.children]) {
-    if (!childSid || seen.has(childSid) || trees.length >= OOPIF_MAX_EXTRA) continue;
-    seen.add(childSid);
-    try {
-      const result = await cdpDomains(cdp).Page.getFrameTree({}, childSid);
-      if (result?.frameTree) trees.push({ sessionId: childSid, frameTree: result.frameTree });
-    } catch {
-      // A detached child no longer answers. detachedFromTarget drops the session.
+  let wave = doc.children.filter(id => id && !seen.has(id));
+  while (wave.length && trees.length < OOPIF_MAX_EXTRA) {
+    const next = [];
+    for (const childSid of wave) {
+      if (!childSid || seen.has(childSid) || trees.length >= OOPIF_MAX_EXTRA) continue;
+      seen.add(childSid);
+      let frameTree = null;
+      try {
+        const result = await cdpDomains(cdp).Page.getFrameTree({}, childSid);
+        frameTree = result?.frameTree || null;
+      } catch {
+        // A detached child no longer answers. detachedFromTarget drops the session.
+        frameTree = null;
+      }
+      if (frameTree) trees.push({ sessionId: childSid, frameTree });
+      await attachChildOopifSessions(cdp, doc, childSid, frameTree);
+      for (const id of doc.children) {
+        if (id && !seen.has(id) && !next.includes(id)) next.push(id);
+      }
     }
+    wave = next;
   }
   const merged = appendCrossSiteFrames(sameOriginFrames, trees);
   doc.frames = merged.sessionByFrame;
