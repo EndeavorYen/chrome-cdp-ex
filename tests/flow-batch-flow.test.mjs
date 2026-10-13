@@ -4,6 +4,7 @@ import { createMockCDP } from './mock-cdp.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const { absolutizeBatchArgs, absolutizeFlowArgs } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-cli.mjs');
+const { tokenizeCommandLine } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-core.mjs');
 const { formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs } = T;
 
 // =========================================================================
@@ -279,6 +280,76 @@ describe('absolutizeFlowArgs backtick quotes', () => {
         args: ['T1', resolve(cwd, 'other file.png'), "it 's fine"],
       },
     ]);
+  });
+
+  it('absolutizes a flow path and keeps a value that contains both quotes', () => {
+    const cwd = '/tmp/caller';
+    const value = `"O'Brien"`;
+    const step = `upload T1 "other file.png" \`${value}\`; shot T1 \`${value}\` "my file.png"`;
+    const out = absolutizeFlowArgs([step], cwd);
+    expect(parseFlowSteps(out[0])).toEqual([
+      {
+        kind: 'command',
+        cmd: 'upload',
+        args: ['T1', resolve(cwd, 'other file.png'), value],
+      },
+      {
+        kind: 'command',
+        cmd: 'shot',
+        args: ['T1', value, resolve(cwd, 'my file.png')],
+      },
+    ]);
+  });
+});
+
+describe('absolutizeBatchArgs apostrophe quotes', () => {
+  it('absolutizes a shot or upload path and keeps an apostrophe as one argument', () => {
+    const cwd = '/tmp/caller';
+    const cases = [
+      {
+        step: `shot T1 "O'Brien" "my file.png"`,
+        command: { cmd: 'shot', args: ['T1', "O'Brien", resolve(cwd, 'my file.png')] },
+      },
+      {
+        step: `upload T1 "other file.png" "it's a note"`,
+        command: { cmd: 'upload', args: ['T1', resolve(cwd, 'other file.png'), "it's a note"] },
+      },
+      {
+        step: `shot T1 "O'Brien" note.png | upload T1 other.png "O'Brien"`,
+        commands: [
+          { cmd: 'shot', args: ['T1', "O'Brien", resolve(cwd, 'note.png')] },
+          { cmd: 'upload', args: ['T1', resolve(cwd, 'other.png'), "O'Brien"] },
+        ],
+      },
+    ];
+    for (const { step, command, commands } of cases) {
+      const out = absolutizeBatchArgs([step], cwd);
+      const parsed = parseBatchArgs(out).commands;
+      expect(parsed, step).toEqual(commands || [command]);
+      const segments = out[0].split('|');
+      parsed.forEach((entry, index) => {
+        const tokens = tokenizeCommandLine(segments[index].trim()).map(token => token.value);
+        expect(tokens, step).toEqual([entry.cmd, ...entry.args]);
+      });
+    }
+  });
+
+  it('does not put backticks around a batch value that contains both quotes', () => {
+    const cwd = '/tmp/caller';
+    const value = `"O'Brien"`;
+    const step = `upload T1 "my file.png" a${value} | shot T1 "it's a note" out.png`;
+    const before = parseBatchArgs([step]).commands;
+    expect(before[0].args[2]).toBe(`a${value}`);
+    const out = absolutizeBatchArgs([step], cwd);
+    const parsed = parseBatchArgs(out).commands;
+    expect(parsed[0].args[2], out[0]).toBe(`a${value}`);
+    expect(parsed[0].args[2], out[0]).not.toContain('`');
+    const uploadTokens = tokenizeCommandLine(out[0].split('|')[0].trim()).map(token => token.value);
+    expect(uploadTokens).toEqual(['upload', 'T1', 'my file.png', `a${value}`]);
+    expect(parsed[1]).toEqual({
+      cmd: 'shot',
+      args: ['T1', "it's a note", resolve(cwd, 'out.png')],
+    });
   });
 });
 

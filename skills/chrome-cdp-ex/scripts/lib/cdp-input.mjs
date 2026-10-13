@@ -38,20 +38,33 @@ export function sameArgList(left, right) {
 }
 // Rejoin a rewritten flow or batch step. Quote only values the tokenizer would
 // split or drop. Those tokenizers do not treat shell `'\''` as one apostrophe,
-// so a value that contains `'` uses a quote kind it does not contain. A selector
-// such as #f stays bare so the step text is stable. A backslash is not
-// whitespace, so a Windows path with no spaces stays bare.
-export function quoteRewrittenArg(text) {
+// so a value that contains `'` uses a quote kind it does not contain. `quoteChars`
+// is the set that tokenizer accepts: flow includes backticks, batch does not.
+// tokenizeCommandLine has no escape. When no quote in the set can wrap the value,
+// return null and the caller leaves that step unchanged. A selector such as #f
+// stays bare so the step text is stable. A backslash is not whitespace, so a
+// Windows path with no spaces stays bare.
+export function quoteRewrittenArg(text, quoteChars = '"\'`') {
   const value = String(text ?? '');
-  if (value === '') return "''";
+  const allowed = String(quoteChars || '"\'`');
+  if (value === '') {
+    const quote = allowed.includes("'") ? "'" : allowed.includes('"') ? '"' : '`';
+    return `${quote}${quote}`;
+  }
   if (!/[\s"';|]/.test(value)) return value;
-  if (!value.includes("'")) return `'${value}'`;
-  if (!value.includes('"')) return `"${value}"`;
-  if (!value.includes('`')) return `\`${value}\``;
-  return shellQuoteCliArg(value);
+  if (allowed.includes("'") && !value.includes("'")) return `'${value}'`;
+  if (allowed.includes('"') && !value.includes('"')) return `"${value}"`;
+  if (allowed.includes('`') && !value.includes('`')) return `\`${value}\``;
+  if (allowed.includes('`')) return shellQuoteCliArg(value);
+  return null;
 }
-export function rejoinRewrittenCommand(head, args) {
-  const parts = [head, ...args.map(arg => quoteRewrittenArg(arg))];
+export function rejoinRewrittenCommand(head, args, quoteChars) {
+  const parts = [head];
+  for (const arg of args) {
+    const quoted = quoteRewrittenArg(arg, quoteChars);
+    if (quoted == null) return null;
+    parts.push(quoted);
+  }
   return parts.join(' ');
 }
 export function canonicalCallerCommand(cmd) {
