@@ -13,6 +13,7 @@ export const CDP_METHODS = Object.freeze([
   'CSS.getStyleSheetText',
   'DOM.describeNode',
   'DOM.enable',
+  'DOM.getBoxModel',
   'DOM.getDocument',
   'DOM.getFrameOwner',
   'DOM.pushNodesByBackendIdsToFrontend',

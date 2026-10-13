@@ -14,7 +14,7 @@ import { cutDocumentConsoleBuffersAt, documentConsoleCutSeq, shellQuoteCliArg } 
 import { navigationCancelledError, reloadObservationBuffers, reloadStr } from './cdp-flow.mjs';
 import { cdpDomains, evalStr, getPages, navigationDestinationMatches, runtimeExceptionMessage } from './cdp-page.mjs';
 import { clearObservationBuffers } from './cdp-page-commands.mjs';
-import { clickPointHitFunctionSource, clickableBoxHelpersSource, discardHoverIdleBaseline, formatUnknownRefError, frameScopedBackendNode, frameViewportOffset, hoverRecaptureShowsChange, invalidateRefMapping, invalidateSessionRefs, isCursorRef, isRef, isSearchListingHref, isStaleRefError, linkFrameNamePageExpression, linkTargetPageExpression, parseElshotArgs, parseFrameRef, perceiveStr, resolveCursorRef, resolveRef, resolveRefNode, resolveRefRectNoScroll, scrollSettledRectFunctionDeclaration, searchListingHelpersSource, searchListingSelector, trustedRefPresenceFunctionDeclaration } from './cdp-perceive.mjs';
+import { clickPointHitFunctionSource, clickableBoxHelpersSource, discardHoverIdleBaseline, formatUnknownRefError, frameScopedBackendNode, frameViewportOffset, hoverRecaptureShowsChange, invalidateRefMapping, invalidateSessionRefs, isCursorRef, isRef, isSearchListingHref, isStaleRefError, linkFrameNamePageExpression, linkTargetPageExpression, parseElshotArgs, parseFrameRef, perceiveStr, resolveCursorRef, resolveRef, resolveRefNode, resolveRefRectNoScroll, resolvedNodeSession, scrollSettledRectFunctionDeclaration, searchListingHelpersSource, searchListingSelector, trustedRefPresenceFunctionDeclaration } from './cdp-perceive.mjs';
 import { clickDownloadBrowser, isSensitiveActionTarget } from './cdp-session-report.mjs';
 
 // The daemon keeps the working directory of the CLI that started it; send the file absolute (#526).
@@ -727,15 +727,19 @@ export function clickProbeInstallModel(parsed, { objectId = null, x = 0, y = 0, 
 export async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0, selector = '' } = {}) {
   try {
     if (objectId) {
+      const probeSid = resolvedNodeSession(cdp, sid, objectId);
       const res = await cdpDomains(cdp).Runtime.callFunctionOn({
         objectId,
         functionDeclaration: clickEventProbeInstallOnNodeDeclaration(),
         returnByValue: true,
-      }, sid);
+      }, probeSid);
       if (res.exceptionDetails) return { installed: false, verifiesTarget: false, missingTarget: false };
-      return clickProbeInstallModel(parseClickEventProbeOutput(res.result?.value), {
-        objectId, x, y, scope: 'target-document',
-      });
+      return {
+        ...clickProbeInstallModel(parseClickEventProbeOutput(res.result?.value), {
+          objectId, x, y, scope: 'target-document',
+        }),
+        contentSid: probeSid,
+      };
     }
     const raw = await evalStr(cdp, sid, clickEventProbeInstallAtPointScript(x, y, selector));
     return clickProbeInstallModel(parseClickEventProbeOutput(raw), { objectId: null, x, y, scope: 'top' });
@@ -747,11 +751,12 @@ export async function readClickEventProbe(cdp, sid, probe = {}, timeoutMs) {
   const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined;
   try {
     if (probe.objectId) {
+      const probeSid = probe.contentSid || resolvedNodeSession(cdp, sid, probe.objectId);
       const res = await cdpDomains(cdp).Runtime.callFunctionOn({
         objectId: probe.objectId,
         functionDeclaration: clickEventProbeReadOnNodeDeclaration(),
         returnByValue: true,
-      }, sid, budget);
+      }, probeSid, budget);
       if (res.exceptionDetails) return null;
       return parseClickEventProbeOutput(res.result?.value);
     }
@@ -2014,8 +2019,9 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
     return namedInViewportJsClickStr(cdp, sid, selector, options.clickTrust);
   }
   const objectId = isRef(selector)
-    ? await resolveRefNode(cdp, sid, refMap, selector, refState)
+    ? await resolveRefNode(cdp, sid, refMap, selector, refState, { allowCrossSite: true })
     : await resolveSelectorNode(cdp, sid, selector);
+  const nodeSid = resolvedNodeSession(cdp, sid, objectId);
   try {
     const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
@@ -2031,7 +2037,7 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
       }`,
       awaitPromise: pointer,
       returnByValue: true,
-    }, sid);
+    }, nodeSid);
     if (pointer) {
       const value = res.result.value || {};
       rememberClickTrust(options.clickTrust, value);
@@ -2315,7 +2321,7 @@ export async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) 
     return `Clicked <${r.sel}> "${r.text}" (${selector})`;
   }
   if (isRef(selector)) {
-    const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true });
+    const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true, allowCrossSite: true });
     if (r.disabled) throw actionDisabledError('click', { tag: r.tag, text: r.text, reason: r.disabled }, selector);
     const refPoint = { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     if (clickMeasurementUnusable(r, refPoint)) throw noClickBoxError(selector, r);
@@ -2323,7 +2329,7 @@ export async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) 
     assertClickPointNotCovered(r.hit, { x: r.x + r.w / 2, y: r.y + r.h / 2, tag: r.tag, text: r.text, ref: selector });
     let objectId = null;
     try {
-      objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { returnRealm: 'page' });
+      objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { returnRealm: 'page', allowCrossSite: true });
     } catch {
       objectId = null;
     }
@@ -4390,12 +4396,12 @@ export async function snapshotFormControlState(cdp, sid, selector, refMap, refSt
   if (!selector) return null;
   try {
     if (isRef(selector)) {
-      const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+      const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { allowCrossSite: true });
       const res = await cdpDomains(cdp).Runtime.callFunctionOn({
         objectId,
         functionDeclaration: `function() { return (${formControlStateProbeDeclaration()}).call(this); }`,
         returnByValue: true,
-      }, sid);
+      }, resolvedNodeSession(cdp, sid, objectId));
       return parseFormControlStateSnapshot(res.result?.value);
     }
     const raw = await evalStr(cdp, sid, `(function() {
@@ -4626,12 +4632,12 @@ export function fillLiveValueAccepted(snapshot, wanted) {
 }
 export async function readFillLiveValue(cdp, sid, selector, refMap, refState) {
   if (isRef(selector)) {
-    const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+    const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { allowCrossSite: true });
     const res = await cdpDomains(cdp).Runtime.callFunctionOn({
       objectId,
       functionDeclaration: fillLiveValueDeclaration(),
       returnByValue: true,
-    }, sid);
+    }, resolvedNodeSession(cdp, sid, objectId));
     return parseFillLiveSnapshot(res.result?.value);
   }
   const raw = await evalStr(cdp, sid, fillLiveValuePageScript(selector));
@@ -4646,8 +4652,9 @@ export async function fillLiveValueAcceptedNow(cdp, sid, selector, text, refMap,
 }
 export async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   const objectId = isRef(selector)
-    ? await resolveRefNode(cdp, sid, refMap, selector, refState)
+    ? await resolveRefNode(cdp, sid, refMap, selector, refState, { allowCrossSite: true })
     : await resolveSelectorNode(cdp, sid, selector);
+  const nodeSid = resolvedNodeSession(cdp, sid, objectId);
   const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
     objectId,
     functionDeclaration: `function() {
@@ -4658,7 +4665,7 @@ export async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
       return info;
     }`,
     returnByValue: true,
-  }, sid);
+  }, nodeSid);
   const probed = probe.result?.value || {};
   if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
   if (probed.disabled) throw actionDisabledError('fill', probed.disabled, selector);
@@ -4690,7 +4697,7 @@ export async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
     }`,
     arguments: [{ value: text }],
     returnByValue: true,
-  }, sid);
+  }, nodeSid);
   const tag = res.result.value?.tag || '?';
   return `React-filled ${isRef(selector) ? selector : `<${tag}>`} with "${formatInputTextPreview(text)}"`;
 }
@@ -4758,13 +4765,15 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
     tag = out.match(/^React-filled <([^>]+)>/)?.[1] || tag;
   } else {
     let probed;
+    let nodeSid = sid;
     if (ref) {
-      const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+      const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { allowCrossSite: true });
+      nodeSid = resolvedNodeSession(cdp, sid, objectId);
       const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
         objectId,
         functionDeclaration: fillableRefProbeDeclaration({ clear: !clearing }),
         returnByValue: true,
-      }, sid);
+      }, nodeSid);
       probed = probe.result?.value || {};
       if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
       if (probed.disabled) throw actionDisabledError('fill', probed.disabled, selector);
@@ -4788,7 +4797,7 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
     if (clearing) {
       await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
     } else {
-      await cdpDomains(cdp).Input.insertText( { text: wanted }, sid);
+      await cdpDomains(cdp).Input.insertText( { text: wanted }, nodeSid);
       if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, wanted, refMap, refState))) {
         await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
       }
@@ -4828,7 +4837,7 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
 }
 // An @ref names one node (#633). Apply it on that node; there is no selector to wait for.
 export async function selectByRef(cdp, sid, selector, wanted, refMap, refState) {
-  const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+  const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { allowCrossSite: true });
   const evaluated = await cdpDomains(cdp).Runtime.callFunctionOn({
     objectId,
     functionDeclaration: `function() {
@@ -4847,7 +4856,7 @@ export async function selectByRef(cdp, sid, selector, wanted, refMap, refState) 
       return { ok: true, text: String(match.textContent || '').trim() || match.value || wanted };
     }`,
     returnByValue: true,
-  }, sid);
+  }, resolvedNodeSession(cdp, sid, objectId));
   if (evaluated.exceptionDetails) throw new Error(runtimeExceptionMessage(evaluated.exceptionDetails));
   const r = evaluated.result?.value || {};
   if (!r.ok && r.disabled) throw actionDisabledError('select', r.disabled, selector);
