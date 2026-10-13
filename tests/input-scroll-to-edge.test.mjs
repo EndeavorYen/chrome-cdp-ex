@@ -150,7 +150,7 @@ describe('issue #323 scroll to top/bottom', () => {
     const cdp = documentScrollCdp(page);
     const text = await T.scrollStr(cdp, 'sid', 'down', '80');
     expect(page.state.scrollY).toBe(HF_HOME_SCROLL_MAX);
-    expect(text).toBe('Scrolled by (0, 80). Position: (0, 5295)');
+    expect(text).toBe('Did not scroll: the document is already at the bottom. scrollY: 5295 / 5295 max (at-bottom: yes)');
     expect(cdp.calls[0].params.expression).toContain('scrollBy');
     expect(cdp.calls[0].params.expression).not.toContain('document-scroll-edge');
     expect(T.scrollFeedbackPolicy('down', '80')).toBe('settle-diff');

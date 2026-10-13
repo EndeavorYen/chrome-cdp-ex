@@ -3032,9 +3032,94 @@ export function scrollEdgeLogicSource() {
 // horizontal-only carousel is found without --scroll-container. Automatic selection accepts
 // overflow auto, scroll, or overlay on that axis. overflow hidden stays out of that search;
 // --scroll-container still scrolls a named hidden box.
-// Kept out of scrollEdgeLogicSource: an edge scroll never calls scrollBy.
+// #657: that fallback prefers an open dialog's scroller when the background is scroll-locked, or
+// when the dialog is modal. A document scroll that is already at the top or bottom says so.
+// Kept out of scrollEdgeLogicSource: an edge scroll never calls scrollBy, and `to top` / `to bottom`
+// keep the main overflow container (a dialog does not change those).
 export function scrollByLogicSource() {
   return `
+    const attrOf = function(el, name) {
+      try {
+        if (!el || typeof el.getAttribute !== 'function') return '';
+        const value = el.getAttribute(name);
+        return value == null ? '' : String(value);
+      } catch (err) {
+        return '';
+      }
+    };
+    const hasOpen = function(el) {
+      try {
+        if (el && typeof el.hasAttribute === 'function') return el.hasAttribute('open');
+      } catch (err) {}
+      return !!(el && el.open === true);
+    };
+    const isShown = function(el) {
+      if (!el || el.hidden === true) return false;
+      const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(el) : null;
+      if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+      return true;
+    };
+    const isDialogCandidate = function(el) {
+      if (!el || isDocumentScroller(el)) return false;
+      const tag = String(el.tagName || '').toLowerCase();
+      if (tag === 'dialog') return hasOpen(el);
+      const role = attrOf(el, 'role').toLowerCase();
+      if (role === 'dialog' || role === 'alertdialog') return true;
+      return attrOf(el, 'aria-modal').toLowerCase() === 'true';
+    };
+    const isModalDialog = function(el) {
+      if (attrOf(el, 'aria-modal').toLowerCase() === 'true') return true;
+      try {
+        return typeof el.matches === 'function' && el.matches(':modal');
+      } catch (err) {
+        return false;
+      }
+    };
+    const backgroundScrollLocked = function(axis) {
+      const locks = function(el) {
+        return !!el && /(hidden|clip)/.test(overflowKeyword(el, axis));
+      };
+      return locks(document.body) || locks(document.documentElement);
+    };
+    const bestAutoScroller = function(root, axis) {
+      let best = null;
+      let bestScore = 0;
+      const consider = function(node) {
+        if (!isAutoScrollableOn(node, axis)) return;
+        const max = overflowMax(node, axis);
+        const area = (Number(node.clientWidth) || 0) * (Number(node.clientHeight) || 0);
+        const score = max * Math.max(1, area);
+        if (score > bestScore) {
+          best = node;
+          bestScore = score;
+        }
+      };
+      consider(root);
+      const inner = root && typeof root.querySelectorAll === 'function' ? root.querySelectorAll('*') : [];
+      for (let i = 0; i < inner.length; i++) consider(inner[i]);
+      return best;
+    };
+    // Last matching dialog in DOM order is the topmost. A non-modal dialog does not steal the
+    // scroll unless the background is locked, which is the modal scroll-lock pattern.
+    const preferDialogScroller = function(axis) {
+      if (typeof document.querySelectorAll !== 'function') return null;
+      let nodes = [];
+      try {
+        nodes = document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]') || [];
+      } catch (err) {
+        return null;
+      }
+      const locked = backgroundScrollLocked(axis);
+      let chosen = null;
+      for (let i = 0; i < nodes.length; i++) {
+        const dialog = nodes[i];
+        if (!isShown(dialog) || !isDialogCandidate(dialog)) continue;
+        if (!locked && !isModalDialog(dialog)) continue;
+        const scroller = bestAutoScroller(dialog, axis);
+        if (scroller) chosen = scroller;
+      }
+      return chosen;
+    };
     const runScrollBy = function(requested, dx, dy) {
       const axis = dy !== 0 ? 'y' : 'x';
       const resolved = resolveContainer(requested, null, axis);
@@ -3046,10 +3131,27 @@ export function scrollByLogicSource() {
           ? measureDocument().scrollMax
           : Math.max(0, Math.round((Number(scroller && scroller.scrollWidth) || 0) - (Number(scroller && scroller.clientWidth) || Number(window.innerWidth) || 0)));
         if (docMax > tolerance || (dx !== 0 && dy !== 0)) {
+          const beforeX = Math.round(Number(window.scrollX) || 0);
+          const beforeY = Math.round(Number(window.scrollY) || 0);
           ${documentScrollByJs('dx', 'dy')};
-          return { ok: true, kind: 'document', x: Math.round(window.scrollX), y: Math.round(window.scrollY) };
+          const afterX = Math.round(Number(window.scrollX) || 0);
+          const afterY = Math.round(Number(window.scrollY) || 0);
+          const after = measureDocument();
+          const horizontalMax = dy !== 0 ? 0 : docMax;
+          return {
+            ok: true,
+            kind: 'document',
+            x: afterX,
+            y: afterY,
+            moved: afterX !== beforeX || afterY !== beforeY,
+            scrollMax: dy !== 0 ? after.scrollMax : docMax,
+            atTop: after.atTop,
+            atBottom: after.atBottom,
+            atLeft: afterX <= tolerance,
+            atRight: horizontalMax <= tolerance || afterX >= horizontalMax - tolerance,
+          };
         }
-        el = dy !== 0 ? primaryOverflow() : (dx !== 0 ? primaryOverflowOn('x') : null);
+        el = preferDialogScroller(axis) || (dy !== 0 ? primaryOverflow() : (dx !== 0 ? primaryOverflowOn('x') : null));
         if (!el) return { ok: true, kind: 'none', x: Math.round(window.scrollX), y: Math.round(window.scrollY) };
       }
       const fromTop = Math.round(Number(el.scrollTop) || 0);
@@ -3099,6 +3201,30 @@ export function formatScrollByContainerText(dx, dy, pos = {}) {
   return vertical
     ? `Scrolled ${who} by (${dx}, ${dy}): scrollTop ${pos.fromTop} → ${pos.scrollTop} / ${pos.scrollMax} max${edge}`
     : `Scrolled ${who} by (${dx}, ${dy}): scrollLeft ${pos.fromLeft} → ${pos.scrollLeft}`;
+}
+// #657: the document receipt used to claim the requested delta even when the page was already
+// at that edge. Name the edge, and do not claim a move that did not happen.
+export function formatScrollByDocumentText(dx, dy, pos = {}) {
+  const vertical = Number(dy) !== 0 && Number(dx) === 0;
+  const horizontal = Number(dx) !== 0 && Number(dy) === 0;
+  const edgeName = vertical
+    ? (Number(dy) > 0 ? (pos.atBottom === true ? 'bottom' : '') : (pos.atTop === true ? 'top' : ''))
+    : horizontal
+      ? (Number(dx) > 0 ? (pos.atRight === true ? 'right edge' : '') : (pos.atLeft === true ? 'left edge' : ''))
+      : '';
+  if (pos.moved === false && edgeName) {
+    if (vertical) {
+      const flag = edgeName === 'bottom' ? 'at-bottom' : 'at-top';
+      return `Did not scroll: the document is already at the ${edgeName}. scrollY: ${pos.y} / ${pos.scrollMax} max (${flag}: yes)`;
+    }
+    return `Did not scroll: the document is already at the ${edgeName}. scrollX: ${pos.x}`;
+  }
+  const hint = pos.moved === true && edgeName === 'bottom'
+    ? ' (at-bottom: yes)'
+    : pos.moved === true && edgeName === 'top'
+      ? ' (at-top: yes)'
+      : '';
+  return `Scrolled by (${dx}, ${dy}). Position: (${pos.x}, ${pos.y})${hint}`;
 }
 export function scrollEdgeExpression(edge, containerSelector = null) {
   const dest = edge === 'top' ? 'top' : 'bottom';
@@ -3177,6 +3303,7 @@ export async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
   const pos = parseScrollEdgePayload(await evalStr(cdp, sid, scrollByExpression(dx, dy, container)));
   if (pos && pos.ok === false) throw new Error(pos.error || 'scroll failed');
   if (pos.kind === 'container') return formatScrollByContainerText(dx, dy, pos);
+  if (pos.kind === 'document') return formatScrollByDocumentText(dx, dy, pos);
   if (pos.kind === 'none') {
     const axisWord = dy !== 0 ? 'vertically' : 'horizontally';
     throw new Error(`scroll: nothing scrolled: nothing on the page scrolls ${axisWord}. Position: (${pos.x}, ${pos.y})`);

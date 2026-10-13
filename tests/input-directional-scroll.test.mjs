@@ -86,8 +86,30 @@ function horizontalElement({
   return el;
 }
 
+// An open <dialog>. Children are its scroll containers.
+function openDialog({ id = 'dlg', open = true, ariaModal = null, modal = false, children = [] } = {}) {
+  const attrs = {};
+  if (open) attrs.open = '';
+  if (ariaModal != null) attrs['aria-modal'] = ariaModal;
+  const el = {
+    id,
+    tagName: 'DIALOG',
+    parentElement: null,
+    open,
+    _state: { overflowY: 'visible', overflowX: 'visible' },
+    _attrs: attrs,
+    getAttribute(name) { return Object.hasOwn(this._attrs, name) ? this._attrs[name] : null; },
+    hasAttribute(name) { return Object.hasOwn(this._attrs, name); },
+    matches(selector) { return modal === true && selector === ':modal'; },
+    querySelectorAll(sel) { return sel === '*' ? children : []; },
+    contains(node) { return children.includes(node); },
+  };
+  for (const child of children) child.parentElement = el;
+  return el;
+}
+
 // A document `docScrollMax` px taller than the viewport, plus nested scrollers.
-function page({ docScrollMax = 0, scrollY = 0, containers = [] } = {}) {
+function page({ docScrollMax = 0, scrollY = 0, containers = [], dialogs = [], bodyOverflowY = null } = {}) {
   const innerHeight = 800;
   const state = { scrollY, scrollHeight: innerHeight + docScrollMax, documentCalls: 0 };
   const scroller = {
@@ -101,11 +123,20 @@ function page({ docScrollMax = 0, scrollY = 0, containers = [] } = {}) {
     _nativeScrollTo(options) { state.scrollY = Math.max(0, Math.min(docScrollMax, Number(options.top) || 0)); },
   };
   const byId = new Map(containers.map(el => [`#${el.id}`, el]));
+  const body = {
+    tagName: 'BODY',
+    _state: bodyOverflowY ? { overflowY: bodyOverflowY, overflow: bodyOverflowY } : {},
+  };
   const document = {
     scrollingElement: scroller,
     documentElement: scroller,
+    body,
     querySelector: sel => byId.get(sel) || null,
-    querySelectorAll: sel => (sel === '*' ? containers : []),
+    querySelectorAll: sel => {
+      if (sel === '*') return containers;
+      if (typeof sel === 'string' && (sel.includes('dialog') || sel.includes('aria-modal'))) return dialogs;
+      return [];
+    },
   };
   const window = {
     innerHeight,
@@ -165,7 +196,8 @@ describe('#640 directional scroll', () => {
   it('stays on the document at its bottom edge instead of scrolling some inner box', async () => {
     const code = overflowElement({ id: 'code', scrollHeight: 900, clientHeight: 300 });
     const fake = page({ docScrollMax: 3000, scrollY: 3000, containers: [code] });
-    expect(await T.scrollStr(pageCdp(fake), 'sid', 'down', '500')).toBe('Scrolled by (0, 500). Position: (0, 3000)');
+    expect(await T.scrollStr(pageCdp(fake), 'sid', 'down', '500'))
+      .toBe('Did not scroll: the document is already at the bottom. scrollY: 3000 / 3000 max (at-bottom: yes)');
     expect(code.scrollTop).toBe(0);
   });
 
@@ -492,5 +524,68 @@ describe('#640 directional scroll', () => {
   it('still reads the old {x, y} reply of a page that answers only that shape', async () => {
     const cdp = { send: () => Promise.resolve({ result: { value: '{"x":0,"y":0}' } }) };
     expect(await T.scrollStr(cdp, 'sid', 'down', '100')).toBe('Scrolled by (0, 100). Position: (0, 0)');
+  });
+});
+
+describe('#657 dialog scroll and document at-bottom', () => {
+  function lockedPage({ open = true, ariaModal = null, bodyOverflowY = 'hidden' } = {}) {
+    const main = overflowElement({ id: 'main', scrollHeight: 18000, clientHeight: 800, clientWidth: 1200 });
+    const dialogBody = overflowElement({ id: 'dialog-body', scrollHeight: 2000, clientHeight: 400, clientWidth: 480 });
+    const dialog = openDialog({ open, ariaModal, children: [dialogBody] });
+    const fake = page({
+      docScrollMax: 0,
+      containers: [main, dialogBody],
+      dialogs: [dialog],
+      bodyOverflowY,
+    });
+    return { main, dialogBody, fake };
+  }
+
+  it('prefers an open dialog scroller when the background body is scroll-locked', async () => {
+    const { main, dialogBody, fake } = lockedPage();
+    const cdp = pageCdp(fake);
+    expect(await T.scrollStr(cdp, 'sid', 'down', '200'))
+      .toBe('Scrolled #dialog-body by (0, 200): scrollTop 0 → 200 / 1600 max');
+    expect(dialogBody.scrollTop).toBe(200);
+    expect(main.scrollTop).toBe(0);
+    expect(fake.state.documentCalls).toBe(0);
+    expect(await T.scrollStr(cdp, 'sid', 'down', '100', ['--scroll-container', '#main']))
+      .toBe('Scrolled #main by (0, 100): scrollTop 0 → 100 / 17200 max');
+    expect(dialogBody.scrollTop).toBe(200);
+  });
+
+  it('prefers an aria-modal dialog when the body itself is not overflow-locked', async () => {
+    const { main, dialogBody, fake } = lockedPage({ ariaModal: 'true', bodyOverflowY: null });
+    expect(await T.scrollStr(pageCdp(fake), 'sid', 'down', '200'))
+      .toBe('Scrolled #dialog-body by (0, 200): scrollTop 0 → 200 / 1600 max');
+    expect(dialogBody.scrollTop).toBe(200);
+    expect(main.scrollTop).toBe(0);
+  });
+
+  it('keeps the background scroller when the dialog is closed or the body is not scroll-locked', async () => {
+    const closed = lockedPage({ open: false });
+    expect(await T.scrollStr(pageCdp(closed.fake), 'sid', 'down', '200'))
+      .toBe('Scrolled #main by (0, 200): scrollTop 0 → 200 / 17200 max');
+    expect(closed.main.scrollTop).toBe(200);
+    expect(closed.dialogBody.scrollTop).toBe(0);
+
+    const unlocked = lockedPage({ bodyOverflowY: null });
+    expect(await T.scrollStr(pageCdp(unlocked.fake), 'sid', 'down', '200'))
+      .toBe('Scrolled #main by (0, 200): scrollTop 0 → 200 / 17200 max');
+    expect(unlocked.dialogBody.scrollTop).toBe(0);
+  });
+
+  it('names at-bottom when scroll down cannot move a document that is already there', async () => {
+    const code = overflowElement({ id: 'code', scrollHeight: 900, clientHeight: 300 });
+    const atBottom = page({ docScrollMax: 3000, scrollY: 3000, containers: [code] });
+    expect(await T.scrollStr(pageCdp(atBottom), 'sid', 'down', '500'))
+      .toBe('Did not scroll: the document is already at the bottom. scrollY: 3000 / 3000 max (at-bottom: yes)');
+    expect(code.scrollTop).toBe(0);
+    const nearBottom = page({ docScrollMax: 3000, scrollY: 2800 });
+    expect(await T.scrollStr(pageCdp(nearBottom), 'sid', 'down', '500'))
+      .toBe('Scrolled by (0, 500). Position: (0, 3000) (at-bottom: yes)');
+    const atTop = page({ docScrollMax: 3000, scrollY: 0 });
+    expect(await T.scrollStr(pageCdp(atTop), 'sid', 'up', '500'))
+      .toBe('Did not scroll: the document is already at the top. scrollY: 0 / 3000 max (at-top: yes)');
   });
 });
