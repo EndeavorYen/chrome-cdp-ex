@@ -309,6 +309,21 @@ describe('#429 fill "" clears a field', () => {
     expect(changedOutcome).toMatchObject({ status: 'changed', changed: true });
   });
 
+  it('reports the kept text and the limit in fill.v1 when maxlength cut the value (#748)', () => {
+    const target = { targetId: TARGET_ID, input: '#name', commandArgs: ['#name', 'abcdefghij'] };
+    T.applyFillValueState(target, { before: '', after: 'abcde', changed: true, maxLength: { limit: 5, kept: 5, requested: 10 } });
+    const receipt = T.compactFillReceiptForJson({ action: 'fill', target, outcome: { status: 'changed', changed: true }, effects: {} });
+    expect(receipt).toMatchObject({ schema: 'chrome-cdp-ex.fill.v1', value: 'abcde', maxLength: { limit: 5, kept: 5, requested: 10 } });
+    const plain = T.compactFillReceiptForJson({
+      action: 'fill',
+      target: { targetId: TARGET_ID, input: '#name', commandArgs: ['#name', 'abc'] },
+      outcome: { status: 'changed', changed: true },
+      effects: {},
+    });
+    expect(plain.value).toBe('abc');
+    expect(plain).not.toHaveProperty('maxLength');
+  });
+
   it('adds the previous value to the compact fill.v1 receipt', () => {
     const receipt = T.compactFillReceiptForJson({
       action: 'fill',

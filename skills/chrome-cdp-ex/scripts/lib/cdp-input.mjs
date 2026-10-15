@@ -7,7 +7,7 @@ import { secretMarker } from './secrets.mjs';
 import { statSync, writeFileSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
 import { actionObservationPerceiveOpts } from './cdp-action-result.mjs';
-import { ACTIONABILITY_POLL_MS, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS, ACTION_DISABLED_NOT_SENT, ARIA_CONTROL_STATE_ATTRS, CHILD_FRAME_CLICK_RE, CLICK_DOWNLOAD_STARTED_RE, CLICK_DOWNLOAD_UNOBSERVED_RE, CLICK_EVENT_PROBE_KEY, CLICK_HREF_PROBE_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_NAVIGATION_WAIT_MS, CLICK_OPENED_TAB_RE, CLICK_OPENER_BLOCK_GRACE_MS, CLICK_OPENER_RESPOND_TIMEOUT_MS, CLICK_OPENER_TERMINATE_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS, CLICK_POPUP_NAVIGATION_CAP_MS, CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS, CLICK_STUCK_OPENER_BUDGET_MS, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_OUTCOME, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DRAG_DEFAULT_STEPS, DRAG_EVENT_PROBE_KEY, DRAG_INTERCEPT_WAIT_MS, DRAG_LATE_START_GRACE_MS, DRAG_LATE_START_SYNC_MS, DRAG_MAX_STEPS, DRAG_POINT_RE, DRAG_PRESS_HOLD_MS, DRAG_PROBE_EVENT_ORDER, DRAG_STEP_DELAY_MS, FILL_VALUE_PREVIEW_MAX, HOVER_DELIVERY_POLL_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_VISIBLE_COVER_POLLS, HOVER_VISIBLE_DELIVERY_WAIT_MS, HOVER_REVEAL_MARKER, KEY_MAP, NAMED_IN_VIEWPORT_CLICK_OUTCOME, NAMED_IN_VIEWPORT_CLICK_SELECTOR, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, NON_FILLABLE_INPUT_TYPES, POINTER_CLICK_SETTLE_MS, PRESS_DELIVERY_POLL_MS, PRESS_DELIVERY_WAIT_MS, PRESS_PROBE_KEY, PRESS_PROBE_MARKER, PRESS_SEARCH_SUBMIT_FLAG, PUNCT_KEY_MAP, REF_RESOLVE_TIMEOUT, SEARCH_SUBMIT_PROBE_WAIT_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_TARGET_IDS, SHIFTED_PUNCT_KEY_MAP, TEXT_SELECTOR_PREFIX_RE, TIMEOUT, sleep } from './cdp-base.mjs';
+import { ACTIONABILITY_POLL_MS, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS, ACTION_DISABLED_NOT_SENT, ARIA_CONTROL_STATE_ATTRS, CHILD_FRAME_CLICK_RE, CLICK_DOWNLOAD_STARTED_RE, CLICK_DOWNLOAD_UNOBSERVED_RE, CLICK_EVENT_PROBE_KEY, CLICK_HREF_PROBE_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS, CLICK_NAVIGATION_WAIT_MS, CLICK_OPENED_TAB_RE, CLICK_OPENER_BLOCK_GRACE_MS, CLICK_OPENER_RESPOND_TIMEOUT_MS, CLICK_OPENER_TERMINATE_TIMEOUT_MS, CLICK_POPUP_COMMIT_WAIT_MS, CLICK_POPUP_NAVIGATION_CAP_MS, CLICK_PROBE_READ_AFTER_MOUSE_TIMEOUT_MS, CLICK_STUCK_OPENER_BUDGET_MS, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_OUTCOME, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DRAG_DEFAULT_STEPS, DRAG_EVENT_PROBE_KEY, DRAG_INTERCEPT_WAIT_MS, DRAG_LATE_START_GRACE_MS, DRAG_LATE_START_SYNC_MS, DRAG_MAX_STEPS, DRAG_POINT_RE, DRAG_PRESS_HOLD_MS, DRAG_PROBE_EVENT_ORDER, DRAG_STEP_DELAY_MS, FILL_VALUE_PREVIEW_MAX, HOVER_DELIVERY_POLL_MS, HOVER_DELIVERY_WAIT_MS, HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_VISIBLE_COVER_POLLS, HOVER_VISIBLE_DELIVERY_WAIT_MS, HOVER_REVEAL_MARKER, KEY_MAP, NAMED_IN_VIEWPORT_CLICK_OUTCOME, NAMED_IN_VIEWPORT_CLICK_SELECTOR, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, NON_FILLABLE_INPUT_TYPES, POINTER_CLICK_SETTLE_MS, PRESS_DELIVERY_POLL_MS, PRESS_DELIVERY_WAIT_MS, PRESS_PROBE_KEY, PRESS_PROBE_MARKER, PRESS_SEARCH_SUBMIT_FLAG, PUNCT_KEY_MAP, REF_RESOLVE_TIMEOUT, SEARCH_SUBMIT_PROBE_WAIT_MS, SENSITIVE_FILL_RAW_VALUES, SESSION_TARGET_IDS, SHIFTED_PUNCT_KEY_MAP, TEXT_SELECTOR_PREFIX_RE, TIMEOUT, sleep, daemonSecretStorage } from './cdp-base.mjs';
 import { isBlankPageUrl, parseCompactFormatArgs } from './cdp-browser.mjs';
 import { parseNonNegativeInteger, targetPrefixForDisplay } from './cdp-cli.mjs';
 import { cutDocumentConsoleBuffersAt, documentConsoleCutSeq, shellQuoteCliArg } from './cdp-core.mjs';
@@ -16,7 +16,7 @@ import { cdpDomains, evalStr, getPages, navigationDestinationMatches, runtimeExc
 import { clearObservationBuffers } from './cdp-page-commands.mjs';
 import { clickPointHitFunctionSource, clickableBoxHelpersSource, discardHoverIdleBaseline, formatUnknownRefError, frameScopedBackendNode, frameViewportOffset, hoverRecaptureShowsChange, invalidateRefMapping, invalidateSessionRefs, isCursorRef, isRef, isSearchListingHref, isStaleRefError, linkFrameNamePageExpression, linkTargetPageExpression, parseElshotArgs, parseFrameRef, perceiveStr, resolveCursorRef, resolveRef, resolveRefNode, resolveRefRectNoScroll, resolvedNodeSession, scrollSettledRectFunctionDeclaration, searchListingHelpersSource, searchListingSelector, trustedRefPresenceFunctionDeclaration } from './cdp-perceive.mjs';
 import { formatCrossSiteTarget, frameContentOrigin, listedFrame, originHost, wrapFrameContent } from './frame-sites.mjs';
-import { clickDownloadBrowser, isSensitiveActionTarget } from './cdp-session-report.mjs';
+import { clickDownloadBrowser, isSensitiveActionTarget, rememberSessionSecret } from './cdp-session-report.mjs';
 
 // The daemon keeps the working directory of the CLI that started it; send the file absolute (#526).
 export function absolutizeElshotFileArg(args = [], cwd = process.cwd()) {
@@ -4481,7 +4481,7 @@ export function fillableControlProbeDeclaration() {
       || (tag === 'INPUT' && ${JSON.stringify(NON_FILLABLE_INPUT_TYPES)}.indexOf(type) === -1)
       || role === 'textbox' || role === 'searchbox' || role === 'combobox'
     ));
-    return { ok: fillable, fillable, tag, type, role };
+    return { ok: fillable, fillable, tag, type, role, maxLength: ${fillMaxLengthExpression('el')} };
   }`;
 }
 export function formControlStateProbeDeclaration() {
@@ -4656,7 +4656,7 @@ export function fillableControlPageProbe(selector, { clear = true, waitMs = 0 } 
     ${clear ? `if (el.isContentEditable) el.textContent = '';
     else el.value = '';
     el.dispatchEvent(new Event('input', { bubbles: true }));` : '// clear: native setter path follows'}
-    return { ok: true, tag: info.tag, type: info.type, before: before, ...waitInfo };
+    return { ok: true, tag: info.tag, type: info.type, before: before, maxLength: info.maxLength, ...waitInfo };
   })()`;
 }
 export function fillableRefProbeDeclaration({ clear = true } = {}) {
@@ -4736,8 +4736,33 @@ export function fillLiveValueDeclaration() {
       value,
       textContent: String(el && el.textContent || ''),
       field: ${fillFieldDescriptorExpression('el')},
+      maxLength: ${fillMaxLengthExpression('el')},
     };
   }`;
+}
+// #748: the maxlength the browser enforces on typed text: a <textarea>, or an <input> of a text
+// type. Chrome ignores maxlength on number, date and the other input types. null when none applies.
+export function fillMaxLengthExpression(name) {
+  return `(function(el) {
+      if (!el) return null;
+      const tag = String(el.tagName || '').toUpperCase();
+      const type = String(el.type || '').toLowerCase();
+      const applies = tag === 'TEXTAREA' || (tag === 'INPUT' && ['text', 'search', 'url', 'tel', 'email', 'password'].indexOf(type) !== -1);
+      return applies && Number.isInteger(el.maxLength) && el.maxLength >= 0 ? el.maxLength : null;
+    })(${name})`;
+}
+// #748: a user cannot type more than maxlength UTF-16 code units, and fill keeps the same limit.
+// A surrogate pair at the cut is dropped whole.
+export function keepWithinMaxLength(text, maxLength) {
+  const value = String(text ?? '');
+  if (!Number.isInteger(maxLength) || maxLength < 0 || value.length <= maxLength) return value;
+  const kept = value.slice(0, maxLength);
+  return /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept;
+}
+// A sensitive value's length stays out of the note.
+export function formatFillMaxLengthNote(wanted, kept, maxLength, { sensitive = false } = {}) {
+  if (kept.length >= String(wanted).length) return '';
+  return ` (maxlength ${maxLength}: kept ${kept.length}${sensitive ? '' : ` of ${String(wanted).length}`} characters)`;
 }
 // The strings that name a control (#485): fill decides from them whether the typed value is secret.
 export function fillFieldDescriptorExpression(name) {
@@ -4818,6 +4843,7 @@ export function parseFillLiveSnapshot(raw) {
     value: String(parsed.value ?? ''),
     textContent: String(parsed.textContent ?? ''),
     field: parsed.field && typeof parsed.field === 'object' ? parsed.field : null,
+    maxLength: Number.isInteger(parsed.maxLength) ? parsed.maxLength : null,
   };
 }
 // True when the control's own name, id, autocomplete, aria-label, placeholder or label marks it secret.
@@ -4903,11 +4929,11 @@ export async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
       el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
       return { tag: el.tagName, value: el.isContentEditable ? el.textContent : el.value };
     }`,
-    arguments: [{ value: text }],
+    arguments: [{ value: keepWithinMaxLength(text, probed.maxLength) }],
     returnByValue: true,
   }, nodeSid);
   const tag = res.result.value?.tag || '?';
-  return `React-filled ${isRef(selector) ? selector : `<${tag}>`} with "${formatInputTextPreview(text)}"`;
+  return `React-filled ${isRef(selector) ? selector : `<${tag}>`} with "${formatInputTextPreview(keepWithinMaxLength(text, probed.maxLength))}"`;
 }
 export function formatFillDispatchText({ label, text, clearing, react, state, secretName = null }) {
   const before = state?.before;
@@ -4934,6 +4960,7 @@ export function applyFillValueState(target, state) {
   if (!target || !state || typeof state !== 'object' || !Object.hasOwn(state, 'after')) return target;
   markSensitiveFillTarget(target, state);
   target.fillValue = { before: state.before ?? null, after: state.after ?? null };
+  if (state.maxLength && typeof state.maxLength === 'object') target.fillMaxLength = { ...state.maxLength };
   if (state.changed === true) {
     target.controlStateChanged = true;
     target.controlStateDiff = `value ${fillValueDisplay(state.before)} → ${fillValueDisplay(state.after)}`;
@@ -4957,6 +4984,7 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
   let before = null;
   let inputType = '';
   let tag = '?';
+  let maxLength = null;
   if (opts.react) {
     if (!ref) {
       const wait = await waitForActionableSelector(cdp, sid, selector, { waitMs, visible: true });
@@ -5002,16 +5030,20 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
     if (typeof probed.before === 'string') before = probed.before;
     inputType = probed.type || '';
     tag = probed.tag || tag;
+    maxLength = Number.isInteger(probed.maxLength) ? probed.maxLength : null;
     if (clearing) {
       await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
     } else {
-      await cdpDomains(cdp).Input.insertText( { text: wanted }, nodeSid);
-      if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, wanted, refMap, refState))) {
-        await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
+      const kept = keepWithinMaxLength(wanted, maxLength);
+      await cdpDomains(cdp).Input.insertText( { text: kept }, nodeSid);
+      if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, kept, refMap, refState))) {
+        await fillReactStr(cdp, sid, selector, kept, refMap, refState);
       }
     }
   }
   const after = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
+  if (maxLength == null && Number.isInteger(after?.maxLength)) maxLength = after.maxLength;
+  const kept = keepWithinMaxLength(wanted, maxLength);
   const facts = ref ? crossSiteListed(cdp, sid, selector, refState) : null;
   if (facts) before = null;
   const secretName = opts.secretName || null;
@@ -5023,11 +5055,16 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
   const state = buildFillValueState({
     before,
     after: after?.ok ? after.value : null,
-    requested: wanted,
+    requested: kept,
     inputType: inputType || after?.type || '',
     sensitive,
     secretName,
   });
+  if (kept.length < wanted.length) {
+    state.maxLength = sensitive ? { limit: maxLength, kept: kept.length } : { limit: maxLength, kept: kept.length, requested: wanted.length };
+    // #748: the page now holds the start of the secret; scrub that part too, on every fill path.
+    if (secretName) rememberSessionSecret(daemonSecretStorage.getStore()?.session, secretName, kept);
+  }
   if (opts.valueState && typeof opts.valueState === 'object') {
     Object.assign(opts.valueState, state);
     if (sensitive) {
@@ -5035,17 +5072,17 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
       SENSITIVE_FILL_RAW_VALUES.set(opts.valueState, [typed, before, after?.value]);
     }
   }
-  if (!fillLiveValueAccepted(after, wanted)) {
+  if (!fillLiveValueAccepted(after, kept)) {
     if (ref) {
       const unique = await fillRefUniqueSelector(cdp, sid, selector, refMap, refState);
       if (unique) state.selector = unique;
     }
-    throw fillValueRejectedError(selector, secretName ? secretMarker(secretName) : wanted, state);
+    throw fillValueRejectedError(selector, secretName ? secretMarker(secretName) : kept, state);
   }
   const label = facts
     ? `${selector}${facts.host ? ` in ${facts.host}` : ''}`
     : (ref ? selector : `<${tag}>`);
-  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state, secretName })}${waitNote}`;
+  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : kept, clearing, react: opts.react === true, state, secretName })}${formatFillMaxLengthNote(wanted, kept, maxLength, { sensitive })}${waitNote}`;
 }
 // An @ref names one node (#633). Apply it on that node; there is no selector to wait for.
 export async function selectByRef(cdp, sid, selector, wanted, refMap, refState) {

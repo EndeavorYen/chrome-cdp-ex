@@ -29,9 +29,10 @@ afterEach(() => {
 });
 
 // One text control whose value follows insertText / the native setter, like the #428 fake page.
-function fakeFillPage({ value = '', type = 'text', accept = text => text } = {}) {
+// `maxLength`: Input.insertText keeps that many characters, as Chrome does; the native setter does not.
+function fakeFillPage({ value = '', type = 'text', accept = text => text, maxLength = null } = {}) {
   const state = { value, calls: [] };
-  const live = () => ({ ok: true, cdpFillLiveValue: true, tag: 'INPUT', type, value: state.value, textContent: '' });
+  const live = () => ({ ok: true, cdpFillLiveValue: true, tag: 'INPUT', type, value: state.value, textContent: '', maxLength });
   const cdp = {
     send(method, params = {}) {
       state.calls.push({ method, params });
@@ -40,10 +41,10 @@ function fakeFillPage({ value = '', type = 'text', accept = text => text } = {})
         if (expr.includes('cdpFillLiveValue')) return Promise.resolve({ result: { value: live() } });
         const before = state.value;
         if (/el\.value = ''/.test(expr)) state.value = '';
-        return Promise.resolve({ result: { value: JSON.stringify({ ok: true, fillable: true, tag: 'INPUT', type, before }) } });
+        return Promise.resolve({ result: { value: JSON.stringify({ ok: true, fillable: true, tag: 'INPUT', type, before, maxLength }) } });
       }
       if (method === 'Input.insertText') {
-        state.value = accept(state.value + params.text);
+        state.value = accept(state.value + params.text).slice(0, maxLength ?? Infinity);
         return Promise.resolve({});
       }
       if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
@@ -279,11 +280,11 @@ describe('#469 the value reaches the page and nowhere else', () => {
   // Drives the daemon's real fill capability inside the real request scope (AsyncLocalStorage
   // secrets + response scrub). Only the browser and the generic actionFeedback plumbing are
   // stand-ins: actionFeedback mirrors the daemon's (dispatch, fill value state, observe, log).
-  async function secretFill({ selector = '#login', secret = SECRET, args = null, observedDiff = null, type = 'text' } = {}) {
+  async function secretFill({ selector = '#login', secret = SECRET, args = null, observedDiff = null, type = 'text', maxLength = null } = {}) {
     const dir = tempDir();
     const session = T.createSessionState({ targetId: TARGET_ID, sessionId: 'sid-1', logPath: join(dir, 'cdp.log') });
     T.initializeSessionLog(session);
-    const { cdp, state } = fakeFillPage({ type });
+    const { cdp, state } = fakeFillPage({ type, maxLength });
     const actionFeedback = (action, dispatch, target, feedbackPolicy, _observe, fopts) => {
       const fillValueState = target.fillValueState;
       delete target.fillValueState;
@@ -320,6 +321,30 @@ describe('#469 the value reaches the page and nowhere else', () => {
     }, { PW: secret });
     return { session, state, response, request };
   }
+
+  it('scrubs the part of a secret that maxlength kept, and does not print its length (#748)', async () => {
+    const { session, state, response } = await secretFill({ maxLength: 8, observedDiff: '(no changes detected in AX tree)' });
+    const kept = SECRET.slice(0, 8);
+    expect(state.value).toBe(kept);
+    const receipt = JSON.parse(response.result);
+    expect(receipt.value).toBe('<secret:PW>');
+    expect(receipt.maxLength).toEqual({ limit: 8, kept: 8 });
+    expect(response.result).not.toContain(kept);
+    expect(T.scrubSessionSecrets(session, `the field shows ${kept}`)).toBe('the field shows <secret:PW>');
+  });
+
+  it('masks the kept part of a secret in text output and the log when the page shows it (#748)', async () => {
+    const kept = SECRET.slice(0, 8);
+    const { session, response } = await secretFill({
+      maxLength: 8,
+      args: ['#login', '--secret', 'PW'],
+      observedDiff: `+++ Added (1)\n+ [textbox] "Login" = ${JSON.stringify(kept)}`,
+    });
+    expect(response.ok).toBe(true);
+    expect(response.result).not.toContain(kept);
+    expect(response.result).toContain('(maxlength 8: kept 8 characters)');
+    expect(readFileSync(session.logPath, 'utf8')).not.toContain(kept);
+  });
 
   it('types the value through Input.insertText while stdout, receipt, log, records, and report show <secret:PW>', async () => {
     const { session, state, response } = await secretFill();
