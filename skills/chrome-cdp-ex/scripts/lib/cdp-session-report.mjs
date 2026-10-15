@@ -1062,7 +1062,7 @@ export function clickNoChangeError(dispatchText) {
   // A cross-site receipt ends in a frame block. Keep it on its own lines, out of the Error: line.
   // Only a cross-site head (`<TAG> (@fN:M) in host`) splits; a top-page label is page text.
   const raw = String(dispatchText || '');
-  const crossSite = /^(?:JS-c|C)licked <[^>"\s]*> \(@f\d+:\d+\) in \S/.test(raw);
+  const crossSite = /^(?:Clicked|JS-clicked|Pointer-clicked) <[^>"\s]*> \(@f\d+:\d+\) in \S/.test(raw);
   const blockAt = crossSite ? raw.search(/^--- FRAME CONTENT \(untrusted\) /m) : -1;
   const line = (blockAt < 0 ? raw : raw.slice(0, blockAt)).replace(/\s+/g, ' ').trim();
   const err = new Error(`click: the control did not react (Outcome: no-change).${line ? ` ${line}` : ''}`);

@@ -187,6 +187,7 @@ function actionCdp({
   settleTimeout = false,
   selectValue = { ok: true, text: 'Visa' },
   fillProbe = { ok: true, fillable: true, tag: 'INPUT', type: 'text', before: '' },
+  pointerValue = { ok: true, tag: 'BUTTON', text: 'Pay now', role: '', ariaExpanded: 'true', dataState: null },
 } = {}) {
   return createMockCDP({
     'Page.getFrameTree': () => ({ frameTree: sameOriginTree() }),
@@ -263,6 +264,9 @@ function actionCdp({
                 },
               },
             };
+          }
+          if (fn.includes("'pointerdown'")) {
+            return { result: { value: pointerValue } };
           }
           if (fn.includes('fillable')) {
             return { result: { value: fillProbe } };
@@ -738,13 +742,16 @@ describe('actions inside a cross-site frame', () => {
     });
     const clicked = await T.clickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
     const js = await T.jsClickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
-    for (const [action, dispatchText] of [['click', clicked], ['jsclick', js]]) {
+    const pointer = await T.pointerClickStr(actionCdp({
+      pointerValue: { ok: true, tag: 'BUTTON', text: 'Pay now', role: '', ariaExpanded: null, dataState: null },
+    }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    for (const [action, dispatchText] of [['click', clicked], ['jsclick', js], ['click', pointer]]) {
       const err = await noChange(action, dispatchText).catch(error => error);
       expect(err, action).toBeInstanceOf(Error);
       const text = T.formatCliError(err.message, { cmd: action, targetPrefix: 'AB12CD34', args: ['@f4:1'] });
       const lines = text.split('\n');
       const errorLine = lines.find(line => /^Error:/.test(line));
-      expect(errorLine, action).toMatch(/did not react \(Outcome: no-change\)\. (?:JS-c|C)licked <BUTTON> \(@f4:1\) in localhost:9$/);
+      expect(errorLine, action).toMatch(/did not react \(Outcome: no-change\)\. (?:JS-c|Pointer-c|C)licked <BUTTON> \(@f4:1\) in localhost:9(?: mode: pointer-sequence .*)?$/);
       expect(lines.filter(line => line.includes('FRAME CONTENT') && !line.includes('END')), action).toEqual([
         expect.stringMatching(openLine),
       ]);
@@ -811,6 +818,28 @@ describe('actions inside a cross-site frame', () => {
       expect(outsideFrameBlocks(printed), name).not.toContain(label);
       expect(insideFrameBlocks(printed), name).toBe(label);
     }
+  });
+
+  it('keeps cross-site click --pointer page text and state inside a frame block', async () => {
+    const pointer = (pointerValue) => T.pointerClickStr(actionCdp({ pointerValue }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    const clicked = await pointer({ ok: true, tag: 'BUTTON', text: 'Pay now', role: '', ariaExpanded: 'true', dataState: 'IGNORE-STATE' });
+    expect(clicked.split('\n')[0]).toBe('Pointer-clicked <BUTTON> (@f4:1) in localhost:9');
+    expect(outsideFrameBlocks(clicked)).not.toContain('Pay now');
+    expect(outsideFrameBlocks(clicked)).not.toContain('IGNORE-STATE');
+    expect(outsideFrameBlocks(clicked)).toContain('A menu or popover is open.');
+    expect(insideFrameBlocks(clicked)).toBe('Pay now\naria-expanded=true data-state=IGNORE-STATE');
+    expect(clicked.split('\n').at(-1)).toMatch(/^--- END FRAME CONTENT nonce=[0-9a-f]{32} ---$/);
+
+    const disabled = await pointer({
+      ok: false,
+      error: 'click --pointer: element is disabled (BUTTON "Pay now")',
+      disabled: { tag: 'BUTTON', text: 'Pay now', reason: 'disabled attribute', matches: null },
+    }).catch(error => error);
+    expect(disabled.message).toMatch(/^<BUTTON> \(@f4:1\) in localhost:9 is disabled \(disabled attribute\)/);
+    expect(insideFrameBlocks(T.formatActionFailure(disabled, { action: 'click', target: { targetId: 'AB12CD34', input: '@f4:1' } }))).toBe('Pay now');
+
+    const hidden = await pointer({ ok: false, error: 'click --pointer: element is not visible (zero size) (BUTTON "Pay now")' }).catch(error => error);
+    expect(hidden.message).toBe('click --pointer: element is not visible (zero size)');
   });
 
   it('shares one nonce between dispatch text and the JSON content boundary', async () => {

@@ -2054,6 +2054,7 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
     ? await resolveRefNode(cdp, sid, refMap, selector, refState, { allowCrossSite: true })
     : await resolveSelectorNode(cdp, sid, selector);
   const nodeSid = resolvedNodeSession(cdp, sid, objectId);
+  const facts = isRef(selector) ? crossSiteListed(cdp, sid, selector, refState) : null;
   try {
     const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
@@ -2073,11 +2074,13 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
     if (pointer) {
       const value = res.result.value || {};
       rememberClickTrust(options.clickTrust, value);
-      return formatPointerClickReceipt(value, selector);
+      if (facts && options.clickTrust && value.ok) {
+        options.clickTrust.frameContent = { origin: facts.rawOrigin, host: facts.host, name: value.text || '' };
+      }
+      return formatPointerClickReceipt(value, selector, facts);
     }
     const r = res.result.value || {};
     rememberClickTrust(options.clickTrust, r);
-    const facts = isRef(selector) ? crossSiteListed(cdp, sid, selector, refState) : null;
     if (facts && options.clickTrust) {
       options.clickTrust.frameContent = { origin: facts.rawOrigin, host: facts.host, name: r.text || '' };
     }
@@ -2092,9 +2095,13 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
     throw e;
   }
 }
-export function formatPointerClickReceipt(r, selector) {
-  if (!r.ok && r.disabled) throw actionDisabledError('click', r.disabled, selector);
-  if (!r.ok) throw new Error(r.error || 'click --pointer failed');
+export function formatPointerClickReceipt(r, selector, facts = null) {
+  if (!r.ok && r.disabled) throw frameAwareDisabledError('click', r.disabled, selector, facts);
+  if (!r.ok) {
+    const message = r.error || 'click --pointer failed';
+    // A cross-site error ends with the element's label, which is frame page text.
+    throw new Error(facts ? message.replace(/ \([A-Za-z][A-Za-z0-9-]* "[\s\S]*"\)$/, '') : message);
+  }
   const state = [
     r.ariaExpanded != null ? `aria-expanded=${r.ariaExpanded}` : null,
     r.dataState != null ? `data-state=${r.dataState}` : null,
@@ -2108,8 +2115,19 @@ export function formatPointerClickReceipt(r, selector) {
       : closed
         ? 'Still closed: no menu opened. The page may need a different element or more time.'
         : '';
+  const mode = 'mode: pointer-sequence (pointerdown, mousedown, pointerup, mouseup, click; no Input.* events)';
+  if (facts) {
+    // The name and the aria-expanded/data-state values are frame page text; they go in the block.
+    const page = [String(r.text || '').trim(), state.join(' ')].filter(Boolean).join('\n');
+    return [
+      `Pointer-clicked ${formatCrossSiteTarget({ tag: r.tag, ref: selector, host: facts.host })}`,
+      mode,
+      ...(verdict ? [verdict] : []),
+      ...(page ? [wrapFrameContent(page, { origin: facts.origin })] : []),
+    ].join('\n');
+  }
   return `Pointer-clicked <${r.tag || '?'}> "${r.text || ''}"${isRef(selector) ? ` (${selector})` : ''}
-mode: pointer-sequence (pointerdown, mousedown, pointerup, mouseup, click; no Input.* events)
+${mode}
 ${state.join(' ')}${verdict ? `
 ${verdict}` : ''}`;
 }
