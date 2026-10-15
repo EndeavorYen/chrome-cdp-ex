@@ -23,7 +23,9 @@ function normalizeHost(hostname) {
   if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
   return host;
 }
-const MARKER_LINE = /^\s*--- (?:FRAME CONTENT|END FRAME CONTENT)/;
+// A block line that looks like a marker or a receipt control line (Next:, Kind:, Error:, Recovery:)
+// is escaped, so no reader takes frame text for the CLI's own line.
+const MARKER_LINE = /^\s*(?:--- (?:FRAME CONTENT|END FRAME CONTENT)|(?:Next|Kind|Error|Recovery):)/;
 const LISTED_FRAMES = new WeakMap();
 
 function policyConfigError(message) {
@@ -194,7 +196,7 @@ function isFrameContentControl(code) {
   return code === 0x7F || (code <= 0x1F && code !== 0x09 && code !== 0x0A && code !== 0x0D);
 }
 
-// FRAME_CONTENT_ESCAPE: a line that begins a frame marker is prefixed; other control characters are dropped.
+// FRAME_CONTENT_ESCAPE: a marker or control line is prefixed; other control characters are dropped.
 export function sanitizeFrameContentLine(line) {
   let text = '';
   for (const ch of String(line)) {

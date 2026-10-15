@@ -1992,8 +1992,10 @@ export function formatDefaultMutatingActionText(result = {}, { dispatchText = ''
   // goes on the receipt's first line.
   const endMarker = /^--- END FRAME CONTENT nonce=[0-9a-f]{32} ---$/;
   const endsInBlock = endMarker.test(String(one).split('\n').at(-1) || '');
-  if (ariaChange && !one.includes(ariaChange)) {
-    one = endsInBlock ? one.replace(/^[^\n]*/, head => `${head}: ${ariaChange}`) : `${one}: ${ariaChange}`;
+  if (ariaChange && endsInBlock && !one.split('\n')[0].includes(ariaChange)) {
+    one = one.replace(/^[^\n]*/, head => `${head}: ${ariaChange}`);
+  } else if (ariaChange && !endsInBlock && !one.includes(ariaChange)) {
+    one = `${one}: ${ariaChange}`;
   }
   // #648: a request the action sent that failed is evidence for the next step.
   const failed = failedRequestLines(result);

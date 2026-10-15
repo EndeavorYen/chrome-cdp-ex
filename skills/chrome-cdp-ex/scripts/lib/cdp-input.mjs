@@ -2098,9 +2098,9 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
 export function formatPointerClickReceipt(r, selector, facts = null) {
   if (!r.ok && r.disabled) throw frameAwareDisabledError('click', r.disabled, selector, facts);
   if (!r.ok) {
-    const message = r.error || 'click --pointer failed';
-    // A cross-site error ends with the element's label, which is frame page text.
-    throw new Error(facts ? message.replace(/ \([^\s"()]+ "[\s\S]*"\)$/, '') : message);
+    // A cross-site element's tag and label are frame page text; only the top page names them.
+    const named = r.zeroSize && !facts ? ` (${r.tag} "${r.text}")` : '';
+    throw new Error(`${r.error || 'click --pointer failed'}${named}`);
   }
   const state = [
     r.ariaExpanded != null ? `aria-expanded=${r.ariaExpanded}` : null,
@@ -2154,7 +2154,7 @@ export function pointerClickFunctionDeclaration(settleMs = POINTER_CLICK_SETTLE_
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const rect = el.getBoundingClientRect();
     if (!(rect.width > 0 && rect.height > 0)) {
-      return { ok: false, error: 'click --pointer: element is not visible (zero size) (' + el.tagName + ' "' + label + '")' };
+      return { ok: false, error: 'click --pointer: element is not visible (zero size)', zeroSize: true, tag: el.tagName, text: label };
     }
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') {
@@ -4560,12 +4560,15 @@ const ARIA_STATE_TOKEN_RE = /^(?:true|false|mixed|undefined|\(absent\)|\(empty\)
 export function formatActionControlStateDiff(cdp, sid, selector, refState, before, after) {
   const diff = formatFormControlStateDiff(before, after);
   if (!isRef(selector) || !crossSiteListed(cdp, sid, selector, refState)) return diff;
-  const kept = ariaControlStateReceiptClause(diff)
+  const checked = Object.hasOwn(before || {}, 'checked') || Object.hasOwn(after || {}, 'checked')
+    ? [`${after?.type === 'radio' ? 'radio' : 'checkbox'} checked ${Boolean(before?.checked)} → ${Boolean(after?.checked)}`]
+    : [];
+  const kept = [...checked, ...ariaControlStateReceiptClause(diff)
     .split('; ')
     .filter((part) => {
       const match = /^aria-[a-z]+ (\S+) → (\S+)$/.exec(part);
       return Boolean(match && ARIA_STATE_TOKEN_RE.test(match[1]) && ARIA_STATE_TOKEN_RE.test(match[2]));
-    })
+    })]
     .join('; ');
   return kept || 'changed inside the cross-site frame; values not shown';
 }
