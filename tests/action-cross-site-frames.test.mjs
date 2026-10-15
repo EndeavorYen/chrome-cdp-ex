@@ -815,6 +815,11 @@ describe('actions inside a cross-site frame', () => {
       expect(err.message, name).not.toContain(label);
       const printed = T.formatActionFailure(err, { action, target: { targetId: 'AB12CD34', input: '@f4:1' } });
       expect(printed, name).toContain('Kind: disabled');
+      const lines = printed.split('\n');
+      const nexts = lines.flatMap((line, index) => (/^Next:/.test(line) ? [index] : []));
+      expect(nexts, name).toHaveLength(1);
+      expect(lines[nexts[0]], name).toBe('Next: cdp perceive AB12CD34 --frame @f4');
+      expect(nexts[0], name).toBeLessThan(lines.findIndex(line => line.startsWith('--- FRAME CONTENT')));
       expect(outsideFrameBlocks(printed), name).not.toContain(label);
       expect(insideFrameBlocks(printed), name).toBe(label);
     }
