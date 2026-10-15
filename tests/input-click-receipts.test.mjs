@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { runInNewContext } from 'node:vm';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const base = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-base.mjs');
 const {
   classifyActionFailure,
   formatActionFailure,
@@ -278,5 +279,24 @@ describe('#430 click receipts suggest perceive --since-action, not list', () => 
     });
     const text = T.formatActionResultOutput(result, { dispatchText: 'Filled <INPUT> with "abc"' });
     expect(text).toBe(`Filled <INPUT> with "abc". Next: cdp perceive ${PREFIX} --since-action`);
+  });
+});
+
+describe('#745 a receipt names the target by aria-label, then text, then title', () => {
+  const element = ({ attrs = {}, text = '' } = {}) => ({
+    textContent: text,
+    getAttribute(name) { return Object.hasOwn(attrs, name) ? attrs[name] : null; },
+  });
+  const labelOf = el => new Function('el', `return ${base.targetLabelExpression('el')};`)(el);
+
+  it('prefers the visible text to a title such as antd\'s "[object Object]", on one line', () => {
+    expect(labelOf(element({ attrs: { title: '[object Object]' }, text: '\n  B200\n  192 GB  ' }))).toBe('B200 192 GB');
+  });
+
+  it('falls back to the title when there is no text, and lets aria-label win', () => {
+    expect(labelOf(element({ attrs: { title: 'Close' }, text: '   ' }))).toBe('Close');
+    expect(labelOf(element({ attrs: { 'aria-label': 'Save draft', title: 'Save' }, text: 'S' }))).toBe('Save draft');
+    expect(labelOf(element({ text: 'x'.repeat(100) }))).toBe('x'.repeat(80));
+    expect(labelOf(null)).toBe('');
   });
 });

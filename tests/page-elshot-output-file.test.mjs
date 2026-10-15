@@ -202,7 +202,9 @@ describe('elshot output file (#526)', () => {
     const out = await T.elshotStr(cdp, 'sid', '@1', TARGET_ID, new Map([[1, 101]]), {}, file);
     const label = `${'a'.repeat(70)} ${'b'.repeat(9)}`;
     expect(out).toBe(oneLineReceipt(file, { tag: 'FORM', text: label, ref: '@1', w: 10, h: 20 }));
-    expect(decl).toContain(".replace(/\\s+/g, ' ').trim().substring(0, 80)");
+    // The page-side label collapses whitespace before it cuts to 80 characters.
+    const pageLabel = new Function(`return (${decl});`)().call({ textContent: raw, getAttribute: () => null });
+    expect(pageLabel).toBe(label);
     expect(out).not.toContain('…');
   });
 });

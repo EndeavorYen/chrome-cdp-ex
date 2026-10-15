@@ -626,6 +626,16 @@ export const CLICK_DOWNLOAD_STARTED_RE = / → download started "([^"]+)"/;
 export const CLICK_DOWNLOAD_UNOBSERVED_RE = /no download event was observed/;
 export const NAMED_IN_VIEWPORT_CLICK_OUTCOME = 'named-in-viewport-click';
 export const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="button"]';
+// #745: how a receipt names its target element: aria-label, then its text, then title (the last
+// fallback in the accessible-name order), whitespace collapsed, at most 80 characters. antd writes
+// title="[object Object]" on an option whose label is a React node.
+export function targetLabelExpression(name) {
+  return `(function(el) {
+      if (!el || typeof el.getAttribute !== 'function') return '';
+      const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      return (clean(el.getAttribute('aria-label')) || clean(el.textContent) || clean(el.getAttribute('title'))).substring(0, 80);
+    })(${name})`;
+}
 // #427: Playwright-style `text=Save`, `text="Save"`, and `text='Save'` are aliases for the
 // named form. The match prefers the exact visible text or aria-label, then a
 // whitespace-normalised fallback. Unquoted `text=` is not Playwright's case-insensitive
