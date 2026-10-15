@@ -1,0 +1,3 @@
+### Features
+
+* `CDP_FRAME_SITES` names cross-site origins an implicit `perceive` may read later. Unset skips that content. A skipped frame is host-only, with a reason (`unset`, `not-allowlisted`, `not-https`, or `opaque-origin`), and Next is `cdp frame <target>` rather than `perceive --frame` on that frame. An allowlisted frame is counted as allowed and is not inlined yet. Explicit `perceive --frame` on a cross-site frame still reads it and wraps the page text in `FRAME CONTENT` markers with a fresh 32-hex nonce. `frame <t>` moves a cross-site frame's name into that block ([#638](https://github.com/EndeavorYen/chrome-cdp-ex/issues/638)).

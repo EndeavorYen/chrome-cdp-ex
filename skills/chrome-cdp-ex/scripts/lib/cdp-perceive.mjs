@@ -4,7 +4,8 @@ import { buildCardsModel, formatCardsJson, formatCardsText } from './cards-model
 import { createPerceptionModel } from './perception-model.mjs';
 
 import { actionDomDiffShowsChange, countTypeaheadLabels, extractTypeaheadLabels, pdfViewerPerceiveResult, perceiveStoreDiffSource, rememberPerceiveDiffSource } from './cdp-action-result.mjs';
-import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, fileUrlRefusedMessage, sleep } from './cdp-base.mjs';
+import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, daemonPolicyStorage, fileUrlRefusedMessage, sleep } from './cdp-base.mjs';
+import { classifyFrameOrigin, createFrameContentNonce, crossSiteReadClause, frameContentBoundary, frameContentOrigin, listedFrame, originHost, parseFrameSiteEntry, rememberListedFrames, wrapFrameContent } from './frame-sites.mjs';
 import { formatJson, isBlankPageUrl, parseFormatArgs, takeUnsafeFullArg } from './cdp-browser.mjs';
 import { consoleDocumentEntries, cutDocumentConsoleBuffers, displayUrl } from './cdp-core.mjs';
 import { actionabilityFunctionSource, namedClickQueryName } from './cdp-input.mjs';
@@ -913,15 +914,24 @@ export function formatFrameTreeText(frames = []) {
     lines.push('No frames reported by Page.getFrameTree.');
     return lines.join('\n');
   }
+  const blocks = [];
+  let nonce = '';
   for (const frame of frames) {
     const indent = '  '.repeat(Math.min(frame.depth || 0, 8));
-    const label = frame.name || '(anonymous)';
+    const crossSite = frame.process === 'oopif';
+    const label = crossSite ? '(anonymous)' : (frame.name || '(anonymous)');
     const parent = frame.parentRef ? ` parent:${frame.parentRef}` : '';
     const origin = frame.securityOrigin ? ` origin:${frame.securityOrigin}` : '';
     const url = frame.url || frame.unreachableUrl || '(no url)';
-    const process = frame.process === 'oopif' ? ' process:oopif' : '';
+    const process = crossSite ? ' process:oopif' : '';
     lines.push(`${indent}${frame.ref} ${label} ${frame.id}${parent} ${url}${origin}${process}`);
+    const name = String(frame.name || '');
+    if (crossSite && name.trim()) {
+      if (!nonce) nonce = createFrameContentNonce();
+      blocks.push(wrapFrameContent(name, { nonce, origin: frameContentOrigin(frame.securityOrigin) }));
+    }
   }
+  if (blocks.length) lines.push(...blocks);
   lines.push('Hint: use frame refs to diagnose wrong-frame errors; element refs inside frames will use @fN:M syntax.');
   return lines.join('\n');
 }
@@ -1194,6 +1204,7 @@ async function loadCrossSiteFrames(cdp, sid, sameOriginFrames) {
   }
   const merged = appendCrossSiteFrames(sameOriginFrames, trees);
   doc.frames = merged.sessionByFrame;
+  rememberListedFrames(cdp, sid, merged.frames);
   return merged.frames;
 }
 
@@ -1394,8 +1405,10 @@ function perceiveFrameLabel(element, owner, crossSite) {
   return String(owner?.host || element?.host || frameUrlHost(owner?.src || element?.src) || '').trim();
 }
 // N and M count child frames Page.getFrameTree reports (depth > 0), including
-// nested frames. They do not include cross-site frames, and this path does not
-// auto-attach. A depth-1 frame that is still about:blank or has an empty URL,
+// nested frames. They do not include cross-site frames. This census does not
+// attach; perceiveStr attaches when the page has iframe elements, reads each
+// frame's securityOrigin, and does not read a child AX or DOM tree unless the
+// caller passed --frame. A depth-1 frame that is still about:blank or has an empty URL,
 // with an opaque origin, is cross-site (pending) when its owner iframe src
 // points at another site: it is not a same-origin child, it gets no ref, and
 // Next does not point at it. `frame <t>` still lists that frame as Chrome
@@ -1487,8 +1500,33 @@ function perceiveFrameCensus({
   const crossSiteCount = Math.max(0, elementCount - sameOriginTop.length);
   return { children: sameOriginChildren, elements, crossSiteCount, paired };
 }
+const PERCEIVE_FRAME_RECORDS = new WeakMap();
+
+function normalizeFrameSites(value) {
+  if (value == null || !Array.isArray(value) || value.length === 0) return null;
+  if (typeof value[0] === 'string') return value.map(parseFrameSiteEntry);
+  return value;
+}
+
+// The daemon uses the value on this request. It does not read CDP_FRAME_SITES
+// from its own environment. Unit tests that omit the store behave as unset.
+function currentFrameSites(opts = {}) {
+  if (Object.hasOwn(opts, 'frameSites')) return normalizeFrameSites(opts.frameSites);
+  return normalizeFrameSites(daemonPolicyStorage.getStore()?.policy?.frameSites);
+}
+
+function rememberPerceiveFrameRecords(cdp, records) {
+  if (!cdp) return;
+  PERCEIVE_FRAME_RECORDS.set(cdp, records || null);
+}
+
+function perceiveFrameRecords(cdp) {
+  return cdp ? (PERCEIVE_FRAME_RECORDS.get(cdp) || null) : null;
+}
+
 function buildPerceiveFrameNotice({
   childFrames, frameElements, frameElementCount, owners, target, pageUrl = '',
+  oopifFrames = null, frameSites = null,
 }) {
   const { children, elements, crossSiteCount, paired } = perceiveFrameCensus({
     childFrames,
@@ -1498,16 +1536,81 @@ function buildPerceiveFrameNotice({
     owners,
   });
   if (children.length === 0 && crossSiteCount === 0) return null;
+  const classifying = Array.isArray(oopifFrames);
   const ownerMap = owners instanceof Map ? owners : new Map();
   const refByElement = new Map();
   for (const [ref, index] of paired) refByElement.set(index, ref);
+  const oopifByElement = new Map();
+  if (classifying) {
+    const usedElements = new Set(paired.values());
+    const usedOopifs = new Set();
+    const topOopifs = oopifFrames.filter(frame => frame && frame.depth === 1);
+    for (const frame of topOopifs) {
+      const urls = [frame.url, frame.unreachableUrl].filter(Boolean);
+      const index = elements.findIndex((element, elementIndex) => (
+        !usedElements.has(elementIndex)
+        && !usedOopifs.has(frame.ref)
+        && urls.some(url => frameUrlsEqual(url, element?.src))
+      ));
+      if (index < 0) continue;
+      usedElements.add(index);
+      usedOopifs.add(frame.ref);
+      oopifByElement.set(index, frame);
+    }
+    // The iframe src attribute stays where the page set it. After the frame
+    // navigates, the frame tree has the current origin and that src no longer
+    // matches. Pair the leftovers in order and classify that origin.
+    const freeOopifs = topOopifs.filter(frame => !usedOopifs.has(frame.ref));
+    const freeElements = [];
+    elements.forEach((_, index) => {
+      if (!usedElements.has(index)) freeElements.push(index);
+    });
+    if (freeOopifs.length > 0 && freeOopifs.length === freeElements.length) {
+      freeOopifs.forEach((frame, index) => {
+        oopifByElement.set(freeElements[index], frame);
+      });
+    }
+  }
+  const records = [];
+  let allowed = 0;
   const slots = elements.map((element, index) => {
-    const ref = refByElement.get(index) || null;
-    const owner = ref ? ownerMap.get(ref) : null;
+    const sameRef = refByElement.get(index) || null;
+    if (sameRef) {
+      const owner = ownerMap.get(sameRef);
+      return {
+        ref: sameRef,
+        label: perceiveFrameLabel(element, owner, false),
+        backendNodeId: owner?.backendNodeId || null,
+      };
+    }
+    if (!classifying) {
+      return {
+        ref: null,
+        label: perceiveFrameLabel(element, null, true),
+        backendNodeId: null,
+      };
+    }
+    const oopif = oopifByElement.get(index) || null;
+    const classification = oopif
+      ? classifyFrameOrigin(oopif.securityOrigin, frameSites)
+      : { read: false, reason: 'opaque-origin', origin: null };
+    if (classification.reason === 'allowed-not-inlined') allowed += 1;
+    const host = oopif ? originHost(oopif.securityOrigin) : '';
+    const ref = oopif?.ref || null;
+    const visible = frameChildVisible(element, null);
+    records.push({
+      ...(ref ? { ref } : {}),
+      content: { read: false, reason: classification.reason, origin: classification.origin },
+    });
     return {
       ref,
-      label: perceiveFrameLabel(element, owner, !ref),
-      backendNodeId: owner?.backendNodeId || null,
+      crossSite: true,
+      host,
+      clause: crossSiteReadClause(classification, { target, ref: ref || '' }),
+      reason: classification.reason,
+      visible,
+      label: host,
+      backendNodeId: null,
     };
   });
   const visibleRefs = [];
@@ -1516,13 +1619,33 @@ function buildPerceiveFrameNotice({
     const element = index == null ? null : elements[index];
     if (frameChildVisible(element, ownerMap.get(frame.ref))) visibleRefs.push(frame.ref);
   }
+  // FRAME_NEXT_CANDIDATES: a skipped cross-site frame is never a perceive --frame target.
+  const frameNextCandidates = [...visibleRefs];
+  if (classifying) {
+    for (const slot of slots) {
+      if (slot.reason === 'allowed-not-inlined' && slot.visible && slot.ref) frameNextCandidates.push(slot.ref);
+    }
+  }
+  const notRead = classifying ? Math.max(0, crossSiteCount - allowed) : crossSiteCount;
   let line = `Frames: ${children.length} (${visibleRefs.length} visible)`;
-  if (crossSiteCount > 0) line += `, ${crossSiteCount} cross-site not reachable yet`;
-  if (visibleRefs.length === 1) line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
-  else if (children.length >= 1) line += `. Next: cdp frame ${target}`;
+  if (classifying) {
+    if (notRead > 0) line += `, ${notRead} cross-site not read`;
+    if (allowed > 0) line += `, ${allowed} cross-site allowed`;
+    if (frameNextCandidates.length === 1) line += `. Next: cdp perceive ${target} --frame ${frameNextCandidates[0]}`;
+    else if (children.length || notRead || allowed) line += `. Next: cdp frame ${target}`;
+  } else if (crossSiteCount > 0) {
+    line += `, ${crossSiteCount} cross-site not reachable yet`;
+    if (visibleRefs.length === 1) line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
+    else if (children.length >= 1) line += `. Next: cdp frame ${target}`;
+  } else if (visibleRefs.length === 1) {
+    line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
+  } else if (children.length >= 1) {
+    line += `. Next: cdp frame ${target}`;
+  }
   return {
     line,
     slots,
+    records,
     childCount: children.length,
     crossSiteCount,
     singleChildRef: children.length === 1 ? children[0]?.ref || null : null,
@@ -1687,8 +1810,15 @@ async function readSelectorFrameMiss(cdp, sid, { label = '', refState = null } =
   }
   return hint;
 }
-function formatPerceiveIframeLine(depth, label, ref) {
+function formatPerceiveIframeLine(depth, label, ref, slot = null) {
   const indent = '  '.repeat(Math.min(depth, 10));
+  if (slot?.crossSite) {
+    const parts = ['[iframe]'];
+    if (slot.host) parts.push(slot.host);
+    if (slot.ref) parts.push(slot.ref);
+    if (slot.clause) parts.push(slot.clause);
+    return `${indent}${parts.join(' ')}`;
+  }
   const quoted = JSON.stringify(String(label ?? ''));
   return `${indent}[iframe] ${quoted}${ref ? ` ${ref}` : ''}`;
 }
@@ -1744,10 +1874,27 @@ export function parseFrameArgs(args = []) {
   }
   return { format: fopts.format, unsafeFull: lifted.unsafeFull };
 }
+function frameListModel(frames) {
+  const nonce = createFrameContentNonce();
+  return frames.map(frame => {
+    if (frame?.process !== 'oopif') return frame;
+    const copy = { ...frame };
+    const name = String(copy.name || '');
+    delete copy.name;
+    delete copy.title;
+    if (name.trim()) {
+      copy.frameContent = {
+        name,
+        contentBoundary: frameContentBoundary(nonce, frameContentOrigin(copy.securityOrigin)),
+      };
+    }
+    return copy;
+  });
+}
 export async function framesStr(cdp, sid, { format = 'text', unsafeFull = false } = {}) {
   const model = await framesModel(cdp, sid, { crossSite: true });
   const frames = (model.frames || []).map(frame => displayedFrame(frame, { unsafeFull }));
-  if (format === 'json') return formatJson({ ...model, frames });
+  if (format === 'json') return formatJson({ ...model, frames: frameListModel(frames) });
   return formatFrameTreeText(frames);
 }
 function unknownFrameError(message) {
@@ -1946,9 +2093,21 @@ async function placeFrameRect(cdp, sid, refState, frameParsed, value, { allowCro
   value.y = (Number(value.y) || 0) + offset.y;
   // The only page-layer cover check. Dispatch does not repeat it: a frame point is
   // already in the top viewport, and dropping this check lets the click fail closed.
+  let parentCovered = false;
   if (hitTest && offset.ownerBackendNodeId) {
     const parentHit = await ownerIframeCover(cdp, sid, offset.ownerBackendNodeId, value, frameParsed.frameRef);
-    if (parentHit?.covered === true) value.hit = parentHit;
+    if (parentHit?.covered === true) {
+      value.hit = parentHit;
+      parentCovered = true;
+    }
+  }
+  if (crossSiteFrameProcess(entry, frameParsed.frameRef) === 'oopif') {
+    const listed = listedFrame(cdp, sid, entry.frameId) || listedFrame(cdp, sid, frameParsed.frameRef);
+    const rawOrigin = listed?.securityOrigin || '';
+    value.crossSite = true;
+    value.crossSiteOrigin = rawOrigin;
+    value.crossSiteHost = originHost(rawOrigin);
+    value.coverScope = parentCovered ? 'page' : 'frame';
   }
   return offset;
 }
@@ -3865,7 +4024,7 @@ export function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
             chromeTruncationNoted = true;
           }
         } else {
-          treeLines.push(formatPerceiveIframeLine(depth, slot.label, slot.ref));
+          treeLines.push(formatPerceiveIframeLine(depth, slot.label, slot.ref, slot));
           if (inChrome) chromeLinesEmitted++;
         }
       }
@@ -4381,7 +4540,39 @@ ${visibleControlsCollectorSource()}
       });
     })()`;
 }
+// The focused element's id is page text. Outside the block a cross-site read shows the tag only.
+function crossSiteFocusedTag(focused) {
+  return String(focused ?? 'none').replace(/^(<[^#>]*)#[\s\S]*$/, '$1>');
+}
+
+function explicitCrossSiteBody(frame, meta, treeLines) {
+  const body = [`title: ${meta?.title ?? ''}`];
+  if (crossSiteFocusedTag(meta?.focused) !== String(meta?.focused ?? 'none')) body.push(`focused: ${meta.focused}`);
+  if (frame?.name) {
+    body.push('name:');
+    body.push(String(frame.name));
+  }
+  body.push(...treeLines);
+  return body.join('\n');
+}
+
+function wrapCrossSiteOutput(text, frame, nonce = createFrameContentNonce()) {
+  const host = originHost(frame?.securityOrigin);
+  const origin = frameContentOrigin(frame?.securityOrigin);
+  const head = [`Page: ${host}`, host ? `Frame: ${frame.ref} ${host}` : `Frame: ${frame.ref}`].join('\n');
+  return {
+    nonce,
+    origin,
+    text: `${head}\n${wrapFrameContent(text, { nonce, origin })}`,
+  };
+}
+
+function rememberCrossSiteBoundary(cdp, nonce, origin) {
+  rememberPerceiveFrameRecords(cdp, { contentBoundary: frameContentBoundary(nonce, origin) });
+}
+
 export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  rememberPerceiveFrameRecords(cdp, null);
   const {
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
@@ -4541,9 +4732,10 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   const frameInventory = frame ? { elements: [], count: 0 } : frameInventoryFromMeta(meta);
   if (frameInventory.count > 0) {
     try {
-      const model = await framesModel(cdp, sid);
+      const model = await framesModel(cdp, sid, { crossSite: true });
       const frames = model.frames || [];
-      const childFrames = frames.filter(item => item && item.depth > 0);
+      const childFrames = frames.filter(item => item && item.depth > 0 && item.process !== 'oopif');
+      const oopifFrames = frames.filter(item => item?.process === 'oopif');
       const owners = await describePerceiveFrameOwners(cdp, sid, childFrames);
       frameNotice = buildPerceiveFrameNotice({
         childFrames,
@@ -4552,6 +4744,8 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
         owners,
         target: opts.targetPrefix || '<target>',
         pageUrl: frames.find(item => item && item.depth === 0)?.url || meta.url || '',
+        oopifFrames,
+        frameSites: currentFrameSites(opts),
       });
     } catch {
       frameNotice = null;
@@ -4681,15 +4875,22 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   // === Assemble output ===
   const lines = [];
   const unsafeFull = opts.unsafeFull === true;
-  lines.push(`Page: ${meta.title} — ${displayUrl(meta.url, { unsafeFull })}`);
+  const crossSiteRead = frame?.process === 'oopif';
+  const crossHost = crossSiteRead ? originHost(frame.securityOrigin) : '';
+  if (crossSiteRead) lines.push(`Page: ${crossHost}`);
+  else lines.push(`Page: ${meta.title} — ${displayUrl(meta.url, { unsafeFull })}`);
   if (frame) {
-    const label = frame.name || '(anonymous)';
-    const url = displayUrl(frame.url || frame.unreachableUrl || '(no url)', { unsafeFull });
-    lines.push(`Frame: ${frame.ref} ${label} ${frame.id} ${url}`);
+    if (crossSiteRead) lines.push(crossHost ? `Frame: ${frame.ref} ${crossHost}` : `Frame: ${frame.ref}`);
+    else {
+      const label = frame.name || '(anonymous)';
+      const url = displayUrl(frame.url || frame.unreachableUrl || '(no url)', { unsafeFull });
+      lines.push(`Frame: ${frame.ref} ${label} ${frame.id} ${url}`);
+    }
   }
 
   const scrollPct = meta.scrollMax > 0 ? Math.round(meta.scrollY / meta.scrollMax * 100) : 0;
-  lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${meta.focused}`);
+  const focused = crossSiteRead ? crossSiteFocusedTag(meta.focused) : meta.focused;
+  lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${focused}`);
   if (typeaheadFilter.omitted) lines.push(TYPEAHEAD_OMITTED_NOTICE);
 
   const countParts = Object.entries(meta.counts).map(([k, v]) => `${v} ${k}`);
@@ -4706,6 +4907,7 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   // misread negative scroll-relative Ys as off-screen.
   lines.push(formatPerceiveCoordsLine(verbose));
 
+  const headerLines = lines.slice();
   lines.push('');
   lines.push(...treeLines);
 
@@ -4714,6 +4916,21 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   const identityOutput = identityTree === treeLines
     ? output
     : [...lines.slice(0, lines.length - treeLines.length), ...identityTree].join('\n');
+
+  const publishImplicitFrameRecords = () => {
+    if (crossSiteRead) return;
+    const records = frameNotice?.records || [];
+    rememberPerceiveFrameRecords(cdp, records.length ? { frames: records } : null);
+  };
+  const presentCrossSite = (text, { reuseHeader = false } = {}) => {
+    const nonce = createFrameContentNonce();
+    const origin = frameContentOrigin(frame.securityOrigin);
+    const printed = reuseHeader
+      ? `${headerLines.join('\n')}\n\n${wrapFrameContent(text, { nonce, origin })}`
+      : wrapCrossSiteOutput(text, frame, nonce).text;
+    rememberCrossSiteBoundary(cdp, nonce, origin);
+    return printed;
+  };
 
   const markPerceived = () => {
     lastPerceiveStore.output = output;
@@ -4727,36 +4944,42 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
       refState.lastPerceiveAt = Date.now();
       refState.invalidationReason = null;
     }
+    publishImplicitFrameRecords();
   };
 
   if (sinceAction) {
     markPerceived();
+    let printed;
     if (!diffBaseline) {
-      return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
+      printed = output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
+    } else {
+      const currentSource = perceiveStoreDiffSource(lastPerceiveStore);
+      // An action receipt judges whether the page reacted. A node redrawn with
+      // the same content is no reaction there (click-no-change stays), so the
+      // settle diff drops backend-node marks; perceive --since-action keeps them (#651).
+      printed = opts.ignoreNodeIdentity
+        ? formatPerceiveDiffOutput(stripPerceiveNodeIdentity(diffBaseline), stripPerceiveNodeIdentity(currentSource), { mode: 'since-action' })
+        : formatPerceiveDiffOutput(diffBaseline, currentSource, { mode: 'since-action' });
     }
-    const currentSource = perceiveStoreDiffSource(lastPerceiveStore);
-    // An action receipt judges whether the page reacted. A node redrawn with
-    // the same content is no reaction there (click-no-change stays), so the
-    // settle diff drops backend-node marks; perceive --since-action keeps them (#651).
-    if (opts.ignoreNodeIdentity) {
-      return formatPerceiveDiffOutput(stripPerceiveNodeIdentity(diffBaseline), stripPerceiveNodeIdentity(currentSource), { mode: 'since-action' });
-    }
-    return formatPerceiveDiffOutput(diffBaseline, currentSource, { mode: 'since-action' });
+    return crossSiteRead ? presentCrossSite(printed) : printed;
   }
 
   // Diff mode: compare with previous perceive output.
   if (diffMode && lastPerceiveStore.output) {
     const previousOutput = perceiveStoreDiffSource(lastPerceiveStore);
     markPerceived();
-    return formatPerceiveDiffOutput(previousOutput, perceiveStoreDiffSource(lastPerceiveStore));
+    const printed = formatPerceiveDiffOutput(previousOutput, perceiveStoreDiffSource(lastPerceiveStore));
+    return crossSiteRead ? presentCrossSite(printed) : printed;
   }
 
   markPerceived();
+  let printed = output;
+  if (crossSiteRead) printed = presentCrossSite(explicitCrossSiteBody(frame, meta, treeLines), { reuseHeader: true });
   // Hint when perceive returns many interactive elements without exclude
   if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
-    return output + `\n\n${perceiveInteractiveNoiseHint(refNodeIds.length)}`;
+    return printed + `\n\n${perceiveInteractiveNoiseHint(refNodeIds.length)}`;
   }
-  return output;
+  return printed;
 }
 export function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>', opts = {}) {
   const lines = String(output || '').split('\n');
@@ -4801,10 +5024,14 @@ export async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, 
   if (String(output || '').includes('chrome-cdp-ex.pdf-viewer.v1')) {
     return pdfViewerHandoffModelFromOutput(output, opts.targetPrefix || '<target>');
   }
-  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>', {
+  const model = perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>', {
     ...opts,
     outputTruncated: lastPerceiveStore?.outputTruncated === true,
   });
+  const extra = perceiveFrameRecords(cdp);
+  if (extra?.frames?.length) model.frames = extra.frames;
+  if (extra?.contentBoundary) model.contentBoundary = extra.contentBoundary;
+  return model;
 }
 export async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
   const mode = opts.sinceAction ? 'since-action' : 'diff';

@@ -740,8 +740,15 @@ function splitNextWords(text) {
  * of the command. A call that needs confirmation carries confirm: true, so it runs as given, as
  * the CLI Next line does.
  */
+// Text inside a nonce-matched FRAME CONTENT block is a cross-site frame's page text, never a Next.
+function withoutFrameContent(text) {
+  return String(text || '').replace(
+    /^--- FRAME CONTENT \(untrusted\) origin=\S+ nonce=([0-9a-f]{32}) ---$[\s\S]*?^--- END FRAME CONTENT nonce=\1 ---$/gm,
+    '',
+  );
+}
 export function mcpNextCall(text) {
-  const match = String(text || '').match(/(?:^|\s)Next: cdp ([^\n]+)/);
+  const match = withoutFrameContent(text).match(/(?:^|\s)Next: cdp ([^\n]+)/);
   if (!match) return null;
   const line = match[1]
     .replace(/\s+#\s.*$/, '')

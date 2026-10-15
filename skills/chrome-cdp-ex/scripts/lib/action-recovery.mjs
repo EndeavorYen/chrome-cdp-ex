@@ -1326,13 +1326,14 @@ export function formatActionFailure(err, context = {}) {
   const message = actionFailureMessage(err);
   if (isClassifiedActionFailureText(message)) return message;
   const failure = classifyActionFailure(err, context);
-  return formatActionFailureLines({
+  const lines = formatActionFailureLines({
     message: failure.originalMessage,
     reason: failure.reason,
     kind: failure.kind,
     detailLines: [formatFillValueLine(failure), ...(Array.isArray(failure.detailLines) ? failure.detailLines : [])],
     nextCommand: failure.nextCommand,
   });
+  return err?.frameContentBlock ? `${lines}\n${err.frameContentBlock}` : lines;
 }
 
 // One shell word for a selector/ref in a pasteable recovery command (#445). Refs and plain words stay

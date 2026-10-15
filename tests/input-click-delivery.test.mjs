@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { formatActionControlStateDiff } from '../skills/chrome-cdp-ex/scripts/lib/cdp-input.mjs';
 
 process.env.NODE_ENV = 'test';
 
@@ -146,7 +147,7 @@ describe('issue #266 click mouse events must land or fail closed', () => {
           const afterControl = await T.snapshotFormControlState(cdp, 'sid', actionTarget.input, refMap, refState);
           if (T.formControlStateChanged(beforeControl, afterControl)) {
             actionTarget.controlStateChanged = true;
-            actionTarget.controlStateDiff = T.formatFormControlStateDiff(beforeControl, afterControl);
+            actionTarget.controlStateDiff = formatActionControlStateDiff(cdp, 'sid', actionTarget.input, refState, beforeControl, afterControl);
           }
         }
         return text;

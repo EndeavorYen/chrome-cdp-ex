@@ -1637,6 +1637,15 @@ export function kindBeforeNext(lines, nextIndex) {
   }
   return { kind, blockStart };
 }
+function isFrameContentTrailer(lines) {
+  const trimmed = [...lines];
+  while (trimmed.length && trimmed[0] === '') trimmed.shift();
+  while (trimmed.length && trimmed.at(-1) === '') trimmed.pop();
+  if (trimmed.length < 2) return false;
+  const open = /^--- FRAME CONTENT \(untrusted\) origin=\S+ nonce=([0-9a-f]{32}) ---$/.exec(trimmed[0]);
+  const close = /^--- END FRAME CONTENT nonce=([0-9a-f]{32}) ---$/.exec(trimmed.at(-1));
+  return Boolean(open && close && open[1] === close[1]);
+}
 export function withKindOnLastNextLine(text, recoveryFor) {
   const lines = String(text).split('\n');
   const nextIndex = lines.findLastIndex(line => /^Next:/.test(line));
@@ -1646,6 +1655,12 @@ export function withKindOnLastNextLine(text, recoveryFor) {
     return [...lines, ...formatNextClosingLines(recoveryFor(), { includeKind: true, existingKind })].join('\n');
   }
   if (!trailers.every(line => HALT_TRAILER_RE.test(line))) {
+    // The frame block is the receipt body, not a later failure. Keep the Kind/Next above it.
+    if (isFrameContentTrailer(trailers)) {
+      const command = bareNextCommand(lines[nextIndex]);
+      lines[nextIndex] = formatNextLine(command);
+      return lines.join('\n');
+    }
     // That Next: is stale; the failure is in the lines after it, so classify those alone.
     return [...lines, ...formatNextClosingLines(recoveryFor(trailers.join('\n')), { includeKind: true })].join('\n');
   }
