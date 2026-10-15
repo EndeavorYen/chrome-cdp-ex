@@ -59,6 +59,7 @@ function fakeRefPage(entries) {
         const node = params.backendNodeId != null ? byBackend.get(params.backendNodeId) : byObjectId.get(params.objectId);
         if (!node) return Promise.reject(new Error('setFileInputFiles: node not found'));
         node.files = (params.files || []).map(file => ({ name: basename(file), size: statSync(file).size }));
+        if (typeof node.afterSetFiles === 'function') node.afterSetFiles();
         return Promise.resolve({});
       }
       if (method === 'Runtime.evaluate') {
@@ -169,6 +170,30 @@ describe('select and upload accept perceive @refs (#633)', () => {
     expect(set.params.nodeId).toBeUndefined();
     expect(calls.map(call => call.method)).not.toContain('DOM.querySelector');
     expect(input.files).toEqual([{ name: 'avatar.txt', size: statSync(file).size }]);
+  });
+
+  it('accepts an @ref input that the page clears after its change event (#743)', async () => {
+    const listeners = [];
+    const ownerDocument = {
+      addEventListener(type, fn, capture) { listeners.push({ type, fn, capture }); },
+      removeEventListener(type, fn) {
+        const at = listeners.findIndex(entry => entry.type === type && entry.fn === fn);
+        if (at >= 0) listeners.splice(at, 1);
+      },
+    };
+    const input = fileInput(205, 'obj-file-clear', {
+      ownerDocument,
+      // The page reads the file on input/change, then clears the value.
+      afterSetFiles() {
+        for (const entry of [...listeners]) entry.fn({ type: entry.type, target: this });
+        this.files = [];
+      },
+    });
+    const file = uploadFile();
+    const { cdp } = fakeRefPage([input]);
+    const result = await T.uploadStr(cdp, 'sid', '@5', file, new Map([[5, input.backendNodeId]]), {});
+    expect(result).toBe(`Uploaded 1 file(s) to @5: ${file} (the page cleared the input after its change event)`);
+    expect(listeners).toEqual([]);
   });
 
   it('uploads through an @ref to a label of one file input', async () => {
