@@ -4540,8 +4540,14 @@ ${visibleControlsCollectorSource()}
       });
     })()`;
 }
+// The focused element's id is page text. Outside the block a cross-site read shows the tag only.
+function crossSiteFocusedTag(focused) {
+  return String(focused ?? 'none').replace(/^(<[^#>]*)#[\s\S]*$/, '$1>');
+}
+
 function explicitCrossSiteBody(frame, meta, treeLines) {
   const body = [`title: ${meta?.title ?? ''}`];
+  if (crossSiteFocusedTag(meta?.focused) !== String(meta?.focused ?? 'none')) body.push(`focused: ${meta.focused}`);
   if (frame?.name) {
     body.push('name:');
     body.push(String(frame.name));
@@ -4883,7 +4889,8 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   }
 
   const scrollPct = meta.scrollMax > 0 ? Math.round(meta.scrollY / meta.scrollMax * 100) : 0;
-  lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${meta.focused}`);
+  const focused = crossSiteRead ? crossSiteFocusedTag(meta.focused) : meta.focused;
+  lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${focused}`);
   if (typeaheadFilter.omitted) lines.push(TYPEAHEAD_OMITTED_NOTICE);
 
   const countParts = Object.entries(meta.counts).map(([k, v]) => `${v} ${k}`);

@@ -2303,14 +2303,24 @@ export function actionDisabledError(action, info = {}, selector = '') {
   const label = String(info.text || '').replace(/\s+/g, ' ').trim();
   const reason = String(info.reason || 'disabled');
   const ref = isRef(selector) ? ` (${selector})` : '';
+  const where = info.host ? ` in ${info.host}` : '';
   const waited = info.waited === true ? ` after waiting ${Math.max(0, Math.round(Number(info.waitedMs) || 0))}ms` : '';
   const err = new Error(
-    `<${tag}>${label ? ` "${label}"` : ''}${ref} is disabled (${reason})${waited}; ${ACTION_DISABLED_NOT_SENT[action] || 'nothing was dispatched'}.`
+    `<${tag}>${label ? ` "${label}"` : ''}${ref}${where} is disabled (${reason})${waited}; ${ACTION_DISABLED_NOT_SENT[action] || 'nothing was dispatched'}.`
   );
   err.actionDisabled = { tag, text: label, reason, selector: String(selector || '') };
   // How many elements the CSS selector matches; recovery must not offer a `waitfor` that a sibling
   // could satisfy while the first match (the one acted on) stays disabled.
   if (Number.isInteger(info.matches)) err.actionDisabled.matches = info.matches;
+  return err;
+}
+// A cross-site control's label is that frame's page text. The error keeps the tag, ref, and host;
+// the label goes in a frame block after it.
+function frameAwareDisabledError(action, info = {}, selector = '', facts = null) {
+  if (!facts) return actionDisabledError(action, info, selector);
+  const label = String(info.text || '').replace(/\s+/g, ' ').trim();
+  const err = actionDisabledError(action, { ...info, text: '', host: facts.host }, selector);
+  if (label) err.frameContentBlock = wrapFrameContent(label, { origin: facts.origin });
   return err;
 }
 // Separate wait for paths that resolve the node through DOM.querySelector (fill --react).
@@ -2362,11 +2372,7 @@ export async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) 
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true, allowCrossSite: true });
     const facts = crossSiteListed(cdp, sid, selector, refState);
-    if (r.disabled) {
-      const err = actionDisabledError('click', { tag: r.tag, text: facts ? '' : r.text, reason: r.disabled }, selector);
-      if (facts && r.text) err.frameContentBlock = wrapFrameContent(String(r.text), { origin: facts.origin });
-      throw err;
-    }
+    if (r.disabled) throw frameAwareDisabledError('click', { tag: r.tag, text: r.text, reason: r.disabled }, selector, facts);
     const refPoint = { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     if (clickMeasurementUnusable(r, refPoint)) throw noClickBoxError(selector, r);
     rememberClickTrust(opts.clickTrust, r);
@@ -4813,7 +4819,10 @@ export async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   }, nodeSid);
   const probed = probe.result?.value || {};
   if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
-  if (probed.disabled) throw actionDisabledError('fill', probed.disabled, selector);
+  if (probed.disabled) {
+    const facts = isRef(selector) ? crossSiteListed(cdp, sid, selector, refState) : null;
+    throw frameAwareDisabledError('fill', probed.disabled, selector, facts);
+  }
   const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
     functionDeclaration: `function(value) {
@@ -4921,7 +4930,7 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
       }, nodeSid);
       probed = probe.result?.value || {};
       if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
-      if (probed.disabled) throw actionDisabledError('fill', probed.disabled, selector);
+      if (probed.disabled) throw frameAwareDisabledError('fill', probed.disabled, selector, crossSiteListed(cdp, sid, selector, refState));
     } else {
       probed = JSON.parse(await evalStr(
         cdp,
@@ -5009,7 +5018,7 @@ export async function selectByRef(cdp, sid, selector, wanted, refMap, refState) 
   if (evaluated.exceptionDetails) throw new Error(runtimeExceptionMessage(evaluated.exceptionDetails));
   const r = evaluated.result?.value || {};
   const facts = crossSiteListed(cdp, sid, selector, refState);
-  if (!r.ok && r.disabled) throw actionDisabledError('select', r.disabled, selector);
+  if (!r.ok && r.disabled) throw frameAwareDisabledError('select', r.disabled, selector, facts);
   if (!r.ok) throw new Error(actionabilityMissMessage(r.error, r));
   if (facts) {
     return `Selected ${formatCrossSiteTarget({ tag: 'SELECT', ref: selector, host: facts.host })}${crossSitePageBlock(facts, r.text)}`;
