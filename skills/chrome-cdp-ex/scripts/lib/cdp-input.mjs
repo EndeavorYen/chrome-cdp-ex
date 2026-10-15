@@ -4481,7 +4481,7 @@ export function fillableControlProbeDeclaration() {
       || (tag === 'INPUT' && ${JSON.stringify(NON_FILLABLE_INPUT_TYPES)}.indexOf(type) === -1)
       || role === 'textbox' || role === 'searchbox' || role === 'combobox'
     ));
-    return { ok: fillable, fillable, tag, type, role };
+    return { ok: fillable, fillable, tag, type, role, maxLength: ${fillMaxLengthExpression('el')} };
   }`;
 }
 export function formControlStateProbeDeclaration() {
@@ -4656,7 +4656,7 @@ export function fillableControlPageProbe(selector, { clear = true, waitMs = 0 } 
     ${clear ? `if (el.isContentEditable) el.textContent = '';
     else el.value = '';
     el.dispatchEvent(new Event('input', { bubbles: true }));` : '// clear: native setter path follows'}
-    return { ok: true, tag: info.tag, type: info.type, before: before, ...waitInfo };
+    return { ok: true, tag: info.tag, type: info.type, before: before, maxLength: info.maxLength, ...waitInfo };
   })()`;
 }
 export function fillableRefProbeDeclaration({ clear = true } = {}) {
@@ -4736,8 +4736,24 @@ export function fillLiveValueDeclaration() {
       value,
       textContent: String(el && el.textContent || ''),
       field: ${fillFieldDescriptorExpression('el')},
+      maxLength: ${fillMaxLengthExpression('el')},
     };
   }`;
+}
+// #748: an <input> or <textarea> maxlength (null when the control has none).
+export function fillMaxLengthExpression(name) {
+  return `((${name} && (${name}.tagName === 'INPUT' || ${name}.tagName === 'TEXTAREA') && Number.isInteger(${name}.maxLength) && ${name}.maxLength >= 0) ? ${name}.maxLength : null)`;
+}
+// #748: a user cannot type more than maxlength UTF-16 code units, and fill keeps the same limit.
+// A surrogate pair at the cut is dropped whole.
+export function keepWithinMaxLength(text, maxLength) {
+  const value = String(text ?? '');
+  if (!Number.isInteger(maxLength) || maxLength < 0 || value.length <= maxLength) return value;
+  const kept = value.slice(0, maxLength);
+  return /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept;
+}
+export function formatFillMaxLengthNote(wanted, kept, maxLength) {
+  return kept.length < String(wanted).length ? ` (maxlength ${maxLength}: kept ${kept.length} of ${String(wanted).length} characters)` : '';
 }
 // The strings that name a control (#485): fill decides from them whether the typed value is secret.
 export function fillFieldDescriptorExpression(name) {
@@ -4818,6 +4834,7 @@ export function parseFillLiveSnapshot(raw) {
     value: String(parsed.value ?? ''),
     textContent: String(parsed.textContent ?? ''),
     field: parsed.field && typeof parsed.field === 'object' ? parsed.field : null,
+    maxLength: Number.isInteger(parsed.maxLength) ? parsed.maxLength : null,
   };
 }
 // True when the control's own name, id, autocomplete, aria-label, placeholder or label marks it secret.
@@ -4903,11 +4920,11 @@ export async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
       el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
       return { tag: el.tagName, value: el.isContentEditable ? el.textContent : el.value };
     }`,
-    arguments: [{ value: text }],
+    arguments: [{ value: keepWithinMaxLength(text, probed.maxLength) }],
     returnByValue: true,
   }, nodeSid);
   const tag = res.result.value?.tag || '?';
-  return `React-filled ${isRef(selector) ? selector : `<${tag}>`} with "${formatInputTextPreview(text)}"`;
+  return `React-filled ${isRef(selector) ? selector : `<${tag}>`} with "${formatInputTextPreview(keepWithinMaxLength(text, probed.maxLength))}"`;
 }
 export function formatFillDispatchText({ label, text, clearing, react, state, secretName = null }) {
   const before = state?.before;
@@ -4957,6 +4974,7 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
   let before = null;
   let inputType = '';
   let tag = '?';
+  let maxLength = null;
   if (opts.react) {
     if (!ref) {
       const wait = await waitForActionableSelector(cdp, sid, selector, { waitMs, visible: true });
@@ -5002,16 +5020,20 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
     if (typeof probed.before === 'string') before = probed.before;
     inputType = probed.type || '';
     tag = probed.tag || tag;
+    maxLength = Number.isInteger(probed.maxLength) ? probed.maxLength : null;
     if (clearing) {
       await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
     } else {
-      await cdpDomains(cdp).Input.insertText( { text: wanted }, nodeSid);
-      if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, wanted, refMap, refState))) {
-        await fillReactStr(cdp, sid, selector, wanted, refMap, refState);
+      const kept = keepWithinMaxLength(wanted, maxLength);
+      await cdpDomains(cdp).Input.insertText( { text: kept }, nodeSid);
+      if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, kept, refMap, refState))) {
+        await fillReactStr(cdp, sid, selector, kept, refMap, refState);
       }
     }
   }
   const after = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
+  if (maxLength == null && Number.isInteger(after?.maxLength)) maxLength = after.maxLength;
+  const kept = keepWithinMaxLength(wanted, maxLength);
   const facts = ref ? crossSiteListed(cdp, sid, selector, refState) : null;
   if (facts) before = null;
   const secretName = opts.secretName || null;
@@ -5023,7 +5045,7 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
   const state = buildFillValueState({
     before,
     after: after?.ok ? after.value : null,
-    requested: wanted,
+    requested: kept,
     inputType: inputType || after?.type || '',
     sensitive,
     secretName,
@@ -5035,17 +5057,17 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
       SENSITIVE_FILL_RAW_VALUES.set(opts.valueState, [typed, before, after?.value]);
     }
   }
-  if (!fillLiveValueAccepted(after, wanted)) {
+  if (!fillLiveValueAccepted(after, kept)) {
     if (ref) {
       const unique = await fillRefUniqueSelector(cdp, sid, selector, refMap, refState);
       if (unique) state.selector = unique;
     }
-    throw fillValueRejectedError(selector, secretName ? secretMarker(secretName) : wanted, state);
+    throw fillValueRejectedError(selector, secretName ? secretMarker(secretName) : kept, state);
   }
   const label = facts
     ? `${selector}${facts.host ? ` in ${facts.host}` : ''}`
     : (ref ? selector : `<${tag}>`);
-  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state, secretName })}${waitNote}`;
+  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : kept, clearing, react: opts.react === true, state, secretName })}${formatFillMaxLengthNote(wanted, kept, maxLength)}${waitNote}`;
 }
 // An @ref names one node (#633). Apply it on that node; there is no selector to wait for.
 export async function selectByRef(cdp, sid, selector, wanted, refMap, refState) {

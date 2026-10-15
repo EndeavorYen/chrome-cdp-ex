@@ -1671,8 +1671,11 @@ show as `<redacted>`.
 
 Every fill compares the control's value before and after. `Filled <INPUT> with
 "Carl" (was "Bob")` names the previous value, and `chrome-cdp-ex.fill.v1` carries
-it as `previousValue`. If the control ends up holding something other than the
-requested text, fill exits 1 (`dispatch.ok=false`):
+it as `previousValue`. An `<input>` or `<textarea>` with `maxlength` gets at most
+that many characters (UTF-16 code units, as a user typing), with or without
+`--react`: `Filled <INPUT> with "abcde" (maxlength 5: kept 5 of 10 characters)`.
+The kept text is then the requested text. If the control ends up holding
+something other than the requested text, fill exits 1 (`dispatch.ok=false`):
 
 - `Kind: fill-value-mismatch`: the value changed, but not to the requested
   text. `<input type=number value="0.5">` given `abc` prints
