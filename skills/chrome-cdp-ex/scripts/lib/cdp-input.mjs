@@ -1957,8 +1957,8 @@ export function namedInViewportClickExpression(name, { checkCover = false } = {}
     const visible = named.filter(inViewport);
     const scrollYBefore = Math.round(window.scrollY || 0);
     let el = visible[0] || null;
-    let scrolled = false;
-    if (!el) {
+    const offscreen = !el;
+    if (offscreen) {
       if (!named.length) return JSON.stringify({ ok: false, error: 'Named control not found: ' + wanted });
       if (named.length !== 1) {
         return JSON.stringify({
@@ -1967,14 +1967,18 @@ export function namedInViewportClickExpression(name, { checkCover = false } = {}
         });
       }
       el = named[0];
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-      scrolled = true;
     }
-    // #742: HTMLElement.click() fires nothing on a :disabled control, so do not claim a click.
+    // #742: HTMLElement.click() fires nothing on a :disabled control, so do not claim a click,
+    // and do not scroll to a control that will not be clicked.
     ${actionabilityFunctionSource()}
     const disabledReason = actionDisabledReason(el, false);
     if (disabledReason) {
       return JSON.stringify({ ok: false, disabled: { tag: el.tagName, text: labelOf(el).substring(0, 80), reason: disabledReason } });
+    }
+    let scrolled = false;
+    if (offscreen) {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      scrolled = true;
     }
     ${coverCheck}
     const rect = el.getBoundingClientRect();

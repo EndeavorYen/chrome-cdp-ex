@@ -63,7 +63,7 @@ function fakePage() {
       getAttribute(name) { return Object.hasOwn(this.attrs, name) ? this.attrs[name] : null; },
       hasAttribute(name) { return Object.hasOwn(this.attrs, name); },
       getBoundingClientRect() { return { ...this._rect }; },
-      scrollIntoView() {},
+      scrollIntoView() { this.scrolled = true; },
       focus() { this.focused = true; },
       // Like the browser, HTMLElement.click() fires nothing on a :disabled form control.
       click() { if (!this.matches(':disabled')) this.events.push('click'); },
@@ -137,7 +137,10 @@ function fakeCdp(page) {
       // A node id or backend node id is its 1-based position in page.nodes, plus one.
       const nodeAt = id => [...page.nodes.values()][Number(id) - 2] || null;
       if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
-      if (method === 'DOM.querySelector') return { nodeId: [...page.nodes.keys()].indexOf(params.selector) + 2 || 0 };
+      if (method === 'DOM.querySelector') {
+        const index = [...page.nodes.keys()].indexOf(params.selector);
+        return { nodeId: index < 0 ? 0 : index + 2 };
+      }
       if (method === 'DOM.resolveNode') return { object: { objectId: `node:${params.nodeId || params.backendNodeId}` } };
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', url: PAGE_HREF } } };
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
@@ -320,6 +323,8 @@ describe('#742 a JS click refuses a natively disabled control', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toBe('<BUTTON> "Exec" is disabled (disabled attribute); the click was not sent.');
     expect(exec.events).toEqual([]);
+    // The fake rect has no top/bottom, so the named path treats it as off-screen: no scroll either.
+    expect(exec.scrolled).toBeUndefined();
     const text = formatActionFailure(err, { action: 'click', target: target('text=Exec') }).split('\n');
     expect(text).toContain('Kind: disabled');
     expect(text.filter(line => /^Next:/.test(line))).toHaveLength(1);
