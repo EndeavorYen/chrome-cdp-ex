@@ -3688,6 +3688,12 @@ export async function readHoverRevealState(cdp, sid, selector, point = null) {
 }
 export async function hoverStr(cdp, sid, selector, refMap, refState, options = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
+  // #750: only click and jsclick resolve text= names; hover takes a CSS selector or an @ref.
+  if (TEXT_SELECTOR_PREFIX_RE.test(String(selector).trim())) {
+    const err = new Error(`hover: ${JSON.stringify(String(selector))} is a text query; hover takes a CSS selector or an @ref. Only click and jsclick resolve text= names.`);
+    err.hoverTextQuery = true;
+    throw err;
+  }
   const waitMs = options.deliveryWaitMs;
   if (isRef(selector)) {
     const { rect: r, objectId } = await resolveRefRectNoScroll(cdp, sid, refMap, selector, refState);
@@ -3705,7 +3711,12 @@ export async function hoverStr(cdp, sid, selector, refMap, refState, options = {
   const expr = `
     (function() {
       void ${JSON.stringify(HOVER_REVEAL_MARKER)};
-      const el = document.querySelector(${JSON.stringify(selector)});
+      let el;
+      try {
+        el = document.querySelector(${JSON.stringify(selector)});
+      } catch (err) {
+        return { ok: false, error: 'Invalid selector: ' + (err && err.message ? err.message : String(err)) };
+      }
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
       const rect = el.getBoundingClientRect();
       const state = (function() {

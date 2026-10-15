@@ -1376,6 +1376,31 @@ function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platf
       reason: 'No current element matched the selector. A missing load-more control is not a successful disappear.',
     };
   }
+  // #750: hover failures that are not a delivery miss still name a Kind and a runnable Next.
+  if (cmd === 'hover' && (err?.hoverTextQuery === true || lower.includes('is a text query; hover takes'))) {
+    return {
+      kind: 'usage',
+      strategy: 'refresh-perception',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'hover takes a CSS selector or an @ref; text= names are resolved only by click and jsclick. Find the element with perceive and hover its @ref, or use a CSS selector.',
+    };
+  }
+  if (cmd === 'hover' && (lower.includes('invalid selector') || lower.includes('is not a valid selector'))) {
+    return {
+      kind: 'invalid-selector',
+      strategy: 'refresh-perception',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'The selector is not valid CSS. Hover an @ref from perceive, or a CSS selector such as #id or [data-testid].',
+    };
+  }
+  if (cmd === 'hover' && lower.includes('element not found')) {
+    return {
+      kind: 'selector',
+      strategy: 'refresh-perception',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'No current element matched the selector. Refresh perception and hover an @ref, or a selector that matches.',
+    };
+  }
   if (cmd === 'hover' && lower.includes('the hover was not delivered')) {
     const selector = String(args?.[0] || '').trim();
     const hidden = lower.includes('visibilitystate is hidden');

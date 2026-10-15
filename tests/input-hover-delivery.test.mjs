@@ -66,6 +66,44 @@ function nextLines(text) {
   return String(text || '').split('\n').filter(line => line.startsWith('Next:'));
 }
 
+describe('#750 every hover failure names a Kind and a runnable Next', () => {
+  const cli = (err, selector) => T.formatCliError(err, { cmd: 'hover', targetPrefix: 'ABCD1234', args: [selector] });
+  // Runs the hover page expression against a document whose querySelector behaves as given.
+  const pageCdp = querySelector => createMockCDP({
+    'Runtime.evaluate': params => ({ result: { value: runInNewContext(params.expression, { document: { querySelector }, JSON, Object }) } }),
+  });
+
+  it('refuses text= before any page call: hover takes a CSS selector or an @ref', async () => {
+    const cdp = createMockCDP({});
+    const err = await T.hoverStr(cdp, 'sid', 'text=Hover me', new Map(), {}).catch(error => error);
+    expect(err).toBeInstanceOf(Error);
+    expect(cdp.calls).toEqual([]);
+    const text = cli(err, 'text=Hover me');
+    expect(text).toMatch(/^Error: hover: "text=Hover me" is a text query; hover takes a CSS selector or an @ref\./);
+    expect(text).toContain('Kind: usage');
+    expect(nextLines(text)).toEqual(['Next: cdp perceive ABCD1234 -C -d 8']);
+  });
+
+  it('reports an invalid CSS selector without a browser stack', async () => {
+    const err = await T.hoverStr(pageCdp(() => {
+      throw new SyntaxError("Failed to execute 'querySelector' on 'Document': 'div[' is not a valid selector.");
+    }), 'sid', 'div[', new Map(), {}).catch(error => error);
+    const text = cli(err, 'div[');
+    expect(text).toMatch(/^Error: Invalid selector: /);
+    expect(text).not.toMatch(/at <anonymous>/);
+    expect(text).toContain('Kind: invalid-selector');
+    expect(nextLines(text)).toEqual(['Next: cdp perceive ABCD1234 -C -d 8']);
+  });
+
+  it('classifies a selector miss instead of Kind: unknown', async () => {
+    const err = await T.hoverStr(pageCdp(() => null), 'sid', '#nope', new Map(), {}).catch(error => error);
+    const text = cli(err, '#nope');
+    expect(text).toMatch(/^Error: Element not found: #nope/);
+    expect(text).toContain('Kind: selector');
+    expect(nextLines(text)).toEqual(['Next: cdp perceive ABCD1234 -C -d 8']);
+  });
+});
+
 describe('hover does not report success before the page is hovered (#608)', () => {
   it('keeps polling until :hover is true instead of returning on the first miss', async () => {
     const cdp = hoverCdp({
