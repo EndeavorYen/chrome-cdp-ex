@@ -333,6 +333,19 @@ describe('#469 the value reaches the page and nowhere else', () => {
     expect(T.scrubSessionSecrets(session, `the field shows ${kept}`)).toBe('the field shows <secret:PW>');
   });
 
+  it('masks the kept part of a secret in text output and the log when the page shows it (#748)', async () => {
+    const kept = SECRET.slice(0, 8);
+    const { session, response } = await secretFill({
+      maxLength: 8,
+      args: ['#login', '--secret', 'PW'],
+      observedDiff: `+++ Added (1)\n+ [textbox] "Login" = ${JSON.stringify(kept)}`,
+    });
+    expect(response.ok).toBe(true);
+    expect(response.result).not.toContain(kept);
+    expect(response.result).toContain('(maxlength 8: kept 8 characters)');
+    expect(readFileSync(session.logPath, 'utf8')).not.toContain(kept);
+  });
+
   it('types the value through Input.insertText while stdout, receipt, log, records, and report show <secret:PW>', async () => {
     const { session, state, response } = await secretFill();
     expect(state.value).toBe(SECRET);
