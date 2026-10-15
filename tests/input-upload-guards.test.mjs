@@ -94,6 +94,12 @@ describe('upload guards (#403)', () => {
     expect(order.indexOf('DOM.setFileInputFiles')).toBeLessThan(order.indexOf('__uploadRead'));
   });
 
+  it('keeps today\'s receipt, with no note, when the input keeps its files (#743)', async () => {
+    const { a } = files();
+    const cdp = fakeCdp({ scan: [composer], readBack: { files: [{ name: 'a.png', size: 1234 }], seen: [{ name: 'a.png', size: 1234 }] } });
+    await expect(T.uploadStr(cdp, 'sid', '#f', a)).resolves.toBe(`Uploaded 1 file(s) to #f: ${a}`);
+  });
+
   it('still fails when the input was empty or held other files at its change event (#743)', async () => {
     const { a } = files();
     for (const seen of [null, [], [{ name: 'other.png', size: 1234 }]]) {

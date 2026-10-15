@@ -58,6 +58,7 @@ function fakeRefPage(entries) {
       if (method === 'DOM.setFileInputFiles') {
         const node = params.backendNodeId != null ? byBackend.get(params.backendNodeId) : byObjectId.get(params.objectId);
         if (!node) return Promise.reject(new Error('setFileInputFiles: node not found'));
+        if (node.failSet) return Promise.reject(new Error('setFileInputFiles: node detached'));
         node.files = (params.files || []).map(file => ({ name: basename(file), size: statSync(file).size }));
         if (typeof node.afterSetFiles === 'function') node.afterSetFiles();
         return Promise.resolve({});
@@ -172,28 +173,72 @@ describe('select and upload accept perceive @refs (#633)', () => {
     expect(input.files).toEqual([{ name: 'avatar.txt', size: statSync(file).size }]);
   });
 
-  it('accepts an @ref input that the page clears after its change event (#743)', async () => {
+  // A root (the document, or a shadow root) that records capture listeners. `clearingInput` is an
+  // input whose page reads the files on input/change and then clears the value.
+  function listenerRoot() {
     const listeners = [];
-    const ownerDocument = {
+    return {
+      listeners,
       addEventListener(type, fn, capture) { listeners.push({ type, fn, capture }); },
       removeEventListener(type, fn) {
         const at = listeners.findIndex(entry => entry.type === type && entry.fn === fn);
         if (at >= 0) listeners.splice(at, 1);
       },
     };
-    const input = fileInput(205, 'obj-file-clear', {
-      ownerDocument,
-      // The page reads the file on input/change, then clears the value.
+  }
+  function clearingInput(backendNodeId, objectId, root, { shadow = false, seen = null, ...extra } = {}) {
+    return fileInput(backendNodeId, objectId, {
+      ownerDocument: shadow ? listenerRoot() : root,
+      getRootNode() { return root; },
       afterSetFiles() {
-        for (const entry of [...listeners]) entry.fn({ type: entry.type, target: this });
+        if (seen) this.files = seen;
+        for (const entry of [...root.listeners]) entry.fn({ type: entry.type, target: this });
         this.files = [];
       },
+      ...extra,
     });
+  }
+
+  it('accepts an @ref input that the page clears after its change event (#743)', async () => {
+    const root = listenerRoot();
+    const input = clearingInput(205, 'obj-file-clear', root);
     const file = uploadFile();
     const { cdp } = fakeRefPage([input]);
     const result = await T.uploadStr(cdp, 'sid', '@5', file, new Map([[5, input.backendNodeId]]), {});
     expect(result).toBe(`Uploaded 1 file(s) to @5: ${file} (the page cleared the input after its change event)`);
-    expect(listeners).toEqual([]);
+    expect(root.listeners).toEqual([]);
+  });
+
+  it('listens on the shadow root for an @ref input inside one (#743)', async () => {
+    const shadowRoot = listenerRoot();
+    const input = clearingInput(206, 'obj-file-shadow', shadowRoot, { shadow: true });
+    const file = uploadFile();
+    const { cdp } = fakeRefPage([input]);
+    await expect(T.uploadStr(cdp, 'sid', '@6', file, new Map([[6, input.backendNodeId]]), {}))
+      .resolves.toMatch(/\(the page cleared the input after its change event\)$/);
+    expect(shadowRoot.listeners).toEqual([]);
+    expect(input.ownerDocument.listeners).toEqual([]);
+  });
+
+  it('still fails an @ref input that held no files or other files at its change event (#743)', async () => {
+    for (const seen of [[], [{ name: 'other.txt', size: 3 }]]) {
+      const root = listenerRoot();
+      const input = clearingInput(207, 'obj-file-other', root, { seen });
+      const { cdp } = fakeRefPage([input]);
+      await expect(T.uploadStr(cdp, 'sid', '@7', uploadFile(), new Map([[7, input.backendNodeId]]), {}))
+        .rejects.toThrow(/page reports \[\] but \[avatar\.txt:/);
+      expect(root.listeners).toEqual([]);
+    }
+  });
+
+  it('removes the listeners when setting the files fails (#743)', async () => {
+    const root = listenerRoot();
+    const input = clearingInput(208, 'obj-file-fail', root, { failSet: true });
+    const { cdp } = fakeRefPage([input]);
+    await expect(T.uploadStr(cdp, 'sid', '@8', uploadFile(), new Map([[8, input.backendNodeId]]), {}))
+      .rejects.toThrow(/node detached/);
+    expect(root.listeners).toEqual([]);
+    expect(Object.keys(globalThis).filter(key => key.startsWith('__chromeCdpExUploadSeen'))).toEqual([]);
   });
 
   it('uploads through an @ref to a label of one file input', async () => {

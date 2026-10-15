@@ -7,6 +7,7 @@ import { extractPdfPageText } from './pdf-text.mjs';
 import { REDACTED_VALUE, redactSensitiveString, redactUrl } from './redaction.mjs';
 import { TABLE_EXTRACTION_LIMITS, addTableSampleBatch, buildTableExportBundle, canonicalizeTableCells, createTableAccumulator, finalizeTableExtraction } from './table-extraction.mjs';
 import { buildTableSamplerExpression, parseTableSamplerResult } from './table-sampler.mjs';
+import { randomBytes } from 'crypto';
 import { readFileSync, statSync } from 'fs';
 import { basename, resolve } from 'path';
 import { compactActionText, isSensitiveDataKey, redactSensitiveArtifactValue } from './cdp-action-result.mjs';
@@ -2268,44 +2269,58 @@ export async function readInputMultiple(cdp, sid, objectId) {
   return evaluated.result?.value === true;
 }
 // #743: a page may read the file in its change handler and then clear input.value. Before the
-// files are set, a capture listener records what the input held at its first input or change event.
-// The read-back call takes that record and removes the listeners, so nothing stays on the page.
-const UPLOAD_SEEN_KEY = '__chromeCdpExUploadSeen';
-function uploadSeenArmSource(elementExpression) {
+// files are set, a capture listener on the input's root (its document, or the shadow root it is in)
+// records what the input held at its first input or change event. The read-back takes that record
+// and removes the listeners; a failed set removes them too. Each upload uses its own global key.
+function uploadSeenKey() {
+  return `__chromeCdpExUploadSeen_${randomBytes(6).toString('hex')}`;
+}
+function uploadSeenArmSource(elementExpression, key) {
   return `
     const el = ${elementExpression};
-    const doc = el && el.ownerDocument;
-    if (!doc || typeof doc.addEventListener !== 'function') return false;
+    const root = el && (typeof el.getRootNode === 'function' ? el.getRootNode() : el.ownerDocument);
+    if (!root || typeof root.addEventListener !== 'function') return false;
     const state = { seen: null };
     const record = (event) => {
       if (event.target !== el || state.seen) return;
       state.seen = [...(el.files || [])].map(file => ({ name: file.name, size: file.size }));
     };
-    doc.addEventListener('input', record, true);
-    doc.addEventListener('change', record, true);
-    globalThis.${UPLOAD_SEEN_KEY} = () => {
-      doc.removeEventListener('input', record, true);
-      doc.removeEventListener('change', record, true);
+    root.addEventListener('input', record, true);
+    root.addEventListener('change', record, true);
+    globalThis.${key} = () => {
+      root.removeEventListener('input', record, true);
+      root.removeEventListener('change', record, true);
       return state.seen;
     };
     return true;`;
 }
-const UPLOAD_SEEN_TAKE_SOURCE = `const take = globalThis.${UPLOAD_SEEN_KEY};
-    delete globalThis.${UPLOAD_SEEN_KEY};
-    const seen = typeof take === 'function' ? take() : null;`;
-async function armUploadSeen(cdp, sid, { selector = null, objectId = null } = {}) {
+function uploadSeenTakeSource(key) {
+  return `const take = globalThis.${key};
+    delete globalThis.${key};
+    let seen = null;
+    try { seen = typeof take === 'function' ? take() : null; } catch (e) { seen = null; }`;
+}
+async function runUploadSeenScript(cdp, sid, { objectId = null }, body) {
   try {
     if (objectId) {
-      await cdpDomains(cdp).Runtime.callFunctionOn({
-        objectId,
-        functionDeclaration: `function() { /* __uploadArm */ ${uploadSeenArmSource('this')} }`,
-        returnByValue: true,
-      }, sid);
+      await cdpDomains(cdp).Runtime.callFunctionOn({ objectId, functionDeclaration: `function() { ${body} }`, returnByValue: true }, sid);
     } else {
-      await evalStr(cdp, sid, `(()=>{ /* __uploadArm */ ${uploadSeenArmSource(`document.querySelector(${JSON.stringify(selector)})`)} })()`, false, { timeoutMs: 3000, raw: true });
+      await evalStr(cdp, sid, `(()=>{ ${body} })()`, false, { timeoutMs: 3000, raw: true });
     }
   } catch {
     // Best-effort, like the other upload probes: without it a cleared input fails as before.
+  }
+}
+function armUploadSeen(cdp, sid, target, key) {
+  const element = target.objectId ? 'this' : `document.querySelector(${JSON.stringify(target.selector)})`;
+  return runUploadSeenScript(cdp, sid, target, `/* __uploadArm */ ${uploadSeenArmSource(element, key)}`);
+}
+async function setFilesWithUploadSeen(cdp, sid, params, target, key) {
+  try {
+    await cdpDomains(cdp).DOM.setFileInputFiles(params, sid);
+  } catch (error) {
+    await runUploadSeenScript(cdp, sid, target, `/* __uploadDisarm */ ${uploadSeenTakeSource(key)} return true;`);
+    throw error;
   }
 }
 // A read-back is { files, seen }. An older page answer (a bare array) has no seen record.
@@ -2314,12 +2329,12 @@ function uploadReadBack(value) {
   if (value && Array.isArray(value.files)) return { files: value.files, seen: Array.isArray(value.seen) ? value.seen : null };
   return null;
 }
-export async function readUploadedFilesFromObject(cdp, sid, objectId) {
+export async function readUploadedFilesFromObject(cdp, sid, objectId, key = uploadSeenKey()) {
   try {
     const evaluated = await cdpDomains(cdp).Runtime.callFunctionOn({
       objectId,
       functionDeclaration: `function() {
-        ${UPLOAD_SEEN_TAKE_SOURCE}
+        ${uploadSeenTakeSource(key)}
         if (!this || !this.files) return null;
         return { files: [...this.files].map(file => ({ name: file.name, size: file.size })), seen };
       }`,
@@ -2375,9 +2390,10 @@ export async function uploadByRef(cdp, sid, selector, files, refMap, refState) {
   const params = { files };
   if (node.backendNodeId != null) params.backendNodeId = node.backendNodeId;
   else params.objectId = fileObjectId;
-  await armUploadSeen(cdp, sid, { objectId: fileObjectId });
-  await cdpDomains(cdp).DOM.setFileInputFiles(params, sid);
-  const note = assertUploadedFilesMatch(selector, files, await readUploadedFilesFromObject(cdp, sid, fileObjectId));
+  const key = uploadSeenKey();
+  await armUploadSeen(cdp, sid, { objectId: fileObjectId }, key);
+  await setFilesWithUploadSeen(cdp, sid, params, { objectId: fileObjectId }, key);
+  const note = assertUploadedFilesMatch(selector, files, await readUploadedFilesFromObject(cdp, sid, fileObjectId, key));
   return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}${note}`;
 }
 export async function uploadStr(cdp, sid, selector, filePaths, refMap, refState) {
@@ -2400,9 +2416,10 @@ export async function uploadStr(cdp, sid, selector, filePaths, refMap, refState)
   if (matches && matches.length === 1 && matches[0].multiple === false && files.length > 1) {
     throw new Error(`upload: ${selector} does not accept several files (no \`multiple\`); pass one file`);
   }
-  await armUploadSeen(cdp, sid, { selector });
-  await cdpDomains(cdp).DOM.setFileInputFiles( { files, nodeId }, sid);
-  const note = assertUploadedFilesMatch(selector, files, await readUploadedFiles(cdp, sid, selector));
+  const key = uploadSeenKey();
+  await armUploadSeen(cdp, sid, { selector }, key);
+  await setFilesWithUploadSeen(cdp, sid, { files, nodeId }, { selector }, key);
+  const note = assertUploadedFilesMatch(selector, files, await readUploadedFiles(cdp, sid, selector, key));
   return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}${note}`;
 }
 export async function evalUploadProbe(cdp, sid, expression) {
@@ -2429,10 +2446,10 @@ export function scanUploadMatches(cdp, sid, selector) {
       { index, id: el.id || '', name: el.name || '', accept: el.accept || '', multiple: !!el.multiple, label: label(el) })));
   })()`);
 }
-export async function readUploadedFiles(cdp, sid, selector) {
+export async function readUploadedFiles(cdp, sid, selector, key = uploadSeenKey()) {
   try {
     const raw = await evalStr(cdp, sid, `(()=>{ /* __uploadRead */
-    ${UPLOAD_SEEN_TAKE_SOURCE}
+    ${uploadSeenTakeSource(key)}
     const el = document.querySelector(${JSON.stringify(selector)});
     return JSON.stringify({ files: el && el.files ? [...el.files].map(f => ({ name: f.name, size: f.size })) : [], seen });
   })()`, false, { timeoutMs: 3000, raw: true });
