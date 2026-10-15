@@ -751,6 +751,36 @@ export function cliErrorFromDaemonResponse(response) {
   return tagged ? err : message;
 }
 
+function hoverSelectorRecovery(message, { cmd = '', target = '<target>' } = {}) {
+  const text = String(message || '').trim();
+  const run = `cdp perceive ${target} -C -d 8`;
+  if (/(?:^|\n)(?:Error:\s*)?hover: ".*" is a text query; hover takes a CSS selector or an @ref\./.test(text)) {
+    return {
+      kind: 'usage',
+      strategy: 'refresh-perception',
+      run,
+      reason: 'hover takes a CSS selector or an @ref; text= names are resolved only by click and jsclick. Find the element with perceive and hover its @ref, or use a CSS selector.',
+    };
+  }
+  if (cmd !== 'hover') return null;
+  if (/^(?:Error:\s*)?invalid selector: /i.test(text)) {
+    return {
+      kind: 'invalid-selector',
+      strategy: 'refresh-perception',
+      run,
+      reason: 'The selector is not valid CSS. Hover an @ref from perceive, or a CSS selector such as #id or [data-testid].',
+    };
+  }
+  if (/^(?:Error:\s*)?element not found: /i.test(text)) {
+    return {
+      kind: 'selector',
+      strategy: 'refresh-perception',
+      run,
+      reason: 'No current element matched the selector. Refresh perception and hover an @ref, or a selector that matches.',
+    };
+  }
+  return null;
+}
 export function buildCliErrorRecovery(message, options) {
   return sealErrorRecovery(buildCliErrorRecoveryBody(message, options));
 }
@@ -790,6 +820,11 @@ function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platf
       reason: 'file: URLs are refused on purpose. Run the server in the file\'s folder, then open the http URL named in the error.',
     };
   }
+  // #750: hover failures that are not a delivery miss. Each is anchored at a line start, ahead of
+  // the generic substring rules, so a selector or page text quoted in a message cannot pick a rule.
+  // The text query is hover's own message, so it is classified inside flow and batch too.
+  const hoverRecovery = hoverSelectorRecovery(message, { cmd, target });
+  if (hoverRecovery) return hoverRecovery;
   // #534: CDP_ISOLATED_ONLY refused a daily or unidentified profile; start an isolated browser instead.
   if (err?.code === 'daily_profile_refused') {
     const browser = err.profile?.browser || 'chrome';
@@ -1374,31 +1409,6 @@ function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platf
         ? 'cdp help loadall'
         : (targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : 'cdp help loadall'),
       reason: 'No current element matched the selector. A missing load-more control is not a successful disappear.',
-    };
-  }
-  // #750: hover failures that are not a delivery miss still name a Kind and a runnable Next.
-  if (cmd === 'hover' && (err?.hoverTextQuery === true || lower.includes('is a text query; hover takes'))) {
-    return {
-      kind: 'usage',
-      strategy: 'refresh-perception',
-      run: `cdp perceive ${target} -C -d 8`,
-      reason: 'hover takes a CSS selector or an @ref; text= names are resolved only by click and jsclick. Find the element with perceive and hover its @ref, or use a CSS selector.',
-    };
-  }
-  if (cmd === 'hover' && (lower.includes('invalid selector') || lower.includes('is not a valid selector'))) {
-    return {
-      kind: 'invalid-selector',
-      strategy: 'refresh-perception',
-      run: `cdp perceive ${target} -C -d 8`,
-      reason: 'The selector is not valid CSS. Hover an @ref from perceive, or a CSS selector such as #id or [data-testid].',
-    };
-  }
-  if (cmd === 'hover' && lower.includes('element not found')) {
-    return {
-      kind: 'selector',
-      strategy: 'refresh-perception',
-      run: `cdp perceive ${target} -C -d 8`,
-      reason: 'No current element matched the selector. Refresh perception and hover an @ref, or a selector that matches.',
     };
   }
   if (cmd === 'hover' && lower.includes('the hover was not delivered')) {

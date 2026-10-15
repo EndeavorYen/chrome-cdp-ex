@@ -13,7 +13,7 @@ import { createMockCDP } from './mock-cdp.mjs';
 process.env.NODE_ENV = 'test';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
-const { hoverNotDeliveredError } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-input.mjs');
+const { dispatchHoverWithLeftoverPolicy, hoverNotDeliveredError } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-input.mjs');
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CDP = join(REPO, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -75,13 +75,31 @@ describe('#750 every hover failure names a Kind and a runnable Next', () => {
 
   it('refuses text= before any page call: hover takes a CSS selector or an @ref', async () => {
     const cdp = createMockCDP({});
-    const err = await T.hoverStr(cdp, 'sid', 'text=Hover me', new Map(), {}).catch(error => error);
+    const err = await dispatchHoverWithLeftoverPolicy({ cdp, sid: 'sid', selector: 'text=Hover me', refMap: new Map(), refState: {} }).catch(error => error);
     expect(err).toBeInstanceOf(Error);
     expect(cdp.calls).toEqual([]);
-    const text = cli(err, 'text=Hover me');
+    // The daemon forwards the message text, so classify that, not the in-process error object.
+    const text = cli(err.message, 'text=Hover me');
     expect(text).toMatch(/^Error: hover: "text=Hover me" is a text query; hover takes a CSS selector or an @ref\./);
     expect(text).toContain('Kind: usage');
     expect(nextLines(text)).toEqual(['Next: cdp perceive ABCD1234 -C -d 8']);
+  });
+
+  it('is not taken over by the generic "required" usage rule, and classifies inside flow', async () => {
+    const required = await T.hoverStr(createMockCDP({}), 'sid', 'text=Required', new Map(), {}).catch(error => error);
+    expect(nextLines(cli(required.message, 'text=Required'))).toEqual(['Next: cdp perceive ABCD1234 -C -d 8']);
+    const miss = await T.hoverStr(pageCdp(() => null), 'sid', 'input:required', new Map(), {}).catch(error => error);
+    const missText = cli(miss.message, 'input:required');
+    expect(missText).toContain('Kind: selector');
+    expect(nextLines(missText)).toEqual(['Next: cdp perceive ABCD1234 -C -d 8']);
+    const inFlow = T.formatCliError(required.message, { cmd: 'flow', targetPrefix: 'ABCD1234', args: [] });
+    expect(inFlow).toContain('Kind: usage');
+    expect(nextLines(inFlow)).toEqual(['Next: cdp perceive ABCD1234 -C -d 8']);
+  });
+
+  it('keeps hover-not-delivered when the selector or page text contains "element not found"', () => {
+    const err = hoverNotDeliveredError('#element-not-found', { x: 1, y: 2 }, 'visible', { coveredBy: '<DIV> "Invalid selector: x"' });
+    expect(cli(err.message, '#element-not-found')).toContain('Kind: hover-not-delivered');
   });
 
   it('reports an invalid CSS selector without a browser stack', async () => {

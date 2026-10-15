@@ -3686,14 +3686,15 @@ export async function readHoverRevealState(cdp, sid, selector, point = null) {
     return null;
   }
 }
+// #750: only click and jsclick resolve text= names; hover takes a CSS selector or an @ref.
+export function assertHoverSelector(selector) {
+  if (TEXT_SELECTOR_PREFIX_RE.test(String(selector ?? '').trim())) {
+    throw new Error(`hover: ${JSON.stringify(String(selector))} is a text query; hover takes a CSS selector or an @ref. Only click and jsclick resolve text= names.`);
+  }
+}
 export async function hoverStr(cdp, sid, selector, refMap, refState, options = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
-  // #750: only click and jsclick resolve text= names; hover takes a CSS selector or an @ref.
-  if (TEXT_SELECTOR_PREFIX_RE.test(String(selector).trim())) {
-    const err = new Error(`hover: ${JSON.stringify(String(selector))} is a text query; hover takes a CSS selector or an @ref. Only click and jsclick resolve text= names.`);
-    err.hoverTextQuery = true;
-    throw err;
-  }
+  assertHoverSelector(selector);
   const waitMs = options.deliveryWaitMs;
   if (isRef(selector)) {
     const { rect: r, objectId } = await resolveRefRectNoScroll(cdp, sid, refMap, selector, refState);
@@ -4227,6 +4228,8 @@ export async function dispatchHoverWithLeftoverPolicy({
   targetId,
   nextCommand = null,
 } = {}) {
+  // Refuse a text query before the settle baseline reads the page.
+  assertHoverSelector(selector);
   const dispatch = () => hoverStr(cdp, sid, selector, refMap, refState);
   if (hoverFeedbackPolicy(nextCommand) === 'report-only') {
     return dispatch();
