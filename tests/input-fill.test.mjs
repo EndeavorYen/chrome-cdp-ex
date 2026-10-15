@@ -126,10 +126,10 @@ describe('#748 fill keeps at most maxlength characters', () => {
 
   // A field with `maxlength`: Input.insertText keeps maxLength code units, as Chrome does for typed
   // text; the native value setter (the fill --react path and the fallback) writes the whole value.
-  function maxLengthField(maxLength, { ref = false } = {}) {
+  function maxLengthField(maxLength, { ref = false, tag = 'INPUT', type = 'text' } = {}) {
     const field = { value: '', setterValues: [] };
-    const live = () => ({ result: { value: { ok: true, cdpFillLiveValue: true, tag: 'INPUT', type: 'text', value: field.value, textContent: '', maxLength } } });
-    const probe = () => ({ result: { value: { ok: true, fillable: true, tag: 'INPUT', type: 'text', before: field.value, maxLength } } });
+    const live = () => ({ result: { value: { ok: true, cdpFillLiveValue: true, tag, type, value: field.value, textContent: '', maxLength } } });
+    const probe = () => ({ result: { value: { ok: true, fillable: true, tag, type, before: field.value, maxLength } } });
     const handlers = {
       'DOM.enable': () => ({}),
       'DOM.getDocument': () => ({ root: { nodeId: 1 } }),
@@ -145,7 +145,7 @@ describe('#748 fill keeps at most maxlength characters', () => {
         if (params.arguments) {
           field.setterValues.push(params.arguments[0].value);
           field.value = params.arguments[0].value;
-          return { result: { value: { tag: 'INPUT', value: field.value } } };
+          return { result: { value: { tag, value: field.value } } };
         }
         return probe();
       },
@@ -169,11 +169,11 @@ describe('#748 fill keeps at most maxlength characters', () => {
   });
 
   it('keeps maxlength characters with --react', async () => {
-    const { field, cdp } = maxLengthField(3);
+    const { field, cdp } = maxLengthField(3, { tag: 'TEXTAREA' });
     const out = await fillStr(cdp, 'sid1', '#note', 'abcdef', new Map(), null, { react: true });
     expect(field.setterValues).toEqual(['abc']);
     expect(field.value).toBe('abc');
-    expect(out).toMatch(/^React-filled <INPUT> with "abc".* \(maxlength 3: kept 3 of 6 characters\)$/);
+    expect(out).toMatch(/^React-filled <TEXTAREA> with "abc".* \(maxlength 3: kept 3 of 6 characters\)$/);
   });
 
   it('keeps maxlength characters by @ref', async () => {
@@ -181,6 +181,32 @@ describe('#748 fill keeps at most maxlength characters', () => {
     const out = await fillStr(cdp, 'sid1', '@1', 'abcdefghij', new Map([[1, 201]]), { generation: 1 });
     expect(field.value).toBe('abcde');
     expect(out).toBe('Filled @1 with "abcde" (maxlength 5: kept 5 of 10 characters)');
+  });
+
+  it('records the limit as numbers for the JSON receipt, and hides a password length', async () => {
+    const plain = maxLengthField(5);
+    const valueState = {};
+    await fillStr(plain.cdp, 'sid1', '#name', 'abcdefghij', new Map(), null, { valueState });
+    expect(valueState.maxLength).toEqual({ limit: 5, kept: 5, requested: 10 });
+
+    const secret = maxLengthField(4, { type: 'password' });
+    const passwordState = {};
+    const out = await fillStr(secret.cdp, 'sid1', '#pw', 'hunter22', new Map(), null, { valueState: passwordState });
+    expect(out).toBe('Filled <INPUT> with "<redacted>" (maxlength 4: kept 4 characters)');
+    expect(passwordState.maxLength).toEqual({ limit: 4, kept: 4 });
+  });
+
+  it('reads maxlength only where the browser enforces it', () => {
+    const limitOf = new Function('el', `return ${input.fillMaxLengthExpression('el')};`);
+    expect(limitOf({ tagName: 'INPUT', type: 'text', maxLength: 5 })).toBe(5);
+    expect(limitOf({ tagName: 'input', type: 'email', maxLength: 5 })).toBe(5);
+    expect(limitOf({ tagName: 'TEXTAREA', type: 'textarea', maxLength: 3 })).toBe(3);
+    expect(limitOf({ tagName: 'INPUT', type: 'text', maxLength: -1 })).toBeNull();
+    for (const type of ['number', 'date', 'time', 'range', 'color']) {
+      expect(limitOf({ tagName: 'INPUT', type, maxLength: 2 }), type).toBeNull();
+    }
+    expect(limitOf({ tagName: 'DIV', isContentEditable: true })).toBeNull();
+    expect(limitOf(null)).toBeNull();
   });
 
   it('adds no note for a value within maxlength', async () => {

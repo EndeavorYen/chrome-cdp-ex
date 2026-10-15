@@ -18,7 +18,7 @@ import { buildCliErrorModel, formatCliErrorRecovery, parseFillArgs, parseNonNega
 import { applyDaemonRestartNotice, consoleDocumentEntries, consoleDocumentSince, displayConsoleLine, displayLocation, displayUrl, listDaemonRecords, rememberTabObservation, restoreTabObservation } from './cdp-core.mjs';
 import { isProcessAlive } from './cdp-daemon.mjs';
 import { actionDispatchFailureMessage, actionDispatchSemanticsFromModel, compactActionDiagnosisModel } from './cdp-flow.mjs';
-import { clickDispatchEffects, clickStr, fillFeedbackPolicy, isNamedClickQuery, namedClickQueryName, parseDragArgs, parseScrollContainerArg, parseScrollEdge, splitScrollEdgeArgs } from './cdp-input.mjs';
+import { clickDispatchEffects, clickStr, fillFeedbackPolicy, keepWithinMaxLength, isNamedClickQuery, namedClickQueryName, parseDragArgs, parseScrollContainerArg, parseScrollEdge, splitScrollEdgeArgs } from './cdp-input.mjs';
 import { assertNotPdfViewerPage, cdpDomains, collectPageHealth, createScreenshotTierState, evalStr, formatPdfViewerOutput, isHiddenTabCaptureError, isPdfViewerContentType, pdfViewerError, pdfViewerHandoffModel, pdfViewerNextCommand, pdfViewerReportRecommendation, runtimeMetricsStr, shotStr, webVitalsModelOrUnavailable } from './cdp-page.mjs';
 import { applyViewportOverride, formatClockSummary, formatNetworkMocksSummary, formatThrottleSummary } from './cdp-page-commands.mjs';
 import { attachSelectorFrameMiss, perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
@@ -1818,6 +1818,10 @@ export function createDaemonFillCapability({ session, actionFeedback, fill }) {
     };
     const commandArgs = parsed.react ? ['--react', parsed.selector, ...textArgs] : [parsed.selector, ...textArgs];
     const value = await actionFeedback('fill', () => fill(parsed.selector, text, fillOpts), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs, fillValueState }, feedbackPolicy, null, parsed.fopts);
+    // #748: maxlength kept only the start of the secret; that part is now on the page too.
+    if (secretName != null && fillValueState.maxLength) {
+      rememberSessionSecret(session, secretName, keepWithinMaxLength(text, fillValueState.maxLength.limit));
+    }
     if (feedbackPolicy === 'report-only') {
       session.awaitSearchSubmitListing = true;
       session.searchSubmitQuery = parsed.text ?? '';

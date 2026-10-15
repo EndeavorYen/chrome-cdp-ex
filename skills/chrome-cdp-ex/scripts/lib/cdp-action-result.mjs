@@ -10,7 +10,7 @@ import { ACTION_JSON_IDENTIFIER_KEYS, ACTION_TEXT_REDACT_WINDOW, DEFAULT_SKINNY_
 import { buildQaSummaryModel, formatJson, formatQaSummaryText, parseFormatArgs, truncateTextLines } from './cdp-browser.mjs';
 import { targetPrefixForDisplay } from './cdp-cli.mjs';
 import { displayLocation, displayObservedText, displayUrl, sliceAtCodePoint } from './cdp-core.mjs';
-import { ariaControlStateReceiptClause } from './cdp-input.mjs';
+import { ariaControlStateReceiptClause, keepWithinMaxLength } from './cdp-input.mjs';
 import { formatPdfViewerOutput, isPdfViewerContentType, pdfViewerHandoffModel } from './cdp-page.mjs';
 import { baselineOutputForActionTarget, formatPerceiveDiffOutput, frameRefFromActionTarget, isCursorRef, isRef, perceiveSnapshotOpts, perceiveStr, resolveSinceActionPerceiveOpts } from './cdp-perceive.mjs';
 import { commandArgsNameSecret, compactActionResultForJson, isSensitiveActionTarget, sensitiveActionValues, summarizeActionDomDiff } from './cdp-session-report.mjs';
@@ -2198,7 +2198,9 @@ export function fillTypedValue(result = {}) {
   if (commandArgsNameSecret(result.action, args)) return secretMarker(args[args.indexOf('--secret') + 1]);
   if (isSensitiveActionTarget(result.action, target)) return REDACTED_VALUE;
   const text = args[0] === '--react' ? args[2] : args[1];
-  return text == null ? '' : String(text);
+  if (text == null) return '';
+  // #748: maxlength cut the typed text; report what the field holds.
+  return target.fillMaxLength ? keepWithinMaxLength(text, target.fillMaxLength.limit) : String(text);
 }
 // The control's value before fill (null when unknown). fillStr already masks password values.
 export function fillPreviousValue(result = {}) {
@@ -2231,6 +2233,7 @@ export function compactFillReceiptForJson(result = {}) {
     navigation: fillNavigationUrl(result.effects || {}),
     typeahead,
   };
+  if (result.target?.fillMaxLength) receipt.maxLength = { ...result.target.fillMaxLength };
   if (targetId) receipt.targetPrefix = targetPrefixForDisplay(targetId);
   Object.assign(receipt, actionDialogFields(result.effects));
   return receipt;

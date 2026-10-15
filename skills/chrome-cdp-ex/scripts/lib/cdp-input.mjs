@@ -4740,9 +4740,16 @@ export function fillLiveValueDeclaration() {
     };
   }`;
 }
-// #748: an <input> or <textarea> maxlength (null when the control has none).
+// #748: the maxlength the browser enforces on typed text: a <textarea>, or an <input> of a text
+// type. Chrome ignores maxlength on number, date and the other input types. null when none applies.
 export function fillMaxLengthExpression(name) {
-  return `((${name} && (${name}.tagName === 'INPUT' || ${name}.tagName === 'TEXTAREA') && Number.isInteger(${name}.maxLength) && ${name}.maxLength >= 0) ? ${name}.maxLength : null)`;
+  return `(function(el) {
+      if (!el) return null;
+      const tag = String(el.tagName || '').toUpperCase();
+      const type = String(el.type || '').toLowerCase();
+      const applies = tag === 'TEXTAREA' || (tag === 'INPUT' && ['text', 'search', 'url', 'tel', 'email', 'password'].indexOf(type) !== -1);
+      return applies && Number.isInteger(el.maxLength) && el.maxLength >= 0 ? el.maxLength : null;
+    })(${name})`;
 }
 // #748: a user cannot type more than maxlength UTF-16 code units, and fill keeps the same limit.
 // A surrogate pair at the cut is dropped whole.
@@ -4752,8 +4759,10 @@ export function keepWithinMaxLength(text, maxLength) {
   const kept = value.slice(0, maxLength);
   return /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept;
 }
-export function formatFillMaxLengthNote(wanted, kept, maxLength) {
-  return kept.length < String(wanted).length ? ` (maxlength ${maxLength}: kept ${kept.length} of ${String(wanted).length} characters)` : '';
+// A sensitive value's length stays out of the note.
+export function formatFillMaxLengthNote(wanted, kept, maxLength, { sensitive = false } = {}) {
+  if (kept.length >= String(wanted).length) return '';
+  return ` (maxlength ${maxLength}: kept ${kept.length}${sensitive ? '' : ` of ${String(wanted).length}`} characters)`;
 }
 // The strings that name a control (#485): fill decides from them whether the typed value is secret.
 export function fillFieldDescriptorExpression(name) {
@@ -4951,6 +4960,7 @@ export function applyFillValueState(target, state) {
   if (!target || !state || typeof state !== 'object' || !Object.hasOwn(state, 'after')) return target;
   markSensitiveFillTarget(target, state);
   target.fillValue = { before: state.before ?? null, after: state.after ?? null };
+  if (state.maxLength && typeof state.maxLength === 'object') target.fillMaxLength = { ...state.maxLength };
   if (state.changed === true) {
     target.controlStateChanged = true;
     target.controlStateDiff = `value ${fillValueDisplay(state.before)} → ${fillValueDisplay(state.after)}`;
@@ -5050,6 +5060,9 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
     sensitive,
     secretName,
   });
+  if (kept.length < wanted.length) {
+    state.maxLength = sensitive ? { limit: maxLength, kept: kept.length } : { limit: maxLength, kept: kept.length, requested: wanted.length };
+  }
   if (opts.valueState && typeof opts.valueState === 'object') {
     Object.assign(opts.valueState, state);
     if (sensitive) {
@@ -5067,7 +5080,7 @@ export async function fillStr(cdp, sid, selector, text, refMap, refState, opts =
   const label = facts
     ? `${selector}${facts.host ? ` in ${facts.host}` : ''}`
     : (ref ? selector : `<${tag}>`);
-  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : kept, clearing, react: opts.react === true, state, secretName })}${formatFillMaxLengthNote(wanted, kept, maxLength)}${waitNote}`;
+  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : kept, clearing, react: opts.react === true, state, secretName })}${formatFillMaxLengthNote(wanted, kept, maxLength, { sensitive })}${waitNote}`;
 }
 // An @ref names one node (#633). Apply it on that node; there is no selector to wait for.
 export async function selectByRef(cdp, sid, selector, wanted, refMap, refState) {
