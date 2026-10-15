@@ -1970,6 +1970,12 @@ export function namedInViewportClickExpression(name, { checkCover = false } = {}
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       scrolled = true;
     }
+    // #742: HTMLElement.click() fires nothing on a :disabled control, so do not claim a click.
+    ${actionabilityFunctionSource()}
+    const disabledReason = actionDisabledReason(el, false);
+    if (disabledReason) {
+      return JSON.stringify({ ok: false, disabled: { tag: el.tagName, text: labelOf(el).substring(0, 80), reason: disabledReason } });
+    }
     ${coverCheck}
     const rect = el.getBoundingClientRect();
     const href = el.href || el.getAttribute('href') || null;
@@ -2020,6 +2026,7 @@ export async function namedInViewportJsClickStr(cdp, sid, input, clickTrust = nu
   if (parsed.covered === true) {
     assertClickPointNotCovered(parsed.hit, { x: parsed.x, y: parsed.y, tag: parsed.tag, text: parsed.text });
   }
+  if (!parsed.ok && parsed.disabled) throw actionDisabledError('click', parsed.disabled, input);
   if (!parsed.ok) throw new Error(namedClickMissMessage(input, parsed.error));
   rememberClickTrust(clickTrust, { tag: parsed.tag, role: parsed.role });
   const newTabWatch = clickFollowsHref(parsed) && linkOpensNewBrowsingContext(parsed)
@@ -2059,6 +2066,12 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
     const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
       functionDeclaration: pointer ? pointerClickFunctionDeclaration(POINTER_CLICK_SETTLE_MS, isRef(selector) ? '' : selector) : `function() {
+        // #742: HTMLElement.click() fires nothing on a :disabled control; aria-disabled is still clicked.
+        ${actionabilityFunctionSource()}
+        const disabled = actionDisabledReason(this, false);
+        if (disabled) {
+          return { disabled: { tag: this.tagName, text: actionLabel(this), reason: disabled, matches: ${isRef(selector) ? 'null' : `actionMatchCount(${JSON.stringify(selector)})`} } };
+        }
         this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         if (typeof this.click === 'function') this.click();
         else this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -2080,6 +2093,7 @@ export async function jsClickStr(cdp, sid, selector, refMap, refState, options =
       return formatPointerClickReceipt(value, selector, facts);
     }
     const r = res.result.value || {};
+    if (r.disabled) throw frameAwareDisabledError('click', r.disabled, selector, facts);
     rememberClickTrust(options.clickTrust, r);
     if (facts && options.clickTrust) {
       options.clickTrust.frameContent = { origin: facts.rawOrigin, host: facts.host, name: r.text || '' };
