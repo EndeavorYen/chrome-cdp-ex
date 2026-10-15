@@ -1,5 +1,6 @@
 import { createContext, runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { formatActionControlStateDiff } from '../skills/chrome-cdp-ex/scripts/lib/cdp-input.mjs';
 import { compactActionResultForJson } from '../skills/chrome-cdp-ex/scripts/lib/cdp-session-report.mjs';
 import { createMockCDP } from './mock-cdp.mjs';
 
@@ -826,8 +827,10 @@ describe('actions inside a cross-site frame', () => {
   });
 
   it('keeps cross-site click --pointer page text and state inside a frame block', async () => {
-    const pointer = (pointerValue) => T.pointerClickStr(actionCdp({ pointerValue }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
-    const clicked = await pointer({ ok: true, tag: 'BUTTON', text: 'Pay now', role: '', ariaExpanded: 'true', dataState: 'IGNORE-STATE' });
+    const pointer = (pointerValue, clickTrust = null) => T.pointerClickStr(actionCdp({ pointerValue }), PAGE, '@f4:1', new Map(), refStateFor(DIRECT), clickTrust);
+    const clickTrust = {};
+    const clicked = await pointer({ ok: true, tag: 'BUTTON', text: 'Pay now', role: '', ariaExpanded: 'true', dataState: 'IGNORE-STATE' }, clickTrust);
+    expect(clickTrust.frameContent).toMatchObject({ name: 'Pay now', host: 'localhost:9', origin: 'http://localhost:9' });
     expect(clicked.split('\n')[0]).toBe('Pointer-clicked <BUTTON> (@f4:1) in localhost:9');
     expect(outsideFrameBlocks(clicked)).not.toContain('Pay now');
     expect(outsideFrameBlocks(clicked)).not.toContain('IGNORE-STATE');
@@ -841,10 +844,54 @@ describe('actions inside a cross-site frame', () => {
       disabled: { tag: 'BUTTON', text: 'Pay now', reason: 'disabled attribute', matches: null },
     }).catch(error => error);
     expect(disabled.message).toMatch(/^<BUTTON> \(@f4:1\) in localhost:9 is disabled \(disabled attribute\)/);
-    expect(insideFrameBlocks(T.formatActionFailure(disabled, { action: 'click', target: { targetId: 'AB12CD34', input: '@f4:1' } }))).toBe('Pay now');
+    const disabledText = T.formatActionFailure(disabled, { action: 'click', target: { targetId: 'AB12CD34', input: '@f4:1' } });
+    expect(disabledText).toContain('Kind: disabled');
+    expect(disabledText.split('\n').filter(line => /^Next:/.test(line))).toEqual(['Next: cdp perceive AB12CD34 --frame @f4']);
+    expect(insideFrameBlocks(disabledText)).toBe('Pay now');
 
     const hidden = await pointer({ ok: false, error: 'click --pointer: element is not visible (zero size) (BUTTON "Pay now")' }).catch(error => error);
     expect(hidden.message).toBe('click --pointer: element is not visible (zero size)');
+    const custom = await pointer({ ok: false, error: 'click --pointer: element is not visible (zero size) (PAY-BTN_V2.X "Pay now")' }).catch(error => error);
+    expect(custom.message).toBe('click --pointer: element is not visible (zero size)');
+  });
+
+  it('puts a cross-site aria change on the receipt head and keeps the END marker whole', async () => {
+    const clicked = await T.clickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    const pointer = await T.pointerClickStr(actionCdp(), PAGE, '@f4:1', new Map(), refStateFor(DIRECT));
+    for (const dispatchText of [clicked, pointer]) {
+      const result = T.createActionResult({
+        action: 'click',
+        target: {
+          targetId: 'AB12CD34',
+          input: '@f4:1',
+          resolvedBy: 'ref',
+          label: '@f4:1',
+          controlStateChanged: true,
+          controlStateDiff: 'aria-expanded false → true',
+        },
+        dispatch: { ok: true, method: 'click' },
+        settle: { ok: true, durationMs: 1 },
+        effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      });
+      const lines = T.formatActionResultOutput(result, { dispatchText }).split('\n');
+      expect(lines[0]).toMatch(/clicked <BUTTON> \(@f4:1\) in localhost:9: aria-expanded false → true$/i);
+      expect(lines.filter(line => line.includes('END FRAME CONTENT'))).toEqual([
+        expect.stringMatching(/^--- END FRAME CONTENT nonce=[0-9a-f]{32} ---$/),
+      ]);
+      expect(lines.at(-1)).toBe('Next: cdp perceive AB12CD34 --since-action');
+    }
+  });
+
+  it('keeps only ARIA token changes in a cross-site control-state diff', () => {
+    const before = { tag: 'SELECT', id: 'IGNORE-ID', selected: ['Visa'], aria: { 'aria-expanded': 'false', 'aria-pressed': 'IGNORE' } };
+    const after = { tag: 'SELECT', id: 'IGNORE-ID', selected: ['Amex'], aria: { 'aria-expanded': 'true', 'aria-pressed': 'IGNORE MORE' } };
+    expect(formatActionControlStateDiff(actionCdp(), PAGE, '@f4:1', refStateFor(DIRECT), before, after)).toBe('aria-expanded false → true');
+    expect(formatActionControlStateDiff(actionCdp(), PAGE, '#pay', null, before, after)).toBe(T.formatFormControlStateDiff(before, after));
+    expect(formatActionControlStateDiff(
+      actionCdp(), PAGE, '@f4:1', refStateFor(DIRECT),
+      { tag: 'SELECT', id: 'x', selected: ['Visa'] },
+      { tag: 'SELECT', id: 'x', selected: ['Amex'] },
+    )).toBe('changed inside the cross-site frame; values not shown');
   });
 
   it('shares one nonce between dispatch text and the JSON content boundary', async () => {

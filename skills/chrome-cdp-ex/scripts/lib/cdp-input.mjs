@@ -2100,7 +2100,7 @@ export function formatPointerClickReceipt(r, selector, facts = null) {
   if (!r.ok) {
     const message = r.error || 'click --pointer failed';
     // A cross-site error ends with the element's label, which is frame page text.
-    throw new Error(facts ? message.replace(/ \([A-Za-z][A-Za-z0-9-]* "[\s\S]*"\)$/, '') : message);
+    throw new Error(facts ? message.replace(/ \([^\s"()]+ "[\s\S]*"\)$/, '') : message);
   }
   const state = [
     r.ariaExpanded != null ? `aria-expanded=${r.ariaExpanded}` : null,
@@ -4553,6 +4553,21 @@ export function formatFormControlStateDiff(before, after) {
     return withAria(`select ${label} selected ${JSON.stringify(before?.selected || [])} → ${JSON.stringify(after?.selected || [])}`);
   }
   return aria;
+}
+const ARIA_STATE_TOKEN_RE = /^(?:true|false|mixed|undefined|\(absent\)|\(empty\))$/;
+// A cross-site control's id, option values, and free-form attribute values are that frame's page
+// text. Its diff keeps only aria state changes between ARIA's own tokens.
+export function formatActionControlStateDiff(cdp, sid, selector, refState, before, after) {
+  const diff = formatFormControlStateDiff(before, after);
+  if (!isRef(selector) || !crossSiteListed(cdp, sid, selector, refState)) return diff;
+  const kept = ariaControlStateReceiptClause(diff)
+    .split('; ')
+    .filter((part) => {
+      const match = /^aria-[a-z]+ (\S+) → (\S+)$/.exec(part);
+      return Boolean(match && ARIA_STATE_TOKEN_RE.test(match[1]) && ARIA_STATE_TOKEN_RE.test(match[2]));
+    })
+    .join('; ');
+  return kept || 'changed inside the cross-site frame; values not shown';
 }
 export function ariaControlStateReceiptClause(diff) {
   return String(diff || '')

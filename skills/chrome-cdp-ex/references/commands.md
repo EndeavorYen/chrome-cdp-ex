@@ -1470,7 +1470,9 @@ selector or an `@ref`, not an accessible name.
 The receipt says `mode: pointer-sequence`, names the element, waits about 1.5 s for the menu to mount, then
 reports the trigger's `aria-expanded` / `data-state` (`open` / `closed`). `Still closed` means nothing
 opened: pick another element or take a `shot`. A disabled, hidden, zero-size or `pointer-events: none`
-target fails instead of reporting success. `--pointer` and `--js` are alternatives. This is a `click` flag,
+target fails instead of reporting success. On a cross-site `@fN:M` the receipt names only the tag, ref and frame
+host; the element name and the `aria-expanded=` / `data-state=` line are inside a `FRAME CONTENT` block at the
+end. `--pointer` and `--js` are alternatives. This is a `click` flag,
 so the 81-command surface and the public synopsis are unchanged.
 
 ### Actionability wait and disabled targets — `--wait-ms`
