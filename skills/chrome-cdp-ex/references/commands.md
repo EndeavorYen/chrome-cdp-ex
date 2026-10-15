@@ -1507,7 +1507,9 @@ unchecked box), so the hints point at `perceive -C -d 8` too.
 
 `aria-disabled="true"` has no effect in the browser, and some design systems keep such buttons clickable
 on purpose (to show validation or a tooltip). To click one anyway, use `cdp click <target> <sel> --js`:
-the JS click does not check disabled. The `Kind: disabled` hints name that command for an ARIA-disabled
+the JS click does not check `aria-disabled`. It does refuse a `:disabled` control (the `disabled`
+attribute or a disabled `<fieldset>`) with `Kind: disabled`, by selector, `@ref`, or name (`"text=…"`),
+because the browser fires no click on one. The `Kind: disabled` hints name that command for an ARIA-disabled
 target. A natively disabled control gets no such hint: the browser does not deliver clicks to it.
 
 An `@ref` is checked for disabled without waiting (also when its scroll settle timed out); its Next is

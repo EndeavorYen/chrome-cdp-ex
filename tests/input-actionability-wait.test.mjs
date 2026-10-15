@@ -63,8 +63,10 @@ function fakePage() {
       getAttribute(name) { return Object.hasOwn(this.attrs, name) ? this.attrs[name] : null; },
       hasAttribute(name) { return Object.hasOwn(this.attrs, name); },
       getBoundingClientRect() { return { ...this._rect }; },
-      scrollIntoView() {},
+      scrollIntoView() { this.scrolled = true; },
       focus() { this.focused = true; },
+      // Like the browser, HTMLElement.click() fires nothing on a :disabled form control.
+      click() { if (!this.matches(':disabled')) this.events.push('click'); },
       dispatchEvent(event) { this.events.push(event.type); return true; },
       matches(selector) {
         if (selector !== ':disabled' || !FORM_CONTROLS.includes(this.tagName)) return false;
@@ -131,6 +133,22 @@ function fakeCdp(page) {
         const focused = [...page.nodes.values()].find(node => node.focused);
         if (focused) focused.value += params.text;
         return {};
+      }
+      // A node id or backend node id is its 1-based position in page.nodes, plus one.
+      const nodeAt = id => [...page.nodes.values()][Number(id) - 2] || null;
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      if (method === 'DOM.querySelector') {
+        const index = [...page.nodes.keys()].indexOf(params.selector);
+        return { nodeId: index < 0 ? 0 : index + 2 };
+      }
+      if (method === 'DOM.resolveNode') return { object: { objectId: `node:${params.nodeId || params.backendNodeId}` } };
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', url: PAGE_HREF } } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
+      if (method === 'Runtime.callFunctionOn' && String(params.objectId || '').startsWith('node:')) {
+        const node = nodeAt(String(params.objectId).slice(5));
+        const fn = runInNewContext(`(${params.functionDeclaration})`, page.context);
+        const value = await fn.call(node, ...(params.arguments || []).map(arg => arg.value));
+        return { result: { value: value === undefined ? undefined : JSON.parse(JSON.stringify(value)) } };
       }
       if (method === 'Runtime.evaluate') {
         if (params.expression === 'location.href') return { result: { type: 'string', value: PAGE_HREF } };
@@ -290,6 +308,57 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
     const err = await T.clickStr(cdp, 'sid', 'button:has-text("Save")', new Map(), {}).catch(e => e);
     expect(Date.now() - started).toBeLessThan(200);
     expect(classifyActionFailure(err, { action: 'click', target: { input: 'button:has-text("Save")' } }).kind).toBe('invalid-selector');
+  });
+});
+
+describe('#742 a JS click refuses a natively disabled control', () => {
+  const NAMED = 'a, button, [role="link"], [role="button"]';
+  const target = (input) => ({ input, targetId: TARGET_ID });
+
+  it('fails click and jsclick by name on a disabled button or inside a disabled fieldset, and sends no click', async () => {
+    const page = fakePage();
+    const exec = page.el('button', { text: 'Exec', attrs: { disabled: '' } });
+    page.nodes.set(NAMED, exec);
+    const err = await T.clickStr(fakeCdp(page), 'sid', 'text=Exec', new Map(), {}).catch(e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe('<BUTTON> "Exec" is disabled (disabled attribute); the click was not sent.');
+    expect(exec.events).toEqual([]);
+    // The fake rect has no top/bottom, so the named path treats it as off-screen: no scroll either.
+    expect(exec.scrolled).toBeUndefined();
+    const text = formatActionFailure(err, { action: 'click', target: target('text=Exec') }).split('\n');
+    expect(text).toContain('Kind: disabled');
+    expect(text.filter(line => /^Next:/.test(line))).toHaveLength(1);
+
+    const fieldset = page.el('fieldset', { attrs: { disabled: '' } });
+    const inner = page.el('button', { text: 'Inner', fieldset });
+    page.nodes.set(NAMED, inner);
+    const innerErr = await T.jsClickStr(fakeCdp(page), 'sid', 'text=Inner', new Map(), {}).catch(e => e);
+    expect(innerErr.message).toBe('<BUTTON> "Inner" is disabled (inside a disabled <fieldset>); the click was not sent.');
+    expect(inner.events).toEqual([]);
+  });
+
+  it('fails jsclick by CSS selector and by @ref with Kind: disabled, not click-no-change', async () => {
+    const page = fakePage();
+    const exec = page.el('button', { text: 'Exec', attrs: { disabled: '' } });
+    page.nodes.set('#exec', exec);
+    const css = await T.jsClickStr(fakeCdp(page), 'sid', '#exec', new Map(), {}).catch(e => e);
+    expect(css.message).toBe('<BUTTON> "Exec" is disabled (disabled attribute); the click was not sent.');
+    expect(classifyActionFailure(css, { action: 'jsclick', target: target('#exec') }).kind).toBe('disabled');
+    const ref = await T.jsClickStr(fakeCdp(page), 'sid', '@3', new Map([[3, 2]]), { generation: 1 }).catch(e => e);
+    expect(ref.message).toBe('<BUTTON> "Exec" (@3) is disabled (disabled attribute); the click was not sent.');
+    expect(classifyActionFailure(ref, { action: 'jsclick', target: target('@3') }).kind).toBe('disabled');
+    expect(exec.events).toEqual([]);
+  });
+
+  it('still JS-clicks an aria-disabled control by name, CSS selector, and @ref', async () => {
+    const page = fakePage();
+    const soft = page.el('button', { text: 'Soft', attrs: { 'aria-disabled': 'true' } });
+    page.nodes.set(NAMED, soft);
+    page.nodes.set('#soft', soft);
+    expect(await T.clickStr(fakeCdp(page), 'sid', 'text=Soft', new Map(), {})).toMatch(/^JS-clicked <BUTTON> "Soft"/);
+    expect(await T.jsClickStr(fakeCdp(page), 'sid', '#soft', new Map(), {})).toMatch(/^JS-clicked <BUTTON> "Soft"/);
+    expect(await T.jsClickStr(fakeCdp(page), 'sid', '@3', new Map([[3, 2]]), { generation: 1 })).toMatch(/^JS-clicked <BUTTON> "Soft"/);
+    expect(soft.events).toEqual(['click', 'click', 'click']);
   });
 });
 
