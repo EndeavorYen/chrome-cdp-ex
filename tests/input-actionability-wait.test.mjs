@@ -175,6 +175,12 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
     expect(cdp.inputEvents().map(call => call.params.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
   });
 
+  it('names a CSS-selector click target by its text, not a "[object Object]" title (#745)', async () => {
+    const page = fakePage();
+    page.nodes.set('.opt', page.el('div', { text: 'B200 192 GB', attrs: { role: 'option', title: '[object Object]' } }));
+    await expect(T.clickStr(fakeCdp(page), 'sid', '.opt', new Map(), {})).resolves.toMatch(/^Clicked <DIV> "B200 192 GB"/);
+  });
+
   it('reports nothing about waiting when the element is actionable at once', async () => {
     const page = fakePage();
     page.nodes.set('#now', page.el('button', { text: 'Go' }));
@@ -379,6 +385,35 @@ describe('#468 @ref click checks disabled without waiting', () => {
     const failure = classifyActionFailure(err, { action: 'click', target: { input: '@7', targetId: TARGET_ID } });
     expect(failure.kind).toBe('disabled');
     expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID.slice(0, 8)} -C -d 8`);
+  });
+
+  it('names an @ref by its text when the scroll settle timed out (#464 fallback, #745)', async () => {
+    const option = {
+      tagName: 'DIV',
+      textContent: 'B200 192 GB',
+      getAttribute: name => (name === 'title' ? '[object Object]' : null),
+      getBoundingClientRect: () => ({ x: 40, y: 300, width: 120, height: 32 }),
+    };
+    const cdp = {
+      onEvent() { return () => {}; },
+      send(method, params = {}) {
+        if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'root-frame' } } });
+        if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 7 });
+        if (method === 'DOM.resolveNode') return Promise.resolve({ object: { objectId: 'option-object' } });
+        if (method === 'Runtime.callFunctionOn') {
+          const fn = String(params.functionDeclaration || '');
+          if (fn.includes('scrollIntoView')) return Promise.reject(new Error('Timeout: Runtime.callFunctionOn'));
+          if (fn.includes('hit: clickPointHit(this')) return Promise.resolve({ result: { value: { hit: { covered: false } } } });
+          if (fn.includes('getBoundingClientRect')) {
+            return Promise.resolve({ result: { value: new Function(`return (${fn});`)().call(option) } });
+          }
+          return Promise.resolve({ result: { value: true } });
+        }
+        return Promise.resolve({});
+      },
+    };
+    const rect = await T.resolveRef(cdp, 'sid', new Map([[15, 99]]), '@15', {}, { hitTest: true });
+    expect(rect).toMatchObject({ settled: false, tag: 'DIV', text: 'B200 192 GB' });
   });
 
   it('still refuses a disabled @ref when the scroll settle timed out (#464 fallback)', async () => {

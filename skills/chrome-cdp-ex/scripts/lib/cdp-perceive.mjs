@@ -4,7 +4,7 @@ import { buildCardsModel, formatCardsJson, formatCardsText } from './cards-model
 import { createPerceptionModel } from './perception-model.mjs';
 
 import { actionDomDiffShowsChange, countTypeaheadLabels, extractTypeaheadLabels, pdfViewerPerceiveResult, perceiveStoreDiffSource, rememberPerceiveDiffSource } from './cdp-action-result.mjs';
-import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, daemonPolicyStorage, fileUrlRefusedMessage, sleep } from './cdp-base.mjs';
+import { CONTENT_REF_ROLES, ENRICHED_ROLES, HIDDEN_TEXT_CAP_NOTE, HIDDEN_TEXT_MAX_CHARS, HIDDEN_TEXT_MAX_LINES, HOVER_MUTATION_MARKER, HOVER_MUTATION_TIMEOUT_MS, INTERACTIVE_ROLES, PERCEIVE_CHROME_LANDMARK_ROLES, PERCEIVE_CHROME_LINE_CAP, PERCEIVE_CHROME_MAX_RELATIVE_DEPTH, PERCEIVE_COMPACT_FLAGS, PERCEIVE_CONTENT_LANDMARK_ROLES, PERCEIVE_COORDS_LINE, PERCEIVE_COORDS_LINE_VERBOSE, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP, PERCEIVE_SNAPSHOT_FLAGS, REF_HIGH_WATER, REF_RESOLVE_TIMEOUT, REF_SETTLE_BUDGET_MS, SKIP_LINK_NAME_RE, STALE_REF_ERROR_CODE, STATUS_PAGE_INFO_TIMEOUT, TYPEAHEAD_FOCUS_ROLES, TYPEAHEAD_OMITTED_NOTICE, TYPEAHEAD_POPUP_ROLES, VISIBLE_CONTROL_CAP_SWAP_SAMPLE, daemonPolicyStorage, fileUrlRefusedMessage, sleep, targetLabelExpression } from './cdp-base.mjs';
 import { classifyFrameOrigin, createFrameContentNonce, crossSiteReadClause, frameContentBoundary, frameContentOrigin, listedFrame, originHost, parseFrameSiteEntry, rememberListedFrames, wrapFrameContent } from './frame-sites.mjs';
 import { formatJson, isBlankPageUrl, parseFormatArgs, takeUnsafeFullArg } from './cdp-browser.mjs';
 import { consoleDocumentEntries, cutDocumentConsoleBuffers, displayUrl } from './cdp-core.mjs';
@@ -766,7 +766,7 @@ export function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       frameName: ${linkFrameNamePageExpression('this')},
       pageHref: location.href,
       downloadAttr: this.tagName === 'A' && typeof this.hasAttribute === 'function' && this.hasAttribute('download'),
-      text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
+      text: ${targetLabelExpression('this')},
       role: (typeof this.getAttribute === 'function' ? this.getAttribute('role') : '') || '',${hitTest ? `
       hit,
       disabled: actionDisabledReason(this),` : ''}
@@ -2230,7 +2230,7 @@ export async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, op
         w: Math.round(rect.width),
         h: Math.round(rect.height),
         tag: this.tagName,
-        text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
+        text: ${targetLabelExpression('this')},
         position: cs ? cs.position : '',
         pointerEvents: cs ? cs.pointerEvents : '',
         visible: !!(rect.width && rect.height),
@@ -5120,15 +5120,15 @@ export function formatElshotReceipt(desc, { w, h, clip = null, fallback = false,
     : '';
   return `Element screenshot of ${desc} — ${Math.round(w)}×${Math.round(h)} CSS px${clipText}${fb} -> ${path}`;
 }
-// resolveRef's text is already cut at 80 before whitespace collapse. Read the full
-// aria-label, title, or textContent here so elshot cuts after collapse (#547).
+// The elshot @ref label, by the shared target-label rule (#547, #745): aria-label, then
+// visible text, then title, whitespace collapsed before the 80-character cut.
 export async function elshotRefLabel(cdp, sid, refMap, ref, refState) {
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
   const read = await cdpDomains(cdp).Runtime.callFunctionOn({
     objectId,
     functionDeclaration: `function() {
       /* elshot-label */
-      return (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80);
+      return ${targetLabelExpression('this')};
     }`,
     returnByValue: true,
   }, sid, REF_RESOLVE_TIMEOUT);

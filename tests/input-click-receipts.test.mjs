@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { runInNewContext } from 'node:vm';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const base = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-base.mjs');
 const {
   classifyActionFailure,
   formatActionFailure,
@@ -278,5 +279,41 @@ describe('#430 click receipts suggest perceive --since-action, not list', () => 
     });
     const text = T.formatActionResultOutput(result, { dispatchText: 'Filled <INPUT> with "abc"' });
     expect(text).toBe(`Filled <INPUT> with "abc". Next: cdp perceive ${PREFIX} --since-action`);
+  });
+});
+
+describe('#745 a receipt names the target by aria-label, then text, then title', () => {
+  const element = ({ attrs = {}, text = '' } = {}) => ({
+    textContent: text,
+    getAttribute(name) { return Object.hasOwn(attrs, name) ? attrs[name] : null; },
+  });
+  const labelOf = el => new Function('el', `return ${base.targetLabelExpression('el')};`)(el);
+
+  it('prefers the visible text to a title such as antd\'s "[object Object]", on one line', () => {
+    expect(labelOf(element({ attrs: { title: '[object Object]' }, text: '\n  B200\n  192 GB  ' }))).toBe('B200 192 GB');
+  });
+
+  // A small DOM tree: element and text nodes linked by firstChild / nextSibling.
+  const tree = (tagName, { attrs = {}, children = [] } = {}) => {
+    const node = { nodeType: 1, tagName, firstChild: children[0] || null, nextSibling: null, ...element({ attrs }) };
+    children.forEach((child, i) => { child.nextSibling = children[i + 1] || null; });
+    return node;
+  };
+  const text = nodeValue => ({ nodeType: 3, nodeValue, nextSibling: null });
+
+  it('skips aria-hidden icon text, script and style, and a form field\'s options', () => {
+    const iconButton = tree('BUTTON', { attrs: { title: 'More options' }, children: [tree('MAT-ICON', { attrs: { 'aria-hidden': 'true' }, children: [text('more_vert')] })] });
+    expect(labelOf(iconButton)).toBe('More options');
+    const option = tree('DIV', { attrs: { title: '[object Object]' }, children: [tree('SPAN', { children: [text('B200')] }), text(' '), tree('SPAN', { children: [text('192 GB')] }), tree('SCRIPT', { children: [text('x=1')] })] });
+    expect(labelOf(option)).toBe('B200 192 GB');
+    const select = tree('SELECT', { attrs: { title: 'Country' }, children: [tree('OPTION', { children: [text('United States')] })] });
+    expect(labelOf(select)).toBe('Country');
+  });
+
+  it('falls back to the title when there is no text, and lets aria-label win', () => {
+    expect(labelOf(element({ attrs: { title: 'Close' }, text: '   ' }))).toBe('Close');
+    expect(labelOf(element({ attrs: { 'aria-label': 'Save draft', title: 'Save' }, text: 'S' }))).toBe('Save draft');
+    expect(labelOf(element({ text: 'x'.repeat(100) }))).toBe('x'.repeat(80));
+    expect(labelOf(null)).toBe('');
   });
 });

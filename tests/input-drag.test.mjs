@@ -83,6 +83,21 @@ function describeInput(call) {
   return `${params.type} ${Math.round(params.x)},${Math.round(params.y)} buttons=${params.buttons}`;
 }
 
+describe('#745 drag names an element under a point by its text', () => {
+  it('prefers the text to a "[object Object]" title', async () => {
+    const { runInNewContext } = await import('node:vm');
+    const { dragPointExpression } = await import('../skills/chrome-cdp-ex/scripts/lib/cdp-input.mjs');
+    const option = { tagName: 'DIV', textContent: ' B200\n 192 GB ', getAttribute: name => (name === 'title' ? '[object Object]' : null) };
+    const point = runInNewContext(dragPointExpression(10, 20), {
+      document: { elementFromPoint: () => option },
+      window: { innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0 },
+      Math,
+      String,
+    });
+    expect(point).toMatchObject({ tag: 'DIV', text: 'B200 192 GB' });
+  });
+});
+
 describe('#471 drag argument parsing', () => {
   it('parses source, destination, steps, and an explicit mode', () => {
     expect(T.parseDragArgs(['#a', '#b'])).toEqual({ from: '#a', to: '#b', steps: 10, mode: 'auto' });

@@ -626,6 +626,34 @@ export const CLICK_DOWNLOAD_STARTED_RE = / → download started "([^"]+)"/;
 export const CLICK_DOWNLOAD_UNOBSERVED_RE = /no download event was observed/;
 export const NAMED_IN_VIEWPORT_CLICK_OUTCOME = 'named-in-viewport-click';
 export const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="button"]';
+// #745: how a receipt names its target element: aria-label, then its visible text, then title,
+// whitespace collapsed, at most 80 characters. antd writes title="[object Object]" on an option
+// whose label is a React node. The text skips aria-hidden subtrees (icon ligatures such as
+// more_vert), script, style and template, and a form field's own options or value.
+export function targetLabelExpression(name) {
+  return `(function(el) {
+      if (!el || typeof el.getAttribute !== 'function') return '';
+      const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const textOf = () => {
+        const tag = String(el.tagName || '').toUpperCase();
+        if (tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'INPUT') return '';
+        if (!('firstChild' in el)) return el.textContent;
+        let out = '';
+        const walk = (node) => {
+          if (!node || out.length > 160) return;
+          if (node.nodeType === 3) { out += node.nodeValue || ''; return; }
+          if (node.nodeType !== 1 && node.nodeType !== 11) return;
+          const nodeTag = String(node.tagName || '').toUpperCase();
+          if (nodeTag === 'SCRIPT' || nodeTag === 'STYLE' || nodeTag === 'TEMPLATE') return;
+          if (node !== el && typeof node.getAttribute === 'function' && node.getAttribute('aria-hidden') === 'true') return;
+          for (let child = node.firstChild; child; child = child.nextSibling) walk(child);
+        };
+        walk(el);
+        return out;
+      };
+      return (clean(el.getAttribute('aria-label')) || clean(textOf()) || clean(el.getAttribute('title'))).substring(0, 80);
+    })(${name})`;
+}
 // #427: Playwright-style `text=Save`, `text="Save"`, and `text='Save'` are aliases for the
 // named form. The match prefers the exact visible text or aria-label, then a
 // whitespace-normalised fallback. Unquoted `text=` is not Playwright's case-insensitive
