@@ -861,7 +861,7 @@ Guards (best-effort; skipped when the page cannot be evaluated):
 
 - A selector that matches **several** elements is refused, with each match's index, nearby label and `accept` listed, instead of silently using the first (pages often have a template card's `input[type=file]` as well as the composer's). Make the selector match one input: an id, a container such as `form input[type=file]`, or `:nth-of-type(N)`.
 - Several files for an input without `multiple` are refused before anything is set.
-- After the files are set, the input's `files` list is read back and a name or size mismatch fails the command.
+- After the files are set, the input's `files` list is read back and a name or size mismatch fails the command. A page that reads the file in its change handler and then clears the input is not a mismatch: when the input held exactly the files sent at its first `input` or `change` event and is empty afterwards, the receipt ends with `(the page cleared the input after its change event)`. A page that refuses a file can clear the input too, so read the page (`perceive --since-action`) when that matters.
 
 ### Text extraction
 

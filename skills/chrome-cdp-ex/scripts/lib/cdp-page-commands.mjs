@@ -7,6 +7,7 @@ import { extractPdfPageText } from './pdf-text.mjs';
 import { REDACTED_VALUE, redactSensitiveString, redactUrl } from './redaction.mjs';
 import { TABLE_EXTRACTION_LIMITS, addTableSampleBatch, buildTableExportBundle, canonicalizeTableCells, createTableAccumulator, finalizeTableExtraction } from './table-extraction.mjs';
 import { buildTableSamplerExpression, parseTableSamplerResult } from './table-sampler.mjs';
+import { randomBytes } from 'crypto';
 import { readFileSync, statSync } from 'fs';
 import { basename, resolve } from 'path';
 import { compactActionText, isSensitiveDataKey, redactSensitiveArtifactValue } from './cdp-action-result.mjs';
@@ -2267,30 +2268,95 @@ export async function readInputMultiple(cdp, sid, objectId) {
   if (evaluated.exceptionDetails) throw new Error(runtimeExceptionMessage(evaluated.exceptionDetails));
   return evaluated.result?.value === true;
 }
-export async function readUploadedFilesFromObject(cdp, sid, objectId) {
+// #743: a page may read the file in its change handler and then clear input.value. Before the
+// files are set, a capture listener on the input's root (its document, or the shadow root it is in)
+// records what the input held at its first input or change event. The read-back takes that record
+// and removes the listeners; a failed set removes them too. Each upload uses its own global key.
+function uploadSeenKey() {
+  return `__chromeCdpExUploadSeen_${randomBytes(6).toString('hex')}`;
+}
+function uploadSeenArmSource(elementExpression, key) {
+  return `
+    const el = ${elementExpression};
+    const root = el && (typeof el.getRootNode === 'function' ? el.getRootNode() : el.ownerDocument);
+    if (!root || typeof root.addEventListener !== 'function') return false;
+    const state = { seen: null };
+    const record = (event) => {
+      if (event.target !== el || state.seen) return;
+      state.seen = [...(el.files || [])].map(file => ({ name: file.name, size: file.size }));
+    };
+    root.addEventListener('input', record, true);
+    root.addEventListener('change', record, true);
+    globalThis.${key} = () => {
+      root.removeEventListener('input', record, true);
+      root.removeEventListener('change', record, true);
+      return state.seen;
+    };
+    return true;`;
+}
+function uploadSeenTakeSource(key) {
+  return `const take = globalThis.${key};
+    delete globalThis.${key};
+    let seen = null;
+    try { seen = typeof take === 'function' ? take() : null; } catch (e) { seen = null; }`;
+}
+async function runUploadSeenScript(cdp, sid, { objectId = null }, body) {
+  try {
+    if (objectId) {
+      await cdpDomains(cdp).Runtime.callFunctionOn({ objectId, functionDeclaration: `function() { ${body} }`, returnByValue: true }, sid);
+    } else {
+      await evalStr(cdp, sid, `(()=>{ ${body} })()`, false, { timeoutMs: 3000, raw: true });
+    }
+  } catch {
+    // Best-effort, like the other upload probes: without it a cleared input fails as before.
+  }
+}
+function armUploadSeen(cdp, sid, target, key) {
+  const element = target.objectId ? 'this' : `document.querySelector(${JSON.stringify(target.selector)})`;
+  return runUploadSeenScript(cdp, sid, target, `/* __uploadArm */ ${uploadSeenArmSource(element, key)}`);
+}
+async function setFilesWithUploadSeen(cdp, sid, params, target, key) {
+  try {
+    await cdpDomains(cdp).DOM.setFileInputFiles(params, sid);
+  } catch (error) {
+    await runUploadSeenScript(cdp, sid, target, `/* __uploadDisarm */ ${uploadSeenTakeSource(key)} return true;`);
+    throw error;
+  }
+}
+// A read-back is { files, seen }. An older page answer (a bare array) has no seen record.
+function uploadReadBack(value) {
+  if (Array.isArray(value)) return { files: value, seen: null };
+  if (value && Array.isArray(value.files)) return { files: value.files, seen: Array.isArray(value.seen) ? value.seen : null };
+  return null;
+}
+export async function readUploadedFilesFromObject(cdp, sid, objectId, key = uploadSeenKey()) {
   try {
     const evaluated = await cdpDomains(cdp).Runtime.callFunctionOn({
       objectId,
       functionDeclaration: `function() {
+        ${uploadSeenTakeSource(key)}
         if (!this || !this.files) return null;
-        return [...this.files].map(file => ({ name: file.name, size: file.size }));
+        return { files: [...this.files].map(file => ({ name: file.name, size: file.size })), seen };
       }`,
       returnByValue: true,
     }, sid);
     if (evaluated.exceptionDetails) return null;
-    const value = evaluated.result?.value;
-    return Array.isArray(value) ? value : null;
+    return uploadReadBack(evaluated.result?.value);
   } catch {
     return null;
   }
 }
-export function assertUploadedFilesMatch(selector, files, seen) {
-  if (!seen) return;
+// Returns a receipt note, or '' when the page reports exactly the files sent.
+export function assertUploadedFilesMatch(selector, files, readBack) {
+  const page = uploadReadBack(readBack);
+  if (!page) return '';
   const sent = files.map(file => `${basename(file)}:${statSync(file).size}`);
-  const got = seen.map(file => `${file.name}:${file.size}`);
-  if (sent.length !== got.length || sent.some((entry, i) => entry !== got[i])) {
-    throw new Error(`upload: the page reports [${got.join(', ')}] but [${sent.join(', ')}] was sent to ${selector}`);
-  }
+  const list = entries => entries.map(file => `${file.name}:${file.size}`);
+  const same = entries => entries.length === sent.length && entries.every((entry, i) => entry === sent[i]);
+  const got = list(page.files);
+  if (same(got)) return '';
+  if (got.length === 0 && page.seen && same(list(page.seen))) return ' (the page cleared the input after its change event)';
+  throw new Error(`upload: the page reports [${got.join(', ')}] but [${sent.join(', ')}] was sent to ${selector}`);
 }
 // A @ref names one node, so the #403 multi-match scan does not apply. Read the files back from
 // the resolved input, not through querySelector.
@@ -2324,9 +2390,11 @@ export async function uploadByRef(cdp, sid, selector, files, refMap, refState) {
   const params = { files };
   if (node.backendNodeId != null) params.backendNodeId = node.backendNodeId;
   else params.objectId = fileObjectId;
-  await cdpDomains(cdp).DOM.setFileInputFiles(params, sid);
-  assertUploadedFilesMatch(selector, files, await readUploadedFilesFromObject(cdp, sid, fileObjectId));
-  return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}`;
+  const key = uploadSeenKey();
+  await armUploadSeen(cdp, sid, { objectId: fileObjectId }, key);
+  await setFilesWithUploadSeen(cdp, sid, params, { objectId: fileObjectId }, key);
+  const note = assertUploadedFilesMatch(selector, files, await readUploadedFilesFromObject(cdp, sid, fileObjectId, key));
+  return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}${note}`;
 }
 export async function uploadStr(cdp, sid, selector, filePaths, refMap, refState) {
   if (!selector) throw new Error('CSS selector or @ref for <input type="file"> required');
@@ -2348,9 +2416,11 @@ export async function uploadStr(cdp, sid, selector, filePaths, refMap, refState)
   if (matches && matches.length === 1 && matches[0].multiple === false && files.length > 1) {
     throw new Error(`upload: ${selector} does not accept several files (no \`multiple\`); pass one file`);
   }
-  await cdpDomains(cdp).DOM.setFileInputFiles( { files, nodeId }, sid);
-  assertUploadedFilesMatch(selector, files, await readUploadedFiles(cdp, sid, selector));
-  return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}`;
+  const key = uploadSeenKey();
+  await armUploadSeen(cdp, sid, { selector }, key);
+  await setFilesWithUploadSeen(cdp, sid, { files, nodeId }, { selector }, key);
+  const note = assertUploadedFilesMatch(selector, files, await readUploadedFiles(cdp, sid, selector, key));
+  return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}${note}`;
 }
 export async function evalUploadProbe(cdp, sid, expression) {
   try {
@@ -2376,11 +2446,17 @@ export function scanUploadMatches(cdp, sid, selector) {
       { index, id: el.id || '', name: el.name || '', accept: el.accept || '', multiple: !!el.multiple, label: label(el) })));
   })()`);
 }
-export function readUploadedFiles(cdp, sid, selector) {
-  return evalUploadProbe(cdp, sid, `(()=>{ /* __uploadRead */
+export async function readUploadedFiles(cdp, sid, selector, key = uploadSeenKey()) {
+  try {
+    const raw = await evalStr(cdp, sid, `(()=>{ /* __uploadRead */
+    ${uploadSeenTakeSource(key)}
     const el = document.querySelector(${JSON.stringify(selector)});
-    return JSON.stringify(el && el.files ? [...el.files].map(f => ({ name: f.name, size: f.size })) : []);
-  })()`);
+    return JSON.stringify({ files: el && el.files ? [...el.files].map(f => ({ name: f.name, size: f.size })) : [], seen });
+  })()`, false, { timeoutMs: 3000, raw: true });
+    return uploadReadBack(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
 export function uploadAmbiguousMessage(selector, matches) {
   const lines = matches.map(m => `  #${m.index}${m.id ? ` id="${m.id}"` : ''}${m.name ? ` name="${m.name}"` : ''} label="${m.label || ''}" accept="${m.accept || ''}"${m.multiple ? ' multiple' : ''}`);

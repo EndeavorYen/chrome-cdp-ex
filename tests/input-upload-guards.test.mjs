@@ -34,6 +34,7 @@ function fakeCdp({ scan = [], readBack = [], evaluate = 'ok' } = {}) {
           const expression = String(params.expression || '');
           if (expression.includes('__uploadScan')) return Promise.resolve({ result: { type: 'string', value: JSON.stringify(scan) } });
           if (expression.includes('__uploadRead')) return Promise.resolve({ result: { type: 'string', value: JSON.stringify(readBack) } });
+          if (expression.includes('__uploadArm')) return Promise.resolve({ result: { type: 'boolean', value: true } });
           return Promise.resolve({ result: { type: 'undefined' } });
         }
         default: return Promise.resolve({});
@@ -81,6 +82,30 @@ describe('upload guards (#403)', () => {
     const { a } = files();
     const cdp = fakeCdp({ scan: [composer], readBack: [] });
     await expect(T.uploadStr(cdp, 'sid', '#f', a)).rejects.toThrow(/page reports/);
+  });
+
+  it('accepts a page that clears the input after its change event, and says so (#743)', async () => {
+    const { a } = files();
+    const cdp = fakeCdp({ scan: [composer], readBack: { files: [], seen: [{ name: 'a.png', size: 1234 }] } });
+    await expect(T.uploadStr(cdp, 'sid', '#f', a))
+      .resolves.toBe(`Uploaded 1 file(s) to #f: ${a} (the page cleared the input after its change event)`);
+    const order = cdp.calls.map(c => (String(c.params.expression || '').match(/__upload(?:Arm|Read)/) || [c.method])[0]);
+    expect(order.indexOf('__uploadArm')).toBeLessThan(order.indexOf('DOM.setFileInputFiles'));
+    expect(order.indexOf('DOM.setFileInputFiles')).toBeLessThan(order.indexOf('__uploadRead'));
+  });
+
+  it('keeps today\'s receipt, with no note, when the input keeps its files (#743)', async () => {
+    const { a } = files();
+    const cdp = fakeCdp({ scan: [composer], readBack: { files: [{ name: 'a.png', size: 1234 }], seen: [{ name: 'a.png', size: 1234 }] } });
+    await expect(T.uploadStr(cdp, 'sid', '#f', a)).resolves.toBe(`Uploaded 1 file(s) to #f: ${a}`);
+  });
+
+  it('still fails when the input was empty or held other files at its change event (#743)', async () => {
+    const { a } = files();
+    for (const seen of [null, [], [{ name: 'other.png', size: 1234 }]]) {
+      const cdp = fakeCdp({ scan: [composer], readBack: { files: [], seen } });
+      await expect(T.uploadStr(cdp, 'sid', '#f', a), JSON.stringify(seen)).rejects.toThrow(/page reports \[\] but \[a\.png:1234\]/);
+    }
   });
 
   it('behaves as before when the page cannot be evaluated (probes are best-effort)', async () => {
