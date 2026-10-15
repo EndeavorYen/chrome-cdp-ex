@@ -5120,8 +5120,8 @@ export function formatElshotReceipt(desc, { w, h, clip = null, fallback = false,
     : '';
   return `Element screenshot of ${desc} — ${Math.round(w)}×${Math.round(h)} CSS px${clipText}${fb} -> ${path}`;
 }
-// resolveRef's text is already cut at 80 before whitespace collapse. Read the full
-// aria-label, title, or textContent here so elshot cuts after collapse (#547).
+// The elshot @ref label, by the shared target-label rule (#547, #745): aria-label, then
+// visible text, then title, whitespace collapsed before the 80-character cut.
 export async function elshotRefLabel(cdp, sid, refMap, ref, refState) {
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
   const read = await cdpDomains(cdp).Runtime.callFunctionOn({
