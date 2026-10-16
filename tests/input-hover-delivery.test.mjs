@@ -404,6 +404,29 @@ describe('hover fails fast on a visible tab when the point is not the target (#6
     hit.setTop(hit.target);
     expect(readPageHit(hit).pointHit.onTarget).toBe(true);
   });
+
+  // #757: the cover is named as other target receipts are: aria-label, then visible text, then title.
+  it('names a cover by its visible text before its title, and by its title when it has no text', () => {
+    const hit = pageHitTarget();
+    const text = { nodeType: 3, nodeValue: 'B200 192 GB', nextSibling: null };
+    const span = { nodeType: 1, tagName: 'SPAN', firstChild: text, nextSibling: null, getAttribute: () => null };
+    const option = {
+      nodeType: 1,
+      tagName: 'DIV',
+      id: 'opt',
+      className: '',
+      textContent: 'B200 192 GB',
+      firstChild: span,
+      shadowRoot: null,
+      parentNode: null,
+      getAttribute: (name) => (name === 'title' ? '[object Object]' : null),
+    };
+    hit.setTop(option);
+    expect(readPageHit(hit).pointHit).toEqual({ onTarget: false, label: '<DIV#opt> "B200 192 GB"' });
+    const tip = { ...option, id: 'tip', textContent: '', firstChild: null, getAttribute: (name) => (name === 'title' ? 'Close dialog' : null) };
+    hit.setTop(tip);
+    expect(readPageHit(hit).pointHit).toEqual({ onTarget: false, label: '<DIV#tip> "Close dialog"' });
+  });
 });
 
 describe('headless background tab hover (#608)', () => {

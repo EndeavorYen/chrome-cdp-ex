@@ -3491,8 +3491,8 @@ function hoverPointHitJs() {
     '      const classes = className ? "." + className.split(/\\s+/).slice(0, 2).join(".") : "";',
     '      const role = node.getAttribute ? String(node.getAttribute("role") || "").replace(/\\s+/g, " ").trim() : "";',
     '      const rolePart = role ? " role=\\"" + role.replace(/"/g, "") + "\\"" : "";',
-    '      const rawName = (node.getAttribute && (node.getAttribute("aria-label") || node.getAttribute("title"))) || node.textContent || "";',
-    '      const name = String(rawName).replace(/\\s+/g, " ").trim().slice(0, 40).replace(/"/g, "\'");',
+    // #757: the shared receipt label (aria-label, then visible text, then title).
+    `      const name = String(${targetLabelExpression('node')} || "").slice(0, 40).replace(/"/g, "'");`,
     '      return "<" + tag + id + classes + rolePart + ">" + (name ? " \\"" + name + "\\"" : "");',
     '    };',
     '    pointHit = hoverOnTarget ? { onTarget: true, label: "" } : { onTarget: false, label: hoverDescribe(hoverTop) };',
