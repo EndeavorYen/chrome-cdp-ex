@@ -18,7 +18,7 @@ import { targetPrefixForDisplay } from './cdp-cli.mjs';
 import { displayUrl } from './cdp-core.mjs';
 import { enableDaemonDomains } from './cdp-daemon.mjs';
 import { assertScreenshotOutputDirectory, documentScrollToJs, getDpr, probePageVisibility, rememberSessionTarget, writeScreenshotFile } from './cdp-input.mjs';
-import { capFullshotHeight, formatFullshotOutput, fullshotFitsViewport, fullshotPlanError, fullshotRestoreExpression, fullshotScrollPlanExpression, parseFullshotArgs, parseTextArgs } from './cdp-page-commands.mjs';
+import { capFullshotHeight, formatFullshotOutput, fullshotFitsViewport, fullshotHideScrollbarsExpression, fullshotPlanError, fullshotRestoreExpression, fullshotScrollPlanExpression, parseFullshotArgs, parseTextArgs } from './cdp-page-commands.mjs';
 import { axNodeAccessibleName, axPropertyValue, elementScreenshotClip, elshotReceiptLabel, elshotRefLabel, formatElshotReceipt, isRef, resolveRef, resolveRefNode, resolvedNodeSession, validateUrl } from './cdp-perceive.mjs';
 import { appendSessionScreenshot, diffShotScreenshotCaptureOptions, ensureSessionScreenshotDir, isScreenshotTimeoutError, sessionScreenshotDir } from './cdp-session-report.mjs';
 
@@ -2215,7 +2215,6 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
 
   let prepared = { ok: true, mode: 'document' };
   let containerMode = false;
-  let scrollbarsHidden = false;
   try {
     try {
       const raw = await evalStr(cdp, sid, fullshotScrollPlanExpression({ selector }));
@@ -2229,9 +2228,9 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
     containerMode = prepared.mode === 'container';
     if (containerMode) {
       // Expanding html/body to overflow:visible makes the document scroll, which
-      // reserves a scrollbar and shrinks layout width. Hide it before measuring.
-      await cdpDomains(cdp).Emulation.setScrollbarsHidden({ hidden: true }, sid);
-      scrollbarsHidden = true;
+      // reserves a scrollbar and shrinks layout width. The sheet takes effect on
+      // the next frame, so measure only after that frame.
+      await evalStr(cdp, sid, fullshotHideScrollbarsExpression());
     }
     const dpr = await getDpr(cdp, sid);
     const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
@@ -2292,9 +2291,6 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
   } finally {
     if (containerMode || pinned) {
       await evalStr(cdp, sid, fullshotRestoreExpression()).catch(() => {});
-    }
-    if (scrollbarsHidden) {
-      await cdpDomains(cdp).Emulation.setScrollbarsHidden({ hidden: false }, sid).catch(() => {});
     }
   }
 }

@@ -136,9 +136,8 @@ function fullshotRestoreBody() {
         if (item.stylePresent) {
           try { el.setAttribute('style', item.style == null ? '' : String(item.style)); } catch (err) {}
         } else {
-          // Clearing cssText first drops the declaration Chrome would otherwise
-          // write back as an empty style attribute.
-          try { el.style.cssText = ''; } catch (err) {}
+          // Chrome writes style="" back on removeAttribute unless that attribute was read first.
+          try { el.getAttribute('style'); } catch (err) {}
           try { el.removeAttribute('style'); } catch (err) {}
         }
         try {
@@ -158,7 +157,32 @@ function fullshotRestoreBody() {
         try { marked[i].removeAttribute('data-cdp-fullshot-target'); } catch (err) {}
       }
     }
+    try {
+      const injected = document.querySelector('style[data-cdp-fullshot]');
+      if (injected) injected.remove();
+    } catch (err) {}
   `;
+}
+
+// Hides the scrollbar that appears once html/body overflow is visible.
+// setScrollbarsHidden applies on a later layout, so the capture measures only
+// after this sheet is in the document, offsetWidth has been read, and one frame
+// has passed. fullshotRestoreExpression removes the sheet.
+export function fullshotHideScrollbarsExpression() {
+  return `(async function() {
+    /* chrome-cdp-ex.fullshot-scrollbars */
+    const css = 'html{scrollbar-width:none} ::-webkit-scrollbar{display:none}';
+    let node = document.querySelector('style[data-cdp-fullshot]');
+    if (!node) {
+      node = document.createElement('style');
+      node.setAttribute('data-cdp-fullshot', '');
+      (document.head || document.documentElement).appendChild(node);
+    }
+    node.textContent = css;
+    void document.documentElement.offsetWidth;
+    await new Promise(r => requestAnimationFrame(() => r()));
+    return 'hidden';
+  })()`;
 }
 
 export function fullshotRestoreExpression() {

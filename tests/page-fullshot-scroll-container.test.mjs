@@ -27,9 +27,12 @@ function makeBox({
     scrollTop,
     scrollLeft: 0,
     attrs: {},
+    calls: [],
+    // Chrome writes style="" back on removeAttribute unless getAttribute('style')
+    // ran immediately before it. A cssText clear does not count as that read.
+    lastStyleOp: null,
     // cssText assignment canonicalizes; setAttribute keeps the exact string.
     cssText: styleText == null ? '' : String(styleText),
-    cssCleared: false,
   };
   if (styleText != null) state.attrs.style = String(styleText);
   const el = {
@@ -49,8 +52,9 @@ function makeBox({
     set scrollLeft(value) { state.scrollLeft = Number(value) || 0; },
     style: {
       setProperty(name, value) {
+        state.calls.push(['setProperty', name]);
+        state.lastStyleOp = 'write';
         state.attrs[`prop:${name}`] = String(value);
-        state.cssCleared = false;
         const piece = `${name}: ${value}`;
         state.cssText = state.cssText ? `${state.cssText}; ${piece}` : piece;
         state.attrs.style = state.cssText;
@@ -59,33 +63,40 @@ function makeBox({
       },
       get cssText() { return state.cssText; },
       set cssText(value) {
+        state.calls.push(['cssText', 'style']);
+        state.lastStyleOp = 'write';
         const raw = String(value);
         if (raw === '') {
           state.cssText = '';
-          state.cssCleared = true;
           if (Object.hasOwn(state.attrs, 'style')) state.attrs.style = '';
           return;
         }
-        state.cssCleared = false;
         state.cssText = raw.endsWith(';') ? raw : `${raw};`;
         state.attrs.style = state.cssText;
       },
     },
     hasAttribute(name) { return Object.hasOwn(state.attrs, name); },
-    getAttribute(name) { return Object.hasOwn(state.attrs, name) ? state.attrs[name] : null; },
+    getAttribute(name) {
+      state.calls.push(['getAttribute', name]);
+      if (name === 'style') state.lastStyleOp = 'get';
+      return Object.hasOwn(state.attrs, name) ? state.attrs[name] : null;
+    },
     setAttribute(name, value) {
+      state.calls.push(['setAttribute', name]);
       state.attrs[name] = String(value);
       if (name === 'style') {
+        state.lastStyleOp = 'write';
         state.cssText = String(value);
-        state.cssCleared = false;
       }
     },
     removeAttribute(name) {
-      // Chrome keeps style="" when the CSSOM was mutated and cssText was not cleared first.
-      if (name === 'style' && !state.cssCleared && Object.hasOwn(state.attrs, 'style')) {
+      state.calls.push(['removeAttribute', name]);
+      if (name === 'style' && Object.hasOwn(state.attrs, 'style') && state.lastStyleOp !== 'get') {
         state.attrs.style = '';
+        state.lastStyleOp = 'remove';
         return;
       }
+      if (name === 'style') state.lastStyleOp = 'remove';
       delete state.attrs[name];
     },
     _scroll: state,
@@ -113,6 +124,31 @@ function scrollPage({
     clientHeight: docClientHeight,
     clientWidth: 1440,
   });
+  const scrollbar = { styleNode: null, forced: false, applied: false };
+  const head = {
+    appendChild(node) {
+      scrollbar.styleNode = node;
+      scrollbar.applied = false;
+      node.parentNode = head;
+      return node;
+    },
+    removeChild(node) {
+      if (scrollbar.styleNode === node) {
+        scrollbar.styleNode = null;
+        scrollbar.applied = false;
+        scrollbar.forced = false;
+      }
+      node.parentNode = null;
+      return node;
+    },
+  };
+  Object.defineProperty(docEl, 'offsetWidth', {
+    configurable: true,
+    get() {
+      scrollbar.forced = true;
+      return 1440;
+    },
+  });
   const body = makeBox({
     tagName: 'BODY',
     parent: docEl,
@@ -127,7 +163,23 @@ function scrollPage({
     scrollingElement: docEl,
     documentElement: docEl,
     body,
+    head,
+    createElement(tag) {
+      const node = {
+        nodeName: String(tag || '').toUpperCase(),
+        attrs: {},
+        textContent: '',
+        parentNode: null,
+        setAttribute(name, value) { this.attrs[name] = String(value); },
+        getAttribute(name) { return Object.hasOwn(this.attrs, name) ? this.attrs[name] : null; },
+        remove() {
+          if (this.parentNode && typeof this.parentNode.removeChild === 'function') this.parentNode.removeChild(this);
+        },
+      };
+      return node;
+    },
     querySelector(sel) {
+      if (sel === 'style[data-cdp-fullshot]') return scrollbar.styleNode;
       if (sel === 'div[') throw new Error('invalid selector');
       if (query.has(sel)) return query.get(sel);
       for (const el of containers) {
@@ -161,8 +213,55 @@ function scrollPage({
       };
     },
     devicePixelRatio: 1,
+    requestAnimationFrame(cb) {
+      queueMicrotask(() => {
+        if (scrollbar.styleNode && scrollbar.forced) scrollbar.applied = true;
+        cb();
+      });
+      return 1;
+    },
   };
-  return { window, document, docEl, body };
+  return { window, document, docEl, body, scrollbar };
+}
+
+function pageContext(page) {
+  return {
+    window: page.window,
+    document: page.document,
+    Element: FakeElement,
+    Math,
+    JSON,
+    Number,
+    String,
+    Promise,
+    requestAnimationFrame: page.window.requestAnimationFrame,
+    Event: function Event(type) { this.type = type; },
+  };
+}
+
+// awaitPromise mirrors Runtime.evaluate: a returned promise settles only when
+// the call asks to wait, which is what lets one frame land before measuring.
+async function runPageExpression(expr, context, awaitPromise = true) {
+  const value = runInNewContext(expr, context);
+  if (value && typeof value.then === 'function') {
+    if (awaitPromise !== true) return undefined;
+    return await value;
+  }
+  return value;
+}
+
+function assertStyleRemovedAfterRead(el) {
+  const calls = el._scroll.calls;
+  let removeAt = -1;
+  for (let i = calls.length - 1; i >= 0; i -= 1) {
+    if (calls[i][0] === 'removeAttribute' && calls[i][1] === 'style') {
+      removeAt = i;
+      break;
+    }
+  }
+  expect(removeAt).toBeGreaterThan(0);
+  expect(calls[removeAt - 1]).toEqual(['getAttribute', 'style']);
+  expect(el.hasAttribute('style')).toBe(false);
 }
 
 function runPlan(page, selector = null) {
@@ -417,37 +516,28 @@ describe('#746 fullshot scroll container', () => {
         overflowY: 'auto',
       });
       const page = scrollPage({ containers: [main] });
-      const context = {
-        window: page.window,
-        document: page.document,
-        Element: FakeElement,
-        Math,
-        JSON,
-        Number,
-        String,
-        Event: function Event(type) { this.type = type; },
-      };
+      const context = pageContext(page);
       let expanded = false;
       const cdp = {
         calls: [],
-        send(method, params = {}) {
+        async send(method, params = {}) {
           this.calls.push({ method, params });
           if (method === 'Runtime.evaluate') {
             const expr = String(params.expression || '');
             if (expr.includes('contentType')) {
-              return Promise.resolve({ result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } });
+              return { result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } };
             }
-            if (expr.includes('devicePixelRatio')) return Promise.resolve({ result: { value: 1 } });
+            if (expr.includes('devicePixelRatio')) return { result: { value: 1 } };
             if (expr.includes('innerWidth')) {
-              return Promise.resolve({ result: { value: JSON.stringify({ w: 1440, h: 900 }) } });
+              return { result: { value: JSON.stringify({ w: 1440, h: 900 }) } };
             }
             if (expr.includes('chrome-cdp-ex.fullshot')) {
-              const value = runInNewContext(expr, context);
+              const value = await runPageExpression(expr, context, params.awaitPromise);
               if (value === 'restored') expanded = false;
-              else if (JSON.parse(value).mode === 'container') expanded = true;
-              return Promise.resolve({ result: { value } });
+              else if (typeof value === 'string' && value.startsWith('{') && JSON.parse(value).mode === 'container') expanded = true;
+              return { result: { value } };
             }
-            return Promise.resolve({ result: { value: 1 } });
+            return { result: { value: 1 } };
           }
           if (method === 'Page.getLayoutMetrics') {
             return Promise.resolve({ cssContentSize: { width: 1440, height: expanded ? 4000 : 900 } });
@@ -511,70 +601,74 @@ describe('#746 fullshot scroll container', () => {
   });
 
   // Expanding html/body to overflow:visible makes the document scroll, and Chrome
-  // then reserves a 15px scrollbar. Layout width is the viewport only while
-  // scrollbars are hidden. Style reads happen before fullshot, not from an observer.
-  it('hides scrollbars during capture so the image width matches the viewport, then shows them again', async () => {
+  // reserves a 15px scrollbar on the next layout. setScrollbarsHidden does not
+  // change that width until a later layout, so the capture injects a temporary
+  // stylesheet, reads offsetWidth, and waits one frame before measuring.
+  // The sheet is removed when capture ends, including when capture fails.
+  // Style reads happen before fullshot, not from an observer.
+  it('hides scrollbars with a temporary stylesheet, waits one frame, then removes it', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'cdp-fullshot-scroll-'));
     const file = join(tmp, 'full.png');
+    const scrollbarCss = 'html{scrollbar-width:none} ::-webkit-scrollbar{display:none}';
     try {
       const run = async (failCapture = false) => {
+        const beforeWidth = 1425;
         const scroller = makeBox({
           tagName: 'DIV',
           id: 'scroller',
           scrollHeight: 4000,
           clientHeight: 800,
-          clientWidth: 1440,
+          clientWidth: beforeWidth,
           scrollTop: 120,
           overflowY: 'auto',
         });
         const page = scrollPage({ containers: [scroller] });
-        const context = {
-          window: page.window,
-          document: page.document,
-          Element: FakeElement,
-          Math,
-          JSON,
-          Number,
-          String,
-          Event: function Event(type) { this.type = type; },
-        };
+        Object.defineProperty(scroller, 'clientWidth', {
+          configurable: true,
+          get() { return page.scrollbar.applied ? 1440 : beforeWidth; },
+        });
+        const context = pageContext(page);
         let expanded = false;
-        let scrollbarsHidden = false;
+        const seen = {};
         const calls = [];
         const cdp = {
           calls,
-          send(method, params = {}) {
+          async send(method, params = {}) {
             calls.push({ method, params });
-            if (method === 'Emulation.setScrollbarsHidden') {
-              scrollbarsHidden = params.hidden === true;
-              return Promise.resolve({});
-            }
             if (method === 'Runtime.evaluate') {
               const expr = String(params.expression || '');
               if (expr.includes('contentType')) {
-                return Promise.resolve({ result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } });
+                return { result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } };
               }
-              if (expr.includes('devicePixelRatio')) return Promise.resolve({ result: { value: 1 } });
+              if (expr.includes('devicePixelRatio')) return { result: { value: 1 } };
               if (expr.includes('innerWidth')) {
-                return Promise.resolve({ result: { value: JSON.stringify({ w: 1440, h: 900 }) } });
+                return { result: { value: JSON.stringify({ w: 1440, h: 900 }) } };
               }
               if (expr.includes('chrome-cdp-ex.fullshot')) {
-                const value = runInNewContext(expr, context);
+                const value = await runPageExpression(expr, context, params.awaitPromise);
                 if (value === 'restored') expanded = false;
-                else if (JSON.parse(value).mode === 'container') expanded = true;
-                return Promise.resolve({ result: { value } });
+                else if (typeof value === 'string' && value.startsWith('{') && JSON.parse(value).mode === 'container') expanded = true;
+                return { result: { value } };
               }
-              return Promise.resolve({ result: { value: 1 } });
+              return { result: { value: 1 } };
             }
             if (method === 'Page.getLayoutMetrics') {
-              const width = expanded && !scrollbarsHidden ? 1425 : 1440;
-              return Promise.resolve({ cssContentSize: { width, height: expanded ? 4000 : 900 } });
+              const style = page.document.querySelector('style[data-cdp-fullshot]');
+              const width = page.scrollbar.applied ? 1440 : 1425;
+              seen.measured = {
+                width,
+                clientWidth: scroller.clientWidth,
+                forced: page.scrollbar.forced,
+                styleText: style ? style.textContent : null,
+                styleAttr: style ? style.getAttribute('data-cdp-fullshot') : undefined,
+              };
+              return { cssContentSize: { width, height: expanded ? 4000 : 900 } };
             }
             if (method === 'Page.captureScreenshot') {
               if (failCapture) throw new Error('Timeout: Page.captureScreenshot');
-              return Promise.resolve({ data: Buffer.from('PNG746').toString('base64') });
+              return { data: Buffer.from('PNG746').toString('base64') };
             }
-            return Promise.resolve({});
+            return {};
           },
           onEvent() { return () => {}; },
           waitForEvent() {
@@ -582,33 +676,41 @@ describe('#746 fullshot scroll container', () => {
           },
         };
         T.resetScreenshotTier();
-        return { cdp, page, scroller, result: T.fullshotStr(cdp, 'sid', file, '1D3669785EAC5A1A211792636BAE8A07') };
+        return { cdp, page, scroller, beforeWidth, seen, result: T.fullshotStr(cdp, 'sid', file, '1D3669785EAC5A1A211792636BAE8A07') };
       };
 
       const ok = await run(false);
+      expect(ok.scroller.clientWidth).toBe(ok.beforeWidth);
       const out = await ok.result;
-      const hideAt = ok.cdp.calls.findIndex(call => call.method === 'Emulation.setScrollbarsHidden' && call.params.hidden === true);
+      const frameAt = ok.cdp.calls.findIndex(call => call.method === 'Runtime.evaluate'
+        && String(call.params.expression).includes('requestAnimationFrame')
+        && String(call.params.expression).includes('data-cdp-fullshot'));
       const metricsAt = ok.cdp.calls.findIndex(call => call.method === 'Page.getLayoutMetrics');
       const shotAt = ok.cdp.calls.findIndex(call => call.method === 'Page.captureScreenshot');
-      const showAt = ok.cdp.calls.findIndex(call => call.method === 'Emulation.setScrollbarsHidden' && call.params.hidden === false);
-      expect(hideAt).toBeGreaterThanOrEqual(0);
-      expect(hideAt).toBeLessThan(metricsAt);
+      expect(ok.cdp.calls.some(call => call.method === 'Emulation.setScrollbarsHidden')).toBe(false);
+      expect(frameAt).toBeGreaterThanOrEqual(0);
+      expect(frameAt).toBeLessThan(metricsAt);
       expect(metricsAt).toBeLessThan(shotAt);
-      expect(shotAt).toBeLessThan(showAt);
-      expect(ok.cdp.calls.filter(call => call.method === 'Emulation.setScrollbarsHidden').map(call => call.params)).toEqual([
-        { hidden: true },
-        { hidden: false },
-      ]);
+      expect(ok.cdp.calls[frameAt].params.awaitPromise).toBe(true);
+      expect(ok.seen.measured).toMatchObject({
+        width: 1440,
+        clientWidth: 1440,
+        forced: true,
+        styleText: scrollbarCss,
+        styleAttr: '',
+      });
       const capture = ok.cdp.calls.find(call => call.method === 'Page.captureScreenshot');
       expect(capture.params.clip).toMatchObject({ width: 1440, height: 4000 });
       expect(out).toContain('1440×4000');
+      expect(ok.page.document.querySelector('style[data-cdp-fullshot]')).toBe(null);
+      expect(ok.scroller.clientWidth).toBe(ok.beforeWidth);
 
       const failed = await run(true);
       await expect(failed.result).rejects.toThrow(/timed out|untrusted/);
-      expect(failed.cdp.calls.filter(call => call.method === 'Emulation.setScrollbarsHidden').map(call => call.params)).toEqual([
-        { hidden: true },
-        { hidden: false },
-      ]);
+      expect(failed.cdp.calls.some(call => call.method === 'Emulation.setScrollbarsHidden')).toBe(false);
+      expect(failed.seen.measured.styleText).toBe(scrollbarCss);
+      expect(failed.page.document.querySelector('style[data-cdp-fullshot]')).toBe(null);
+      expect(failed.scroller.clientWidth).toBe(failed.beforeWidth);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -642,37 +744,28 @@ describe('#746 fullshot scroll container', () => {
       expect(page.body.getAttribute('style')).toBe(null);
       expect(scroller.getAttribute('style')).toBe(null);
       expect(shell.getAttribute('style')).toBe('color: red');
-      const context = {
-        window: page.window,
-        document: page.document,
-        Element: FakeElement,
-        Math,
-        JSON,
-        Number,
-        String,
-        Event: function Event(type) { this.type = type; },
-      };
+      const context = pageContext(page);
       let expanded = false;
       const cdp = {
         calls: [],
-        send(method, params = {}) {
+        async send(method, params = {}) {
           this.calls.push({ method, params });
           if (method === 'Runtime.evaluate') {
             const expr = String(params.expression || '');
             if (expr.includes('contentType')) {
-              return Promise.resolve({ result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } });
+              return { result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } };
             }
-            if (expr.includes('devicePixelRatio')) return Promise.resolve({ result: { value: 1 } });
+            if (expr.includes('devicePixelRatio')) return { result: { value: 1 } };
             if (expr.includes('innerWidth')) {
-              return Promise.resolve({ result: { value: JSON.stringify({ w: 1440, h: 900 }) } });
+              return { result: { value: JSON.stringify({ w: 1440, h: 900 }) } };
             }
             if (expr.includes('chrome-cdp-ex.fullshot')) {
-              const value = runInNewContext(expr, context);
+              const value = await runPageExpression(expr, context, params.awaitPromise);
               if (value === 'restored') expanded = false;
-              else if (JSON.parse(value).mode === 'container') expanded = true;
-              return Promise.resolve({ result: { value } });
+              else if (typeof value === 'string' && value.startsWith('{') && JSON.parse(value).mode === 'container') expanded = true;
+              return { result: { value } };
             }
-            return Promise.resolve({ result: { value: 1 } });
+            return { result: { value: 1 } };
           }
           if (method === 'Page.getLayoutMetrics') {
             return Promise.resolve({ cssContentSize: { width: 1440, height: expanded ? 4000 : 900 } });
@@ -689,9 +782,9 @@ describe('#746 fullshot scroll container', () => {
       };
       T.resetScreenshotTier();
       await T.fullshotStr(cdp, 'sid', file, '1D3669785EAC5A1A211792636BAE8A07');
-      expect(page.docEl.getAttribute('style')).toBe(null);
-      expect(page.body.getAttribute('style')).toBe(null);
-      expect(scroller.getAttribute('style')).toBe(null);
+      assertStyleRemovedAfterRead(page.docEl);
+      assertStyleRemovedAfterRead(page.body);
+      assertStyleRemovedAfterRead(scroller);
       expect(shell.getAttribute('style')).toBe('color: red');
       expect(scroller.scrollTop).toBe(80);
     } finally {
