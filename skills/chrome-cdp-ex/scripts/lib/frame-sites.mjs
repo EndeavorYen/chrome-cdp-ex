@@ -174,7 +174,7 @@ export function frameContentOrigin(origin) {
   return parsed ? parsed.origin : 'null';
 }
 
-export function crossSiteReadClause(classification, _options = {}) {
+export function crossSiteReadClause(classification) {
   const detail = {
     unset: 'CDP_FRAME_SITES not set',
     'not-allowlisted': `not in CDP_FRAME_SITES; the user can add ${classification?.origin || ''}`,
