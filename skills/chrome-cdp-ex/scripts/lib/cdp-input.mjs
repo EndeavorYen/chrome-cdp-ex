@@ -111,13 +111,21 @@ export function absolutizeShotArgs(args = [], cwd = process.cwd()) {
 }
 export function absolutizeFullshotArgs(args = [], cwd = process.cwd()) {
   if (!Array.isArray(args) || args.length === 0) return args;
-  const token = args[0];
-  if (typeof token !== 'string' || !token || token.startsWith('--')) return args;
-  const resolved = resolveCallerFile(token, cwd);
-  if (resolved === token) return args;
   const next = args.slice();
-  next[0] = resolved;
-  return next;
+  let changed = false;
+  for (let i = 0; i < next.length; i++) {
+    const token = next[i];
+    if (token === '--scroll-container' || token === '--format') {
+      i += 1;
+      continue;
+    }
+    if (typeof token !== 'string' || !token || token.startsWith('--')) continue;
+    const resolved = resolveCallerFile(token, cwd);
+    if (resolved === token) continue;
+    next[i] = resolved;
+    changed = true;
+  }
+  return changed ? next : args;
 }
 export function uploadPathIndexes(args = []) {
   const indexes = [];

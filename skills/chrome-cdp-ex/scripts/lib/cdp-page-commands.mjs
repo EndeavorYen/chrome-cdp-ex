@@ -11,11 +11,11 @@ import { randomBytes } from 'crypto';
 import { readFileSync, statSync } from 'fs';
 import { basename, resolve } from 'path';
 import { compactActionText, isSensitiveDataKey, redactSensitiveArtifactValue } from './cdp-action-result.mjs';
-import { ACCEPT_DIALOG_FLAG, DECISION_DIALOG_TYPES, INPUT_NOT_DELIVERED_KINDS, LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS, MAX_ACTION_DIALOG_MESSAGE_CHARS, MAX_NETWORK_MOCK_HITS, MOCK_PATTERN_END, NAVIGATION_TIMEOUT, REF_RESOLVE_TIMEOUT, TABLE_COLLECTOR_OBJECT_GROUP, TABLE_COLLECTOR_WORLD, THROTTLE_PRESETS, sleep } from './cdp-base.mjs';
+import { ACCEPT_DIALOG_FLAG, DECISION_DIALOG_TYPES, FULLSHOT_MAX_CAPTURE_HEIGHT, INPUT_NOT_DELIVERED_KINDS, LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS, MAX_ACTION_DIALOG_MESSAGE_CHARS, MAX_NETWORK_MOCK_HITS, MOCK_PATTERN_END, NAVIGATION_TIMEOUT, REF_RESOLVE_TIMEOUT, TABLE_COLLECTOR_OBJECT_GROUP, TABLE_COLLECTOR_WORLD, THROTTLE_PRESETS, sleep } from './cdp-base.mjs';
 import { formatJson, parseFormatArgs, takeUnsafeFullArg } from './cdp-browser.mjs';
 import { parseNonNegativeInteger } from './cdp-cli.mjs';
 import { TableCollectionDeadlineError, displayUrl, rememberTabEnvironment, rememberTabObservation, runTableCollectionLifecycle, throwIfRequestAborted } from './cdp-core.mjs';
-import { dispatchClick } from './cdp-input.mjs';
+import { dispatchClick, scrollEdgeLogicSource } from './cdp-input.mjs';
 import { assertNotPdfViewerPage, cdpDomains, evalStr, isPdfViewerContentType, loadPdfBytesForText, pdfViewerError, runtimeExceptionMessage } from './cdp-page.mjs';
 import { isCursorRef, isRef, resolveCursorRef, resolveRefNode, validateUrl } from './cdp-perceive.mjs';
 import { appendSessionEnvironmentLog } from './cdp-session-report.mjs';
@@ -30,6 +30,269 @@ export function fullshotFitsViewport(content = {}, viewport = null) {
     return true;
   }
   return width <= viewportWidth + 1 && height <= viewportHeight + 1;
+}
+
+function fullshotUsageError(message) {
+  const err = new Error(message);
+  err.usage = true;
+  err.code = 'usage';
+  return err;
+}
+
+export function parseFullshotArgs(args = []) {
+  const list = Array.isArray(args) ? args : [];
+  let container = null;
+  let filePath = null;
+  let format = 'text';
+  for (let i = 0; i < list.length; i++) {
+    const token = list[i];
+    if (token === '--scroll-container') {
+      const value = list[++i];
+      if (value == null || String(value).startsWith('--')) {
+        throw fullshotUsageError('fullshot: --scroll-container requires a CSS selector or an @ref');
+      }
+      if (container != null) throw fullshotUsageError('fullshot: duplicate --scroll-container');
+      container = String(value);
+      continue;
+    }
+    if (token === '--format') {
+      const value = list[++i];
+      if (value !== 'text' && value !== 'json') {
+        throw fullshotUsageError('fullshot: format must be text or json');
+      }
+      format = value;
+      continue;
+    }
+    if (String(token).startsWith('--')) throw fullshotUsageError(`fullshot: unknown argument ${token}`);
+    if (filePath != null) throw fullshotUsageError(`fullshot: unexpected argument ${token}`);
+    filePath = String(token);
+  }
+  return { filePath, scrollContainer: container, format };
+}
+
+export function capFullshotHeight(height, max = FULLSHOT_MAX_CAPTURE_HEIGHT) {
+  const content = Math.max(1, Math.round(Number(height) || 0));
+  const limit = Math.max(1, Math.round(Number(max) || FULLSHOT_MAX_CAPTURE_HEIGHT));
+  if (content <= limit) return { height: content, capped: false, max: limit, content };
+  return { height: limit, capped: true, max: limit, content };
+}
+
+export function buildFullshotModel({ path, width, height, dpr, container = null, capped = null } = {}) {
+  const model = {
+    schema: 'chrome-cdp-ex.fullshot.v1',
+    path,
+    width,
+    height,
+    dpr,
+    capped: capped?.capped === true,
+  };
+  if (container) model.scrollContainer = container;
+  if (capped?.capped === true) model.contentHeight = capped.content;
+  return model;
+}
+
+export function formatFullshotReceipt({ path, width, height, dpr, diagnostics = '', container = null, capped = null } = {}) {
+  const fb = diagnostics ? ` ${diagnostics}` : '';
+  const capNote = capped?.capped === true
+    ? `Height capped at ${capped.max} CSS px (content is ${capped.content}px).`
+    : '';
+  if (!container) {
+    const cap = capNote ? `\n${capNote}` : '';
+    return `${path}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}${fb}${cap}\nNote: large pages produce tiny text. Use 'scanshot' for readable segmented capture.`;
+  }
+  const cap = capNote ? ` ${capNote}` : '';
+  return `${path}\nSaved full-page screenshot ${path} (scrolled container ${container}, ${width}×${height}).${cap}${fb}\nNote: large pages produce tiny text. Use 'scanshot' for readable segmented capture.`;
+}
+
+export function formatFullshotOutput(info, format = 'text') {
+  if (format === 'json') return formatJson(buildFullshotModel(info));
+  return formatFullshotReceipt(info);
+}
+
+export function fullshotPlanError(plan = {}) {
+  if (plan.kind === 'selector') {
+    const err = new Error(`fullshot: no element matched ${plan.selector || ''}`.trim());
+    err.selectorMiss = true;
+    return err;
+  }
+  if (plan.kind === 'usage') {
+    const who = plan.label || 'element';
+    return fullshotUsageError(
+      `fullshot: ${who} does not scroll (scrollHeight ${plan.scrollHeight}, clientHeight ${plan.clientHeight})`,
+    );
+  }
+  return fullshotUsageError(`fullshot: ${plan.error || 'could not use that scroll container'}`);
+}
+
+function fullshotRestoreBody() {
+  return `
+    const saved = window.__cdpFullshotRestore;
+    window.__cdpFullshotRestore = null;
+    if (saved && saved.nodes) {
+      for (let i = saved.nodes.length - 1; i >= 0; i--) {
+        const item = saved.nodes[i];
+        const el = item.el;
+        if (!el) continue;
+        if (item.style == null) {
+          try { el.removeAttribute('style'); } catch (err) {}
+        } else {
+          try { el.setAttribute('style', item.style); } catch (err) {}
+        }
+        try {
+          Element.prototype.scrollTo.call(el, { left: item.scrollLeft, top: item.scrollTop, behavior: 'instant' });
+        } catch (err) {}
+      }
+      const scroller = document.scrollingElement || document.documentElement;
+      if (scroller) {
+        try {
+          Element.prototype.scrollTo.call(scroller, { left: saved.scrollX || 0, top: saved.scrollY || 0, behavior: 'instant' });
+        } catch (err) {}
+      }
+    }
+    if (document.querySelectorAll) {
+      const marked = document.querySelectorAll('[data-cdp-fullshot-target]');
+      for (let i = 0; i < marked.length; i++) {
+        try { marked[i].removeAttribute('data-cdp-fullshot-target'); } catch (err) {}
+      }
+    }
+  `;
+}
+
+export function fullshotRestoreExpression() {
+  return `(function() {
+    /* chrome-cdp-ex.fullshot-restore */
+    ${fullshotRestoreBody()}
+    return 'restored';
+  })()`;
+}
+
+// Reuses scroll's primaryOverflow (largest overflow auto/scroll/overlay box).
+// Explicit --scroll-container must be that element: a miss is selector, a box
+// that does not scroll is usage. The document gate is scrollHeight <= clientHeight + 1.
+export function fullshotScrollPlanExpression({ selector = null } = {}) {
+  const requested = selector == null ? 'null' : JSON.stringify(selector);
+  return `(function() {
+    /* chrome-cdp-ex.fullshot-scroll */
+    ${scrollEdgeLogicSource()}
+    const requested = ${requested};
+    const doc = document.scrollingElement || document.documentElement;
+    const docScrollHeight = Math.round(Number(doc && doc.scrollHeight) || 0);
+    const docClientHeight = Math.round(Number(doc && doc.clientHeight) || 0);
+    const documentScrolls = docScrollHeight > docClientHeight + 1;
+    const describe = function(el) {
+      if (!el) return 'element';
+      const tag = el.tagName ? String(el.tagName).toLowerCase() : 'element';
+      const names = [];
+      if (el.classList && el.classList.length) {
+        for (let i = 0; i < el.classList.length && names.length < 3; i++) {
+          const name = String(el.classList[i] || '');
+          if (name) names.push(name);
+        }
+      } else if (typeof el.className === 'string' && el.className) {
+        const parts = el.className.trim().split(/\\s+/);
+        for (let i = 0; i < parts.length && names.length < 3; i++) {
+          if (parts[i]) names.push(parts[i]);
+        }
+      }
+      if (names.length) return tag + '.' + names.join('.');
+      if (el.id) return '#' + String(el.id);
+      return tag;
+    };
+    const elementScrolls = function(el) {
+      if (!el || isDocumentScroller(el)) return false;
+      const extra = Math.round(Number(el.scrollHeight) || 0) > Math.round(Number(el.clientHeight) || 0) + 1;
+      if (!extra) return false;
+      const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(el) : null;
+      const oy = String((style && (style.overflowY || style.overflow)) || '');
+      return /(auto|scroll|overlay|hidden)/.test(oy);
+    };
+    const expand = function(el) {
+      const nodes = [];
+      for (let node = el; node; node = node.parentElement) {
+        nodes.push({
+          el: node,
+          style: typeof node.getAttribute === 'function' ? node.getAttribute('style') : null,
+          scrollTop: Math.round(Number(node.scrollTop) || 0),
+          scrollLeft: Math.round(Number(node.scrollLeft) || 0),
+        });
+        if (node === document.documentElement) break;
+      }
+      window.__cdpFullshotRestore = {
+        nodes: nodes,
+        scrollX: Math.round(Number(window.scrollX) || 0),
+        scrollY: Math.round(Number(window.scrollY) || 0),
+      };
+      const contentHeight = Math.round(Number(el.scrollHeight) || 0);
+      el.style.setProperty('height', contentHeight + 'px', 'important');
+      el.style.setProperty('max-height', 'none', 'important');
+      el.style.setProperty('overflow', 'visible', 'important');
+      el.style.setProperty('overflow-y', 'visible', 'important');
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i].el;
+        if (node === el) continue;
+        node.style.setProperty('height', 'auto', 'important');
+        node.style.setProperty('max-height', 'none', 'important');
+        node.style.setProperty('overflow', 'visible', 'important');
+        node.style.setProperty('overflow-y', 'visible', 'important');
+      }
+      return contentHeight;
+    };
+    try {
+      let el = null;
+      let how = 'document';
+      if (requested) {
+        let found = null;
+        if (typeof document.querySelector !== 'function') {
+          return JSON.stringify({ ok: false, kind: 'selector', selector: requested });
+        }
+        try {
+          found = document.querySelector(requested);
+        } catch (err) {
+          return JSON.stringify({ ok: false, kind: 'invalid', error: 'invalid selector: ' + requested, selector: requested });
+        }
+        if (!found) return JSON.stringify({ ok: false, kind: 'selector', selector: requested });
+        if (!elementScrolls(found)) {
+          return JSON.stringify({
+            ok: false,
+            kind: 'usage',
+            label: describe(found),
+            scrollHeight: Math.round(Number(found.scrollHeight) || 0),
+            clientHeight: Math.round(Number(found.clientHeight) || 0),
+          });
+        }
+        el = found;
+        how = 'explicit';
+      } else if (!documentScrolls) {
+        el = primaryOverflow();
+        if (el) how = 'auto';
+      }
+      if (!el) {
+        return JSON.stringify({ ok: true, mode: 'document', documentScrolls: documentScrolls });
+      }
+      const contentHeight = expand(el);
+      return JSON.stringify({
+        ok: true,
+        mode: 'container',
+        how: how,
+        label: how === 'explicit' ? requested : describe(el),
+        contentHeight: contentHeight,
+        scrollTop: window.__cdpFullshotRestore.nodes[0].scrollTop,
+      });
+    } catch (err) {
+      ${fullshotRestoreBody()}
+      return JSON.stringify({ ok: false, kind: 'invalid', error: String(err && err.message || err) });
+    }
+  })()`;
+}
+
+export function fullshotHelpLines() {
+  return [
+    '--scroll-container <sel|@ref> captures that element\'s full scroll height, then restores its scroll position and any styles fullshot changed.',
+    'With no flag, a document that does not scroll (scrollHeight <= clientHeight + 1) uses the largest visible overflow:auto/scroll/overlay box, the same container scroll picks. When none exists, fullshot captures the document as before.',
+    `Height is capped at ${FULLSHOT_MAX_CAPTURE_HEIGHT} CSS px, the same ceiling as a document fullshot, and the receipt says so.`,
+    'Fixed and sticky headers are painted once, at their position when the page is at scroll 0, so they are not repeated down the image. A fixed bar can still cover the top of the content; fullshot does not hide it.',
+    'A selector that matches nothing is Kind: selector. An element that does not scroll is Kind: usage.',
+  ];
 }
 export async function stylesStr(cdp, sid, selectorOrArgs, extra = {}) {
   // Share root/selector resolution with text/html for consistent diagnostics.

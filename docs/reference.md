@@ -76,7 +76,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `wait` | `wait <target> <ms>` | `read / standard` |
 | `fill` | `fill <target> <sel\|@ref> <txt\|--secret NAME> [--format json]` | `mutation / mutation` |
 | `select` | `select <target> <sel\|@ref> <val> [--format json]` | `mutation / mutation` |
-| `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
+| `fullshot` | `fullshot <target> [file] [--scroll-container <sel\|@ref>] [--format json]` | `conditional-mutation / conditional` |
 | `scanshot` | `scanshot <target>` | `read / standard` |
 | `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
 | `components` | `components <target> [--depth N] [@ref\|selector] [--max-chars N] [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |

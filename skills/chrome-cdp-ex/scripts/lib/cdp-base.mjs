@@ -15,6 +15,9 @@ export const TIMEOUT = 15000;
 export const SCREENSHOT_TIMEOUT = 30000;
 export const QA_SCREENSHOT_TIMEOUT_MS = 2000;
 export const FULLSHOT_TIMEOUT_MS = 3000;
+// Shared height ceiling for a document fullshot and an inner-container fullshot.
+// The receipt names the original content height when this applies.
+export const FULLSHOT_MAX_CAPTURE_HEIGHT = 16384;
 export const VERIFY_CLICK_SETTLE_MS = 800;
 export const VERIFY_CLICK_REQUEST_WAIT_MS = 1000;
 export const NAVIGATION_TIMEOUT = 30000;
@@ -1209,8 +1212,8 @@ export const CLI_HELP_LAYOUT = Object.freeze([
   {
     "name": "fullshot",
     "headGap": 1,
-    "summaryGap": 10,
-    "summaryIndent": null
+    "summaryGap": null,
+    "summaryIndent": 36
   },
   {
     "name": "scanshot",
