@@ -293,4 +293,28 @@ describe('error kind by source (#636)', () => {
 
     expect(T.cliErrorFromDaemonResponse({ ok: false, error: 'boom' })).toBe('boom');
   });
+
+  it('classifies async eval inference failures as Kind: eval (#751)', () => {
+    const messages = [
+      'eval: cannot infer the final async expression safely; add an explicit return for the desired result.',
+      'eval: multi-statement async input is ambiguous; add an explicit return for the desired result.',
+    ];
+    for (const message of messages) {
+      for (const cmd of ['eval', 'eval64']) {
+        const recovery = cli(message, cmd);
+        expect(recovery.kind, cmd).toBe('eval');
+        expect(recovery.run, cmd).toBe('cdp help eval');
+        const text = T.formatCliError(new Error(message), { cmd, targetPrefix: TARGET });
+        expect(text).toContain('Kind: eval');
+        expect(text).toContain('Next: cdp help eval');
+        expect(text).toMatch(/explicit return/);
+        expect(text).not.toContain('Kind: unknown');
+        expect(text).not.toContain('Kind: target-resolution');
+      }
+    }
+    expect(() => T.wrapAwaitExpression('const v = await Promise.resolve(2); if (v) { v * 10 }', true))
+      .toThrow(/cannot infer the final async expression safely/);
+    expect(() => T.wrapAwaitExpression('const value = await Promise.resolve(42);', true))
+      .toThrow(/multi-statement async input is ambiguous/);
+  });
 });

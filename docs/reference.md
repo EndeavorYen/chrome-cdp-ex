@@ -277,6 +277,9 @@ An unquoted fill or type value is trimmed, and a run of whitespace is an argumen
 Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.
 Use an explicit `return` for ambiguous control-flow endings.
+A top-level `return` works with or without `await`, so
+`eval <target> "const a = 1; return a + 1"` prints `2` and
+`eval <target> "const v = 2; if (v) { return v * 10 }"` prints `20`.
 
 Each `eval` gives `let`, `const`, and `class` their own scope, so
 `eval <target> "const zz = 1; zz + 1"` prints `2` every time. The value is still

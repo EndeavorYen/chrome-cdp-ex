@@ -988,6 +988,19 @@ function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platf
       reason: 'The requested tab target could not be resolved from the current page list. If the list is empty, open a page.',
     };
   }
+  // #751: both messages ask for an explicit return. The ambiguous one also contains
+  // "is ambiguous", so it has to be classified before the prefix rule below.
+  if (
+    lower.includes('cannot infer the final async expression safely')
+    || lower.includes('multi-statement async input is ambiguous')
+  ) {
+    return {
+      kind: 'eval',
+      strategy: 'fix-expression',
+      run: 'cdp help eval',
+      reason: 'The script uses await and the final value is not a single trailing expression. Add an explicit return for the desired result.',
+    };
+  }
   if (
     lower.includes('ambiguous prefix')
     || lower.includes('is ambiguous')

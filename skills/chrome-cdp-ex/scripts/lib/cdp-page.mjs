@@ -10,6 +10,7 @@ import { distinctTargets } from './target-binding.mjs';
 import { buildWebVitalsModel, buildWebVitalsUnavailable, webVitalsPageScript } from './web-vitals.mjs';
 import { readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
+import { Script } from 'node:vm';
 import { compactRedactedText } from './cdp-action-result.mjs';
 import { CDP_DOMAIN_CLIENTS, DIFF_SHOT_LABEL_CHARS, DIFF_SHOT_LABEL_SOURCE_CHARS, DIFF_SHOT_REGION_CELL_PX, DIFF_SHOT_REGION_LIMIT, DIFF_SHOT_REGION_MIN_PIXELS, DIFF_SHOT_SPILL_PX, DIFF_SHOT_STRIP_PX, DOCUMENT_SCROLLER_JS, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, FULLSHOT_TIMEOUT_MS, HIDDEN_TAB_CAPTURE_TIMEOUT_MS, HIDDEN_TAB_ERROR_CODE, INTERACTIVE_ROLES, NAVIGATION_TIMEOUT, NAV_DOCUMENT_PROBE_EXPR, NAV_DOCUMENT_PROBE_INTERVAL_MS, PERCEIVE_PRIORITY_TEXT_RE, RUNTIME_DIR, SCREENSHOT_TIER_LABELS, SCREENSHOT_TIMEOUT, STATUS_PAGE_INFO_TIMEOUT, STATUS_VITALS_TIMEOUT, TIMEOUT, sleep } from './cdp-base.mjs';
 import { aliasesForTarget, formatJson, getDisplayPrefixLength, isBlankPageUrl, pageTargetScore, parseFormatArgs, rankPageTargets, takeUnsafeFullArg } from './cdp-browser.mjs';
@@ -557,6 +558,7 @@ export function wrapTopLevelLexicalScope(source) {
 export function evalScopeHelpLines() {
   return [
     'The result is the last expression.',
+    'A top-level return works with or without await.',
     'let, const, and class exist only for that call, so the same script can run again.',
     'var and assignments to globalThis or window stay on the tab. A sloppy function declaration stays too.',
     'A strict-mode function in a script that also uses let, const, or class stays in that call.',
@@ -564,10 +566,31 @@ export function evalScopeHelpLines() {
     'A leading "use strict" or \'use strict\' directive still applies to the script.',
   ];
 }
+// A script with a top-level return is a syntax error. The same source is legal as a
+// function body. Compile only; never run the script here.
+const ILLEGAL_RETURN_STATEMENT = 'Illegal return statement';
+function syncScriptNeedsFunctionBody(source) {
+  let scriptError = null;
+  try {
+    new Script(source);
+  } catch (err) {
+    scriptError = err;
+  }
+  if (!scriptError || scriptError.message !== ILLEGAL_RETURN_STATEMENT) return false;
+  try {
+    new Script(`(()=>{${source}\n})`);
+    return true;
+  } catch {
+    return false;
+  }
+}
 export function wrapAwaitExpression(expression, autoWrap = false) {
   const source = String(expression || '');
   if (!autoWrap) return source;
-  if (!/\bawait\b/.test(source)) return wrapTopLevelLexicalScope(source);
+  if (!/\bawait\b/.test(source)) {
+    if (syncScriptNeedsFunctionBody(source)) return `(()=>{${source}\n})()`;
+    return wrapTopLevelLexicalScope(source);
+  }
   if (!source.includes(';') && !source.includes('\n')) return `(async()=>(${source}))()`;
   if (hasExplicitReturnStatement(source)) return `(async()=>{${source}})()`;
 
