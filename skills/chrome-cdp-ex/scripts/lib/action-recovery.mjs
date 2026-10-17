@@ -1298,12 +1298,23 @@ export function isClassifiedActionFailureText(message) {
 }
 
 const ACTION_FAILURE_ERROR_MAX_CHARS = 600;
+const FRAME_CONTENT_BLOCK_AT = /\n--- FRAME CONTENT \(untrusted\) /;
+
+// A trailing FRAME CONTENT block stays on its own lines. The Error head is the
+// host-only message. A top-page label is already one line before it gets here.
+function frameContentSuffix(message) {
+  const text = String(message || '');
+  const at = text.search(FRAME_CONTENT_BLOCK_AT);
+  if (at < 0) return { head: text, block: '' };
+  return { head: text.slice(0, at), block: text.slice(at + 1).trim() };
+}
 
 // #427: a failed action must always say what went wrong. `Kind: unknown` plus a Next
 // command reads like a receipt, so agents took it for success. The Error line is the
 // original message on one bounded line, without a doubled `Error:` prefix.
 export function actionFailureErrorLine(message, fallback = '') {
-  const oneLine = String(message || '').replace(/\s+/g, ' ').trim().replace(/^Error:\s*/i, '')
+  const { head } = frameContentSuffix(message);
+  const oneLine = String(head || '').replace(/\s+/g, ' ').trim().replace(/^Error:\s*/i, '')
     || String(fallback || '').replace(/\s+/g, ' ').trim()
     || 'action failed';
   const bounded = oneLine.length > ACTION_FAILURE_ERROR_MAX_CHARS
@@ -1314,12 +1325,14 @@ export function actionFailureErrorLine(message, fallback = '') {
 
 // `detailLines` sit between Kind and Next (e.g. fill's `Value: "0.5" → ""`); empty entries are dropped.
 export function formatActionFailureLines({ message = '', reason = '', kind = 'unknown', detailLines = [], nextCommand = '' } = {}) {
-  return [
-    actionFailureErrorLine(message, reason),
+  const { head, block } = frameContentSuffix(message);
+  const lines = [
+    actionFailureErrorLine(head, reason),
     `Kind: ${kind || 'unknown'}`,
     ...detailLines.filter(Boolean),
     ...(nextCommand ? [`Next: ${nextCommand}`] : []),
   ].join('\n');
+  return block ? `${lines}\n${block}` : lines;
 }
 
 export function formatActionFailure(err, context = {}) {
