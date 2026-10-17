@@ -1344,6 +1344,111 @@ describe('slice 2 inline cross-site frames', () => {
     expect(out).not.toContain('FRAME CONTENT');
   });
 
+  it('discards content when the first snapshot origin is no longer the classified one', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    let treeReads = 0;
+    let axReads = 0;
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify(hostPageMeta([
+        { title: 'checkout', src: 'https://pay.example.com/checkout', host: 'pay.example.com', name: '', visible: true },
+      ])) } }),
+      'Accessibility.getFullAXTree': () => ({ nodes: hostAxNodes([{ title: 'checkout' }]) }),
+      'Page.getFrameTree': () => ({
+        frameTree: { frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html', securityOrigin: 'http://127.0.0.1:9' } },
+      }),
+      'DOM.resolveNode': () => ({ object: { objectId: 'host-node' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { x: 1, y: 2, w: 3, h: 4, position: 'static' } } }),
+      childSessions: [childEntry(CHILD, {
+        frame: {
+          id: 'pay-frame', parentId: 'main-frame', url: 'https://pay.example.com/checkout',
+          securityOrigin: 'https://pay.example.com', loaderId: 'loader-1',
+        },
+      }, {
+        'Page.getFrameTree': () => {
+          treeReads += 1;
+          const moved = treeReads >= 2;
+          return {
+            frameTree: {
+              frame: {
+                id: 'pay-frame',
+                parentId: 'main-frame',
+                url: moved ? 'https://evil.test/phish' : 'https://pay.example.com/checkout',
+                securityOrigin: moved ? 'https://evil.test' : 'https://pay.example.com',
+                loaderId: 'loader-1',
+              },
+            },
+          };
+        },
+        'Accessibility.getFullAXTree': () => {
+          axReads += 1;
+          return { nodes: payFrameNodes({ title: 'SHOULD NOT LEAK', button: 'Pay now' }) };
+        },
+      })],
+    });
+    const out = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null },
+      { targetPrefix: 'AB12CD34' },
+    ));
+    expect(axReads).toBe(0);
+    expect(out).toContain('[iframe] pay.example.com @f2 (cross-site, not read: frame navigated during read)');
+    expect(out).not.toContain('Pay now');
+    expect(out).not.toContain('SHOULD NOT LEAK');
+    expect(out).not.toContain('evil.test');
+    expect(out).not.toContain('FRAME CONTENT');
+    expect(childContentCalls(cdp, CHILD)).toEqual([]);
+  });
+
+  it('discards content when only the loaderId changes between the two checks', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    let treeReads = 0;
+    let axReads = 0;
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify(hostPageMeta([
+        { title: 'checkout', src: 'https://pay.example.com/checkout', host: 'pay.example.com', name: '', visible: true },
+      ])) } }),
+      'Accessibility.getFullAXTree': () => ({ nodes: hostAxNodes([{ title: 'checkout' }]) }),
+      'Page.getFrameTree': () => ({
+        frameTree: { frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html', securityOrigin: 'http://127.0.0.1:9' } },
+      }),
+      'DOM.resolveNode': () => ({ object: { objectId: 'host-node' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { x: 1, y: 2, w: 3, h: 4, position: 'static' } } }),
+      childSessions: [childEntry(CHILD, {
+        frame: {
+          id: 'pay-frame', parentId: 'main-frame', url: 'https://pay.example.com/checkout',
+          securityOrigin: 'https://pay.example.com', loaderId: 'loader-1',
+        },
+      }, {
+        'Page.getFrameTree': () => {
+          treeReads += 1;
+          return {
+            frameTree: {
+              frame: {
+                id: 'pay-frame',
+                parentId: 'main-frame',
+                url: 'https://pay.example.com/checkout',
+                securityOrigin: 'https://pay.example.com',
+                loaderId: treeReads >= 3 ? 'loader-2' : 'loader-1',
+              },
+            },
+          };
+        },
+        'Accessibility.getFullAXTree': () => {
+          axReads += 1;
+          return { nodes: payFrameNodes({ title: 'SHOULD NOT LEAK', button: 'Pay now' }) };
+        },
+      })],
+    });
+    const out = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null },
+      { targetPrefix: 'AB12CD34' },
+    ));
+    expect(axReads).toBe(1);
+    expect(out).toContain('not read: frame navigated during read');
+    expect(out).not.toContain('Pay now');
+    expect(out).not.toContain('SHOULD NOT LEAK');
+    expect(out).not.toContain('FRAME CONTENT');
+  });
+
   it('skips a non-allowlisted same-process child and keeps its text out of the parent block', async () => {
     const sites = await frameSites('https://pay.example.com');
     const cdp = createMockCDP({
@@ -1511,5 +1616,113 @@ describe('slice 2 inline cross-site frames', () => {
     expect(skippedText).not.toContain('FRAME CONTENT');
     expect(skippedText).not.toContain(INSTRUCTION_TITLE);
     expect(childContentCalls(skipped, CHILD)).toEqual([]);
+  });
+
+  it('does not read a non-allowlisted frame that shares the page with an allowed one', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const adsTitle = 'ADS_FRAME_TITLE';
+    const summaryValue = JSON.stringify({
+      title: 'Host',
+      url: 'http://127.0.0.1:9/host.html',
+      viewport: '800x600',
+      scrollY: 0,
+      scrollMax: 0,
+      counts: { button: 1 },
+      focused: 'none',
+      domNodes: 4,
+      tableRows: 0,
+      visibleControls: 1,
+      hiddenTemplateNodes: 0,
+    });
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: summaryValue } }),
+      'Page.getFrameTree': () => ({
+        frameTree: { frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html', securityOrigin: 'http://127.0.0.1:9' } },
+      }),
+      childSessions: [
+        childEntry('pay-sid', {
+          frame: {
+            id: 'pay-frame', parentId: 'main-frame', url: 'https://pay.example.com/checkout',
+            securityOrigin: 'https://pay.example.com', loaderId: 'loader-pay',
+          },
+        }, {
+          'Accessibility.getFullAXTree': (params) => {
+            expect(params?.frameId).toBe('pay-frame');
+            return { nodes: payFrameNodes({ title: 'Checkout', button: 'Pay now' }) };
+          },
+        }),
+        childEntry('ads-sid', {
+          frame: {
+            id: 'ads-frame', parentId: 'main-frame', url: 'https://ads.example.com/unit',
+            securityOrigin: 'https://ads.example.com', loaderId: 'loader-ads',
+            name: adsTitle,
+          },
+        }, {
+          'Accessibility.getFullAXTree': () => ({
+            nodes: payFrameNodes({ title: adsTitle, button: 'AD SECRET' }),
+          }),
+        }),
+      ],
+    });
+    const text = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.summaryStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4),
+    ));
+    const model = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.summaryModel(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4),
+    ));
+    expect(text).toContain('Frame: pay.example.com');
+    expect(text).not.toContain('Frame: ads.example.com');
+    expect(text).not.toContain(adsTitle);
+    expect(text).not.toContain('AD SECRET');
+    expect(model.frames).toHaveLength(1);
+    expect(model.frames[0].content).toEqual({ read: true, origin: 'https://pay.example.com' });
+    expect(JSON.stringify(model)).not.toContain(adsTitle);
+    expect(JSON.stringify(model)).not.toContain('https://ads.example.com');
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree' && call.sessionId === 'ads-sid')).toEqual([]);
+    expect(cdp.calls.filter(call => call.method === 'Page.getFrameTree' && call.sessionId === 'ads-sid')).toHaveLength(2);
+  });
+
+  it('does not attach or read a cross-site frame when CDP_FRAME_SITES is unset', async () => {
+    const unsetTitle = 'UNSET_FRAME_TITLE';
+    const summaryValue = JSON.stringify({
+      title: 'Host',
+      url: 'http://127.0.0.1:9/host.html',
+      viewport: '800x600',
+      scrollY: 0,
+      scrollMax: 0,
+      counts: {},
+      focused: 'none',
+      domNodes: 1,
+      tableRows: 0,
+      visibleControls: 0,
+      hiddenTemplateNodes: 0,
+    });
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: summaryValue } }),
+      'Page.getFrameTree': () => ({
+        frameTree: { frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html', securityOrigin: 'http://127.0.0.1:9' } },
+      }),
+      childSessions: [childEntry(CHILD, {
+        frame: {
+          id: 'pay-frame', parentId: 'main-frame', url: 'https://pay.example.com/checkout',
+          securityOrigin: 'https://pay.example.com', loaderId: 'loader-1',
+          name: unsetTitle,
+        },
+      }, {
+        'Accessibility.getFullAXTree': () => ({
+          nodes: payFrameNodes({ title: unsetTitle, button: 'Pay now' }),
+        }),
+      })],
+    });
+    const text = await T.summaryStr(cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4));
+    const model = await T.summaryModel(cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4));
+    expect(text).toContain('Title: Host');
+    expect(text).not.toContain('Frame:');
+    expect(text).not.toContain(unsetTitle);
+    expect(text).not.toContain('Pay now');
+    expect(model.frames).toBeUndefined();
+    expect(JSON.stringify(model)).not.toContain(unsetTitle);
+    expect(cdp.calls.filter(call => call.method === 'Target.setAutoAttach')).toEqual([]);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree' && call.sessionId === CHILD)).toEqual([]);
   });
 });

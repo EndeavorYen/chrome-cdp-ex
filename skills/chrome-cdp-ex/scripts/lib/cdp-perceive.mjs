@@ -1800,6 +1800,8 @@ export function formatCrossSiteSummaryText(frames) {
 
 export async function crossSiteSummaryFrames(cdp, sid) {
   const sites = currentFrameSites();
+  // Unset means nothing can be inlined. Skip attach and the child frame walk.
+  if (sites == null) return [];
   const listed = await framesModel(cdp, sid, { crossSite: true });
   const frames = (listed.frames || []).filter(frame => frame?.process === 'oopif' && frame.id);
   if (!frames.length) return [];
@@ -1941,7 +1943,7 @@ function buildPerceiveFrameNotice({
       ref,
       crossSite: true,
       host,
-      clause: read ? '' : crossSiteReadClause(classification, { target, ref: ref || '' }),
+      clause: read ? '' : crossSiteReadClause(classification),
       reason: read ? '' : classification.reason,
       read,
       visible,
