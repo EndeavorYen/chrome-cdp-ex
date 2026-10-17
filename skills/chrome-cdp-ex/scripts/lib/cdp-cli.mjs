@@ -195,6 +195,15 @@ export function absolutizeCallerFileArgs(cmd, args = [], cwd = process.cwd()) {
 export function helpStr() {
   return USAGE;
 }
+export function recordActionsHelpLines() {
+  return [
+    'stop, an idle exit, a crash, and kill -9 keep the action log.',
+    'record-actions <target> --clear empties that log and the recorded environment steps and keeps the netlog buffer. Mock rules, throttle, and dialog mode stay active.',
+    'closetab removes the saved file.',
+    'To export only new steps, run record-actions <target> --clear before them.',
+    '--clear cannot be combined with an export flag.',
+  ];
+}
 export function helpTopicStr(topic) {
   const raw = String(topic || '').trim();
   if (!raw || raw === 'help' || raw === '--help' || raw === '-h') return helpStr();
@@ -207,6 +216,7 @@ export function helpTopicStr(topic) {
   if (record.name === 'eval' || record.name === 'eval64') lines.push(...evalScopeHelpLines());
   if (record.name === 'press') lines.push(...pressHelpLines());
   if (record.name === 'flow') lines.push(...flowStepHelpLines());
+  if (record.name === 'record-actions') lines.push(...recordActionsHelpLines());
   lines.push('Run `cdp help` for the survivor card; leftover verbs: `cdp help <command>`.');
   return `${lines.join('\n')}\n`;
 }
@@ -477,7 +487,7 @@ export function authorizeDaemonApplicationCommand({ command, args = [], policy, 
     'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
-    || (['console', 'diff-shot', 'elshot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)
+    || (['console', 'diff-shot', 'elshot', 'fullshot', 'netlog', 'record', 'record-actions', 'shot'].includes(command)
       && policy === 'conditional' && mutates === false)
     || tablePolicyMatches
     || (['batch', 'flow', 'repeat'].includes(command)

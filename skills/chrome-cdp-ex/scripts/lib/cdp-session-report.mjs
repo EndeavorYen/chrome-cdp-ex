@@ -23,6 +23,7 @@ import { assertNotPdfViewerPage, cdpDomains, collectPageHealth, createScreenshot
 import { applyViewportOverride, formatClockSummary, formatNetworkMocksSummary, formatThrottleSummary } from './cdp-page-commands.mjs';
 import { attachSelectorFrameMiss, perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
 import { relocateCrossSiteActionFields } from './frame-sites.mjs';
+import { readTabObservation, writeTabObservation } from './tab-observation.mjs';
 
 export function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } = {}) {
   const model = buildCliErrorModel(err, { cmd, targetPrefix });
@@ -2719,6 +2720,115 @@ export function formatCommandLine(command) {
     const s = String(arg);
     return /^[^\s"']+$/.test(s) ? s : JSON.stringify(s);
   }).join(' ');
+}
+function countedLabel(count, one, many) {
+  const n = Number(count) || 0;
+  return `${n} ${n === 1 ? one : many}`;
+}
+export function recordActionsClearModel(targetId, actions, environment) {
+  const next = `cdp record-actions ${targetPrefixForDisplay(targetId)}`;
+  return {
+    schema: 'chrome-cdp-ex.record-actions-clear.v1',
+    targetId: targetId || null,
+    cleared: { actions, environment },
+    message: `Cleared action log (${countedLabel(actions, 'action', 'actions')}, ${countedLabel(environment, 'environment step', 'environment steps')}).`,
+    next,
+  };
+}
+export function parseRecordActionsArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  let clear = false;
+  for (const arg of fopts.args) {
+    if (arg === '--clear') {
+      if (clear) {
+        throw new Error('record-actions: unknown argument --clear. --clear cannot be combined with an export flag. Use --clear or --format json.');
+      }
+      clear = true;
+      continue;
+    }
+    throw new Error(`record-actions: unknown argument ${arg}. --clear cannot be combined with an export flag. Use --clear or --format json.`);
+  }
+  return { format: fopts.format, clear };
+}
+function sessionHasNetworkBuffer(session) {
+  return Boolean(session?.buffers?.network && typeof session.buffers.network.all === 'function');
+}
+function restoreClearedSession(session, previous) {
+  session.actionLog = previous.actionLog;
+  session.environmentLog = previous.environmentLog;
+  session.actionSeq = previous.actionSeq;
+  session.observationLoaded = previous.observationLoaded;
+  session.observationRestore = previous.observationRestore;
+}
+// Empties the action log and recorded environment steps. The netlog buffer stays.
+// Mock rules, throttle, and dialog mode live in the environment file and are not touched.
+export function clearRecordedActions(session, { format = 'text' } = {}) {
+  if (!session || typeof session !== 'object') {
+    throw new Error('record-actions: no target session to clear');
+  }
+  const disk = session.runtimeDir && session.targetId
+    ? readTabObservation(session.targetId, { runtimeDir: session.runtimeDir })
+    : { status: 'absent' };
+  const memoryActions = Array.isArray(session.actionLog) ? session.actionLog.length : 0;
+  const memoryEnvironment = Array.isArray(session.environmentLog) ? session.environmentLog.length : 0;
+  const memoryHoldsLog = memoryActions > 0 || memoryEnvironment > 0 || session.observationLoaded === true;
+  if (disk.status === 'unreadable' && !memoryHoldsLog) {
+    throw new Error('record-actions: saved action log could not be read, so it was not cleared');
+  }
+  const actions = memoryHoldsLog ? memoryActions : (disk.status === 'ok' ? disk.actions.length : 0);
+  const environment = memoryHoldsLog ? memoryEnvironment : (disk.status === 'ok' ? disk.environment.length : 0);
+  const diskAlreadyEmpty = disk.status === 'absent'
+    || (disk.status === 'ok' && disk.actions.length === 0 && disk.environment.length === 0);
+  if (actions === 0 && environment === 0 && diskAlreadyEmpty) {
+    session.actionLog = [];
+    session.environmentLog = [];
+    session.actionSeq = 0;
+    session.observationLoaded = false;
+  } else {
+    const previous = {
+      actionLog: session.actionLog,
+      environmentLog: session.environmentLog,
+      actionSeq: session.actionSeq,
+      observationLoaded: session.observationLoaded,
+      observationRestore: session.observationRestore,
+    };
+    session.actionLog = [];
+    session.environmentLog = [];
+    session.actionSeq = 0;
+    session.observationLoaded = false;
+    if (session.observationRestore?.status === 'unreadable') {
+      session.observationRestore = {
+        applied: true,
+        status: 'ok',
+        netlogCount: 0,
+        actionCount: 0,
+        environmentCount: 0,
+      };
+    }
+    let saved = true;
+    if (session.runtimeDir && session.targetId) {
+      if (sessionHasNetworkBuffer(session) || disk.status !== 'ok') {
+        saved = rememberTabObservation(session);
+      } else {
+        saved = writeTabObservation(session.targetId, {
+          actionSeq: 0,
+          actions: [],
+          environment: [],
+          netlog: disk.netlog,
+        }, { runtimeDir: session.runtimeDir });
+        if (saved) {
+          session.observationWriteFailed = false;
+          session.observationComparable = null;
+        }
+      }
+    }
+    if (!saved) {
+      restoreClearedSession(session, previous);
+      throw new Error('record-actions: the action log could not be saved, so it was not cleared');
+    }
+  }
+  const model = recordActionsClearModel(session.targetId, actions, environment);
+  return format === 'json' ? formatJson(model) : `${model.message} Next: ${model.next}`;
 }
 export function formatRecordActions(session, { format = 'text' } = {}) {
   const model = buildRecordActionsModel(session);
