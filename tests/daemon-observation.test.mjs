@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
+import { argsRequireConfirm } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { createNetlogRequestStore, parseNetlogArgs } from '../skills/chrome-cdp-ex/scripts/lib/netlog.mjs';
 
 process.env.NODE_ENV = 'test';
@@ -266,5 +268,174 @@ describe('#618 record-actions survives a tab daemon exit', () => {
     const session = sessionAt(blocker, 'T618SAVE');
     expect(() => T.appendSessionActionLog(session, reloadAction())).not.toThrow();
     expect(T.formatRecordActions(session)).toContain('could not be saved');
+  });
+});
+
+describe('#744 record-actions --clear starts a fresh log', () => {
+  function seedObservedSession(dir, targetId) {
+    const session = sessionAt(dir, targetId);
+    captureFailingRequest(session);
+    T.appendSessionEnvironmentLog(session, {
+      kind: 'mock',
+      action: 'add',
+      rule: { urlPattern: '**/api/*', status: 503, body: '{"ok":false}', contentType: 'application/json' },
+    });
+    T.appendSessionEnvironmentLog(session, {
+      kind: 'throttle',
+      action: 'apply',
+      throttle: { profile: 'offline', offline: true, latencyMs: 0, downloadKbps: 0, uploadKbps: 0 },
+    });
+    T.appendSessionEnvironmentLog(session, {
+      kind: 'clock',
+      action: 'set',
+      clock: { profile: 'freeze', atMs: 1, offsetMs: 0 },
+    });
+    T.appendSessionActionLog(session, reloadAction());
+    T.appendSessionActionLog(session, reloadAction());
+    session.dialogMode = 'accept';
+    session.networkThrottle = { profile: 'offline' };
+    session.networkMocks = [{ urlPattern: '**/api/*', status: 503 }];
+    return session;
+  }
+
+  it('empties actions and environment steps in memory and on disk and keeps netlog', () => {
+    const dir = runtimeDir();
+    const targetId = 'T744CLR1';
+    const session = seedObservedSession(dir, targetId);
+    const text = T.clearRecordedActions(session);
+    expect(text).toBe('Cleared action log (2 actions, 3 environment steps). Next: cdp record-actions T744CLR1');
+    expect(session.actionLog).toEqual([]);
+    expect(session.environmentLog).toEqual([]);
+    expect(session.actionSeq).toBe(0);
+    expect(session.dialogMode).toBe('accept');
+    expect(session.networkThrottle).toEqual({ profile: 'offline' });
+    expect(session.networkMocks).toEqual([{ urlPattern: '**/api/*', status: 503 }]);
+
+    const saved = JSON.parse(readFileSync(observePath(dir, targetId), 'utf8'));
+    expect(saved.actions).toEqual([]);
+    expect(saved.environment).toEqual([]);
+    expect(saved.actionSeq).toBe(0);
+    expect(saved.netlog.entries.length).toBeGreaterThan(0);
+    expect(saved.netlog.entries[0].status).toBe(404);
+
+    const next = restartedSession(dir, targetId);
+    expect(next.observationRestore.actionCount).toBe(0);
+    expect(next.observationRestore.environmentCount).toBe(0);
+    expect(T.formatDaemonRestartNotice({
+      dialog: 'dismiss',
+      throttleProfile: 'off',
+      mockCount: 0,
+      netlogCount: next.observationRestore.netlogCount,
+      actionCount: next.observationRestore.actionCount,
+    })).toContain('0 actions restored');
+    expect(netlogText(next)).toContain('#1');
+    expect(netlogText(next)).toContain('404');
+    expect(T.buildRecordActionsModel(next).actionCount).toBe(0);
+  });
+
+  it('records only actions that happen after the clear', () => {
+    const dir = runtimeDir();
+    const targetId = 'T744NEXT';
+    const session = seedObservedSession(dir, targetId);
+    T.clearRecordedActions(session);
+    T.appendSessionActionLog(session, reloadAction());
+    T.appendSessionActionLog(session, reloadAction());
+    T.appendSessionActionLog(session, reloadAction());
+    expect(T.buildRecordActionsModel(session).actionCount).toBe(3);
+    expect(T.buildRecordActionsModel(session).environmentCount).toBe(0);
+
+    const next = restartedSession(dir, targetId);
+    const model = T.buildRecordActionsModel(next);
+    expect(model.actionCount).toBe(3);
+    expect(model.environmentCount).toBe(0);
+    expect(model.actions.map(entry => entry.action)).toEqual(['reload', 'reload', 'reload']);
+    const text = T.formatRecordActions(next);
+    expect(text).toContain('Recorded actions: 3');
+    expect(text).not.toContain('Environment controls');
+  });
+
+  it('is a successful no-op when nothing was saved and no daemon loaded a log', () => {
+    const dir = runtimeDir();
+    const targetId = 'T744NONE';
+    const session = sessionAt(dir, targetId);
+    expect(T.clearRecordedActions(session)).toBe(
+      'Cleared action log (0 actions, 0 environment steps). Next: cdp record-actions T744NONE',
+    );
+    expect(existsSync(observePath(dir, targetId))).toBe(false);
+    const next = restartedSession(dir, targetId);
+    expect(next.observationRestore.actionCount).toBe(0);
+    expect(next.observationRestore.status).toBe('absent');
+  });
+
+  it('prints a versioned JSON receipt for --clear --format json', () => {
+    const dir = runtimeDir();
+    const targetId = 'T744JSON';
+    const session = seedObservedSession(dir, targetId);
+    const parsed = JSON.parse(T.clearRecordedActions(session, { format: 'json' }));
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.record-actions-clear.v1',
+      targetId,
+      cleared: { actions: 2, environment: 3 },
+      next: 'cdp record-actions T744JSON',
+    });
+    expect(parsed.message).toBe('Cleared action log (2 actions, 3 environment steps).');
+    expect(JSON.parse(readFileSync(observePath(dir, targetId), 'utf8')).actions).toEqual([]);
+  });
+
+  it('rejects --clear combined with an extra argument as Kind: usage with one Next', () => {
+    expect(T.parseRecordActionsArgs(['--clear', '--format', 'json'])).toEqual({ clear: true, format: 'json' });
+    expect(T.parseRecordActionsArgs(['--format', 'json'])).toEqual({ clear: false, format: 'json' });
+    let error;
+    try {
+      T.parseRecordActionsArgs(['--clear', '--out', 'actions.json']);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/unknown argument/);
+    const text = T.formatCliError(error, { cmd: 'record-actions', targetPrefix: 'T744JSON' });
+    expect(text).toContain('Kind: usage');
+    expect(text.match(/^Next:/gm)).toHaveLength(1);
+    expect(text).toContain('Next: cdp help record-actions');
+  });
+
+  it('documents --clear in help and treats it like netlog --clear for policy', () => {
+    const help = T.helpTopicStr('record-actions');
+    expect(help).toContain('--clear');
+    expect(help).toMatch(/stop, an idle exit, a crash, and kill -9 keep the action log/);
+    expect(help).toMatch(/closetab removes the saved file/);
+    expect(help).toMatch(/record-actions <target> --clear/);
+    expect(COMMAND_SURFACE.resolve('record-actions')).toMatchObject({
+      kind: 'conditional-mutation',
+      authorization: 'conditional',
+      mutates: false,
+    });
+    expect(argsRequireConfirm('record-actions', [])).toBe(false);
+    expect(argsRequireConfirm('record-actions', ['--format', 'json'])).toBe(false);
+    expect(argsRequireConfirm('record-actions', ['--clear'])).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('record-actions', [])).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('record-actions', ['--format', 'json'])).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('record-actions', ['--clear'])).toBe(true);
+    expect(T.daemonRequestMayHaveSideEffects({ cmd: 'record-actions', args: [] }))
+      .toBe(T.daemonRequestMayHaveSideEffects({ cmd: 'netlog', args: [] }));
+    expect(T.daemonRequestMayHaveSideEffects({ cmd: 'record-actions', args: ['--clear'] }))
+      .toBe(T.daemonRequestMayHaveSideEffects({ cmd: 'netlog', args: ['--clear'] }));
+  });
+
+  it('clears a saved file when no daemon has loaded it', () => {
+    const dir = runtimeDir();
+    const targetId = 'T744DISK';
+    const first = seedObservedSession(dir, targetId);
+    expect(T.buildRecordActionsModel(first).actionCount).toBe(2);
+    const idle = sessionAt(dir, targetId);
+    const text = T.clearRecordedActions(idle);
+    expect(text).toBe('Cleared action log (2 actions, 3 environment steps). Next: cdp record-actions T744DISK');
+    const saved = JSON.parse(readFileSync(observePath(dir, targetId), 'utf8'));
+    expect(saved.actions).toEqual([]);
+    expect(saved.environment).toEqual([]);
+    expect(saved.netlog.entries.length).toBeGreaterThan(0);
+    const next = restartedSession(dir, targetId);
+    expect(next.observationRestore.actionCount).toBe(0);
+    expect(netlogText(next)).toContain('404');
   });
 });
