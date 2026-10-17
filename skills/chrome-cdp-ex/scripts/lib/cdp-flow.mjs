@@ -988,7 +988,7 @@ export function isBatchParallelUnsafeCommand(cmd, args = []) {
       || command.evidencePolicy !== 'none') return true;
     return isTableCollectArgs(args);
   }
-  if (command.name === 'console' || command.name === 'netlog') {
+  if (command.name === 'console' || command.name === 'netlog' || command.name === 'record-actions') {
     return args.some(arg => arg === '--clear');
   }
   if (command.name === 'dialog') {
