@@ -133,10 +133,13 @@ function fullshotRestoreBody() {
         const item = saved.nodes[i];
         const el = item.el;
         if (!el) continue;
-        if (item.style == null) {
-          try { el.removeAttribute('style'); } catch (err) {}
+        if (item.stylePresent) {
+          try { el.setAttribute('style', item.style == null ? '' : String(item.style)); } catch (err) {}
         } else {
-          try { el.setAttribute('style', item.style); } catch (err) {}
+          // Clearing cssText first drops the declaration Chrome would otherwise
+          // write back as an empty style attribute.
+          try { el.style.cssText = ''; } catch (err) {}
+          try { el.removeAttribute('style'); } catch (err) {}
         }
         try {
           Element.prototype.scrollTo.call(el, { left: item.scrollLeft, top: item.scrollTop, behavior: 'instant' });
@@ -206,12 +209,21 @@ export function fullshotScrollPlanExpression({ selector = null } = {}) {
       const oy = String((style && (style.overflowY || style.overflow)) || '');
       return /(auto|scroll|overlay|hidden)/.test(oy);
     };
+    const readStyle = function(node) {
+      let present = false;
+      if (node && typeof node.hasAttribute === 'function') present = !!node.hasAttribute('style');
+      else if (node && typeof node.getAttribute === 'function') present = node.getAttribute('style') != null;
+      const value = present && node && typeof node.getAttribute === 'function' ? node.getAttribute('style') : null;
+      return { present: present, value: value };
+    };
     const expand = function(el) {
       const nodes = [];
       for (let node = el; node; node = node.parentElement) {
+        const savedStyle = readStyle(node);
         nodes.push({
           el: node,
-          style: typeof node.getAttribute === 'function' ? node.getAttribute('style') : null,
+          style: savedStyle.value,
+          stylePresent: savedStyle.present,
           scrollTop: Math.round(Number(node.scrollTop) || 0),
           scrollLeft: Math.round(Number(node.scrollLeft) || 0),
         });

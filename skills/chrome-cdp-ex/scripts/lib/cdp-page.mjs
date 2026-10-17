@@ -2215,6 +2215,7 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
 
   let prepared = { ok: true, mode: 'document' };
   let containerMode = false;
+  let scrollbarsHidden = false;
   try {
     try {
       const raw = await evalStr(cdp, sid, fullshotScrollPlanExpression({ selector }));
@@ -2226,6 +2227,12 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
     }
     if (prepared.ok === false) throw fullshotPlanError(prepared);
     containerMode = prepared.mode === 'container';
+    if (containerMode) {
+      // Expanding html/body to overflow:visible makes the document scroll, which
+      // reserves a scrollbar and shrinks layout width. Hide it before measuring.
+      await cdpDomains(cdp).Emulation.setScrollbarsHidden({ hidden: true }, sid);
+      scrollbarsHidden = true;
+    }
     const dpr = await getDpr(cdp, sid);
     const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
     const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
@@ -2285,6 +2292,9 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
   } finally {
     if (containerMode || pinned) {
       await evalStr(cdp, sid, fullshotRestoreExpression()).catch(() => {});
+    }
+    if (scrollbarsHidden) {
+      await cdpDomains(cdp).Emulation.setScrollbarsHidden({ hidden: false }, sid).catch(() => {});
     }
   }
 }

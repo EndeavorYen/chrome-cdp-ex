@@ -21,8 +21,17 @@ function makeBox({
   clientWidth = 100,
   scrollTop = 0,
   overflowY = 'visible',
+  styleText = null,
 } = {}) {
-  const state = { scrollTop, scrollLeft: 0, attrs: {} };
+  const state = {
+    scrollTop,
+    scrollLeft: 0,
+    attrs: {},
+    // cssText assignment canonicalizes; setAttribute keeps the exact string.
+    cssText: styleText == null ? '' : String(styleText),
+    cssCleared: false,
+  };
+  if (styleText != null) state.attrs.style = String(styleText);
   const el = {
     tagName,
     id,
@@ -41,13 +50,44 @@ function makeBox({
     style: {
       setProperty(name, value) {
         state.attrs[`prop:${name}`] = String(value);
+        state.cssCleared = false;
+        const piece = `${name}: ${value}`;
+        state.cssText = state.cssText ? `${state.cssText}; ${piece}` : piece;
+        state.attrs.style = state.cssText;
         // Expanding overflow:auto to visible drops the scroll offset, as Chrome does.
         if ((name === 'overflow' || name === 'overflow-y') && value === 'visible') state.scrollTop = 0;
       },
+      get cssText() { return state.cssText; },
+      set cssText(value) {
+        const raw = String(value);
+        if (raw === '') {
+          state.cssText = '';
+          state.cssCleared = true;
+          if (Object.hasOwn(state.attrs, 'style')) state.attrs.style = '';
+          return;
+        }
+        state.cssCleared = false;
+        state.cssText = raw.endsWith(';') ? raw : `${raw};`;
+        state.attrs.style = state.cssText;
+      },
     },
+    hasAttribute(name) { return Object.hasOwn(state.attrs, name); },
     getAttribute(name) { return Object.hasOwn(state.attrs, name) ? state.attrs[name] : null; },
-    setAttribute(name, value) { state.attrs[name] = String(value); },
-    removeAttribute(name) { delete state.attrs[name]; },
+    setAttribute(name, value) {
+      state.attrs[name] = String(value);
+      if (name === 'style') {
+        state.cssText = String(value);
+        state.cssCleared = false;
+      }
+    },
+    removeAttribute(name) {
+      // Chrome keeps style="" when the CSSOM was mutated and cssText was not cleared first.
+      if (name === 'style' && !state.cssCleared && Object.hasOwn(state.attrs, 'style')) {
+        state.attrs.style = '';
+        return;
+      }
+      delete state.attrs[name];
+    },
     _scroll: state,
   };
   return el;
@@ -468,5 +508,194 @@ describe('#746 fullshot scroll container', () => {
   it('documents --scroll-container on help and the command surface', () => {
     expect(T.helpTopicStr('fullshot')).toContain('--scroll-container');
     expect(T.helpTopicStr('fullshot')).toMatch(/fixed|sticky/i);
+  });
+
+  // Expanding html/body to overflow:visible makes the document scroll, and Chrome
+  // then reserves a 15px scrollbar. Layout width is the viewport only while
+  // scrollbars are hidden. Style reads happen before fullshot, not from an observer.
+  it('hides scrollbars during capture so the image width matches the viewport, then shows them again', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-fullshot-scroll-'));
+    const file = join(tmp, 'full.png');
+    try {
+      const run = async (failCapture = false) => {
+        const scroller = makeBox({
+          tagName: 'DIV',
+          id: 'scroller',
+          scrollHeight: 4000,
+          clientHeight: 800,
+          clientWidth: 1440,
+          scrollTop: 120,
+          overflowY: 'auto',
+        });
+        const page = scrollPage({ containers: [scroller] });
+        const context = {
+          window: page.window,
+          document: page.document,
+          Element: FakeElement,
+          Math,
+          JSON,
+          Number,
+          String,
+          Event: function Event(type) { this.type = type; },
+        };
+        let expanded = false;
+        let scrollbarsHidden = false;
+        const calls = [];
+        const cdp = {
+          calls,
+          send(method, params = {}) {
+            calls.push({ method, params });
+            if (method === 'Emulation.setScrollbarsHidden') {
+              scrollbarsHidden = params.hidden === true;
+              return Promise.resolve({});
+            }
+            if (method === 'Runtime.evaluate') {
+              const expr = String(params.expression || '');
+              if (expr.includes('contentType')) {
+                return Promise.resolve({ result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } });
+              }
+              if (expr.includes('devicePixelRatio')) return Promise.resolve({ result: { value: 1 } });
+              if (expr.includes('innerWidth')) {
+                return Promise.resolve({ result: { value: JSON.stringify({ w: 1440, h: 900 }) } });
+              }
+              if (expr.includes('chrome-cdp-ex.fullshot')) {
+                const value = runInNewContext(expr, context);
+                if (value === 'restored') expanded = false;
+                else if (JSON.parse(value).mode === 'container') expanded = true;
+                return Promise.resolve({ result: { value } });
+              }
+              return Promise.resolve({ result: { value: 1 } });
+            }
+            if (method === 'Page.getLayoutMetrics') {
+              const width = expanded && !scrollbarsHidden ? 1425 : 1440;
+              return Promise.resolve({ cssContentSize: { width, height: expanded ? 4000 : 900 } });
+            }
+            if (method === 'Page.captureScreenshot') {
+              if (failCapture) throw new Error('Timeout: Page.captureScreenshot');
+              return Promise.resolve({ data: Buffer.from('PNG746').toString('base64') });
+            }
+            return Promise.resolve({});
+          },
+          onEvent() { return () => {}; },
+          waitForEvent() {
+            return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+          },
+        };
+        T.resetScreenshotTier();
+        return { cdp, page, scroller, result: T.fullshotStr(cdp, 'sid', file, '1D3669785EAC5A1A211792636BAE8A07') };
+      };
+
+      const ok = await run(false);
+      const out = await ok.result;
+      const hideAt = ok.cdp.calls.findIndex(call => call.method === 'Emulation.setScrollbarsHidden' && call.params.hidden === true);
+      const metricsAt = ok.cdp.calls.findIndex(call => call.method === 'Page.getLayoutMetrics');
+      const shotAt = ok.cdp.calls.findIndex(call => call.method === 'Page.captureScreenshot');
+      const showAt = ok.cdp.calls.findIndex(call => call.method === 'Emulation.setScrollbarsHidden' && call.params.hidden === false);
+      expect(hideAt).toBeGreaterThanOrEqual(0);
+      expect(hideAt).toBeLessThan(metricsAt);
+      expect(metricsAt).toBeLessThan(shotAt);
+      expect(shotAt).toBeLessThan(showAt);
+      expect(ok.cdp.calls.filter(call => call.method === 'Emulation.setScrollbarsHidden').map(call => call.params)).toEqual([
+        { hidden: true },
+        { hidden: false },
+      ]);
+      const capture = ok.cdp.calls.find(call => call.method === 'Page.captureScreenshot');
+      expect(capture.params.clip).toMatchObject({ width: 1440, height: 4000 });
+      expect(out).toContain('1440×4000');
+
+      const failed = await run(true);
+      await expect(failed.result).rejects.toThrow(/timed out|untrusted/);
+      expect(failed.cdp.calls.filter(call => call.method === 'Emulation.setScrollbarsHidden').map(call => call.params)).toEqual([
+        { hidden: true },
+        { hidden: false },
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves no style attribute when none existed and restores an exact style string', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-fullshot-style-'));
+    const file = join(tmp, 'full.png');
+    try {
+      const shell = makeBox({
+        tagName: 'DIV',
+        id: 'shell',
+        styleText: 'color: red',
+        scrollHeight: 900,
+        clientHeight: 900,
+        clientWidth: 1440,
+        overflowY: 'visible',
+      });
+      const scroller = makeBox({
+        tagName: 'DIV',
+        id: 'scroller',
+        parent: shell,
+        scrollHeight: 4000,
+        clientHeight: 800,
+        clientWidth: 1440,
+        scrollTop: 80,
+        overflowY: 'auto',
+      });
+      const page = scrollPage({ containers: [shell, scroller] });
+      expect(page.docEl.getAttribute('style')).toBe(null);
+      expect(page.body.getAttribute('style')).toBe(null);
+      expect(scroller.getAttribute('style')).toBe(null);
+      expect(shell.getAttribute('style')).toBe('color: red');
+      const context = {
+        window: page.window,
+        document: page.document,
+        Element: FakeElement,
+        Math,
+        JSON,
+        Number,
+        String,
+        Event: function Event(type) { this.type = type; },
+      };
+      let expanded = false;
+      const cdp = {
+        calls: [],
+        send(method, params = {}) {
+          this.calls.push({ method, params });
+          if (method === 'Runtime.evaluate') {
+            const expr = String(params.expression || '');
+            if (expr.includes('contentType')) {
+              return Promise.resolve({ result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } });
+            }
+            if (expr.includes('devicePixelRatio')) return Promise.resolve({ result: { value: 1 } });
+            if (expr.includes('innerWidth')) {
+              return Promise.resolve({ result: { value: JSON.stringify({ w: 1440, h: 900 }) } });
+            }
+            if (expr.includes('chrome-cdp-ex.fullshot')) {
+              const value = runInNewContext(expr, context);
+              if (value === 'restored') expanded = false;
+              else if (JSON.parse(value).mode === 'container') expanded = true;
+              return Promise.resolve({ result: { value } });
+            }
+            return Promise.resolve({ result: { value: 1 } });
+          }
+          if (method === 'Page.getLayoutMetrics') {
+            return Promise.resolve({ cssContentSize: { width: 1440, height: expanded ? 4000 : 900 } });
+          }
+          if (method === 'Page.captureScreenshot') {
+            return Promise.resolve({ data: Buffer.from('PNG746').toString('base64') });
+          }
+          return Promise.resolve({});
+        },
+        onEvent() { return () => {}; },
+        waitForEvent() {
+          return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+        },
+      };
+      T.resetScreenshotTier();
+      await T.fullshotStr(cdp, 'sid', file, '1D3669785EAC5A1A211792636BAE8A07');
+      expect(page.docEl.getAttribute('style')).toBe(null);
+      expect(page.body.getAttribute('style')).toBe(null);
+      expect(scroller.getAttribute('style')).toBe(null);
+      expect(shell.getAttribute('style')).toBe('color: red');
+      expect(scroller.scrollTop).toBe(80);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

@@ -25,6 +25,7 @@ export const CDP_METHODS = Object.freeze([
   'Emulation.setDeviceMetricsOverride',
   'Emulation.setEmulatedMedia',
   'Emulation.setFocusEmulationEnabled',
+  'Emulation.setScrollbarsHidden',
   'Fetch.continueRequest',
   'Fetch.disable',
   'Fetch.enable',
