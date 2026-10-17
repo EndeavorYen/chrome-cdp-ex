@@ -19,6 +19,7 @@ import {
   urlFlagValue,
 } from './session-policy.mjs';
 import { withoutDaemonRestartNotice } from './daemon-restart-notice.mjs';
+import { HALT_TRAILER_RE } from './cdp-base.mjs';
 
 export {
   MCP_RESOURCE_TEMPLATES,
@@ -733,13 +734,6 @@ function splitNextWords(text) {
   return words;
 }
 
-/**
- * The first `Next: cdp …` step of a CLI receipt as a run_command call, or null when the receipt
- * names none, or names it in a form that is not one command (a placeholder, a choice, a command
- * run_command does not accept). The " (Kind: …)" suffix and a trailing "# comment" are not part
- * of the command. A call that needs confirmation carries confirm: true, so it runs as given, as
- * the CLI Next line does.
- */
 // Text inside a nonce-matched FRAME CONTENT block is a cross-site frame's page text, never a Next.
 function withoutFrameContent(text) {
   return String(text || '').replace(
@@ -747,10 +741,41 @@ function withoutFrameContent(text) {
     '',
   );
 }
-export function mcpNextCall(text) {
-  const match = withoutFrameContent(text).match(/(?:^|\s)Next: cdp ([^\n]+)/);
-  if (!match) return null;
-  const line = match[1]
+// A Next the CLI wrote, from the match through the end of that line, or null.
+// Halt trailers (Dialog:, Downloaded ", flow/repeat/replay summaries) can quote page text after
+// the CLI's own Next, so they are dropped with the frame blocks before the search.
+// A success takes the first line that starts with `Next: cdp ` (`clock` prints two). A failure
+// takes the last: withKindOnLastNextLine ends the text with the recovery command, and repeats
+// that command as the last line when only trailers follow. An error message can start its own
+// `Next: cdp ` line before the stack, and that earlier line is not the recovery step.
+function cliNextCommand(text, { failed = false } = {}) {
+  const lines = withoutFrameContent(text).split('\n').filter(line => !HALT_TRAILER_RE.test(line));
+  const leadingLines = lines.filter(line => line.startsWith('Next: cdp '));
+  const leading = failed ? leadingLines.at(-1) : leadingLines[0];
+  if (leading) return leading.slice('Next: cdp '.length);
+  const marker = '. Next: cdp ';
+  const inline = (line) => {
+    if (!line) return null;
+    const at = line.lastIndexOf(marker);
+    return at === -1 ? null : line.slice(at + marker.length);
+  };
+  const headed = lines.find(line => line.startsWith('Frames: ') || line.startsWith('Body truncated.'));
+  if (headed) return inline(headed);
+  return inline(lines.find(line => line.trim() !== ''));
+}
+
+/**
+ * The CLI's own `Next: cdp …` step as a run_command call, or null when that step is missing
+ * or is not one command (a placeholder, a choice, a command run_command does not accept).
+ * Page text quoted in the output is not a step. The " (Kind: …)" suffix and a trailing
+ * "# comment" are not part of the command. A call that needs confirmation carries confirm: true,
+ * so it runs as given, as the CLI Next line does. `failed` selects the last line that starts
+ * with `Next: cdp `; the default selects the first.
+ */
+export function mcpNextCall(text, { failed = false } = {}) {
+  const raw = cliNextCommand(text, { failed });
+  if (raw == null) return null;
+  const line = raw
     .replace(/\s+#\s.*$/, '')
     .replace(/\s+\(Kind: [^)]*\)\s*$/, '')
     .trim();
@@ -804,7 +829,7 @@ export function createMcpToolResult(command, result, imageOptions = {}) {
     structuredContent = structuredOutput(result.stdout);
   } else {
     const kind = result.code === 0 ? null : cliErrorKind(text);
-    const next = mcpNextCall(withoutDaemonRestartNotice(text));
+    const next = mcpNextCall(withoutDaemonRestartNotice(text), { failed: result.code !== 0 });
     structuredContent = {
       schema: 'chrome-cdp-ex.mcp-result.v1',
       ok: result.code === 0,
