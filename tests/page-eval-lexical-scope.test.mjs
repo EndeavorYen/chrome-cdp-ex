@@ -126,7 +126,8 @@ describe('#593 eval lexical scope', () => {
     expect(run(strictFn, strictFunction)).toBe(7);
     expect(() => run('foo()', strictFunction)).toThrow(/foo is not defined/);
 
-    expect(() => run('const zz = 1; return zz')).toThrow(/Illegal return statement/);
+    // #751: a top-level return runs as a function body. This records that decision.
+    expect(run('const zz = 1; return zz')).toBe(1);
     expect(() => run('"use strict"; const zz = 1; undeclared = 1')).toThrow(/undeclared is not defined/);
   });
 
@@ -159,6 +160,7 @@ describe('#593 eval lexical scope', () => {
     const help = T.helpTopicStr('eval');
     expect(help).toMatch(/let, const, and class exist only for that call/);
     expect(help).toMatch(/The result is the last expression/);
+    expect(help).toMatch(/A top-level return works with or without await/);
     expect(help).toMatch(/var and assignments to globalThis or window stay on the tab/);
     expect(help).toMatch(/A sloppy function declaration stays too/);
     expect(help).toMatch(/strict-mode function/);
@@ -177,5 +179,34 @@ describe('#593 eval lexical scope', () => {
     const callError = T.formatCliError(new Error('SyntaxError: Unexpected token'), { cmd: 'call' });
     expect(callError).toContain('The JavaScript expression threw. Fix the expression; the tab is still live.');
     expect(callError).not.toMatch(/own let, const, and class scope/);
+  });
+
+  it('runs a sync top-level return, including one inside a block (#751)', () => {
+    const top = 'const a = 1; return a + 1';
+    expect(T.wrapAwaitExpression(top, true)).toBe('(()=>{const a = 1; return a + 1\n})()');
+    const shared = context();
+    expect(run(top, shared)).toBe(2);
+    expect(run(top, shared)).toBe(2);
+
+    const blocked = 'const v = 2; if (v) { return v * 10 }';
+    expect(T.wrapAwaitExpression(blocked, true)).toBe('(()=>{const v = 2; if (v) { return v * 10 }\n})()');
+    expect(run(blocked)).toBe(20);
+  });
+
+  it('keeps a sync script without return on the block wrapper and lets it run twice (#751)', () => {
+    const source = 'const a = 1; a + 1';
+    expect(T.wrapAwaitExpression(source, true)).toBe('{const a = 1; a + 1\n}');
+    const shared = context();
+    expect(run(source, shared)).toBe(2);
+    expect(run(source, shared)).toBe(2);
+  });
+
+  it('leaves a nested function return on the lexical-scope path (#751)', () => {
+    const source = '[1].map(x => { return x })';
+    expect(T.wrapAwaitExpression(source, true)).toBe(source);
+    expect(run(source)).toEqual([1]);
+    const withConst = 'const xs = [1].map(x => { return x }); xs';
+    expect(T.wrapAwaitExpression(withConst, true)).toBe(`{${withConst}\n}`);
+    expect(run(withConst)).toEqual([1]);
   });
 });

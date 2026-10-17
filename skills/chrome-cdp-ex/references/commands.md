@@ -420,6 +420,9 @@ scripts/cdp.mjs eval64 <target> <base64>       # alias for `eval --b64`
 Multi-statement async eval returns a simple final expression, so
 `const value = await Promise.resolve(42); value` prints `42`. Use an explicit
 `return` when the final statement is a control block or otherwise ambiguous.
+A top-level `return` works with or without `await`, so
+`const a = 1; return a + 1` prints `2` and
+`const v = 2; if (v) { return v * 10 }` prints `20`.
 
 `let`, `const`, and `class` exist only for that call, so
 `eval <target> "const zz = 1; zz + 1"` prints `2` every time. The value is still
