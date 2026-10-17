@@ -1407,8 +1407,8 @@ function perceiveFrameLabel(element, owner, crossSite) {
 // N and M count child frames Page.getFrameTree reports (depth > 0), including
 // nested frames. They do not include cross-site frames. This census does not
 // attach; perceiveStr attaches when the page has iframe elements, reads each
-// frame's securityOrigin, and does not read a child AX or DOM tree unless the
-// caller passed --frame. A depth-1 frame that is still about:blank or has an empty URL,
+// frame's securityOrigin. An allowlisted frame is then inlined from that frame's
+// AX tree; a frame that is not allowlisted is not read. A depth-1 frame that is still about:blank or has an empty URL,
 // with an opaque origin, is cross-site (pending) when its owner iframe src
 // points at another site: it is not a same-origin child, it gets no ref, and
 // Next does not point at it. `frame <t>` still lists that frame as Chrome
@@ -1500,6 +1500,341 @@ function perceiveFrameCensus({
   const crossSiteCount = Math.max(0, elementCount - sameOriginTop.length);
   return { children: sameOriginChildren, elements, crossSiteCount, paired };
 }
+// An implicit perceive inlines at most this many allowlisted frames. The rest
+// stay host-only with reason cap, and they are not read.
+const FRAME_INLINE_CAP = 8;
+
+function frameNodeById(node, frameId) {
+  if (!node?.frame) return null;
+  if (node.frame.id === frameId) return node.frame;
+  for (const child of node.childFrames || []) {
+    const found = frameNodeById(child, frameId);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function committedFrameSnapshot(cdp, sessionId, frameId) {
+  const result = await cdpDomains(cdp).Page.getFrameTree({}, sessionId);
+  const frame = frameNodeById(result?.frameTree, frameId);
+  if (!frame) return null;
+  return { origin: frame.securityOrigin || '', loaderId: frame.loaderId || '' };
+}
+
+// A frame's AX tree includes same-process children. Drop those nodes, and drop
+// the iframe element whose name is the child document's title, so a skipped
+// child cannot appear inside the parent block.
+function axNodesOwnedByFrame(nodes, frameId) {
+  const list = (Array.isArray(nodes) ? nodes : []).filter(node => node && node.nodeId);
+  const byId = new Map(list.map(node => [node.nodeId, node]));
+  const dropped = new Set();
+  const dropTree = (nodeId) => {
+    if (!nodeId || dropped.has(nodeId)) return;
+    dropped.add(nodeId);
+    const node = byId.get(nodeId);
+    for (const childId of node?.childIds || []) dropTree(childId);
+  };
+  for (const node of list) {
+    const role = String(node.role?.value || '').toLowerCase();
+    if (role === 'iframe' || role === 'frame') dropTree(node.nodeId);
+    if (node.frameId && frameId && node.frameId !== frameId) dropTree(node.nodeId);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const node of list) {
+      if (dropped.has(node.nodeId) || !node.parentId || !dropped.has(node.parentId)) continue;
+      dropTree(node.nodeId);
+      grew = true;
+    }
+  }
+  return list.filter(node => !dropped.has(node.nodeId)).map(node => ({
+    ...node,
+    childIds: (node.childIds || []).filter(id => byId.has(id) && !dropped.has(id)),
+  }));
+}
+
+function frameContentTitleAndInteractive(nodes) {
+  let title = '';
+  const interactive = {};
+  for (const node of nodes || []) {
+    const role = String(node?.role?.value || '');
+    if (!title && role === 'RootWebArea') title = String(node.name?.value ?? '');
+    const key = role.toLowerCase();
+    if (INTERACTIVE_ROLES.has(key)) interactive[key] = (interactive[key] || 0) + 1;
+  }
+  return { title, interactive };
+}
+
+function hoistTrailingFrameRef(line) {
+  const text = String(line ?? '');
+  const match = / {2}(@f\d+:\d+|@\d+)$/.exec(text);
+  if (!match || !text.includes('\n')) return text;
+  const parts = text.slice(0, match.index).split('\n');
+  parts[0] += match[0];
+  return parts.join('\n');
+}
+
+function nestedIframeLine(host, ref, clause) {
+  const parts = ['[iframe]'];
+  if (host) parts.push(host);
+  if (ref) parts.push(ref);
+  if (clause) parts.push(clause);
+  return `  ${parts.join(' ')}`;
+}
+
+function markInlineSlotUnread(slot, reason, origin) {
+  const shown = origin == null || origin === '' ? null : frameContentOrigin(origin);
+  slot.read = false;
+  slot.reason = reason;
+  slot.clause = crossSiteReadClause({ reason, origin: shown });
+  slot.inlineText = '';
+  slot.childLines = [];
+  if (slot.record) {
+    slot.record.content = { read: false, reason, origin: shown };
+    delete slot.record.contentBoundary;
+  }
+}
+
+function renderFrameNoticeLine(notice) {
+  const visibleRefs = notice.visibleRefs || [];
+  const classifying = notice.classifying === true;
+  const target = notice.target || '<target>';
+  const childCount = notice.childCount || 0;
+  const crossSiteCount = notice.crossSiteCount || 0;
+  const candidates = [...visibleRefs];
+  let allowed = 0;
+  if (classifying) {
+    for (const slot of notice.slots || []) {
+      if (!slot?.crossSite || !slot.read || slot.reason) continue;
+      allowed += 1;
+      if (slot.visible && slot.ref) candidates.push(slot.ref);
+    }
+  }
+  const notRead = classifying ? Math.max(0, crossSiteCount - allowed) : crossSiteCount;
+  let line = `Frames: ${childCount} (${visibleRefs.length} visible)`;
+  if (classifying) {
+    if (notRead > 0) line += `, ${notRead} cross-site not read`;
+    if (allowed > 0) line += `, ${allowed} cross-site allowed`;
+    if (candidates.length === 1) line += `. Next: cdp perceive ${target} --frame ${candidates[0]}`;
+    else if (childCount || notRead || allowed) line += `. Next: cdp frame ${target}`;
+  } else if (crossSiteCount > 0) {
+    line += `, ${crossSiteCount} cross-site not reachable yet`;
+    if (visibleRefs.length === 1) line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
+    else if (childCount >= 1) line += `. Next: cdp frame ${target}`;
+  } else if (visibleRefs.length === 1) {
+    line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
+  } else if (childCount >= 1) {
+    line += `. Next: cdp frame ${target}`;
+  }
+  notice.line = line;
+  return notice;
+}
+
+// COMMIT_CHECKS: the origin is read before the AX call and again after it.
+// A Page.frameNavigated for that frame, or a changed origin or loaderId,
+// discards the tree. The printed host stays the origin we committed to.
+async function readInlineFrameContent(cdp, sid, frame, ctx) {
+  const committed = frameContentOrigin(frame.securityOrigin);
+  const childSid = crossSiteFrameSession(cdp, sid, frame.id);
+  if (!childSid) return { ok: false, reason: 'navigated', origin: committed };
+  let before = null;
+  try {
+    before = await committedFrameSnapshot(cdp, childSid, frame.id);
+  } catch {
+    return { ok: false, reason: 'navigated', origin: committed };
+  }
+  const started = frame.securityOrigin || '';
+  if (!before || before.origin !== started || !classifyFrameOrigin(before.origin, ctx.sites).read) {
+    return { ok: false, reason: 'navigated', origin: committed };
+  }
+  let sawNavigation = false;
+  const unsubscribe = typeof cdp.onEvent === 'function'
+    ? cdp.onEvent('Page.frameNavigated', (params) => {
+      if (params?.frame?.id === frame.id) sawNavigation = true;
+    })
+    : null;
+  try {
+    const ax = await cdpDomains(cdp).Accessibility.getFullAXTree({ frameId: frame.id }, childSid);
+    const after = await committedFrameSnapshot(cdp, childSid, frame.id);
+    if (sawNavigation || !after || after.origin !== before.origin || after.loaderId !== before.loaderId) {
+      return { ok: false, reason: 'navigated', origin: frameContentOrigin(before.origin) };
+    }
+    const nodes = axNodesOwnedByFrame(Array.isArray(ax?.nodes) ? ax.nodes : [], frame.id);
+    const scopedRefs = new Map();
+    const built = buildPerceiveTree(nodes, { layoutMap: {}, counts: {}, styleHints: {} }, scopedRefs, {
+      maxDepth: ctx.maxDepth,
+      interactiveOnly: ctx.interactiveOnly,
+      cursorInteractive: ctx.cursorInteractive,
+      targetPrefix: ctx.targetPrefix,
+    });
+    storeFrameScopedRefs(ctx.refState, frame, ctx.frames, scopedRefs);
+    const { title, interactive } = frameContentTitleAndInteractive(nodes);
+    const origin = frameContentOrigin(before.origin);
+    const qualified = qualifyFrameRefsInLines(built.treeLines, frame.ref).map(hoistTrailingFrameRef);
+    return {
+      ok: true,
+      origin,
+      title,
+      interactive,
+      text: wrapFrameContent(qualified.join('\n'), { nonce: ctx.nonce, origin }),
+    };
+  } catch {
+    return { ok: false, reason: 'navigated', origin: frameContentOrigin(before.origin) };
+  } finally {
+    if (typeof unsubscribe === 'function') unsubscribe();
+  }
+}
+
+async function inlineNestedOopifFrames(cdp, sid, parent, ctx) {
+  const lines = [];
+  const children = (ctx.frames || []).filter(frame => frame && frame.process === 'oopif' && frame.parentId === parent.id);
+  for (const child of children) {
+    const classification = classifyFrameOrigin(child.securityOrigin, ctx.sites);
+    const host = originHost(child.securityOrigin);
+    if (!classification.read) {
+      ctx.notice.records.push({
+        ref: child.ref,
+        content: { read: false, reason: classification.reason, origin: classification.origin },
+      });
+      lines.push(nestedIframeLine(host, child.ref, crossSiteReadClause(classification)));
+      continue;
+    }
+    if (ctx.budget <= 0) {
+      ctx.notice.records.push({
+        ref: child.ref,
+        content: { read: false, reason: 'cap', origin: classification.origin },
+      });
+      lines.push(nestedIframeLine(host, child.ref, crossSiteReadClause({ reason: 'cap', origin: classification.origin })));
+      continue;
+    }
+    ctx.budget -= 1;
+    const outcome = await readInlineFrameContent(cdp, sid, child, ctx);
+    if (!outcome.ok) {
+      ctx.notice.records.push({
+        ref: child.ref,
+        content: { read: false, reason: outcome.reason || 'navigated', origin: outcome.origin },
+      });
+      lines.push(nestedIframeLine(host, child.ref, crossSiteReadClause({
+        reason: outcome.reason || 'navigated',
+        origin: outcome.origin,
+      })));
+      continue;
+    }
+    ctx.notice.records.push({
+      ref: child.ref,
+      content: { read: true, origin: outcome.origin },
+      contentBoundary: frameContentBoundary(ctx.nonce, outcome.origin),
+    });
+    lines.push(nestedIframeLine(host, child.ref, ''));
+    if (outcome.text) lines.push(...String(outcome.text).split('\n'));
+    lines.push(...await inlineNestedOopifFrames(cdp, sid, child, ctx));
+  }
+  return lines;
+}
+
+async function inlineAllowlistedFrames(cdp, sid, notice, ctx) {
+  const byId = new Map();
+  for (const frame of ctx.frames || []) {
+    if (frame?.id) byId.set(frame.id, frame);
+  }
+  const state = {
+    ...ctx,
+    notice,
+    nonce: createFrameContentNonce(),
+    budget: FRAME_INLINE_CAP,
+  };
+  for (const slot of notice.slots || []) {
+    if (!slot?.crossSite || !slot.read || slot.reason) continue;
+    const origin = slot.record?.content?.origin || null;
+    const frame = slot.frameId ? byId.get(slot.frameId) : null;
+    if (!frame) {
+      markInlineSlotUnread(slot, 'navigated', origin);
+      continue;
+    }
+    if (state.budget <= 0) {
+      markInlineSlotUnread(slot, 'cap', origin);
+      continue;
+    }
+    state.budget -= 1;
+    const outcome = await readInlineFrameContent(cdp, sid, frame, state);
+    if (!outcome.ok) {
+      markInlineSlotUnread(slot, outcome.reason || 'navigated', outcome.origin || origin);
+      continue;
+    }
+    slot.read = true;
+    slot.reason = '';
+    slot.clause = '';
+    slot.inlineText = outcome.text;
+    if (slot.record) {
+      slot.record.content = { read: true, origin: outcome.origin };
+      slot.record.contentBoundary = frameContentBoundary(state.nonce, outcome.origin);
+    }
+    slot.childLines = await inlineNestedOopifFrames(cdp, sid, frame, state);
+  }
+  return renderFrameNoticeLine(notice);
+}
+
+function interactiveCountLine(interactive) {
+  const parts = Object.entries(interactive || {})
+    .filter(([, count]) => count > 0)
+    .map(([role, count]) => `${count} ${role}`);
+  return `Interactive: ${parts.length ? parts.join(', ') : 'none'}`;
+}
+
+export function formatCrossSiteSummaryText(frames) {
+  if (!Array.isArray(frames) || frames.length === 0) return '';
+  const lines = [];
+  for (const frame of frames) {
+    if (!frame?.content?.read || !frame.frameContent) continue;
+    const host = frame.host || originHost(frame.content.origin);
+    if (host) lines.push(`Frame: ${host}`);
+    const nonce = frame.contentBoundary?.nonce || createFrameContentNonce();
+    lines.push(wrapFrameContent([
+      `Title: ${frame.frameContent.title || ''}`,
+      interactiveCountLine(frame.frameContent.interactive),
+    ].join('\n'), { nonce, origin: frame.content.origin }));
+  }
+  return lines.join('\n');
+}
+
+export async function crossSiteSummaryFrames(cdp, sid) {
+  const sites = currentFrameSites();
+  // Unset means nothing can be inlined. Skip attach and the child frame walk.
+  if (sites == null) return [];
+  const listed = await framesModel(cdp, sid, { crossSite: true });
+  const frames = (listed.frames || []).filter(frame => frame?.process === 'oopif' && frame.id);
+  if (!frames.length) return [];
+  const nonce = createFrameContentNonce();
+  const records = [];
+  let budget = FRAME_INLINE_CAP;
+  const ctx = {
+    sites,
+    nonce,
+    frames: listed.frames,
+    maxDepth: Infinity,
+    interactiveOnly: false,
+    cursorInteractive: false,
+    targetPrefix: '<target>',
+    refState: null,
+  };
+  for (const frame of frames) {
+    const classification = classifyFrameOrigin(frame.securityOrigin, sites);
+    if (!classification.read) continue;
+    if (budget <= 0) break;
+    budget -= 1;
+    const outcome = await readInlineFrameContent(cdp, sid, frame, ctx);
+    if (!outcome.ok) continue;
+    records.push({
+      ref: frame.ref,
+      host: originHost(outcome.origin),
+      content: { read: true, origin: outcome.origin },
+      contentBoundary: frameContentBoundary(nonce, outcome.origin),
+      frameContent: { title: outcome.title, interactive: outcome.interactive },
+    });
+  }
+  return records;
+}
 const PERCEIVE_FRAME_RECORDS = new WeakMap();
 
 function normalizeFrameSites(value) {
@@ -1572,7 +1907,6 @@ function buildPerceiveFrameNotice({
     }
   }
   const records = [];
-  let allowed = 0;
   const slots = elements.map((element, index) => {
     const sameRef = refByElement.get(index) || null;
     if (sameRef) {
@@ -1594,23 +1928,29 @@ function buildPerceiveFrameNotice({
     const classification = oopif
       ? classifyFrameOrigin(oopif.securityOrigin, frameSites)
       : { read: false, reason: 'opaque-origin', origin: null };
-    if (classification.reason === 'allowed-not-inlined') allowed += 1;
     const host = oopif ? originHost(oopif.securityOrigin) : '';
     const ref = oopif?.ref || null;
     const visible = frameChildVisible(element, null);
-    records.push({
+    const read = classification.read === true;
+    const record = {
       ...(ref ? { ref } : {}),
-      content: { read: false, reason: classification.reason, origin: classification.origin },
-    });
+      content: read
+        ? { read: true, origin: classification.origin }
+        : { read: false, reason: classification.reason, origin: classification.origin },
+    };
+    records.push(record);
     return {
       ref,
       crossSite: true,
       host,
-      clause: crossSiteReadClause(classification, { target, ref: ref || '' }),
-      reason: classification.reason,
+      clause: read ? '' : crossSiteReadClause(classification),
+      reason: read ? '' : classification.reason,
+      read,
       visible,
       label: host,
       backendNodeId: null,
+      frameId: oopif?.id || '',
+      record,
     };
   });
   const visibleRefs = [];
@@ -1620,36 +1960,16 @@ function buildPerceiveFrameNotice({
     if (frameChildVisible(element, ownerMap.get(frame.ref))) visibleRefs.push(frame.ref);
   }
   // FRAME_NEXT_CANDIDATES: a skipped cross-site frame is never a perceive --frame target.
-  const frameNextCandidates = [...visibleRefs];
-  if (classifying) {
-    for (const slot of slots) {
-      if (slot.reason === 'allowed-not-inlined' && slot.visible && slot.ref) frameNextCandidates.push(slot.ref);
-    }
-  }
-  const notRead = classifying ? Math.max(0, crossSiteCount - allowed) : crossSiteCount;
-  let line = `Frames: ${children.length} (${visibleRefs.length} visible)`;
-  if (classifying) {
-    if (notRead > 0) line += `, ${notRead} cross-site not read`;
-    if (allowed > 0) line += `, ${allowed} cross-site allowed`;
-    if (frameNextCandidates.length === 1) line += `. Next: cdp perceive ${target} --frame ${frameNextCandidates[0]}`;
-    else if (children.length || notRead || allowed) line += `. Next: cdp frame ${target}`;
-  } else if (crossSiteCount > 0) {
-    line += `, ${crossSiteCount} cross-site not reachable yet`;
-    if (visibleRefs.length === 1) line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
-    else if (children.length >= 1) line += `. Next: cdp frame ${target}`;
-  } else if (visibleRefs.length === 1) {
-    line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
-  } else if (children.length >= 1) {
-    line += `. Next: cdp frame ${target}`;
-  }
-  return {
-    line,
+  return renderFrameNoticeLine({
     slots,
     records,
     childCount: children.length,
     crossSiteCount,
     singleChildRef: children.length === 1 ? children[0]?.ref || null : null,
-  };
+    classifying,
+    target,
+    visibleRefs,
+  });
 }
 // Named click matches buttons and links. A heading or ignored node with the
 // same text is not a place that click would have found the control.
@@ -1733,7 +2053,7 @@ function knownFrameElementRef(refState, frame, node) {
 // line. Zero iframe/frame elements skip Page.getFrameTree: that page has nothing
 // a later --frame could enter. A named miss then reads accessible names in
 // same-origin frames. An already-attached cross-site frame is included; this
-// does not call setAutoAttach, and it does not read that frame into text or summary.
+// does not call setAutoAttach, and it does not inline that frame here.
 export async function attachSelectorFrameMiss(cdp, sid, err, target = {}, refState = null) {
   if (!cdp || !sid || !err || typeof err !== 'object') return err;
   const message = String(err.message || '');
@@ -4025,6 +4345,12 @@ export function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
           }
         } else {
           treeLines.push(formatPerceiveIframeLine(depth, slot.label, slot.ref, slot));
+          if (slot.inlineText) {
+            for (const line of String(slot.inlineText).split('\n')) treeLines.push(line);
+          }
+          if (Array.isArray(slot.childLines)) {
+            for (const line of slot.childLines) treeLines.push(line);
+          }
           if (inChrome) chromeLinesEmitted++;
         }
       }
@@ -4747,6 +5073,17 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
         oopifFrames,
         frameSites: currentFrameSites(opts),
       });
+      if (frameNotice) {
+        await inlineAllowlistedFrames(cdp, sid, frameNotice, {
+          frames,
+          refState,
+          maxDepth,
+          interactiveOnly,
+          cursorInteractive,
+          targetPrefix: opts.targetPrefix || '<target>',
+          sites: currentFrameSites(opts),
+        });
+      }
     } catch {
       frameNotice = null;
     }
@@ -5029,7 +5366,21 @@ export async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, 
     outputTruncated: lastPerceiveStore?.outputTruncated === true,
   });
   const extra = perceiveFrameRecords(cdp);
-  if (extra?.frames?.length) model.frames = extra.frames;
+  if (extra?.frames?.length) {
+    model.frames = extra.frames;
+    const originByFrame = new Map();
+    for (const frame of extra.frames) {
+      if (frame?.ref && frame.content?.read === true && frame.content.origin) {
+        originByFrame.set(frame.ref, frame.content.origin);
+      }
+    }
+    for (const node of model.nodes || []) {
+      const match = /^(@f\d+):\d+$/.exec(String(node?.ref || ''));
+      if (!match || !originByFrame.has(match[1])) continue;
+      if (node.frameRef == null) node.frameRef = match[1];
+      if (node.origin == null) node.origin = originByFrame.get(match[1]);
+    }
+  }
   if (extra?.contentBoundary) model.contentBoundary = extra.contentBoundary;
   return model;
 }

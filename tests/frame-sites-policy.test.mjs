@@ -115,9 +115,8 @@ describe('frame origin classification', () => {
   });
 
   it('gates about:srcdoc on the inherited origin', () => {
-    expect(classifyFrameOrigin('https://pay.example.com', allowed)).toMatchObject({
-      read: false,
-      reason: 'allowed-not-inlined',
+    expect(classifyFrameOrigin('https://pay.example.com', allowed)).toEqual({
+      read: true,
       origin: 'https://pay.example.com',
     });
     expect(classifyFrameOrigin('https://ads.example.com', allowed)).toMatchObject({
@@ -132,7 +131,23 @@ describe('frame origin classification', () => {
     expect(classifyFrameOrigin('http://pay.example.com', allowed)).toMatchObject({ reason: 'not-https' });
     expect(classifyFrameOrigin('http://127.0.0.2', allowed)).toMatchObject({ reason: 'not-https' });
     expect(classifyFrameOrigin('https://pay.example.com', null)).toMatchObject({ reason: 'unset' });
-    expect(classifyFrameOrigin('http://localhost', allowed)).toMatchObject({ reason: 'allowed-not-inlined' });
+    expect(classifyFrameOrigin('http://localhost', allowed)).toEqual({ read: true, origin: 'http://localhost' });
     expect(classifyFrameOrigin('http://localhost:9', allowed)).toMatchObject({ reason: 'not-allowlisted' });
+  });
+
+  it('treats a data:, blob:, or null prefix as opaque before the URL origin is reused', () => {
+    for (const origin of [
+      'data:text/html,hi',
+      'data:https://pay.example.com',
+      'blob:https://pay.example.com/uuid',
+      'blob:http://localhost/x',
+      'null',
+    ]) {
+      expect(classifyFrameOrigin(origin, allowed), origin).toEqual({
+        read: false,
+        reason: 'opaque-origin',
+        origin: null,
+      });
+    }
   });
 });

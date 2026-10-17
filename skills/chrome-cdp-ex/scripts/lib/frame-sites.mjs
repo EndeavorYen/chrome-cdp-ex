@@ -1,5 +1,6 @@
 // CDP_FRAME_SITES: which cross-site frame origins implicit perceive may read.
-// Slice 1 parses the list and classifies frames. It does not inline their trees.
+// An allowlisted https or loopback origin is eligible to inline. The read itself
+// still has to pass the commit checks in perceive.
 // The public-suffix set is a floor: a wildcard whose base is on it is rejected.
 // An entry that is not on the list is not thereby trusted.
 import { randomBytes } from 'node:crypto';
@@ -160,7 +161,7 @@ export function classifyFrameOrigin(origin, entries) {
   if (!frameSiteMatches(parsed.origin, entries)) {
     return { read: false, reason: 'not-allowlisted', origin: parsed.origin };
   }
-  return { read: false, reason: 'allowed-not-inlined', origin: parsed.origin };
+  return { read: true, origin: parsed.origin };
 }
 
 export function originHost(origin) {
@@ -173,10 +174,7 @@ export function frameContentOrigin(origin) {
   return parsed ? parsed.origin : 'null';
 }
 
-export function crossSiteReadClause(classification, { target = '<target>', ref = '' } = {}) {
-  if (classification?.reason === 'allowed-not-inlined') {
-    return `(cross-site, allowed, not inlined yet; read it with cdp perceive ${target} --frame ${ref})`;
-  }
+export function crossSiteReadClause(classification) {
   const detail = {
     unset: 'CDP_FRAME_SITES not set',
     'not-allowlisted': `not in CDP_FRAME_SITES; the user can add ${classification?.origin || ''}`,
