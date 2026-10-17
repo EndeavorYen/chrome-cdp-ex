@@ -21,7 +21,7 @@ import { actionDispatchFailureMessage, actionDispatchSemanticsFromModel, compact
 import { clickDispatchEffects, clickStr, fillFeedbackPolicy, isNamedClickQuery, namedClickQueryName, parseDragArgs, parseScrollContainerArg, parseScrollEdge, splitScrollEdgeArgs } from './cdp-input.mjs';
 import { assertNotPdfViewerPage, cdpDomains, collectPageHealth, createScreenshotTierState, evalStr, formatPdfViewerOutput, isHiddenTabCaptureError, isPdfViewerContentType, pdfViewerError, pdfViewerHandoffModel, pdfViewerNextCommand, pdfViewerReportRecommendation, runtimeMetricsStr, shotStr, webVitalsModelOrUnavailable } from './cdp-page.mjs';
 import { applyViewportOverride, formatClockSummary, formatNetworkMocksSummary, formatThrottleSummary } from './cdp-page-commands.mjs';
-import { attachSelectorFrameMiss, perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
+import { attachSelectorFrameMiss, crossSiteSummaryFrames, formatCrossSiteSummaryText, perceiveStr, renderedInteractiveSource } from './cdp-perceive.mjs';
 import { relocateCrossSiteActionFields } from './frame-sites.mjs';
 
 export function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } = {}) {
@@ -258,7 +258,7 @@ export async function summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra = {
   }
   const exceptions = consoleDocumentEntries(exceptionBuf).length;
 
-  return {
+  const model = {
     schema: 'chrome-cdp-ex.summary.v1',
     page: { title: r.title, url: displayUrl(r.url, { unsafeFull: extra.unsafeFull === true }) },
     viewport: {
@@ -281,9 +281,19 @@ export async function summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra = {
     focused: r.focused,
     console: { errors, warnings, exceptions },
   };
+  try {
+    const frames = await crossSiteSummaryFrames(cdp, sid);
+    if (frames.length) model.frames = frames;
+  } catch {
+    // A frame probe must not hide the page summary.
+  }
+  return model;
 }
 export async function summaryStr(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
-  return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra));
+  const model = await summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra);
+  const text = formatSummaryText(model);
+  const frames = formatCrossSiteSummaryText(model.frames);
+  return frames ? `${text}\n${frames}` : text;
 }
 export function normalizeRequestExpectation(pattern = '') {
   const text = String(pattern || '').trim();
@@ -1058,6 +1068,11 @@ export function clickControlShouldReact(result, dispatchText) {
     || '';
   return REACTIVE_CLICK_TAGS.has(tag);
 }
+function dispatchErrorWithFrameBlock(message, block) {
+  const extra = String(block || '').trim();
+  const head = String(message || '');
+  return extra ? `${head}\n${extra}` : head;
+}
 export function clickNoChangeError(dispatchText) {
   // A cross-site receipt ends in a frame block. Keep it on its own lines, out of the Error: line.
   // Only a cross-site head (`<TAG> (@fN:M) in host`) splits; a top-page label is page text.
@@ -1091,7 +1106,7 @@ export function applyReactiveClickNoChangeFailure(result, dispatchText) {
   result.dispatch = {
     ...(result.dispatch || {}),
     ok: false,
-    error: failure.originalMessage,
+    error: dispatchErrorWithFrameBlock(failure.originalMessage, err.frameContentBlock),
   };
   result.settle = { ...(result.settle || {}), ok: false };
   result.effects = result.effects || {};
@@ -1124,7 +1139,7 @@ export async function runActionWithFeedback({ action, target = null, dispatch, f
     const result = createActionResult({
       action,
       target: target || { input: '', resolvedBy: 'command', label: '' },
-      dispatch: { ok: false, method: dispatchMethod, error: failure.originalMessage },
+      dispatch: { ok: false, method: dispatchMethod, error: dispatchErrorWithFrameBlock(failure.originalMessage, e?.frameContentBlock) },
       settle: { ok: false, durationMs: Date.now() - startedAt },
       effects: { domDiff: null, console: [], network: [], navigation: null, failure },
       nextHint: failure.nextCommand,
