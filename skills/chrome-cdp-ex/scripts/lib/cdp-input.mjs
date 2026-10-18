@@ -1889,13 +1889,21 @@ export function namedClickActionTarget(input, extra = {}) {
     commandArgs: extra.commandArgs ?? [input],
   };
   if (extra.targetId) target.targetId = extra.targetId;
-  if (named) {
-    target.expectedOutcome = NAMED_IN_VIEWPORT_CLICK_OUTCOME;
-    target.dispatchMethod = 'jsclick';
-  }
+  if (named) target.expectedOutcome = NAMED_IN_VIEWPORT_CLICK_OUTCOME;
   return target;
 }
-export function namedInViewportClickExpression(name, { checkCover = false } = {}) {
+// Page-side mark so the resolved node can be clicked by objectId. A string key
+// survives the evaluate that set it; it is removed before the pointer events.
+const NAMED_CLICK_MARK = 'chrome-cdp-ex.named-click';
+export function namedClickMarkReaderDeclaration() {
+  return `function() {
+    const mark = ${JSON.stringify(NAMED_CLICK_MARK)};
+    const meta = this[mark] || null;
+    try { delete this[mark]; } catch (err) {}
+    return meta;
+  }`;
+}
+export function namedInViewportClickExpression(name, { checkCover = false, resolveOnly = false } = {}) {
   const wanted = String(name ?? '');
   const coverCheck = checkCover ? `
     ${clickPointHitFunctionSource()}
@@ -1994,9 +2002,7 @@ export function namedInViewportClickExpression(name, { checkCover = false } = {}
     const linkTarget = ${linkTargetPageExpression('el')};
     const frameName = ${linkFrameNamePageExpression('el')};
     const pageHref = location.href;
-    if (typeof el.click === 'function') el.click();
-    else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-    return JSON.stringify({
+    const meta = {
       ok: true,
       tag: el.tagName,
       text: labelOf(el).substring(0, 80),
@@ -2012,7 +2018,13 @@ export function namedInViewportClickExpression(name, { checkCover = false } = {}
       scrolled,
       scrollYBefore,
       scrollYAfter: Math.round(window.scrollY || 0),
-    });
+    };
+    ${resolveOnly ? `
+    try { el[${JSON.stringify(NAMED_CLICK_MARK)}] = meta; } catch (err) {}
+    return el;` : `
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return JSON.stringify(meta);`}
   })()`;
 }
 export function rememberClickTrust(holder, { tag = '', role = '' } = {}) {
@@ -2057,8 +2069,8 @@ export async function namedInViewportJsClickStr(cdp, sid, input, clickTrust = nu
 // transforms, or when an MUD/game UI binds handlers only to synthetic clicks.
 // This path is intentionally separate from clickStr — agents opt into it via
 // `jsclick` or `click --js` so the default behaviour stays a realistic mouse
-// dispatch. Named queries use this path in one step (no mouse fail-close).
-// Off-screen unique names reuse the CSS jsclick scrollIntoView, then el.click().
+// dispatch. A named `click` is a pointer click; only these opt-ins keep the
+// in-page click. Off-screen unique names scrollIntoView, then el.click().
 export async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
   const pointer = options.pointer === true;
   if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
@@ -2390,20 +2402,127 @@ export async function waitForActionableSelector(cdp, sid, selector, { waitMs = A
   try { parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { parsed = null; }
   return parsed && parsed.cdpActionability === true ? parsed : null;
 }
+function namedClickPoint(rect) {
+  const w = Number(rect?.w);
+  const h = Number(rect?.h);
+  return { x: Number(rect?.x) + w / 2, y: Number(rect?.y) + h / 2 };
+}
+function namedClickBoxUnusable(rect, point) {
+  if (!rect || rect.connected === false) return true;
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return true;
+  return clickMeasurementUnusable({ ...rect, x: point.x, y: point.y }, point);
+}
+function namedResolvePayload(remote) {
+  const value = remote?.value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  if (value && typeof value === 'object' && value.ok !== true) return value;
+  return null;
+}
+// Resolve a named control with the same rules as jsclick, hold it by objectId,
+// then use the CSS pointer path so the control takes focus. No usable box falls
+// back to el.click() and the receipt says focus was not moved.
+export async function namedInViewportPointerClickStr(cdp, sid, input, opts = {}) {
+  assertClosedClickTarget(input);
+  const name = namedClickQueryName(input);
+  if (!String(name).trim()) {
+    throw new Error(`${String(input).trim()} has no visible text to match. Pass the button or link text, e.g. click <target> "text=Save", or an @ref from perceive.`);
+  }
+  const evaluated = await cdpDomains(cdp).Runtime.evaluate({
+    expression: namedInViewportClickExpression(name, { resolveOnly: true }),
+    returnByValue: false,
+    awaitPromise: true,
+  }, sid);
+  if (evaluated.exceptionDetails) throw new Error(runtimeExceptionMessage(evaluated.exceptionDetails));
+  const remote = evaluated.result || {};
+  const failure = namedResolvePayload(remote);
+  if (failure && failure.ok !== true) {
+    if (failure.covered === true) {
+      assertClickPointNotCovered(failure.hit, { x: failure.x, y: failure.y, tag: failure.tag, text: failure.text });
+    }
+    if (failure.disabled) throw actionDisabledError('click', failure.disabled, input);
+    throw new Error(namedClickMissMessage(input, failure.error));
+  }
+  const objectId = remote.objectId;
+  if (!objectId) {
+    throw new Error(`click: named control ${JSON.stringify(name)} was found but could not be held for a pointer click. Nothing was clicked.`);
+  }
+  const marked = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId,
+    functionDeclaration: namedClickMarkReaderDeclaration(),
+    returnByValue: true,
+  }, sid);
+  if (marked.exceptionDetails) throw new Error(runtimeExceptionMessage(marked.exceptionDetails));
+  const meta = marked.result?.value;
+  if (!meta || meta.ok !== true) {
+    throw new Error(`click: named control ${JSON.stringify(name)} was found, then lost before the pointer click. Nothing was clicked.`);
+  }
+  const settled = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId,
+    functionDeclaration: scrollSettledRectFunctionDeclaration({ hitTest: true }),
+    returnByValue: true,
+    awaitPromise: true,
+  }, sid, REF_RESOLVE_TIMEOUT);
+  if (settled.exceptionDetails) throw new Error(runtimeExceptionMessage(settled.exceptionDetails));
+  const rect = settled.result?.value || {};
+  const point = namedClickPoint(rect);
+  const measurement = { ...rect, x: point.x, y: point.y };
+  rememberClickTrust(opts.clickTrust, { tag: meta.tag || rect.tag, role: meta.role || rect.role });
+  if (rect.hit?.covered === true) {
+    assertClickPointNotCovered(rect.hit, { x: point.x, y: point.y, tag: meta.tag, text: meta.text });
+  }
+  if (namedClickBoxUnusable(measurement, point)) {
+    await cdpDomains(cdp).Runtime.callFunctionOn({
+      objectId,
+      functionDeclaration: `function() {
+        if (typeof this.click === 'function') this.click();
+        else this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return true;
+      }`,
+      returnByValue: true,
+    }, sid);
+    return `JS-clicked <${meta.tag || '?'}> "${meta.text || ''}" (no click box; focus not moved)`;
+  }
+  const target = {
+    tag: meta.tag,
+    text: meta.text,
+    role: meta.role || '',
+    href: rect.href || meta.href || null,
+    linkTarget: rect.linkTarget != null ? rect.linkTarget : meta.linkTarget,
+    frameName: rect.frameName != null ? rect.frameName : meta.frameName,
+    pageHref: rect.pageHref || meta.pageHref || '',
+    downloadAttr: rect.downloadAttr === true,
+  };
+  const suffix = await observeClickOutsideDocument(cdp, sid, point, { objectId, selector: input }, target, opts);
+  let url = '';
+  if (clickFollowsHref(target) && !suffix) {
+    const current = await evalPageHref(cdp, sid);
+    if (current && current !== String(target.pageHref || '')) url = current;
+  }
+  const scrollLine = meta.scrolled ? `\nScroll: ${meta.scrollYBefore} → ${meta.scrollYAfter}` : '';
+  const urlLine = url ? `\nURL: ${url}` : '';
+  return `Clicked <${meta.tag || '?'}> "${meta.text || ''}"${suffix || ''}${scrollLine}${urlLine}`;
+}
 // Click element by CSS selector, @ref, or accessible name.
-// Named queries take the jsclick path in one step: headed CDP mouse often
-// completes dispatch.ok with zero page events (no-input-events). A unique
-// off-screen name reuses scrollIntoView({block,inline:center}) then el.click().
+// A named query resolves with the same rules as jsclick (exact text, then a
+// normalised field, viewport first, one off-screen match scrolled into view),
+// then uses the CSS pointer path: scroll-settled box, hit test, CDP mouse at
+// the centre, so the control takes focus. A target with no usable click box
+// falls back to el.click(). `jsclick` and `click --js` stay on that in-page click.
 // A CSS selector waits up to `opts.waitMs` (default ACTIONABILITY_WAIT_DEFAULT_MS, 0 disables)
 // for the element to be attached, visible and enabled (#468); an @ref is checked for disabled
 // without waiting.
 export async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
   assertClosedClickTarget(selector);
-  // A label hit-tests, then uses the same in-page click as jsclick. `click --js` / `jsclick`
-  // call jsClickStr and skip the hit test.
   if (isNamedClickQuery(selector)) {
-    return namedInViewportJsClickStr(cdp, sid, selector, opts.clickTrust, { checkCover: true });
+    return namedInViewportPointerClickStr(cdp, sid, selector, opts);
   }
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);

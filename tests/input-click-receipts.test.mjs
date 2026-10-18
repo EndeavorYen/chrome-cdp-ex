@@ -13,41 +13,84 @@ const TARGET_ID = '71DF370F9D36D5A232B424FDC696BE1A';
 const PREFIX = '71DF370F';
 const BUTTON_NAME = '套用設定';
 
-function fakeButton(text, { clicks }) {
-  return {
+function fakePageCdp(names) {
+  const clicks = [];
+  const mouse = [];
+  class Node {
+    get isConnected() { return true; }
+    get ownerDocument() { return doc; }
+    get parentNode() { return null; }
+    getRootNode() { return doc; }
+  }
+  const buttons = names.map(text => Object.assign(Object.create(Node.prototype), {
+    nodeType: 1,
     tagName: 'BUTTON',
+    id: '',
+    className: '',
     innerText: text,
     textContent: text,
     href: '',
     getAttribute: () => null,
+    closest() { return null; },
+    matches() { return false; },
     getBoundingClientRect: () => ({ x: 10, y: 10, width: 80, height: 24, top: 10, left: 10, right: 90, bottom: 34 }),
     click() { clicks.push(text); },
     scrollIntoView() {},
+  }));
+  const doc = {
+    nodeType: 9,
+    elementFromPoint() { return null; },
+    querySelectorAll: () => buttons,
+    querySelector: () => null,
   };
-}
-
-function fakePageCdp(names) {
-  const clicks = [];
-  const buttons = names.map(name => fakeButton(name, { clicks }));
   const context = {
-    window: { innerWidth: 800, innerHeight: 600, scrollY: 0, MouseEvent: class {} },
-    document: {
-      querySelectorAll: () => buttons,
-      querySelector: () => null,
-    },
+    window: { innerWidth: 800, innerHeight: 600, scrollY: 0, MouseEvent: class MouseEvent {} },
+    document: doc,
     location: { href: 'http://127.0.0.1/fixture' },
-    Array, JSON, String, Math, Number,
+    Node,
+    getComputedStyle: () => ({
+      position: 'static', overflowX: 'visible', overflowY: 'visible', transform: 'none',
+      filter: 'none', contain: 'none', display: 'block', visibility: 'visible', pointerEvents: 'auto',
+    }),
+    Promise, Date, setTimeout, Math, Object, Reflect, String, Number, Array, JSON,
   };
-  context.window.MouseEvent = class MouseEvent {};
+  let seen = [];
+  let resolved = null;
   const cdp = {
     send(method, params = {}) {
-      if (method === 'Runtime.evaluate') {
-        return Promise.resolve({ result: { value: runInNewContext(String(params.expression || ''), context) } });
+      const src = method === 'Runtime.evaluate'
+        ? String(params.expression || '')
+        : String(params.functionDeclaration || '');
+      if (src.includes('__chromeCdpExClickProbe')) {
+        if (src.includes('installed: true')) {
+          seen = [];
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+        }
+        return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen: seen.slice(), reached: seen.slice() } } });
       }
-      throw new Error(`unexpected ${method}`);
+      if (method === 'Input.dispatchMouseEvent') {
+        mouse.push(params);
+        if (params.type === 'mouseReleased') seen.push('mousedown', 'mouseup', 'click');
+        return Promise.resolve({});
+      }
+      if (method === 'Runtime.evaluate') {
+        if (src === 'location.href') return Promise.resolve({ result: { type: 'string', value: context.location.href } });
+        const value = runInNewContext(src, context);
+        if (params.returnByValue === false && value && value.nodeType === 1) {
+          resolved = value;
+          return Promise.resolve({ result: { type: 'object', subtype: 'node', objectId: 'named-el' } });
+        }
+        return Promise.resolve({ result: { value } });
+      }
+      if (method === 'Runtime.callFunctionOn') {
+        const fn = runInNewContext(`(${src})`, context);
+        return Promise.resolve(fn.call(resolved)).then(value => ({ result: { value } }));
+      }
+      if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: [] });
+      return Promise.resolve({});
     },
   };
-  return { cdp, clicks };
+  return { cdp, clicks, mouse };
 }
 
 describe('#427 failed actions always print an Error line', () => {
@@ -154,12 +197,16 @@ describe('#427 Playwright text= selector is an alias for the visible-text form',
     expect(T.namedClickQueryName(BUTTON_NAME)).toBe(BUTTON_NAME);
   });
 
-  it('click "text=套用設定" clicks the button with that visible text', async () => {
+  it('click "text=套用設定" pointer-clicks the button with that visible text', async () => {
     for (const input of [`text=${BUTTON_NAME}`, `text="${BUTTON_NAME}"`]) {
-      const { cdp, clicks } = fakePageCdp([BUTTON_NAME, '無動作']);
+      const { cdp, clicks, mouse } = fakePageCdp([BUTTON_NAME, '無動作']);
       const out = await T.clickStr(cdp, 'sid', input);
-      expect(out).toBe(`JS-clicked <BUTTON> "${BUTTON_NAME}"`);
-      expect(clicks).toEqual([BUTTON_NAME]);
+      expect(out).toBe(`Clicked <BUTTON> "${BUTTON_NAME}"`);
+      expect(mouse.filter(event => event.type === 'mousePressed')).toEqual([
+        expect.objectContaining({ x: 50, y: 22, button: 'left' }),
+      ]);
+      expect(mouse.some(event => event.type === 'mouseReleased')).toBe(true);
+      expect(clicks).toEqual([]);
     }
   });
 
@@ -308,6 +355,92 @@ describe('#745 a receipt names the target by aria-label, then text, then title',
     expect(labelOf(option)).toBe('B200 192 GB');
     const select = tree('SELECT', { attrs: { title: 'Country' }, children: [tree('OPTION', { children: [text('United States')] })] });
     expect(labelOf(select)).toBe('Country');
+  });
+
+  it('a named click pointer-presses the resolved centre (#749)', async () => {
+    const clicks = [];
+    const button = {
+      nodeType: 1,
+      tagName: 'BUTTON',
+      id: '',
+      className: '',
+      href: '',
+      innerText: 'New Project',
+      textContent: 'New Project',
+      _rect: { x: 40, y: 50, width: 200, height: 40 },
+      getAttribute: () => null,
+      matches: () => false,
+      closest: () => null,
+      getBoundingClientRect() {
+        const box = this._rect;
+        return { x: box.x, y: box.y, width: box.width, height: box.height, top: box.y, left: box.x, right: box.x + box.width, bottom: box.y + box.height };
+      },
+      scrollIntoView() {},
+      click() { clicks.push('New Project'); },
+    };
+    class Node {
+      get isConnected() { return true; }
+      get ownerDocument() { return this._owner || doc; }
+      get parentNode() { return this._parent || null; }
+      getRootNode() { return doc; }
+    }
+    Object.setPrototypeOf(button, Node.prototype);
+    const doc = {
+      nodeType: 9,
+      elementFromPoint() { return button; },
+      querySelector() { return null; },
+      querySelectorAll: () => [button],
+    };
+    button._owner = doc;
+    const context = {
+      window: { innerWidth: 800, innerHeight: 600, scrollY: 0, MouseEvent: class {}, requestAnimationFrame(cb) { cb(); return 1; } },
+      document: doc,
+      location: { href: 'http://127.0.0.1/fixture' },
+      Node, getComputedStyle: () => ({ position: 'static', overflowX: 'visible', overflowY: 'visible', transform: 'none', filter: 'none', contain: 'none', display: 'block', visibility: 'visible', pointerEvents: 'auto' }),
+      Promise, Date, setTimeout, Math, Object, Reflect, String, Number, Array, JSON,
+    };
+    const mouse = [];
+    let seen = [];
+    let resolved = null;
+    const cdp = {
+      send(method, params = {}) {
+        const src = method === 'Runtime.evaluate' ? String(params.expression || '') : String(params.functionDeclaration || '');
+        if (src.includes('__chromeCdpExClickProbe')) {
+          if (src.includes('installed: true')) {
+            seen = [];
+            return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+          }
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen: seen.slice(), reached: seen.slice() } } });
+        }
+        if (method === 'Input.dispatchMouseEvent') {
+          mouse.push(params);
+          if (params.type === 'mouseReleased') seen.push('mousedown', 'mouseup', 'click');
+          return Promise.resolve({});
+        }
+        if (method === 'Runtime.evaluate') {
+          const value = runInNewContext(src, context);
+          if (params.returnByValue === false && value && value.nodeType === 1) {
+            resolved = value;
+            return Promise.resolve({ result: { type: 'object', subtype: 'node', objectId: 'named-el' } });
+          }
+          return Promise.resolve({ result: { value } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          const fn = runInNewContext(`(${src})`, context);
+          return Promise.resolve(fn.call(resolved)).then(value => ({ result: { value } }));
+        }
+        return Promise.resolve({});
+      },
+    };
+    const out = await T.clickStr(cdp, 'sid', 'text=New Project');
+    expect(out).toBe('Clicked <BUTTON> "New Project"');
+    expect(mouse.filter(event => event.type === 'mousePressed')).toEqual([
+      expect.objectContaining({ x: 140, y: 70, button: 'left' }),
+    ]);
+    expect(mouse.filter(event => event.type === 'mouseReleased')).toEqual([
+      expect.objectContaining({ x: 140, y: 70, button: 'left' }),
+    ]);
+    expect(clicks).toEqual([]);
   });
 
   it('falls back to the title when there is no text, and lets aria-label win', () => {
