@@ -29,7 +29,7 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 ## Quick start
 
-Needs Node.js 22 (built-in WebSocket). This project does **not** publish to the npm registry.
+Needs Node.js 22 (built-in WebSocket). GitHub Releases remain the tarball install. npm publish runs from the release workflow after one manual first publish.
 
 From a checkout or unpacked release:
 

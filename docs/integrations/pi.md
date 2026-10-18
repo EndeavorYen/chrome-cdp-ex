@@ -21,6 +21,6 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 
 ## Route
 
-Prefer **CLI**. Official distribution remains GitHub Release tarballs — this project does not publish to the npm registry.
+Prefer **CLI**. Official distribution is the GitHub Release tarball, and npm after one manual first publish.
 
 See also: `skills/chrome-cdp-ex/hosts/pi.md`.
