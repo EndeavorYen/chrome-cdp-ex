@@ -923,7 +923,8 @@ describe('slice 1 cross-site frame sites', () => {
     ));
     expect(out).not.toContain('not inlined yet');
     expect(out).not.toContain('allowed-not-inlined');
-    expect(out).toContain('Frames: 0 (0 visible), 1 cross-site allowed. Next: cdp perceive AB12CD34 --frame @f2');
+    expect(out).toContain('Frames: 0 (0 visible), 1 cross-site allowed');
+    expect(out).not.toMatch(/Next:.*--frame/);
     expect(out).not.toContain('cross-site not read');
   });
 
@@ -1724,5 +1725,150 @@ describe('slice 2 inline cross-site frames', () => {
     expect(JSON.stringify(model)).not.toContain(unsetTitle);
     expect(cdp.calls.filter(call => call.method === 'Target.setAutoAttach')).toEqual([]);
     expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree' && call.sessionId === CHILD)).toEqual([]);
+  });
+});
+
+const INLINE_DIFF_TARGET = 'AB12CD34ABCDEF0123456789ABCDEF01';
+const inlineDiffDelta = {
+  console: { count: 0, errors: 0, warnings: 0, entries: [] },
+  exceptions: { count: 0, entries: [] },
+  network: { count: 0, failures: 0, pending: 0, entries: [] },
+};
+
+function inlinePayCdp(state) {
+  return createMockCDP({
+    'Runtime.evaluate': () => ({ result: { value: JSON.stringify(hostPageMeta([
+      { title: 'Checkout', src: 'https://pay.example.com/checkout', host: 'pay.example.com', visible: true },
+    ])) } }),
+    'Accessibility.getFullAXTree': () => ({ nodes: hostAxNodes([{ title: 'Checkout' }]) }),
+    'Page.getFrameTree': () => ({
+      frameTree: { frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html', securityOrigin: 'http://127.0.0.1:9' } },
+    }),
+    'DOM.resolveNode': () => ({ object: { objectId: 'host-node' } }),
+    'Runtime.callFunctionOn': () => ({ result: { value: { x: 1, y: 2, w: 80, h: 24, position: 'static' } } }),
+    childSessions: [childEntry(CHILD, {
+      frame: {
+        id: 'pay-frame',
+        parentId: 'main-frame',
+        url: 'https://pay.example.com/checkout',
+        securityOrigin: 'https://pay.example.com',
+        loaderId: 'loader-1',
+      },
+    }, {
+      'Accessibility.getFullAXTree': () => ({ nodes: payFrameNodes({ title: 'Checkout', button: state.button }) }),
+      'DOM.resolveNode': () => ({ object: { objectId: 'pay-btn' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { x: 4, y: 6, w: 40, h: 18, position: 'static' } } }),
+    })],
+  });
+}
+
+function framesHeader(text) {
+  return String(text).split('\n').find(line => line.startsWith('Frames:')) || '';
+}
+
+function inlineDiffBaseline(store, actionTarget, refState = {}) {
+  const baselineFromTarget = T.baselineOutputForActionTarget(
+    refState,
+    T.perceiveStoreDiffSource(store),
+    actionTarget,
+  );
+  return T.actionSettleBaseline(baselineFromTarget, store.snapshotOpts || null, actionTarget);
+}
+
+function inlineDiffReceipt(domDiff, actionTarget) {
+  return T.applyActionObservationDelta(T.createActionResult({
+    action: 'click',
+    target: { targetId: INLINE_DIFF_TARGET, ...actionTarget },
+    dispatch: { ok: true, method: 'click' },
+    settle: { ok: true, durationMs: 80 },
+    effects: { domDiff, console: [], network: [], navigation: null },
+  }), inlineDiffDelta);
+}
+
+describe('inlined frame nonce is not a perceive diff', () => {
+  it('perceive --diff on an unchanged page with an inlined frame reports no change', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const cdp = inlinePayCdp({ button: 'Pay now' });
+    const store = { output: null };
+    const opts = { targetPrefix: 'AB12CD34' };
+    const first = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), store, opts,
+    ));
+    const firstNonce = /nonce=([0-9a-f]{32})/.exec(first)[1];
+    expect(first).toContain(`--- FRAME CONTENT (untrusted) origin=https://pay.example.com nonce=${firstNonce} ---`);
+    const diff = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), store,
+      { ...T.parsePerceiveArgs(['--diff']), ...opts },
+    ));
+    const secondNonce = /nonce=([0-9a-f]{32})/.exec(T.perceiveStoreDiffSource(store))[1];
+    expect(secondNonce).not.toBe(firstNonce);
+    expect(diff).toMatch(/no changes detected in AX tree/i);
+    expect(diff).not.toMatch(/FRAME CONTENT/);
+    expect(diff).not.toMatch(/--- Removed/);
+    expect(diff).not.toMatch(/\+\+\+ Added/);
+  });
+
+  it('a no-op action settled against an inlined frame is Outcome: no-change', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const cdp = inlinePayCdp({ button: 'Pay now' });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), refMap, store,
+      { targetPrefix: 'AB12CD34' }, refState,
+    ));
+    const target = { input: '@1', resolvedBy: 'selector-or-ref', label: '@1', commandArgs: ['@1'] };
+    const baseline = inlineDiffBaseline(store, target, refState);
+    const after = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), refMap, store,
+      T.actionSettleObserveOpts(INLINE_DIFF_TARGET, target, baseline.output, baseline.opts),
+      refState,
+    ));
+    expect(after).toMatch(/no changes detected in AX tree/i);
+    expect(after).not.toMatch(/FRAME CONTENT/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(false);
+    expect(T.formatActionText(inlineDiffReceipt(after, target))).toMatch(/Outcome: no-change/);
+  });
+
+  it('a real change inside an inlined frame is still Outcome: changed', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const state = { button: 'Pay now' };
+    const cdp = inlinePayCdp(state);
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), refMap, store,
+      { targetPrefix: 'AB12CD34' }, refState,
+    ));
+    const target = { input: '@1', resolvedBy: 'selector-or-ref', label: '@1', commandArgs: ['@1'] };
+    const baseline = inlineDiffBaseline(store, target, refState);
+    state.button = 'Paid';
+    const after = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), refMap, store,
+      T.actionSettleObserveOpts(INLINE_DIFF_TARGET, target, baseline.output, baseline.opts),
+      refState,
+    ));
+    expect(after).toMatch(/\[button\] Pay now/);
+    expect(after).toMatch(/\[button\] Paid/);
+    expect(after).not.toMatch(/FRAME CONTENT/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    expect(T.formatActionText(inlineDiffReceipt(after, target))).toMatch(/Outcome: changed/);
+  });
+
+  it('does not suggest perceive --frame when the only allowlisted frame is already inlined', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const cdp = inlinePayCdp({ button: 'Pay now' });
+    const out = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null },
+      { targetPrefix: 'AB12CD34' },
+    ));
+    expect(out).toContain('[button] Pay now  @f2:1');
+    expect(out).toMatch(/--- FRAME CONTENT \(untrusted\) origin=https:\/\/pay\.example\.com nonce=[0-9a-f]{32} ---/);
+    const header = framesHeader(out);
+    expect(header).toBe('Frames: 0 (0 visible), 1 cross-site allowed');
+    expect(header).not.toContain('--frame');
+    expect(out).not.toMatch(/Next:.*--frame/);
   });
 });

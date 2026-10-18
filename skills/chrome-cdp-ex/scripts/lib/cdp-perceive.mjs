@@ -1604,10 +1604,16 @@ function renderFrameNoticeLine(notice) {
   const crossSiteCount = notice.crossSiteCount || 0;
   const candidates = [...visibleRefs];
   let allowed = 0;
+  let inlined = 0;
   if (classifying) {
     for (const slot of notice.slots || []) {
       if (!slot?.crossSite || !slot.read || slot.reason) continue;
       allowed += 1;
+      // The tree is already under this frame's host line. --frame would re-read it.
+      if (slot.inlineText) {
+        inlined += 1;
+        continue;
+      }
       if (slot.visible && slot.ref) candidates.push(slot.ref);
     }
   }
@@ -1616,8 +1622,9 @@ function renderFrameNoticeLine(notice) {
   if (classifying) {
     if (notRead > 0) line += `, ${notRead} cross-site not read`;
     if (allowed > 0) line += `, ${allowed} cross-site allowed`;
+    const pending = allowed - inlined;
     if (candidates.length === 1) line += `. Next: cdp perceive ${target} --frame ${candidates[0]}`;
-    else if (childCount || notRead || allowed) line += `. Next: cdp frame ${target}`;
+    else if (childCount || notRead || pending) line += `. Next: cdp frame ${target}`;
   } else if (crossSiteCount > 0) {
     line += `, ${crossSiteCount} cross-site not reachable yet`;
     if (visibleRefs.length === 1) line += `. Next: cdp perceive ${target} --frame ${visibleRefs[0]}`;
@@ -3749,13 +3756,21 @@ export function stripPerceiveSelectorChrome(line) {
     .replace(/\s+[a-z][\w-]*\[(?:title|aria-label)="[^"]*"\]/gi, '')
     .replace(/\s+(?:\.[^\s]+)+$/g, '');
 }
+// A FRAME CONTENT marker carries a new nonce on every output. The printed
+// tree keeps that nonce. Identity compare treats it as chrome so an unchanged
+// page does not look edited. Escaped marker text inside the block is page
+// content and stays in the key.
+const FRAME_CONTENT_NONCE_RE = /^(\s*--- (?:FRAME CONTENT \(untrusted\) origin=\S+|END FRAME CONTENT) )nonce=[0-9a-f]{32}( ---)$/;
+function stripFrameContentNonce(line) {
+  return String(line ?? '').replace(FRAME_CONTENT_NONCE_RE, '$1nonce=<nonce>$2');
+}
 export function stripPerceiveIdentityChrome(line) {
   // Fold tags (`↑above fold` / `↓below fold`) are viewport chrome on the
   // same landmark identity (#297). Title-only selector+class chrome is
   // identity chrome (#303). Do not strip Visible-control membership.
-  return stripPerceiveSelectorChrome(
+  return stripFrameContentNonce(stripPerceiveSelectorChrome(
     stripPerceiveRectChrome(line).replace(/\s+[↑↓](?:above|below) fold\b/g, ''),
-  );
+  ));
 }
 export function isVisibleControlsSectionHeader(line) {
   return /^\s*\[Visible controls\]/.test(String(line || ''));
@@ -3937,7 +3952,7 @@ export function computePerceiveDiff(previousOutput, currentOutput) {
   const currTree = currSplit.map(item => stripPerceiveIdentityChrome(item.line));
   const prevIds = prevSplit.map(item => item.id);
   const currIds = currSplit.map(item => item.id);
-  const refFreeKey = line => line.replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
+  const refFreeKey = line => stripFrameContentNonce(line).replace(/\s+@(?:c?\d+|f\d+:\d+)(?=\s|$)/g, '');
   // Count each key, so one of two identical lines going away is still reported.
   // Same text with two different backend ids does not pair.
   const currItems = currTree.map((line, index) => ({
