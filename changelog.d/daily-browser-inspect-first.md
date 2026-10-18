@@ -1,3 +1,0 @@
-### Bug Fixes
-
-* README and the daily-browser guide name `chrome://inspect/#remote-debugging` as the first step for the user's own browser (that toggle keeps their logins). `spawn-debug-browser`, `--daily-profile`, and an isolated or persistent non-default profile stay fallbacks without those logins; ask first. The persistent-dir launch line remains the cron option ([#635](https://github.com/EndeavorYen/chrome-cdp-ex/issues/635)). A flow step that absolutizes a shot or upload path keeps a backtick-quoted value, including one with an apostrophe and no pipe, as one argument ([#615](https://github.com/EndeavorYen/chrome-cdp-ex/issues/615)).

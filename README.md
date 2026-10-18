@@ -3,7 +3,7 @@
 <p>
   <a href="skills/chrome-cdp-ex/scripts/cdp.mjs"><img src="https://img.shields.io/badge/dependencies-0-blue" alt="Zero Dependencies"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-22%2B-brightgreen" alt="Node 22+"></a>
-  <a href="https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.21.0"><img src="https://img.shields.io/badge/release-v2.21.0-brightgreen" alt="Release v2.21.0"></a>
+  <a href="https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.22.0"><img src="https://img.shields.io/badge/release-v2.22.0-brightgreen" alt="Release v2.22.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-gray" alt="MIT License"></a>
 </p>
 <p>
@@ -55,16 +55,16 @@ If `node -v` is older than 22, doctor prints a Node 22 path that `./bin/chrome-c
 <details>
 <summary>Get the files (tarball or git clone)</summary>
 
-Pinned [v2.21.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.21.0) tarball:
+Pinned [v2.22.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.22.0) tarball:
 
 ```bash
-curl -L -o pi-chrome-cdp-2.21.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.21.0/pi-chrome-cdp-2.21.0.tgz
-mkdir -p chrome-cdp-ex-v2.21.0
-tar -xzf pi-chrome-cdp-2.21.0.tgz -C chrome-cdp-ex-v2.21.0 --strip-components=1
-cd chrome-cdp-ex-v2.21.0
+curl -L -o pi-chrome-cdp-2.22.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.22.0/pi-chrome-cdp-2.22.0.tgz
+mkdir -p chrome-cdp-ex-v2.22.0
+tar -xzf pi-chrome-cdp-2.22.0.tgz -C chrome-cdp-ex-v2.22.0 --strip-components=1
+cd chrome-cdp-ex-v2.22.0
 ```
 
-Checksum is on the [GitHub Release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.21.0).
+Checksum is on the [GitHub Release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.22.0).
 
 Current `main`:
 
