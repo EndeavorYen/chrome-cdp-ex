@@ -62,6 +62,7 @@ function makeLink({
       el.clicked = true;
       if (typeof el.onClick === 'function') el.onClick();
     },
+    nodeType: 1,
     clicked: false,
     scrollIntoView(opts) {
       el.scrolledIntoView = true;
@@ -71,6 +72,7 @@ function makeLink({
         pageState.scrollY + rect.y - pageState.innerHeight / 2 + rect.h / 2,
       ));
       pageState.scrollY = next;
+      rect.y = Math.max(0, Math.round((pageState.innerHeight - rect.h) / 2));
     },
     scrolledIntoView: false,
     scrollIntoViewOpts: null,
@@ -127,6 +129,12 @@ function createHfHomePage({
     state.href = HF_SPACES;
   };
   const links = [navModels, hero, belowFoldHero, apps];
+  class Node {
+    get isConnected() { return true; }
+    get ownerDocument() { return documentObj; }
+    get parentNode() { return null; }
+    getRootNode() { return documentObj; }
+  }
   const windowObj = {
     get innerWidth() { return state.innerWidth; },
     get innerHeight() { return state.innerHeight; },
@@ -167,6 +175,7 @@ function createHfHomePage({
       return [];
     },
   };
+  for (const link of links) Object.setPrototypeOf(link, Node.prototype);
   return {
     state,
     hero,
@@ -177,50 +186,87 @@ function createHfHomePage({
     window: windowObj,
     document: documentObj,
     location,
+    Node,
   };
 }
 
-function evaluateOnPage(page, expression) {
-  return runInNewContext(expression, {
+function pageVmContext(page) {
+  return {
     window: page.window,
     document: page.document,
     location: page.location,
+    Node: page.Node,
+    getComputedStyle: () => ({
+      position: 'static',
+      overflowX: 'visible',
+      overflowY: 'visible',
+      transform: 'none',
+      filter: 'none',
+      contain: 'none',
+      display: 'block',
+      visibility: 'visible',
+      pointerEvents: 'auto',
+    }),
     Array,
     JSON,
     String,
     Math,
     Number,
-  });
+    Object,
+    Reflect,
+    Promise,
+    Date,
+    setTimeout,
+  };
+}
+
+function evaluateOnPage(page, expression) {
+  return runInNewContext(expression, pageVmContext(page));
 }
 
 function hfHomeCdp(page) {
   const calls = [];
+  let seen = [];
+  let resolved = null;
   return {
     calls,
     send(method, params = {}) {
       calls.push({ method, params });
-      if (method === 'Runtime.evaluate') {
-        const value = evaluateOnPage(page, String(params.expression || ''));
-        return Promise.resolve({ result: { value } });
+      const src = method === 'Runtime.evaluate'
+        ? String(params.expression || '')
+        : String(params.functionDeclaration || '');
+      if (src.includes('__chromeCdpExClickProbe')) {
+        if (src.includes('installed: true')) {
+          seen = [];
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+        }
+        return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen: seen.slice(), reached: seen.slice() } } });
       }
       if (method === 'Input.dispatchMouseEvent') {
+        if (params.type === 'mouseReleased') {
+          seen.push('mousedown', 'mouseup', 'click');
+          if (resolved && typeof resolved.click === 'function') resolved.click();
+        }
         return Promise.resolve({});
       }
+      if (method === 'Runtime.evaluate') {
+        if (src === 'location.href') return Promise.resolve({ result: { type: 'string', value: page.state.href } });
+        const value = evaluateOnPage(page, src);
+        if (params.returnByValue === false && value && value.nodeType === 1) {
+          resolved = value;
+          return Promise.resolve({ result: { type: 'object', subtype: 'node', objectId: 'named-el' } });
+        }
+        return Promise.resolve({ result: { value } });
+      }
+      if (method === 'Runtime.callFunctionOn') {
+        const fn = runInNewContext(`(${src})`, pageVmContext(page));
+        return Promise.resolve(fn.call(resolved)).then(value => ({ result: { value } }));
+      }
+      if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: [] });
       if (method === 'DOM.enable') return Promise.resolve({});
       if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
       if (method === 'DOM.querySelector') return Promise.resolve({ nodeId: 2 });
       if (method === 'DOM.resolveNode') return Promise.resolve({ object: { objectId: 'el-hero' } });
-      if (method === 'Runtime.callFunctionOn') {
-        const fn = String(params.functionDeclaration || '');
-        if (fn.includes('scrollIntoView')) {
-          page.hero.scrollIntoView();
-          if (fn.includes('this.click()')) page.hero.click();
-          return Promise.resolve({
-            result: { value: { tag: 'A', text: HERO_NAME } },
-          });
-        }
-        return Promise.resolve({ result: { value: {} } });
-      }
       throw new Error(`unexpected ${method}`);
     },
   };
@@ -279,16 +325,18 @@ describe('issue #327 click in-viewport named link', () => {
     expect(expr).not.toContain('scrollBy');
   });
 
-  it('click without --js uses the jsclick path for a named in-viewport link', async () => {
+  it('click without --js pointer-clicks a named in-viewport link', async () => {
     const page = createHfHomePage();
     const cdp = hfHomeCdp(page);
     const text = await T.clickStr(cdp, 'sid', HERO_NAME);
     expect(page.hero.clicked).toBe(true);
     expect(page.state.href).toBe(HF_MODELS);
     expect(page.state.scrollY).toBe(0);
-    expect(text).toMatch(/JS-clicked <A> "Browse 2M\+ models"/);
+    expect(text).toMatch(/Clicked <A> "Browse 2M\+ models"/);
+    expect(text).not.toMatch(/JS-clicked/);
     expect(text).toMatch(/URL: https:\/\/huggingface\.co\/models/);
-    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed')).toBe(true);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseReleased')).toBe(true);
   });
 
   it('prints a skinny report-only receipt without reprinting leftover AX', async () => {
@@ -362,9 +410,10 @@ describe('issue #327 click in-viewport named link', () => {
     expect(page.apps.clicked).toBe(true);
     expect(page.state.href).toBe(HF_SPACES);
     expect(page.state.scrollY).toBeGreaterThan(0);
+    expect(text).toMatch(/Clicked <A> "Browse 1M\+ applications"/);
     expect(text).toMatch(/Scroll: 0 → \d+/);
     expect(text).not.toMatch(/RootWebArea/);
-    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed')).toBe(true);
   });
 
   it('keeps the off-screen named-click receipt skinny and report-only', async () => {
@@ -419,9 +468,10 @@ describe('issue #327 click in-viewport named link', () => {
       expect(page.apps.scrolledIntoView).toBe(true);
       expect(page.state.scrollY).toBeGreaterThan(0);
       expect(text.length).toBeLessThan(800);
+      expect(text).toMatch(/Clicked <A> "Browse 1M\+ applications"/);
       expect(text).toMatch(/Scroll: 0 → \d+/);
       expect(text).not.toMatch(/RootWebArea/);
-      expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+      expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed')).toBe(true);
     }
   });
 
@@ -470,8 +520,9 @@ describe('issue #327 click in-viewport named link', () => {
       expect(page.state.href).toBe(HF_MODELS);
       expect(page.state.scrollY).toBe(0);
       expect(text.length).toBeLessThan(2000);
+      expect(text).toMatch(/Clicked <A> "Browse 2M\+ models"/);
       expect(text).not.toMatch(/RootWebArea/);
-      expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+      expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed')).toBe(true);
     }
     expect(walls).toHaveLength(3);
   });

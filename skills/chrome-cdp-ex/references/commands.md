@@ -642,7 +642,7 @@ scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
 scripts/cdp.mjs nav     <target> <url> [--compact] [--format json] # URL+title; --compact is one line
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
-scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; hit-tests, then one-step jsclick, skinny URL
+scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; pointer click that moves focus, skinny URL
 scripts/cdp.mjs click   <target> "text=Save" [--format json]  # alias for the named form (exact visible text)
 scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path; scrollIntoView if off-screen
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
@@ -1401,11 +1401,15 @@ associated `<label>` with a positive in-viewport box is used instead. Otherwise 
 and the click exits 1 with `Kind: no-click-box` (`dispatched: false`) and one Next,
 `cdp jsclick <target> <sel>`. `clickxy` is an explicit point and is unchanged.
 
-A named query (`click` `"Save profile"` or `"Browse 1M+ applications"`, any script) hit-tests
-the click point, then takes the one-step jsclick path: no `perceive -C -d 8`, unique off-screen
-names `scrollIntoView` then click, skinny URL receipt (Scroll before/after when it scrolled).
-A covered label, including `text=`, sends nothing and exits 1 with `Kind: covered`. `jsclick`
-and `click --js` skip that hit test.
+A named query (`click` `"Save profile"` or `"Browse 1M+ applications"`, any script) is a pointer
+click that moves focus. It resolves the name, hit-tests the click point, then sends the same CDP
+mouse press and release as a CSS click. The receipt says `Clicked`, not `JS-clicked`. No
+`perceive -C -d 8`, unique off-screen names `scrollIntoView` then click, skinny URL receipt
+(Scroll before/after when it scrolled). A target with no usable click box falls back to an in-page
+click; that receipt says `JS-clicked` and `(no click box; focus not moved)`, and still reports
+`URL:`, `→ opened new tab`, and `Scroll:` the same way that in-page click does. A covered label,
+including `text=`, sends nothing and exits 1 with `Kind: covered`. `jsclick` and `click --js`
+keep the in-page click and skip that hit test.
 
 `text=button`, `text="Save changes"`, and `text='Save'` are aliases for that named
 form. The match prefers the exact visible text or `aria-label`, then a whitespace-normalised

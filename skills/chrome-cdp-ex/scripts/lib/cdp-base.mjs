@@ -1492,7 +1492,7 @@ Usage: cdp <command> [args]
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --accept-dialog: accept a native confirm, prompt, or beforeunload this click opens (default is dismiss; Kind: native-dialog)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
-                                    name: accessible name, including a multi-word label; hit-tests, then one-step jsclick, skinny URL receipt
+                                    name: accessible name, including a multi-word label; pointer click that moves focus, skinny URL receipt. jsclick keeps the in-page click
                                     text=Name / text="Name": same visible-name match; text= forces a name when the word is an HTML tag (text=button vs button)
 {{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
@@ -1639,7 +1639,9 @@ ACTION FEEDBACK
   upload, inject, dismiss-modal, and viewport (when resizing) automatically wait for DOM to
   settle and return compact action evidence plus a perceive diff.
   Named click / jsclick (a control name, not @ref or CSS)
-  is report-only: skinny URL receipt, no AX dump. Unique off-screen
+  is report-only: skinny URL receipt, no AX dump. A named click is a
+  pointer click that moves focus; the receipt says Clicked. jsclick and
+  click --js keep the in-page click and say JS-clicked. Unique off-screen
   names scrollIntoView first.   Mouse click @ref still
   fail-closes with no-input-events. Mouse click @ref / CSS hit-tests the
   click point first: when another element is on top it fails with

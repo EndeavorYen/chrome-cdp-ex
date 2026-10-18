@@ -216,39 +216,89 @@ describe('#437 a link that opens a new browsing context', () => {
     }
   });
 
-  it('the named (text=) path reports a new tab opened by el.click()', async () => {
+  it('the named (text=) path reports a new tab opened by the pointer click', async () => {
     T.rememberSessionTarget('sid', TAB_ID);
     const targets = [page(TAB_ID, PAGE)];
-    const link = {
+    class Node {
+      get isConnected() { return true; }
+      get ownerDocument() { return doc; }
+      get parentNode() { return null; }
+      getRootNode() { return doc; }
+    }
+    const link = Object.assign(Object.create(Node.prototype), {
+      nodeType: 1,
       tagName: 'A',
+      id: '',
+      className: '',
       innerText: 'Open in new tab',
       textContent: 'Open in new tab',
       href: DEST,
-      getAttribute: name => (name === 'target' ? '_blank' : null),
+      getAttribute: name => (name === 'target' ? '_blank' : name === 'href' ? DEST : null),
+      hasAttribute: name => name === 'target',
+      closest() { return null; },
+      matches() { return false; },
       getBoundingClientRect: () => ({ x: 10, y: 10, width: 80, height: 24, top: 10, left: 10, right: 90, bottom: 34 }),
       click() { targets.push(page(NEW_ID, DEST, { openerId: TAB_ID })); },
       scrollIntoView() {},
+    });
+    const doc = {
+      nodeType: 9,
+      defaultView: { name: '' },
+      elementFromPoint() { return null; },
+      querySelectorAll: () => [link],
+      querySelector: () => null,
     };
-    const doc = { querySelectorAll: () => [link], querySelector: () => null };
-    link.ownerDocument = doc;
     const context = {
-      window: { innerWidth: 800, innerHeight: 600, scrollY: 0, name: '', MouseEvent: class {} },
+      window: { innerWidth: 800, innerHeight: 600, scrollY: 0, name: '', MouseEvent: class MouseEvent {} },
       document: doc,
       location: { href: PAGE },
-      Array, JSON, String, Math, Number,
+      Node,
+      getComputedStyle: () => ({
+        position: 'static', overflowX: 'visible', overflowY: 'visible', transform: 'none',
+        filter: 'none', contain: 'none', display: 'block', visibility: 'visible', pointerEvents: 'auto',
+      }),
+      Promise, Date, setTimeout, Math, Object, Reflect, String, Number, Array, JSON,
     };
+    let seen = [];
+    let resolved = null;
     const cdp = {
       send(method, params = {}) {
+        const src = method === 'Runtime.evaluate'
+          ? String(params.expression || '')
+          : String(params.functionDeclaration || '');
+        if (src.includes('__chromeCdpExClickProbe')) {
+          if (src.includes('installed: true')) {
+            seen = [];
+            return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+          }
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen: seen.slice(), reached: seen.slice() } } });
+        }
+        if (method === 'Input.dispatchMouseEvent') {
+          if (params.type === 'mouseReleased') {
+            seen.push('mousedown', 'mouseup', 'click');
+            if (resolved && typeof resolved.click === 'function') resolved.click();
+          }
+          return Promise.resolve({});
+        }
         if (method === 'Runtime.evaluate') {
-          if (String(params.expression) === 'location.href') return Promise.resolve({ result: { value: PAGE } });
-          return Promise.resolve({ result: { value: runInNewContext(String(params.expression || ''), context) } });
+          if (src === 'location.href') return Promise.resolve({ result: { type: 'string', value: PAGE } });
+          const value = runInNewContext(src, context);
+          if (params.returnByValue === false && value && value.nodeType === 1) {
+            resolved = value;
+            return Promise.resolve({ result: { type: 'object', subtype: 'node', objectId: 'named-el' } });
+          }
+          return Promise.resolve({ result: { value } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          const fn = runInNewContext(`(${src})`, context);
+          return Promise.resolve(fn.call(resolved)).then(value => ({ result: { value } }));
         }
         if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: targets.slice() });
-        throw new Error(`unexpected ${method}`);
+        return Promise.resolve({});
       },
     };
     await expect(T.clickStr(cdp, 'sid', 'text=Open in new tab'))
-      .resolves.toBe(`JS-clicked <A> "Open in new tab" → opened new tab F78D41FA ${DEST}`);
+      .resolves.toBe(`Clicked <A> "Open in new tab" → opened new tab F78D41FA ${DEST}`);
   });
 });
 
