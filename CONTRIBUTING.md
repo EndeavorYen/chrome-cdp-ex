@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for contributing to `chrome-cdp-ex`. The project rules, for people and agents alike, are in [AGENTS.md](AGENTS.md): layout, product goals, tests, verification, and the PR format.
+Thanks for contributing to `chrome-cdp-ex`. The project rules, for people and agents alike, are in [AGENTS.md](AGENTS.md): layout, product goals, tests, verification, and the PR format. Release policy is in [RELEASING.md](RELEASING.md).
 
 1. Check existing issues and pull requests. Open an issue first for a new command or a behavior change.
 2. Branch from `main` and add a failing test for the behavior you change.
