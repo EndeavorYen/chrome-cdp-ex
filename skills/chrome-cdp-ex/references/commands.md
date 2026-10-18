@@ -1406,7 +1406,8 @@ click that moves focus. It resolves the name, hit-tests the click point, then se
 mouse press and release as a CSS click. The receipt says `Clicked`, not `JS-clicked`. No
 `perceive -C -d 8`, unique off-screen names `scrollIntoView` then click, skinny URL receipt
 (Scroll before/after when it scrolled). A target with no usable click box falls back to an in-page
-click; that receipt says `JS-clicked` and `(no click box; focus not moved)`. A covered label,
+click; that receipt says `JS-clicked` and `(no click box; focus not moved)`, and still reports
+`URL:`, `→ opened new tab`, and `Scroll:` the same way that in-page click does. A covered label,
 including `text=`, sends nothing and exits 1 with `Kind: covered`. `jsclick` and `click --js`
 keep the in-page click and skip that hit test.
 

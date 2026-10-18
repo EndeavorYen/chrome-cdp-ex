@@ -317,11 +317,13 @@ function batchEdge(line) {
 }
 
 // A page just rich enough for the named resolver and the scroll-settled hit test.
-function pointerNamedPage(buttons, { cover = null } = {}) {
+function pointerNamedPage(buttons, { cover = null, targets = null } = {}) {
   const clicks = [];
   const scrolls = [];
   const mouse = [];
-  const state = { scrollY: 0 };
+  const calls = [];
+  const state = { scrollY: 0, href: 'http://127.0.0.1/fixture' };
+  const targetInfos = targets || [];
   class Node {
     get isConnected() { return true; }
     get ownerDocument() { return this._owner || doc; }
@@ -398,7 +400,10 @@ function pointerNamedPage(buttons, { cover = null } = {}) {
   const context = {
     window,
     document: doc,
-    location: { href: 'http://127.0.0.1/fixture' },
+    location: {
+      get href() { return state.href; },
+      set href(value) { state.href = value; },
+    },
     Node,
     getComputedStyle: node => ({
       position: node && node._position ? node._position : 'static',
@@ -427,6 +432,7 @@ function pointerNamedPage(buttons, { cover = null } = {}) {
   const cdp = {
     mouse,
     send(method, params = {}) {
+      calls.push(method);
       const src = method === 'Runtime.evaluate'
         ? String(params.expression || '')
         : String(params.functionDeclaration || '');
@@ -456,11 +462,11 @@ function pointerNamedPage(buttons, { cover = null } = {}) {
         const run = fn.call(resolved);
         return Promise.resolve(run).then(value => ({ result: { value } }));
       }
-      if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: [] });
+      if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: targetInfos.slice() });
       return Promise.resolve({});
     },
   };
-  return { cdp, clicks, scrolls, mouse, nodes, state };
+  return { cdp, clicks, scrolls, mouse, nodes, state, calls };
 }
 
 function boxOffscreen(rect) {
@@ -510,7 +516,62 @@ describe('named click is a pointer click (#749)', () => {
   it('falls back to an in-page click when the named target has no click box', async () => {
     const page = pointerNamedPage([{ text: 'New Project', rect: { x: 0, y: 0, width: 0, height: 0 } }]);
     const out = await T.clickStr(page.cdp, 'sid', 'New Project');
-    expect(out).toBe('JS-clicked <BUTTON> "New Project" (no click box; focus not moved)');
+    // A zero box is not in the viewport, so the resolver scrolls before the fallback click.
+    expect(out).toBe('JS-clicked <BUTTON> "New Project" (no click box; focus not moved)\nScroll: 0 → 640');
+    expect(page.mouse).toEqual([]);
+    expect(page.clicks).toEqual(['New Project']);
+    expect(page.calls).toContain('Runtime.releaseObjectGroup');
+  });
+
+  it('reports the opened tab when a zero-box named link uses target=_blank', async () => {
+    const TAB_ID = '52652A75B73A2CD473A881E906557EE2';
+    const NEW_ID = 'F78D41FA4492257A29C2DA4D2CD22976';
+    const DEST = 'http://127.0.0.1/opened';
+    const targets = [{ targetId: TAB_ID, type: 'page', title: '', url: 'http://127.0.0.1/fixture' }];
+    T.rememberSessionTarget('sid', TAB_ID);
+    try {
+      const page = pointerNamedPage([{
+        text: 'Docs',
+        tag: 'A',
+        href: DEST,
+        target: '_blank',
+        rect: { x: 10, y: 10, width: 0, height: 0 },
+        onClick() {
+          targets.push({ targetId: NEW_ID, type: 'page', title: '', url: DEST, openerId: TAB_ID });
+        },
+      }], { targets });
+      const out = await T.clickStr(page.cdp, 'sid', 'text=Docs');
+      expect(out).toBe(`JS-clicked <A> "Docs" (no click box; focus not moved) → opened new tab F78D41FA ${DEST}\nScroll: 0 → 640`);
+      expect(page.mouse).toEqual([]);
+      expect(page.clicks).toEqual(['Docs']);
+    } finally {
+      T.forgetSessionTarget('sid');
+    }
+  });
+
+  it('reports URL when a zero-box named link navigates this tab', async () => {
+    const NEXT = 'http://127.0.0.1/next';
+    const page = pointerNamedPage([{
+      text: 'Next',
+      tag: 'A',
+      href: NEXT,
+      rect: { x: 10, y: 10, width: 0, height: 0 },
+      onClick() { page.state.href = NEXT; },
+    }]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=Next');
+    expect(out).toBe(`JS-clicked <A> "Next" (no click box; focus not moved)\nScroll: 0 → 640\nURL: ${NEXT}`);
+    expect(page.mouse).toEqual([]);
+    expect(page.clicks).toEqual(['Next']);
+  });
+
+  it('prints Scroll when a zero-box named target was scrolled into view', async () => {
+    const page = pointerNamedPage([{
+      text: 'New Project',
+      rect: { x: 40, y: 1800, width: 0, height: 0 },
+      scrollYAfter: 1520,
+    }]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=New Project');
+    expect(out).toBe('JS-clicked <BUTTON> "New Project" (no click box; focus not moved)\nScroll: 0 → 1520');
     expect(page.mouse).toEqual([]);
     expect(page.clicks).toEqual(['New Project']);
   });
