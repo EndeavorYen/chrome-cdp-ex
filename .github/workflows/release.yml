@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Existing release tag to publish to npm (vX.Y.Z or X.Y.Z)
+        description: Existing release tag to publish to npm (vX.Y.Z or X.Y.Z, not a prerelease)
         required: true
         type: string
 
@@ -22,7 +22,6 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      actions: write
       contents: write
     outputs:
       tarball: ${{ steps.pack.outputs.tarball }}
@@ -168,10 +167,10 @@ jobs:
         env:
           REQUESTED: ${{ inputs.version }}
         run: |
-          if [[ "$REQUESTED" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z]+)*$ ]]; then
+          if [[ "$REQUESTED" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             if [[ "$REQUESTED" == v* ]]; then TAG="$REQUESTED"; else TAG="v$REQUESTED"; fi
           else
-            echo "version must be an existing release tag like vX.Y.Z" >&2
+            echo "Refusing version: workflow_dispatch publishes only an existing vX.Y.Z tag, not a prerelease." >&2
             exit 1
           fi
           git rev-parse --verify "refs/tags/${TAG}^{commit}" >/dev/null
@@ -182,16 +181,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: ${{ github.event_name == 'workflow_dispatch' && 'release-src/package-lock.json' || 'package-lock.json' }}
 
       - name: Pack the tagged release
         if: github.event_name == 'workflow_dispatch'
         id: pack
         working-directory: release-src
         run: |
-          npm ci
-          npm pack --json > pack.json
+          npm pack --ignore-scripts --json > pack.json
           TARBALL="$(node -p 'const rows=require("./pack.json"); if(!Array.isArray(rows)||!rows[0]||typeof rows[0].filename!=="string"||rows[0].filename===""){process.stderr.write("npm pack did not report a tarball\n"); process.exit(1)} rows[0].filename')"
           rm -f pack.json
           test -f "$TARBALL"

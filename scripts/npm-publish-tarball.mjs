@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const MIN_NODE = '22.14.0';
 const MIN_NPM = '11.5.1';
+const PUBLISH_NAME = 'chrome-cdp-ex';
 
 function versionParts(value) {
   return String(value).trim().replace(/^v/, '').split('.').map(part => {
@@ -53,6 +54,12 @@ export function versionsFromNpmView(stdout) {
 }
 
 export function planNpmPublish({ identity, view, tarball }) {
+  if (identity.name !== PUBLISH_NAME) {
+    return {
+      action: 'skip',
+      message: `Notice: ${identity.name} is not ${PUBLISH_NAME}. Skipping publish.`,
+    };
+  }
   if (view.missing) {
     return {
       action: 'skip',
@@ -125,6 +132,12 @@ export function publishReleaseTarball({
   if (!tarball || !existsSync(resolved)) {
     error(`Tarball does not exist: ${resolved}`);
     return 1;
+  }
+
+  if (identity.name !== PUBLISH_NAME) {
+    const skipped = planNpmPublish({ identity, view: { missing: true, versions: [] }, tarball: resolved });
+    log(skipped.message);
+    return 0;
   }
 
   const view = runNpm(spawn, ['view', identity.name, 'versions', '--json']);

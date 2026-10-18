@@ -66,7 +66,7 @@ function runPublish(overrides = {}) {
   const npm = overrides.npm ?? fakeNpm();
   const exitCode = publishReleaseTarball({
     tarball,
-    packageJsonText: JSON.stringify({ name: 'example-pkg', version: '1.2.3' }),
+    packageJsonText: JSON.stringify({ name: 'chrome-cdp-ex', version: '1.2.3' }),
     nodeVersion: '22.14.0',
     env: {},
     spawn: npm.spawn,
@@ -97,10 +97,10 @@ describe('npm trusted publish skip rules', () => {
     const result = runPublish();
     expect(result.exitCode).toBe(0);
     expect(result.logs).toEqual([
-      'Notice: example-pkg is not on npm yet. The first publish is manual.',
+      'Notice: chrome-cdp-ex is not on npm yet. The first publish is manual.',
     ]);
     expect(result.calls.some(args => args[0] === 'publish')).toBe(false);
-    expect(result.calls).toContainEqual(['view', 'example-pkg', 'versions', '--json']);
+    expect(result.calls).toContainEqual(['view', 'chrome-cdp-ex', 'versions', '--json']);
   });
 
   it('skips a version that is already on npm', () => {
@@ -110,17 +110,38 @@ describe('npm trusted publish skip rules', () => {
       }),
     });
     expect(result.exitCode).toBe(0);
-    expect(result.logs[0]).toBe('Notice: example-pkg@1.2.3 is already on npm. Skipping publish.');
+    expect(result.logs[0]).toBe('Notice: chrome-cdp-ex@1.2.3 is already on npm. Skipping publish.');
     expect(result.calls.some(args => args[0] === 'publish')).toBe(false);
   });
 
   it('treats a single published version string as that version', () => {
     const plan = planNpmPublish({
-      identity: { name: 'example-pkg', version: '0.0.1' },
+      identity: { name: 'chrome-cdp-ex', version: '0.0.1' },
       view: { missing: false, versions: ['0.0.1'] },
-      tarball: 'example-pkg-0.0.1.tgz',
+      tarball: 'chrome-cdp-ex-0.0.1.tgz',
     });
     expect(plan.action).toBe('skip');
+  });
+
+  it('skips a package name other than chrome-cdp-ex and does not publish', () => {
+    const plan = planNpmPublish({
+      identity: { name: 'pi-chrome-cdp', version: '2.22.0' },
+      view: { missing: false, versions: ['1.0.2', '1.1.0'] },
+      tarball: 'pi-chrome-cdp-2.22.0.tgz',
+    });
+    expect(plan).toEqual({
+      action: 'skip',
+      message: 'Notice: pi-chrome-cdp is not chrome-cdp-ex. Skipping publish.',
+    });
+    const result = runPublish({
+      packageJsonText: JSON.stringify({ name: 'pi-chrome-cdp', version: '2.22.0' }),
+      npm: fakeNpm({
+        onView: { status: 1, stdout: '', stderr: 'npm error code ECONNRESET\n' },
+      }),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.logs).toEqual([plan.message]);
+    expect(result.calls.some(args => args[0] === 'publish' || args[0] === 'view')).toBe(false);
   });
 
   it('publishes the given tarball with provenance when the version is new', () => {
@@ -130,7 +151,7 @@ describe('npm trusted publish skip rules', () => {
       }),
     });
     expect(result.exitCode).toBe(0);
-    expect(result.logs.at(-1)).toBe('Published example-pkg@1.2.3');
+    expect(result.logs.at(-1)).toBe('Published chrome-cdp-ex@1.2.3');
     const publish = result.calls.find(args => args[0] === 'publish');
     expect(publish).toEqual(['publish', result.tarball, '--provenance', '--access', 'public']);
   });
@@ -191,7 +212,7 @@ describe('release workflow npm publish', () => {
   const releaseJob = releaseWorkflow.slice(0, releaseWorkflow.indexOf('\n  npm-publish:'));
 
   it('keeps the packed tarball name in the release job and publishes that output', () => {
-    expect(releaseJob).toContain('TARBALL="pi-chrome-cdp-${VERSION}.tgz"');
+    expect(releaseJob).toContain('TARBALL="chrome-cdp-ex-${VERSION}.tgz"');
     expect(releaseJob).toContain('echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"');
     expect(releaseJob).toContain('path: ${{ steps.pack.outputs.tarball }}');
     expect(publishJob).not.toContain('pi-chrome-cdp');
@@ -206,6 +227,8 @@ describe('release workflow npm publish', () => {
 
   it('publishes with trusted publishing only from the npm job, after the GitHub Release', () => {
     expect(releaseWorkflow.indexOf('gh release create')).toBeLessThan(releaseWorkflow.indexOf('npm-publish:'));
+    expect(releaseJob).not.toContain('actions: write');
+    expect(releaseJob).toContain('contents: write');
     expect(releaseJob).not.toContain('id-token:');
     expect(publishJob).toContain('id-token: write');
     expect(releaseWorkflow.match(/id-token:\s*write/g)).toEqual(['id-token: write']);
@@ -225,8 +248,11 @@ describe('release workflow npm publish', () => {
     expect(releaseJob).toContain("if: github.event_name == 'push'");
     expect(publishJob).toContain("github.event_name == 'workflow_dispatch'");
     expect(publishJob).toContain('git rev-parse --verify "refs/tags/${TAG}^{commit}"');
-    expect(publishJob).toContain('npm ci');
-    expect(publishJob).toContain('npm pack --json');
+    expect(publishJob).toContain('^v?[0-9]+\\.[0-9]+\\.[0-9]+$');
+    expect(publishJob).toContain('not a prerelease');
+    expect(publishJob).not.toContain('npm ci');
+    expect(publishJob).not.toContain('cache: npm');
+    expect(publishJob).toContain('npm pack --ignore-scripts --json');
     expect(publishJob).not.toContain('gh release create');
   });
 });
@@ -236,7 +262,7 @@ describe('npm publish CLI', () => {
     const dir = tempDir();
     const tarball = join(dir, 'example-pkg-1.2.3.tgz');
     writeFileSync(tarball, 'tarball');
-    writeFileSync(join(dir, 'package.json'), '{"name":"example-pkg","version":"1.2.3"}\n');
+    writeFileSync(join(dir, 'package.json'), '{"name":"chrome-cdp-ex","version":"1.2.3"}\n');
     const log = join(dir, 'npm-args.log');
     writeFileSync(join(dir, 'fake-npm.mjs'), `#!/usr/bin/env node
 import { appendFileSync } from 'node:fs';
