@@ -294,13 +294,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub and, after one manual first publish, on npm. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the GitHub publish surface.
 
-Pinned install: [v2.21.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.21.0).
+Pinned install: [v2.22.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.22.0). That asset is `pi-chrome-cdp-2.22.0.tgz`. Later releases attach `chrome-cdp-ex-<version>.tgz`.
 
 ```bash
-curl -L -o pi-chrome-cdp-2.21.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.21.0/pi-chrome-cdp-2.21.0.tgz
-mkdir -p chrome-cdp-ex-v2.21.0
-tar -xzf pi-chrome-cdp-2.21.0.tgz -C chrome-cdp-ex-v2.21.0 --strip-components=1
-cd chrome-cdp-ex-v2.21.0
+curl -L -o chrome-cdp-ex-2.22.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.22.0/pi-chrome-cdp-2.22.0.tgz
+mkdir -p chrome-cdp-ex-v2.22.0
+tar -xzf chrome-cdp-ex-2.22.0.tgz -C chrome-cdp-ex-v2.22.0 --strip-components=1
+cd chrome-cdp-ex-v2.22.0
 claude --plugin-dir .
 ```
 

@@ -103,7 +103,7 @@ jobs:
           npm run lint
           npm run check:docs
           npm pack
-          TARBALL="pi-chrome-cdp-${VERSION}.tgz"
+          TARBALL="chrome-cdp-ex-${VERSION}.tgz"
           test -f "$TARBALL"
           npm run check:release-package -- "$TARBALL"
           CHECKSUM="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
@@ -113,7 +113,7 @@ jobs:
             echo ""
             echo "- Asset: \`$TARBALL\`"
             echo "- SHA-256: \`$CHECKSUM\`"
-            echo "- Includes cross-host manifests, validation scripts, Codex Killer Path evidence, demo media, CLI shim, setup script, and skills runtime."
+            echo "- Includes cross-host manifests, validation scripts, CLI shim, setup script, and skills runtime."
           } >> release-notes.md
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
 

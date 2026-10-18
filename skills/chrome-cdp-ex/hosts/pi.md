@@ -1,11 +1,11 @@
 # Pi host overlay
 
-This repository is packaged as a Pi skills package via `package.json` metadata.
+This repository is packaged as a Pi skills package via `package.json` metadata. Install from a GitHub Release tarball or a git checkout.
 
 ```json
 {
-  "name": "pi-chrome-cdp",
-  "version": "2.21.0",
+  "name": "chrome-cdp-ex",
+  "version": "2.22.0",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "skills", "chrome", "cdp", "browser", "devtools"],
   "pi": {
     "skills": ["./skills"]
