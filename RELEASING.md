@@ -2,7 +2,7 @@
 
 ## Cadence
 
-Cut a release every two weeks, on alternate Mondays, when `main` has unreleased changelog entries. Do not publish an empty release.
+Cut a release every second Monday counting from 2026-11-02 (the first scheduled release after v2.22.0), when `main` has unreleased changelog entries. Do not publish an empty release.
 
 ## Early release
 
@@ -26,4 +26,4 @@ The 2.x history sometimes shipped Breaking Changes as a minor. From this policy 
 
 ## Who releases
 
-The maintainer reviews and merges a release-prep pull request. The steps for that pull request are in the Release section of [AGENTS.md](AGENTS.md). After the merge, `.github/workflows/release.yml` tags the version and publishes the GitHub Release. Nobody tags or publishes by hand. If that workflow fails, fix the problem and merge again.
+The maintainer reviews and merges a release-prep pull request. The steps for that pull request are in the Release section of [AGENTS.md](AGENTS.md). `.github/workflows/release.yml` publishes only when `CHANGELOG.md` has a `## [<version>]` heading matching `package.json` and the tag does not exist yet; any other push to `main` is a no-op. Nobody tags or publishes by hand. If that workflow fails, fix the problem and merge again.
