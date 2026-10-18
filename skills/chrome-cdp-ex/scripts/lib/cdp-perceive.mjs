@@ -1590,9 +1590,26 @@ function markInlineSlotUnread(slot, reason, origin) {
   slot.clause = crossSiteReadClause({ reason, origin: shown });
   slot.inlineText = '';
   slot.childLines = [];
+  if (slot.emit) slot.emit.block = false;
   if (slot.record) {
     slot.record.content = { read: false, reason, origin: shown };
     delete slot.record.contentBoundary;
+  }
+}
+
+function frameBlockOpenLine(slot) {
+  const open = String(slot?.inlineText || '').split('\n').find(line => line.includes('--- FRAME CONTENT'));
+  return open ? open.trim() : '';
+}
+
+// A frame counts as inlined only while its block is still in the printed tree.
+// Depth and the chrome line cap can drop a block after the read.
+function retainPrintedFrameBlocks(slots, lines) {
+  const printed = new Set((lines || []).map(line => String(line).trim()));
+  for (const slot of slots || []) {
+    if (!slot?.emit) continue;
+    const open = frameBlockOpenLine(slot);
+    slot.emit.block = Boolean(slot.emit.block && open && printed.has(open));
   }
 }
 
@@ -1609,8 +1626,8 @@ function renderFrameNoticeLine(notice) {
     for (const slot of notice.slots || []) {
       if (!slot?.crossSite || !slot.read || slot.reason) continue;
       allowed += 1;
-      // The tree is already under this frame's host line. --frame would re-read it.
-      if (slot.inlineText) {
+      // The printed tree already contains this frame's block. --frame would re-read it.
+      if (slot.emit?.block) {
         inlined += 1;
         continue;
       }
@@ -1773,6 +1790,7 @@ async function inlineAllowlistedFrames(cdp, sid, notice, ctx) {
     slot.reason = '';
     slot.clause = '';
     slot.inlineText = outcome.text;
+    slot.emit = { block: false };
     if (slot.record) {
       slot.record.content = { read: true, origin: outcome.origin };
       slot.record.contentBoundary = frameContentBoundary(state.nonce, outcome.origin);
@@ -4361,7 +4379,12 @@ export function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
         } else {
           treeLines.push(formatPerceiveIframeLine(depth, slot.label, slot.ref, slot));
           if (slot.inlineText) {
-            for (const line of String(slot.inlineText).split('\n')) treeLines.push(line);
+            let emittedBlock = false;
+            for (const line of String(slot.inlineText).split('\n')) {
+              treeLines.push(line);
+              if (String(line).includes('--- FRAME CONTENT')) emittedBlock = true;
+            }
+            if (emittedBlock && slot.emit) slot.emit.block = true;
           }
           if (Array.isArray(slot.childLines)) {
             for (const line of slot.childLines) treeLines.push(line);
@@ -5253,6 +5276,10 @@ export async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, la
   if (warnings > 0) healthParts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
   if (exceptions > 0) healthParts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
   lines.push(`Console: ${healthParts.length > 0 ? healthParts.join(', ') : 'clean'}`);
+  if (frameNotice) {
+    retainPrintedFrameBlocks(frameNotice.slots, treeLines);
+    renderFrameNoticeLine(frameNotice);
+  }
   if (frameNotice?.line) lines.push(frameNotice.line);
   // Coordinate hint — top-level viewport CSS pixels match clickxy/Input events.
   // Fixed/sticky elements include a "fixed"/"sticky" tag so agents do not

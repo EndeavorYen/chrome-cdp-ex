@@ -4,4 +4,4 @@
 
 ### Bug Fixes
 
-* `perceive --diff` and an action settle ignore the nonce on `FRAME CONTENT` markers, so an unchanged inlined frame is not a page change. When that frame is the only one and its tree is already shown, the Frames line does not suggest `perceive --frame` ([#638](https://github.com/EndeavorYen/chrome-cdp-ex/issues/638)).
+* `perceive --diff` and an action settle ignore the nonce on `FRAME CONTENT` markers, so an unchanged inlined frame is not a page change. The Frames line omits `perceive --frame` only when that frame's block is in the printed tree, and a depth limit or the chrome line cap that drops the block keeps the hint ([#638](https://github.com/EndeavorYen/chrome-cdp-ex/issues/638)).

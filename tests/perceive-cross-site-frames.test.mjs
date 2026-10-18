@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { daemonPolicyStorage } from '../skills/chrome-cdp-ex/scripts/lib/cdp-base.mjs';
+import { PERCEIVE_CHROME_LINE_CAP, daemonPolicyStorage } from '../skills/chrome-cdp-ex/scripts/lib/cdp-base.mjs';
 import { createMockCDP } from './mock-cdp.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -1113,6 +1113,33 @@ function hostAxNodes(frameElements) {
   ];
 }
 
+// navigation > list > listitem > iframe. -d 1 prints the navigation line and stops before the iframe.
+function nestedNavIframeNodes() {
+  return [
+    { nodeId: 'root', role: { value: 'RootWebArea' }, name: { value: 'Host' }, childIds: ['nav'] },
+    { nodeId: 'nav', parentId: 'root', role: { value: 'navigation' }, name: { value: 'Menu' }, childIds: ['list'] },
+    { nodeId: 'list', parentId: 'nav', role: { value: 'list' }, name: { value: 'Items' }, childIds: ['item'] },
+    { nodeId: 'item', parentId: 'list', role: { value: 'listitem' }, name: { value: 'Entry' }, childIds: ['ifr0'] },
+    { nodeId: 'ifr0', parentId: 'item', role: { value: 'Iframe' }, name: { value: 'Checkout' }, backendDOMNodeId: 100 },
+  ];
+}
+
+function chromeLineCapIframeNodes(linkCount) {
+  const linkIds = Array.from({ length: linkCount }, (_, index) => `lnk${index}`);
+  return [
+    { nodeId: 'root', role: { value: 'RootWebArea' }, name: { value: 'Host' }, childIds: ['nav'] },
+    { nodeId: 'nav', parentId: 'root', role: { value: 'navigation' }, name: { value: 'Menu' }, childIds: [...linkIds, 'ifr0'] },
+    ...linkIds.map((id, index) => ({
+      nodeId: id,
+      parentId: 'nav',
+      role: { value: 'link' },
+      name: { value: `Link ${index}` },
+      backendDOMNodeId: 200 + index,
+    })),
+    { nodeId: 'ifr0', parentId: 'nav', role: { value: 'Iframe' }, name: { value: 'Checkout' }, backendDOMNodeId: 100 },
+  ];
+}
+
 function payFrameNodes({ title = 'Checkout', button = 'Pay now', extra = [] } = {}) {
   return [
     { nodeId: 'root', role: { value: 'RootWebArea' }, name: { value: title }, childIds: ['btn', ...extra.map(node => node.nodeId)], frameId: 'pay-frame' },
@@ -1735,12 +1762,12 @@ const inlineDiffDelta = {
   network: { count: 0, failures: 0, pending: 0, entries: [] },
 };
 
-function inlinePayCdp(state) {
+function inlinePayCdp(state, hostNodes = null) {
   return createMockCDP({
     'Runtime.evaluate': () => ({ result: { value: JSON.stringify(hostPageMeta([
       { title: 'Checkout', src: 'https://pay.example.com/checkout', host: 'pay.example.com', visible: true },
     ])) } }),
-    'Accessibility.getFullAXTree': () => ({ nodes: hostAxNodes([{ title: 'Checkout' }]) }),
+    'Accessibility.getFullAXTree': () => ({ nodes: hostNodes || hostAxNodes([{ title: 'Checkout' }]) }),
     'Page.getFrameTree': () => ({
       frameTree: { frame: { id: 'main-frame', url: 'http://127.0.0.1:9/host.html', securityOrigin: 'http://127.0.0.1:9' } },
     }),
@@ -1870,5 +1897,79 @@ describe('inlined frame nonce is not a perceive diff', () => {
     expect(header).toBe('Frames: 0 (0 visible), 1 cross-site allowed');
     expect(header).not.toContain('--frame');
     expect(out).not.toMatch(/Next:.*--frame/);
+  });
+});
+
+const FRAME_NEXT = 'Frames: 0 (0 visible), 1 cross-site allowed. Next: cdp perceive AB12CD34 --frame @f2';
+
+describe('frame next follows the printed block', () => {
+  it('keeps perceive --frame when -d cuts a deep iframe before its block', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const cdp = inlinePayCdp({ button: 'Pay now' }, nestedNavIframeNodes());
+    const depthOpts = { ...T.parsePerceiveArgs(['-d', '1']), targetPrefix: 'AB12CD34' };
+    const out = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null }, depthOpts,
+    ));
+    expect(out).not.toContain('FRAME CONTENT');
+    expect(out).not.toContain('[iframe]');
+    expect(out).not.toContain('Pay now');
+    expect(framesHeader(out)).toBe(FRAME_NEXT);
+
+    const compact = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null },
+      { ...T.parsePerceiveArgs(['-C', '-d', '1']), targetPrefix: 'AB12CD34' },
+    ));
+    expect(compact).not.toContain('FRAME CONTENT');
+    expect(framesHeader(compact)).toBe(FRAME_NEXT);
+
+    const store = { output: null };
+    await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), store, depthOpts,
+    ));
+    const diff = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), store,
+      { ...depthOpts, diff: true },
+    ));
+    expect(diff).toMatch(/no changes detected in AX tree/i);
+    expect(diff).not.toContain('FRAME CONTENT');
+    expect(framesHeader(diff)).toBe(FRAME_NEXT);
+
+    const refMap = new Map();
+    const refState = {};
+    const settleStore = { output: null, snapshotOpts: null };
+    await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), refMap, settleStore, depthOpts, refState,
+    ));
+    const target = { input: '@1', resolvedBy: 'selector-or-ref', label: '@1', commandArgs: ['@1'] };
+    const baseline = inlineDiffBaseline(settleStore, target, refState);
+    const after = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), refMap, settleStore,
+      T.actionSettleObserveOpts(INLINE_DIFF_TARGET, target, baseline.output, baseline.opts),
+      refState,
+    ));
+    expect(after).toMatch(/no changes detected in AX tree/i);
+    expect(after).not.toContain('FRAME CONTENT');
+    expect(framesHeader(after)).toBe(FRAME_NEXT);
+  });
+
+  it('keeps perceive --frame when the chrome line cap drops the frame block', async () => {
+    const sites = await frameSites('https://pay.example.com');
+    const cdp = inlinePayCdp({ button: 'Pay now' }, chromeLineCapIframeNodes(PERCEIVE_CHROME_LINE_CAP));
+    const out = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null },
+      { targetPrefix: 'AB12CD34' },
+    ));
+    expect(out).toContain('... chrome truncated');
+    expect(out).not.toContain('FRAME CONTENT');
+    expect(out).not.toContain('[iframe]');
+    expect(out).not.toContain('Pay now');
+    expect(framesHeader(out)).toBe(FRAME_NEXT);
+
+    const compact = await daemonPolicyStorage.run({ policy: { frameSites: sites } }, () => T.perceiveStr(
+      cdp, PAGE, new T.RingBuffer(4), new T.RingBuffer(4), new Map(), { output: null },
+      { ...T.parsePerceiveArgs(['-C']), targetPrefix: 'AB12CD34' },
+    ));
+    expect(compact).not.toContain('FRAME CONTENT');
+    expect(framesHeader(compact)).toBe(FRAME_NEXT);
   });
 });
