@@ -156,10 +156,15 @@ describe('click visible-text labels (#641)', () => {
   it('clicks a multi-word label copied from perceive, in any script', async () => {
     for (const input of ['Save profile', '儲存設定', 'text=Save profile', 'text="Save profile"']) {
       const name = input.startsWith('text=') ? 'Save profile' : input;
-      const { cdp, clicks } = labelCdp([name, 'Cancel']);
-      const out = await T.clickStr(cdp, 'sid', input);
-      expect(out, input).toBe(`JS-clicked <BUTTON> "${name}"`);
-      expect(clicks, input).toEqual([name]);
+      const page = pointerNamedPage([
+        { text: name, rect: { x: 40, y: 50, width: 200, height: 40 } },
+        { text: 'Cancel', rect: { x: 40, y: 120, width: 80, height: 24 } },
+      ]);
+      const out = await T.clickStr(page.cdp, 'sid', input);
+      expect(out, input).toBe(`Clicked <BUTTON> "${name}"`);
+      expect(page.mouse.some(event => event.type === 'mousePressed'), input).toBe(true);
+      expect(page.mouse.some(event => event.type === 'mouseReleased'), input).toBe(true);
+      expect(page.clicks, input).toEqual([]);
     }
   });
 
@@ -173,14 +178,29 @@ describe('click visible-text labels (#641)', () => {
   });
 
   it('refuses a covered label, including text=, with Kind covered', async () => {
+    const cover = {
+      tagName: 'DIV',
+      id: 'consent',
+      className: '',
+      textContent: 'We use cookies',
+      _position: 'fixed',
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ x: 0, y: 0, width: 800, height: 72, top: 0, left: 0, right: 800, bottom: 72 }),
+      closest() { return null; },
+      matches() { return false; },
+    };
     for (const input of ['Save profile', 'text=Save profile']) {
-      const { cdp, clicks, scrolls } = coveredPage('Save profile');
-      const err = await T.clickStr(cdp, 'sid', input).catch(error => error);
+      const page = pointerNamedPage(
+        [{ text: 'Save profile', rect: { x: 100, y: 100, width: 120, height: 40 } }],
+        { cover },
+      );
+      const err = await T.clickStr(page.cdp, 'sid', input).catch(error => error);
       expect(err, input).toBeInstanceOf(Error);
       expect(err.message, input).toMatch(/click not sent: <BUTTON> "Save profile" at \(160,120\) is covered by position:fixed <DIV#consent>/);
       expect(err.clickCovered, input).toMatchObject({ recentred: true });
-      expect(clicks, input).toEqual([]);
-      expect(scrolls, input).toEqual(['Save profile']);
+      expect(page.clicks, input).toEqual([]);
+      expect(page.scrolls, input).toEqual(['Save profile']);
+      expect(page.mouse, input).toEqual([]);
       const failure = classifyActionFailure(err, { action: 'click', target: { targetId: TARGET_ID, input } });
       expect(failure.kind, input).toBe('covered');
       expect(failure.dispatched, input).toBe(false);
@@ -295,6 +315,253 @@ function batchEdge(line) {
   ]);
   return 'kept (JSON array)';
 }
+
+// A page just rich enough for the named resolver and the scroll-settled hit test.
+function pointerNamedPage(buttons, { cover = null } = {}) {
+  const clicks = [];
+  const scrolls = [];
+  const mouse = [];
+  const state = { scrollY: 0 };
+  class Node {
+    get isConnected() { return true; }
+    get ownerDocument() { return this._owner || doc; }
+    get parentNode() { return this._parent || null; }
+    getRootNode() { return doc; }
+  }
+  const doc = {
+    nodeType: 9,
+    documentElement: null,
+    body: null,
+    elementFromPoint() { return cover || null; },
+    querySelector() { return null; },
+    querySelectorAll(selector) {
+      if (selector === 'a, button, [role="link"], [role="button"]') return nodes;
+      return [];
+    },
+  };
+  const nodes = buttons.map(spec => {
+    const rect = { ...(spec.rect || { x: 40, y: 50, width: 200, height: 40 }) };
+    const node = Object.assign(Object.create(Node.prototype), {
+      nodeType: 1,
+      tagName: spec.tag || 'BUTTON',
+      id: spec.id || '',
+      className: spec.className || '',
+      href: spec.href || '',
+      innerText: spec.text,
+      textContent: spec.text,
+      _position: spec.position || 'static',
+      _rect: rect,
+      getAttribute(name) {
+        if (name === 'role') return spec.role || null;
+        if (name === 'aria-label') return spec.ariaLabel || null;
+        if (name === 'title') return spec.title || null;
+        if (name === 'href') return spec.href || null;
+        if (name === 'target') return spec.target || null;
+        if (name === 'disabled' && spec.disabled) return '';
+        return null;
+      },
+      hasAttribute(name) { return name === 'disabled' && spec.disabled === true; },
+      matches(selector) { return selector === ':disabled' && spec.disabled === true; },
+      closest() { return null; },
+      getBoundingClientRect() {
+        const box = this._rect;
+        return {
+          x: box.x, y: box.y, width: box.width, height: box.height,
+          top: box.y, left: box.x, right: box.x + box.width, bottom: box.y + box.height,
+        };
+      },
+      scrollIntoView() {
+        scrolls.push(spec.text);
+        state.scrollY = spec.scrollYAfter == null ? 640 : spec.scrollYAfter;
+        if (spec.bringIntoView !== false && boxOffscreen(this._rect)) {
+          this._rect.y = 80;
+          this._rect.x = 40;
+        }
+      },
+      click() { clicks.push(spec.text); if (spec.onClick) spec.onClick(); },
+    });
+    node._owner = doc;
+    return node;
+  });
+  if (cover) {
+    cover.nodeType = 1;
+    cover._owner = doc;
+    doc.elementFromPoint = () => cover;
+  }
+  const window = {
+    innerWidth: 800,
+    innerHeight: 600,
+    get scrollY() { return state.scrollY; },
+    MouseEvent: class MouseEvent {},
+    requestAnimationFrame(cb) { cb(); return 1; },
+  };
+  const context = {
+    window,
+    document: doc,
+    location: { href: 'http://127.0.0.1/fixture' },
+    Node,
+    getComputedStyle: node => ({
+      position: node && node._position ? node._position : 'static',
+      overflowX: 'visible',
+      overflowY: 'visible',
+      transform: 'none',
+      filter: 'none',
+      contain: 'none',
+      display: 'block',
+      visibility: 'visible',
+      pointerEvents: 'auto',
+    }),
+    Promise,
+    Date,
+    setTimeout,
+    Math,
+    Object,
+    Reflect,
+    String,
+    Number,
+    Array,
+    JSON,
+  };
+  let seen = [];
+  let resolved = null;
+  const cdp = {
+    mouse,
+    send(method, params = {}) {
+      const src = method === 'Runtime.evaluate'
+        ? String(params.expression || '')
+        : String(params.functionDeclaration || '');
+      if (src.includes('__chromeCdpExClickProbe')) {
+        if (src.includes('installed: true')) {
+          seen = [];
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+        }
+        return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen: seen.slice(), reached: seen.slice() } } });
+      }
+      if (method === 'Input.dispatchMouseEvent') {
+        mouse.push(params);
+        if (params.type === 'mouseReleased') seen.push('mousedown', 'mouseup', 'click');
+        return Promise.resolve({});
+      }
+      if (method === 'Runtime.evaluate') {
+        if (src === 'location.href') return Promise.resolve({ result: { type: 'string', value: context.location.href } });
+        const value = runInNewContext(src, context);
+        if (params.returnByValue === false && value && value.nodeType === 1) {
+          resolved = value;
+          return Promise.resolve({ result: { type: 'object', subtype: 'node', objectId: 'named-el' } });
+        }
+        return Promise.resolve({ result: { type: typeof value === 'string' ? 'string' : 'object', value } });
+      }
+      if (method === 'Runtime.callFunctionOn') {
+        const fn = runInNewContext(`(${src})`, context);
+        const run = fn.call(resolved);
+        return Promise.resolve(run).then(value => ({ result: { value } }));
+      }
+      if (method === 'Target.getTargets') return Promise.resolve({ targetInfos: [] });
+      return Promise.resolve({});
+    },
+  };
+  return { cdp, clicks, scrolls, mouse, nodes, state };
+}
+
+function boxOffscreen(rect) {
+  return rect.y >= 600 || rect.x >= 800 || rect.y + rect.height <= 0 || rect.x + rect.width <= 0;
+}
+
+describe('named click is a pointer click (#749)', () => {
+  it('dispatches press and release at the resolved centre and prints Clicked', async () => {
+    const page = pointerNamedPage([{ text: 'New Project', rect: { x: 40, y: 50, width: 200, height: 40 } }]);
+    const clickTrust = {};
+    const out = await T.clickStr(page.cdp, 'sid', 'text=New Project', new Map(), {}, { clickTrust });
+    expect(out).toBe('Clicked <BUTTON> "New Project"');
+    const pressed = page.mouse.filter(event => event.type === 'mousePressed');
+    const released = page.mouse.filter(event => event.type === 'mouseReleased');
+    expect(pressed).toEqual([expect.objectContaining({ type: 'mousePressed', x: 140, y: 70, button: 'left' })]);
+    expect(released).toEqual([expect.objectContaining({ type: 'mouseReleased', x: 140, y: 70, button: 'left' })]);
+    expect(page.clicks).toEqual([]);
+    expect(clickTrust.tag).toBe('BUTTON');
+  });
+
+  it('a covered named target is Kind: covered and sends no mouse event', async () => {
+    const cover = {
+      tagName: 'DIV',
+      id: 'consent',
+      className: '',
+      textContent: 'We use cookies',
+      _position: 'fixed',
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ x: 0, y: 0, width: 800, height: 72, top: 0, left: 0, right: 800, bottom: 72 }),
+      closest() { return null; },
+      matches() { return false; },
+    };
+    const page = pointerNamedPage(
+      [{ text: 'New Project', rect: { x: 100, y: 100, width: 120, height: 40 } }],
+      { cover },
+    );
+    const err = await T.clickStr(page.cdp, 'sid', 'text=New Project').catch(error => error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/click not sent: <BUTTON> "New Project"/);
+    expect(err.clickCovered).toMatchObject({ recentred: true });
+    const failure = classifyActionFailure(err, { action: 'click', target: { targetId: TARGET_ID, input: 'text=New Project' } });
+    expect(failure.kind).toBe('covered');
+    expect(page.mouse).toEqual([]);
+    expect(page.clicks).toEqual([]);
+  });
+
+  it('falls back to an in-page click when the named target has no click box', async () => {
+    const page = pointerNamedPage([{ text: 'New Project', rect: { x: 0, y: 0, width: 0, height: 0 } }]);
+    const out = await T.clickStr(page.cdp, 'sid', 'New Project');
+    expect(out).toBe('JS-clicked <BUTTON> "New Project" (no click box; focus not moved)');
+    expect(page.mouse).toEqual([]);
+    expect(page.clicks).toEqual(['New Project']);
+  });
+
+  it('jsclick and click --js with a name stay in-page clicks and send no mouse event', async () => {
+    const page = pointerNamedPage([{ text: 'New Project' }]);
+    const out = await T.jsClickStr(page.cdp, 'sid', 'text=New Project');
+    expect(out).toBe('JS-clicked <BUTTON> "New Project"');
+    expect(page.mouse).toEqual([]);
+    expect(page.clicks).toEqual(['New Project']);
+
+    const click = vi.fn(async () => 'mouse');
+    const jsClick = vi.fn(async () => 'js');
+    const handler = T.createClickCommandHandler({
+      actionFeedback: async (_action, dispatch) => dispatch(),
+      click,
+      jsClick,
+      pointerClick: vi.fn(),
+    });
+    expect((await handler({ args: ['--js', 'text=New Project'] })).value).toBe('js');
+    expect(jsClick).toHaveBeenCalledWith('text=New Project', expect.any(Object));
+    expect(click).not.toHaveBeenCalled();
+    await expect(T.pointerClickStr(page.cdp, 'sid', 'text=New Project')).rejects.toThrow(/click --pointer needs a CSS selector or @ref/);
+  });
+
+  it('scrolls a unique off-screen name into view, then pointer-clicks it', async () => {
+    const page = pointerNamedPage([{
+      text: 'New Project',
+      rect: { x: 40, y: 1800, width: 200, height: 40 },
+      scrollYAfter: 1520,
+    }]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=New Project');
+    expect(page.scrolls).toEqual(['New Project']);
+    expect(page.state.scrollY).toBeGreaterThan(0);
+    expect(out).toBe('Clicked <BUTTON> "New Project"\nScroll: 0 → 1520');
+    expect(page.mouse.some(event => event.type === 'mousePressed')).toBe(true);
+    expect(page.clicks).toEqual([]);
+  });
+
+  it('keeps the non-unique off-screen error and sends nothing', async () => {
+    const page = pointerNamedPage([
+      { text: 'New Project', rect: { x: 40, y: 1800, width: 80, height: 24 } },
+      { text: 'New Project', rect: { x: 40, y: 1900, width: 80, height: 24 } },
+    ]);
+    const err = await T.clickStr(page.cdp, 'sid', 'text=New Project').catch(error => error);
+    expect(err.message).toMatch(/^Named control is not unique and none are in the viewport: "New Project"/);
+    expect(page.scrolls).toEqual([]);
+    expect(page.mouse).toEqual([]);
+    expect(page.clicks).toEqual([]);
+  });
+});
 
 describe('text edge lines through flow and batch absolutize', () => {
   it.each(TEXT_EDGE_LINES)('keeps %j as a quoted fill argument', (line) => {

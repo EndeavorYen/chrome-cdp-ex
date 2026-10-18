@@ -144,8 +144,8 @@ function fakeCdp(page) {
       if (method === 'DOM.resolveNode') return { object: { objectId: `node:${params.nodeId || params.backendNodeId}` } };
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main', url: PAGE_HREF } } };
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
-      if (method === 'Runtime.callFunctionOn' && String(params.objectId || '').startsWith('node:')) {
-        const node = nodeAt(String(params.objectId).slice(5));
+      if (method === 'Runtime.callFunctionOn' && (String(params.objectId || '').startsWith('node:') || params.objectId === 'named-el')) {
+        const node = params.objectId === 'named-el' ? page.namedNode : nodeAt(String(params.objectId).slice(5));
         const fn = runInNewContext(`(${params.functionDeclaration})`, page.context);
         const value = await fn.call(node, ...(params.arguments || []).map(arg => arg.value));
         return { result: { value: value === undefined ? undefined : JSON.parse(JSON.stringify(value)) } };
@@ -153,6 +153,10 @@ function fakeCdp(page) {
       if (method === 'Runtime.evaluate') {
         if (params.expression === 'location.href') return { result: { type: 'string', value: PAGE_HREF } };
         const value = await runInNewContext(params.expression, page.context);
+        if (params.returnByValue === false && value && value.nodeType === 1) {
+          page.namedNode = value;
+          return { result: { type: 'object', subtype: 'node', objectId: 'named-el' } };
+        }
         return { result: { value: value === undefined ? undefined : JSON.parse(JSON.stringify(value)) } };
       }
       return {};
@@ -356,15 +360,17 @@ describe('#742 a JS click refuses a natively disabled control', () => {
     expect(exec.events).toEqual([]);
   });
 
-  it('still JS-clicks an aria-disabled control by name, CSS selector, and @ref', async () => {
+  it('still clicks an aria-disabled control by name, CSS selector, and @ref', async () => {
     const page = fakePage();
     const soft = page.el('button', { text: 'Soft', attrs: { 'aria-disabled': 'true' } });
     page.nodes.set(NAMED, soft);
     page.nodes.set('#soft', soft);
-    expect(await T.clickStr(fakeCdp(page), 'sid', 'text=Soft', new Map(), {})).toMatch(/^JS-clicked <BUTTON> "Soft"/);
+    const named = fakeCdp(page);
+    expect(await T.clickStr(named, 'sid', 'text=Soft', new Map(), {})).toMatch(/^Clicked <BUTTON> "Soft"/);
+    expect(named.inputEvents().map(call => call.params.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
     expect(await T.jsClickStr(fakeCdp(page), 'sid', '#soft', new Map(), {})).toMatch(/^JS-clicked <BUTTON> "Soft"/);
     expect(await T.jsClickStr(fakeCdp(page), 'sid', '@3', new Map([[3, 2]]), { generation: 1 })).toMatch(/^JS-clicked <BUTTON> "Soft"/);
-    expect(soft.events).toEqual(['click', 'click', 'click']);
+    expect(soft.events).toEqual(['click', 'click']);
   });
 });
 
