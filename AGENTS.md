@@ -81,4 +81,6 @@ CI also runs Windows and `smoke:live` on pinned Chrome stable. Run `npm run smok
 
 ## Release
 
+Policy: [RELEASING.md](RELEASING.md).
+
 Bump `package.json` and `.claude-plugin/plugin.json` together, run `npm run changelog:fold`, move the folded notes under the new version heading in `CHANGELOG.md`, update the release link in `README.md`, then tag `v<version>`. Releases go to GitHub Releases, not npm.
