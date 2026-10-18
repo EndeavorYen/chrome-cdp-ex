@@ -18,8 +18,8 @@ import { targetPrefixForDisplay } from './cdp-cli.mjs';
 import { displayUrl } from './cdp-core.mjs';
 import { enableDaemonDomains } from './cdp-daemon.mjs';
 import { assertScreenshotOutputDirectory, documentScrollToJs, getDpr, probePageVisibility, rememberSessionTarget, writeScreenshotFile } from './cdp-input.mjs';
-import { capFullshotHeight, formatFullshotOutput, fullshotFitsViewport, fullshotHideScrollbarsExpression, fullshotPlanError, fullshotRestoreExpression, fullshotScrollPlanExpression, parseFullshotArgs, parseTextArgs } from './cdp-page-commands.mjs';
-import { axNodeAccessibleName, axPropertyValue, elementScreenshotClip, elshotReceiptLabel, elshotRefLabel, formatElshotReceipt, isRef, resolveRef, resolveRefNode, resolvedNodeSession, validateUrl } from './cdp-perceive.mjs';
+import { capFullshotHeight, formatFullshotOutput, fullshotFitsViewport, fullshotFrameRefError, fullshotHideScrollbarsExpression, fullshotPlanError, fullshotRestoreExpression, fullshotScrollPlanExpression, parseFullshotArgs, parseTextArgs } from './cdp-page-commands.mjs';
+import { axNodeAccessibleName, axPropertyValue, elementScreenshotClip, elshotReceiptLabel, elshotRefLabel, formatElshotReceipt, isRef, parseFrameRef, resolveRef, resolveRefNode, resolvedNodeSession, validateUrl } from './cdp-perceive.mjs';
 import { appendSessionScreenshot, diffShotScreenshotCaptureOptions, ensureSessionScreenshotDir, isScreenshotTimeoutError, sessionScreenshotDir } from './cdp-session-report.mjs';
 
 export function cdpDomains(cdp) {
@@ -2203,10 +2203,16 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
         format: extra.format || 'text',
       };
   if (parsed.filePath) assertScreenshotOutputDirectory(parsed.filePath, 'fullshot');
+  const requestedContainer = parsed.scrollContainer;
+  // A frame ref resolves in the iframe document. The plan then looks the marker
+  // up in the main document, misses, and restore never clears the attribute.
+  if (requestedContainer && parseFrameRef(requestedContainer)) {
+    throw fullshotFrameRefError(requestedContainer);
+  }
   const targetPrefix = targetPrefixForDisplay(targetId);
   await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
 
-  let selector = parsed.scrollContainer;
+  let selector = requestedContainer;
   let pinned = false;
   if (selector && isRef(selector)) {
     selector = await pinFullshotRef(cdp, sid, extra.refMap, selector, extra.refState);
@@ -2217,7 +2223,10 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
   let containerMode = false;
   try {
     try {
-      const raw = await evalStr(cdp, sid, fullshotScrollPlanExpression({ selector }));
+      const raw = await evalStr(cdp, sid, fullshotScrollPlanExpression({
+        selector,
+        label: requestedContainer,
+      }));
       const plan = JSON.parse(raw);
       if (plan && typeof plan === 'object') prepared = plan;
     } catch (error) {
@@ -2285,7 +2294,7 @@ export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}
       height: limited.height,
       dpr,
       diagnostics,
-      container: containerMode ? (prepared.label || selector || 'container') : null,
+      container: containerMode ? (requestedContainer || prepared.label || 'container') : null,
       capped: limited,
     }, parsed.format);
   } finally {

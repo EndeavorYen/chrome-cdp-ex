@@ -1351,6 +1351,14 @@ function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platf
       reason: 'That element does not scroll. Omit --scroll-container to capture the document, or name an element whose content is taller than its box.',
     };
   }
+  if (cmd === 'fullshot' && /is a frame ref/i.test(String(message || '')) && (err?.usage === true || err?.code === 'usage')) {
+    return {
+      kind: 'usage',
+      strategy: 'use-main-document-container',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'fullshot --scroll-container looks the element up in the main document. Use a main-document @ref or a CSS selector.',
+    };
+  }
   if (cmd === 'fullshot' && /^fullshot:/i.test(String(message || '').trim()) && (err?.usage === true || err?.code === 'usage')) {
     return {
       kind: 'usage',

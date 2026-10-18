@@ -39,6 +39,12 @@ function fullshotUsageError(message) {
   return err;
 }
 
+export function fullshotFrameRefError(ref) {
+  return fullshotUsageError(
+    `fullshot: --scroll-container ${ref} is a frame ref. The container is looked up in the main document, so use a main-document @ref or a CSS selector.`,
+  );
+}
+
 export function parseFullshotArgs(args = []) {
   const list = Array.isArray(args) ? args : [];
   let container = null;
@@ -196,8 +202,11 @@ export function fullshotRestoreExpression() {
 // Reuses scroll's primaryOverflow (largest overflow auto/scroll/overlay box).
 // Explicit --scroll-container must be that element: a miss is selector, a box
 // that does not scroll is usage. The document gate is scrollHeight <= clientHeight + 1.
-export function fullshotScrollPlanExpression({ selector = null } = {}) {
+export function fullshotScrollPlanExpression({ selector = null, label = null } = {}) {
   const requested = selector == null ? 'null' : JSON.stringify(selector);
+  // Explicit mode prints this name. A pinned @ref keeps the caller's ref; the
+  // marker selector is only the lookup handle and is never shown.
+  const explicitLabel = label == null ? 'requested' : JSON.stringify(String(label));
   return `(function() {
     /* chrome-cdp-ex.fullshot-scroll */
     ${scrollEdgeLogicSource()}
@@ -279,14 +288,14 @@ export function fullshotScrollPlanExpression({ selector = null } = {}) {
       if (requested) {
         let found = null;
         if (typeof document.querySelector !== 'function') {
-          return JSON.stringify({ ok: false, kind: 'selector', selector: requested });
+          return JSON.stringify({ ok: false, kind: 'selector', selector: ${explicitLabel} });
         }
         try {
           found = document.querySelector(requested);
         } catch (err) {
-          return JSON.stringify({ ok: false, kind: 'invalid', error: 'invalid selector: ' + requested, selector: requested });
+          return JSON.stringify({ ok: false, kind: 'invalid', error: 'invalid selector: ' + ${explicitLabel}, selector: ${explicitLabel} });
         }
-        if (!found) return JSON.stringify({ ok: false, kind: 'selector', selector: requested });
+        if (!found) return JSON.stringify({ ok: false, kind: 'selector', selector: ${explicitLabel} });
         if (!elementScrolls(found)) {
           return JSON.stringify({
             ok: false,
@@ -310,7 +319,7 @@ export function fullshotScrollPlanExpression({ selector = null } = {}) {
         ok: true,
         mode: 'container',
         how: how,
-        label: how === 'explicit' ? requested : describe(el),
+        label: how === 'explicit' ? ${explicitLabel} : describe(el),
         contentHeight: contentHeight,
         scrollTop: window.__cdpFullshotRestore.nodes[0].scrollTop,
       });
@@ -328,6 +337,8 @@ export function fullshotHelpLines() {
     `Height is capped at ${FULLSHOT_MAX_CAPTURE_HEIGHT} CSS px, the same ceiling as a document fullshot, and the receipt says so.`,
     'Fixed and sticky headers are painted once, at their position when the page is at scroll 0, so they are not repeated down the image. A fixed bar can still cover the top of the content; fullshot does not hide it.',
     'A selector that matches nothing is Kind: selector. An element that does not scroll is Kind: usage.',
+    'A frame ref such as @f1:3 is Kind: usage. The container is looked up in the main document; use a main-document @ref or a CSS selector.',
+    'The receipt and JSON scrollContainer name the caller\'s selector or @ref, or the tag when fullshot picked the container.',
   ];
 }
 export async function stylesStr(cdp, sid, selectorOrArgs, extra = {}) {

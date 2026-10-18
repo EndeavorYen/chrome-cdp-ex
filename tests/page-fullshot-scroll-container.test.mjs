@@ -181,6 +181,13 @@ function scrollPage({
     querySelector(sel) {
       if (sel === 'style[data-cdp-fullshot]') return scrollbar.styleNode;
       if (sel === 'div[') throw new Error('invalid selector');
+      const marker = /^\[data-cdp-fullshot-target="([^"]*)"\]$/.exec(String(sel || ''));
+      if (marker) {
+        for (const el of containers) {
+          if (el.getAttribute('data-cdp-fullshot-target') === marker[1]) return el;
+        }
+        return null;
+      }
       if (query.has(sel)) return query.get(sel);
       for (const el of containers) {
         const tag = String(el.tagName || '').toLowerCase();
@@ -192,6 +199,9 @@ function scrollPage({
     },
     querySelectorAll(sel) {
       if (sel === '*') return containers;
+      if (sel === '[data-cdp-fullshot-target]') {
+        return containers.filter(el => el.hasAttribute('data-cdp-fullshot-target'));
+      }
       return [];
     },
   };
@@ -790,5 +800,162 @@ describe('#746 fullshot scroll container', () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  // The pin marker is only a lookup handle. The receipt and JSON name the
+  // caller's @ref. A frame ref is refused before that attribute is written.
+  it('names the caller @ref in the receipt and JSON, not the pin marker', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-fullshot-ref-'));
+    const file = join(tmp, 'full.png');
+    try {
+      const scroller = makeBox({
+        tagName: 'MAIN',
+        className: 'ant-layout-content',
+        scrollHeight: 4000,
+        clientHeight: 800,
+        clientWidth: 1200,
+        scrollTop: 250,
+        overflowY: 'auto',
+      });
+      const page = scrollPage({ containers: [scroller] });
+      const context = pageContext(page);
+      let expanded = false;
+      const cdp = {
+        calls: [],
+        async send(method, params = {}) {
+          this.calls.push({ method, params });
+          if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame-1' } } };
+          if (method === 'Page.createIsolatedWorld') return { executionContextId: 1 };
+          if (method === 'DOM.resolveNode') return { object: { objectId: 'main-node' } };
+          if (method === 'Runtime.callFunctionOn') {
+            const decl = String(params.functionDeclaration || '');
+            if (decl.includes('data-cdp-fullshot-target')) {
+              scroller.setAttribute('data-cdp-fullshot-target', params.arguments?.[0]?.value);
+              return { result: { value: true } };
+            }
+            return { result: { value: { connected: true } } };
+          }
+          if (method === 'Runtime.evaluate') {
+            const expr = String(params.expression || '');
+            if (expr.includes('contentType')) {
+              return { result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } };
+            }
+            if (expr.includes('devicePixelRatio')) return { result: { value: 1 } };
+            if (expr.includes('innerWidth')) {
+              return { result: { value: JSON.stringify({ w: 1440, h: 900 }) } };
+            }
+            if (expr.includes('chrome-cdp-ex.fullshot')) {
+              const value = await runPageExpression(expr, context, params.awaitPromise);
+              if (value === 'restored') expanded = false;
+              else if (typeof value === 'string' && value.startsWith('{') && JSON.parse(value).mode === 'container') expanded = true;
+              return { result: { value } };
+            }
+            return { result: { value: 1 } };
+          }
+          if (method === 'Page.getLayoutMetrics') {
+            return { cssContentSize: { width: 1440, height: expanded ? 4000 : 900 } };
+          }
+          if (method === 'Page.captureScreenshot') {
+            return { data: Buffer.from('PNG746').toString('base64') };
+          }
+          return {};
+        },
+        onEvent() { return () => {}; },
+        waitForEvent() {
+          return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+        },
+      };
+      const refMap = new Map([[3, 303]]);
+      T.resetScreenshotTier();
+      const text = await T.fullshotStr(
+        cdp,
+        'sid',
+        ['--scroll-container', '@3', file],
+        '1D3669785EAC5A1A211792636BAE8A07',
+        { refMap },
+      );
+      expect(text).toContain('scrolled container @3');
+      expect(text).not.toContain('data-cdp-fullshot-target');
+      expect(scroller.hasAttribute('data-cdp-fullshot-target')).toBe(false);
+      expect(scroller.scrollTop).toBe(250);
+
+      scroller.scrollTop = 250;
+      expanded = false;
+      T.resetScreenshotTier();
+      const json = JSON.parse(await T.fullshotStr(
+        cdp,
+        'sid',
+        ['--format', 'json', '--scroll-container', '@3', file],
+        '1D3669785EAC5A1A211792636BAE8A07',
+        { refMap },
+      ));
+      expect(json.scrollContainer).toBe('@3');
+      expect(JSON.stringify(json)).not.toContain('data-cdp-fullshot-target');
+      expect(scroller.hasAttribute('data-cdp-fullshot-target')).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a frame ref for --scroll-container before a marker is set', async () => {
+    const calls = [];
+    const page = scrollPage({ containers: [] });
+    const context = pageContext(page);
+    const cdp = {
+      calls,
+      async send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
+        if (method === 'DOM.resolveNode') return { object: { objectId: 'frame-node' } };
+        if (method === 'Runtime.callFunctionOn') {
+          return { result: { value: { connected: true } } };
+        }
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('contentType')) {
+            return { result: { value: JSON.stringify({ title: 'app', url: 'https://app.example/', contentType: 'text/html' }) } };
+          }
+          if (expr.includes('chrome-cdp-ex.fullshot')) {
+            const value = await runPageExpression(expr, context, params.awaitPromise);
+            return { result: { value } };
+          }
+          return { result: { value: 1 } };
+        }
+        if (method === 'Page.getLayoutMetrics') return { cssContentSize: { width: 1440, height: 900 } };
+        if (method === 'Page.captureScreenshot') return { data: Buffer.from('PNG746').toString('base64') };
+        return {};
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+      },
+    };
+    const refState = {
+      frameRefs: new Map([
+        ['@f1', { frameId: 'child-frame', refs: new Map([[3, 303]]) }],
+      ]),
+    };
+    const error = await T.fullshotStr(
+      cdp,
+      'sid',
+      ['--scroll-container', '@f1:3'],
+      '1D3669785EAC5A1A211792636BAE8A07',
+      { refState },
+    ).then(() => null, (err) => err);
+    expect(error?.usage).toBe(true);
+    expect(error.message).toMatch(/frame ref/i);
+    expect(error.message).toMatch(/main document/i);
+    expect(error.message).not.toContain('data-cdp-fullshot-target');
+    expect(calls.some(call => String(call.params?.functionDeclaration || '').includes('data-cdp-fullshot-target'))).toBe(false);
+    const recovery = T.buildCliErrorRecovery(error.message, {
+      cmd: 'fullshot',
+      targetPrefix: '1D366978',
+      err: error,
+    });
+    expect(recovery.kind).toBe('usage');
+    const formatted = T.formatCliError(error, { cmd: 'fullshot', targetPrefix: '1D366978' });
+    const nexts = formatted.split('\n').filter(line => line.startsWith('Next:'));
+    expect(nexts).toHaveLength(1);
+    expect(nexts[0]).toBe(`Next: ${recovery.run}`);
   });
 });
