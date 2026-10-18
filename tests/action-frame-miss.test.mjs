@@ -8,7 +8,7 @@ const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
 const TARGET = '71DF370F9D36D5A232B424FDC696BE1A';
 const PREFIX = '71DF370F';
-const NAMED = 'Named control not found: "Pay now" (from text=Pay now). No button or link has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.';
+const NAMED = 'Named control not found: "Pay now" (from text=Pay now). No button, link, tab, radio or label has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.';
 const CSS = 'Element not found: #pay. No element matches this CSS selector; pass the control\'s visible text or an @ref from perceive.';
 const NOT_UNIQUE = 'Named control is not unique and none are in the viewport: "Save". Pick one by @ref from perceive.';
 const MARKER = 'chrome-cdp-ex.frame-inventory.v1';

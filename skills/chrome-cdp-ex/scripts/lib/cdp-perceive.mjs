@@ -1651,9 +1651,10 @@ function buildPerceiveFrameNotice({
     singleChildRef: children.length === 1 ? children[0]?.ref || null : null,
   };
 }
-// Named click matches buttons and links. A heading or ignored node with the
-// same text is not a place that click would have found the control.
-const NAMED_FRAME_MISS_ROLES = new Set(['button', 'link']);
+// Named click matches buttons, links, tabs, radios and labels. A heading or
+// ignored node with the same text is not a place that click would have found
+// the control. LabelText is the accessible role of a <label>.
+const NAMED_FRAME_MISS_ROLES = new Set(['button', 'link', 'tab', 'radio', 'label', 'labeltext']);
 function namedFrameMissLabel(message, target) {
   if (!/^Named control not found\b/.test(String(message || ''))) return '';
   const input = String(target?.input || '').trim();

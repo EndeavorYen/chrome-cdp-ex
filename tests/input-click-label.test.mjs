@@ -316,6 +316,15 @@ function batchEdge(line) {
   return 'kept (JSON array)';
 }
 
+// Parts of the named-click selector. The page expression passes the real selector, so a
+// role that is not in that string is absent here too.
+function namedCandidatePart(node, part) {
+  const tag = String(node.tagName || '').toLowerCase();
+  if (part === 'a' || part === 'button' || part === 'label') return tag === part;
+  const role = /^\[role="([^"]+)"\]$/.exec(part);
+  return role ? node.getAttribute('role') === role[1] : false;
+}
+
 // A page just rich enough for the named resolver and the scroll-settled hit test.
 function pointerNamedPage(buttons, { cover = null, targets = null } = {}) {
   const clicks = [];
@@ -337,11 +346,15 @@ function pointerNamedPage(buttons, { cover = null, targets = null } = {}) {
     elementFromPoint() { return cover || null; },
     querySelector() { return null; },
     querySelectorAll(selector) {
-      if (selector === 'a, button, [role="link"], [role="button"]') return nodes;
-      return [];
+      const parts = String(selector).split(',').map(part => part.trim());
+      return nodes.filter(node => parts.some(part => namedCandidatePart(node, part)));
+    },
+    getElementById(id) {
+      return nodes.find(node => node.id === id) || null;
     },
   };
-  const nodes = buttons.map(spec => {
+  const nodes = [];
+  const addNode = (spec, parent) => {
     const rect = { ...(spec.rect || { x: 40, y: 50, width: 200, height: 40 }) };
     const node = Object.assign(Object.create(Node.prototype), {
       nodeType: 1,
@@ -349,22 +362,37 @@ function pointerNamedPage(buttons, { cover = null, targets = null } = {}) {
       id: spec.id || '',
       className: spec.className || '',
       href: spec.href || '',
+      type: spec.type || '',
       innerText: spec.text,
       textContent: spec.text,
       _position: spec.position || 'static',
       _rect: rect,
+      _children: [],
       getAttribute(name) {
         if (name === 'role') return spec.role || null;
         if (name === 'aria-label') return spec.ariaLabel || null;
         if (name === 'title') return spec.title || null;
         if (name === 'href') return spec.href || null;
         if (name === 'target') return spec.target || null;
+        if (name === 'for') return spec.forId || null;
         if (name === 'disabled' && spec.disabled) return '';
         return null;
       },
       hasAttribute(name) { return name === 'disabled' && spec.disabled === true; },
       matches(selector) { return selector === ':disabled' && spec.disabled === true; },
       closest() { return null; },
+      querySelector(selector) {
+        const tags = String(selector).split(',').map(part => part.trim().toLowerCase());
+        const walk = (el) => {
+          for (const child of el._children || []) {
+            if (tags.includes(String(child.tagName || '').toLowerCase())) return child;
+            const found = walk(child);
+            if (found) return found;
+          }
+          return null;
+        };
+        return walk(this);
+      },
       getBoundingClientRect() {
         const box = this._rect;
         return {
@@ -383,8 +411,13 @@ function pointerNamedPage(buttons, { cover = null, targets = null } = {}) {
       click() { clicks.push(spec.text); if (spec.onClick) spec.onClick(); },
     });
     node._owner = doc;
+    node._parent = parent || null;
+    if (parent) parent._children.push(node);
+    nodes.push(node);
+    for (const child of spec.children || []) addNode(child, node);
     return node;
-  });
+  };
+  for (const spec of buttons) addNode(spec, null);
   if (cover) {
     cover.nodeType = 1;
     cover._owner = doc;
@@ -621,6 +654,141 @@ describe('named click is a pointer click (#749)', () => {
     expect(page.scrolls).toEqual([]);
     expect(page.mouse).toEqual([]);
     expect(page.clicks).toEqual([]);
+  });
+});
+
+const OFFSCREEN = { x: 40, y: 1800, width: 120, height: 32 };
+
+function antdSegmented(text, { disabled = false } = {}) {
+  return {
+    tag: 'LABEL',
+    className: 'ant-segmented-item',
+    text,
+    children: [
+      { tag: 'INPUT', type: 'radio', className: 'ant-segmented-item-input', text: '', disabled },
+      { tag: 'DIV', className: 'ant-segmented-item-label', title: text, text },
+    ],
+  };
+}
+
+describe('named click matches radios, tabs and labels (#747)', () => {
+  it('clicks an antd Segmented label for text=Form Wizard', async () => {
+    const page = pointerNamedPage([antdSegmented('Form Wizard')]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=Form Wizard');
+    expect(out).toBe('Clicked <LABEL> "Form Wizard"');
+    expect(page.mouse.some(event => event.type === 'mousePressed')).toBe(true);
+    expect(page.clicks).toEqual([]);
+
+    const js = pointerNamedPage([antdSegmented('Form Wizard')]);
+    const jsOut = await T.jsClickStr(js.cdp, 'sid', 'text=Form Wizard');
+    expect(jsOut).toBe('JS-clicked <LABEL> "Form Wizard"');
+    expect(js.clicks).toEqual(['Form Wizard']);
+    expect(js.mouse).toEqual([]);
+  });
+
+  it('clicks a role=tab by its visible text', async () => {
+    const page = pointerNamedPage([
+      { tag: 'DIV', role: 'tab', text: 'Settings', rect: { x: 16, y: 20, width: 88, height: 32 } },
+    ]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=Settings');
+    expect(out).toBe('Clicked <DIV> "Settings"');
+    expect(page.mouse.some(event => event.type === 'mousePressed')).toBe(true);
+  });
+
+  it('keeps the innermost control when a tab wraps a button with the same text, even off-screen', async () => {
+    const page = pointerNamedPage([{
+      tag: 'DIV',
+      role: 'tab',
+      text: 'Settings',
+      rect: { ...OFFSCREEN },
+      children: [{ tag: 'BUTTON', text: 'Settings', rect: { ...OFFSCREEN, y: 1808, height: 24 } }],
+    }]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=Settings');
+    expect(out).toMatch(/^Clicked <BUTTON> "Settings"/);
+    expect(out).toMatch(/Scroll:/);
+    expect(page.mouse.some(event => event.type === 'mousePressed')).toBe(true);
+    expect(page.scrolls).toEqual(['Settings']);
+  });
+
+  it('keeps the innermost radio when a label wraps a role=radio with the same text', async () => {
+    const page = pointerNamedPage([{
+      tag: 'LABEL',
+      text: 'Form Wizard',
+      rect: { ...OFFSCREEN },
+      children: [{
+        tag: 'DIV',
+        role: 'radio',
+        text: 'Form Wizard',
+        rect: { ...OFFSCREEN, y: 1808, height: 24 },
+      }],
+    }]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=Form Wizard');
+    expect(out).toMatch(/^Clicked <DIV> "Form Wizard"/);
+    expect(page.scrolls).toEqual(['Form Wizard']);
+  });
+
+  it('still reports two off-screen tabs with the same name as not unique', async () => {
+    const page = pointerNamedPage([
+      { tag: 'DIV', role: 'tab', text: 'Settings', rect: { ...OFFSCREEN } },
+      { tag: 'DIV', role: 'tab', text: 'Settings', rect: { ...OFFSCREEN, y: 1900 } },
+    ]);
+    const err = await T.clickStr(page.cdp, 'sid', 'text=Settings').catch(error => error);
+    expect(err.message).toMatch(/^Named control is not unique and none are in the viewport: "Settings" \(from text=Settings\)/);
+    expect(page.mouse).toEqual([]);
+    expect(page.clicks).toEqual([]);
+    expect(page.scrolls).toEqual([]);
+  });
+
+  it('names tabs, radios and labels in a named miss', async () => {
+    const page = pointerNamedPage([{ text: 'Save' }]);
+    const err = await T.clickStr(page.cdp, 'sid', 'text=Form Wizard').catch(error => error);
+    expect(err.message).toBe('Named control not found: "Form Wizard" (from text=Form Wizard). No button, link, tab, radio or label has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.');
+    expect(page.mouse).toEqual([]);
+  });
+
+  it('treats a label that wraps or points at a disabled input as disabled', async () => {
+    const wrapped = pointerNamedPage([antdSegmented('Form Wizard', { disabled: true })]);
+    const wrappedErr = await T.clickStr(wrapped.cdp, 'sid', 'text=Form Wizard').catch(error => error);
+    expect(wrappedErr.message).toBe('<LABEL> "Form Wizard" is disabled (disabled attribute); the click was not sent.');
+    expect(wrapped.mouse).toEqual([]);
+    expect(wrapped.clicks).toEqual([]);
+
+    const pointed = pointerNamedPage([
+      { tag: 'INPUT', id: 'mode', type: 'radio', text: '', disabled: true, rect: { x: 0, y: 0, width: 0, height: 0 } },
+      { tag: 'LABEL', text: 'Form Wizard', forId: 'mode' },
+    ]);
+    const pointedErr = await T.jsClickStr(pointed.cdp, 'sid', 'text=Form Wizard').catch(error => error);
+    expect(pointedErr.message).toBe('<LABEL> "Form Wizard" is disabled (disabled attribute); the click was not sent.');
+    expect(pointed.clicks).toEqual([]);
+  });
+
+  it('keeps a CSS tag word on the CSS path, and Logout stays a named query', async () => {
+    expect(T.isLikelyCssSelector('button')).toBe(true);
+    expect(T.isNamedClickQuery('button')).toBe(false);
+    // Logout is not an HTML tag, so it is already a name. There is no CSS miss to retry as text=.
+    expect(T.isLikelyCssSelector('Logout')).toBe(false);
+    expect(T.isNamedClickQuery('Logout')).toBe(true);
+
+    const css = {
+      send(method, params = {}) {
+        if (method !== 'Runtime.evaluate') throw new Error(`unexpected ${method}`);
+        const selector = JSON.parse(String(params.expression).match(/'Element not found: ' \+ ("(?:[^"\\]|\\.)*")/)[1]);
+        return Promise.resolve({ result: { value: JSON.stringify({ ok: false, error: `Element not found: ${selector}` }) } });
+      },
+    };
+    const cssErr = await T.clickStr(css, 'sid', 'button').catch(error => error);
+    expect(cssErr.message).toMatch(/^Element not found: button\./);
+    expect(cssErr.message).toContain('"button" was read as a CSS tag selector');
+    expect(cssErr.message).toContain('"text=button"');
+    expect(cssErr.message).not.toMatch(/Named control not found/);
+
+    const named = pointerNamedPage([{ text: 'Logout' }]);
+    const out = await T.clickStr(named.cdp, 'sid', 'Logout');
+    expect(out).toBe('Clicked <BUTTON> "Logout"');
+    const miss = pointerNamedPage([]);
+    const missErr = await T.clickStr(miss.cdp, 'sid', 'Logout').catch(error => error);
+    expect(missErr.message).toMatch(/^Named control not found: "Logout"/);
+    expect(missErr.message).not.toMatch(/was read as a CSS tag selector/);
   });
 });
 

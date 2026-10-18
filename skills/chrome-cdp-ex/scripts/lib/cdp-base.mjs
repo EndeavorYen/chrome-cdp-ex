@@ -628,7 +628,8 @@ export const CHILD_FRAME_CLICK_RE = / → child-frame (delivered|unobserved)(?: 
 export const CLICK_DOWNLOAD_STARTED_RE = / → download started "([^"]+)"/;
 export const CLICK_DOWNLOAD_UNOBSERVED_RE = /no download event was observed/;
 export const NAMED_IN_VIEWPORT_CLICK_OUTCOME = 'named-in-viewport-click';
-export const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="button"]';
+// #747: named click also matches tabs, radios, and labels (an antd Segmented item is a label).
+export const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="button"], [role="radio"], [role="tab"], label';
 // #745: how a receipt names its target element: aria-label, then its visible text, then title,
 // whitespace collapsed, at most 80 characters. antd writes title="[object Object]" on an option
 // whose label is a React node. The text skips aria-hidden subtrees (icon ligatures such as
@@ -658,9 +659,11 @@ export function targetLabelExpression(name) {
     })(${name})`;
 }
 // #427: Playwright-style `text=Save`, `text="Save"`, and `text='Save'` are aliases for the
-// named form. The match prefers the exact visible text or aria-label, then a
-// whitespace-normalised fallback. Unquoted `text=` is not Playwright's case-insensitive
-// substring match. `text=` also forces a name when the word is an HTML tag (`text=button` vs `button`).
+// named form (a button, link, tab, radio, or label). The match prefers the exact visible
+// text or aria-label, then a whitespace-normalised fallback. Unquoted `text=` is not
+// Playwright's case-insensitive substring match. `text=` also forces a name when the word
+// is an HTML tag (`text=button` vs `button`). A word that is not a tag, such as Logout, is
+// already that name.
 export const TEXT_SELECTOR_PREFIX_RE = /^text=/i;
 // Pointer-sequence click (#412): menus built on Radix / Headless UI open on pointerdown, so neither the mouse path
 // (dropped on a hidden tab, "no-input-events") nor HTMLElement.click() opens them. This dispatches
@@ -1492,11 +1495,11 @@ Usage: cdp <command> [args]
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --accept-dialog: accept a native confirm, prompt, or beforeunload this click opens (default is dismiss; Kind: native-dialog)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
-                                    name: accessible name, including a multi-word label; pointer click that moves focus, skinny URL receipt. jsclick keeps the in-page click
-                                    text=Name / text="Name": same visible-name match; text= forces a name when the word is an HTML tag (text=button vs button)
+                                    name: button, link, tab, radio, or label by exact visible text or aria-label; pointer click that moves focus, skinny URL receipt. jsclick keeps the in-page click
+                                    text=Name / text="Name": same match. A single word that parses as CSS (button, label) is a CSS selector, so use text=button. Logout is not a tag, so click Logout is already that name
 {{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
-                                    name: accessible name; scrollIntoView if off-screen, no perceive dump
+                                    name: button, link, tab, radio, or label; scrollIntoView if off-screen, no perceive dump
 {{command:clickxy}}
 {{command:type}}
                                     Works in cross-origin iframes unlike eval-based approaches
