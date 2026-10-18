@@ -29,20 +29,9 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 ## Quick start
 
-Needs Node.js 22 (built-in WebSocket). npm install starts with the first npm release. `pi-chrome-cdp` on npm is the upstream package.
+Needs Node.js 22 (built-in WebSocket). This project does **not** publish to the npm registry. Install from a GitHub Release tarball or a git checkout. `pi-chrome-cdp` on npm is the upstream package.
 
-From npm, the command is `chrome-cdp` after a global install, or `npx chrome-cdp-ex` without one:
-
-```bash
-npm i -g chrome-cdp-ex
-chrome-cdp doctor
-```
-
-```bash
-npx chrome-cdp-ex doctor
-```
-
-From a checkout or an unpacked release tarball, the same command is `./bin/chrome-cdp`:
+From a checkout or an unpacked release tarball:
 
 ```bash
 ./bin/chrome-cdp doctor

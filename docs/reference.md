@@ -292,7 +292,7 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 ## Install And Release Surface
 
-Official releases live on GitHub Releases and npm. npm install starts with the first npm release. Use the release tag, release notes, GitHub Pages proof page, and attached tarball.
+Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
 Pinned install: [v2.22.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.22.0). That asset is `pi-chrome-cdp-2.22.0.tgz`. Later releases attach `chrome-cdp-ex-<version>.tgz`.
 

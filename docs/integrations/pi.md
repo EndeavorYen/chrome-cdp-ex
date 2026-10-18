@@ -21,6 +21,6 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 
 ## Route
 
-Prefer **CLI**. Install from a GitHub Release tarball, or `pi install npm:chrome-cdp-ex` once the first npm release is out.
+Prefer **CLI**. Official distribution remains GitHub Release tarballs — this project does not publish to the npm registry.
 
 See also: `skills/chrome-cdp-ex/hosts/pi.md`.

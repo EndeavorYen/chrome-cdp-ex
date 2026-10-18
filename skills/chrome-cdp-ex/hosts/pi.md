@@ -1,12 +1,6 @@
 # Pi host overlay
 
-This repository is packaged as a Pi skills package via `package.json` metadata.
-
-```bash
-pi install npm:chrome-cdp-ex
-```
-
-npm install starts with the first npm release.
+This repository is packaged as a Pi skills package via `package.json` metadata. Install from a GitHub Release tarball or a git checkout.
 
 ```json
 {
