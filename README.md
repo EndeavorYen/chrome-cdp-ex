@@ -29,7 +29,7 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 ## Quick start
 
-Needs Node.js 22 (built-in WebSocket). This project does **not** publish to the npm registry. Install from a GitHub Release tarball or a git checkout. `pi-chrome-cdp` on npm is the upstream package.
+Needs Node.js 22 (built-in WebSocket). Install from a GitHub Release tarball or a git checkout. npm publish runs from the release workflow after one manual first publish. `pi-chrome-cdp` on npm is the upstream package.
 
 From a checkout or an unpacked release tarball:
 
