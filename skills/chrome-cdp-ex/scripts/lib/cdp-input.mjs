@@ -1979,8 +1979,36 @@ export function namedInViewportClickExpression(name, { checkCover = false, resol
     // Keep the innermost so that pair is one target.
     const innermost = (list) => list.filter(el => !list.some(other => other !== el && containsMatch(el, other)));
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(NAMED_IN_VIEWPORT_CLICK_SELECTOR)}));
-    const exactNodes = innermost(nodes.filter(el => exactField(el) != null));
-    const named = exactNodes.length ? exactNodes : innermost(nodes.filter(el => normalizedField(el) != null));
+    const tagOf = (el) => String(el && el.tagName || '').toUpperCase();
+    // A field label usually precedes the button it names. Use a label only when no
+    // button, link, tab, or radio matches, and only when its control is a radio or
+    // checkbox (an antd Segmented item is that label). Prefer HTMLLabelElement.control;
+    // otherwise resolve for= or the first labelable descendant.
+    const labelControl = (el) => {
+      if (!el || tagOf(el) !== 'LABEL') return null;
+      if ('control' in el) return el.control && el.control.nodeType === 1 ? el.control : null;
+      const forId = typeof el.getAttribute === 'function' ? el.getAttribute('for') : '';
+      if (forId) {
+        const doc = el.ownerDocument;
+        const found = doc && typeof doc.getElementById === 'function' ? doc.getElementById(forId) : null;
+        return found && found.nodeType === 1 ? found : null;
+      }
+      return typeof el.querySelector === 'function'
+        ? el.querySelector('input, select, textarea, button, meter, output, progress')
+        : null;
+    };
+    const checkableLabel = (el) => {
+      const control = labelControl(el);
+      if (!control || tagOf(control) !== 'INPUT') return false;
+      const type = String(control.type || '').toLowerCase();
+      return type === 'radio' || type === 'checkbox';
+    };
+    const rank = (list) => {
+      const exact = innermost(list.filter(el => exactField(el) != null));
+      return exact.length ? exact : innermost(list.filter(el => normalizedField(el) != null));
+    };
+    const primaryNamed = rank(nodes.filter(el => tagOf(el) !== 'LABEL'));
+    const named = primaryNamed.length ? primaryNamed : rank(nodes.filter(checkableLabel));
     const visible = named.filter(inViewport);
     const scrollYBefore = Math.round(window.scrollY || 0);
     let el = visible[0] || null;

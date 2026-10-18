@@ -628,7 +628,9 @@ export const CHILD_FRAME_CLICK_RE = / → child-frame (delivered|unobserved)(?: 
 export const CLICK_DOWNLOAD_STARTED_RE = / → download started "([^"]+)"/;
 export const CLICK_DOWNLOAD_UNOBSERVED_RE = /no download event was observed/;
 export const NAMED_IN_VIEWPORT_CLICK_OUTCOME = 'named-in-viewport-click';
-// #747: named click also matches tabs, radios, and labels (an antd Segmented item is a label).
+// #747: named click also matches tabs, radios, and a label whose control is a radio or
+// checkbox (an antd Segmented item). The matcher uses that label only when no button,
+// link, tab, or radio has the name, so a field label does not take a same-name button.
 export const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="button"], [role="radio"], [role="tab"], label';
 // #745: how a receipt names its target element: aria-label, then its visible text, then title,
 // whitespace collapsed, at most 80 characters. antd writes title="[object Object]" on an option
@@ -659,7 +661,8 @@ export function targetLabelExpression(name) {
     })(${name})`;
 }
 // #427: Playwright-style `text=Save`, `text="Save"`, and `text='Save'` are aliases for the
-// named form (a button, link, tab, radio, or label). The match prefers the exact visible
+// named form (a button, link, tab, radio, or a label for a radio or checkbox). A label is used
+// only when no button, link, tab, or radio matches. The match prefers the exact visible
 // text or aria-label, then a whitespace-normalised fallback. Unquoted `text=` is not
 // Playwright's case-insensitive substring match. `text=` also forces a name when the word
 // is an HTML tag (`text=button` vs `button`). A word that is not a tag, such as Logout, is
@@ -1495,11 +1498,11 @@ Usage: cdp <command> [args]
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --accept-dialog: accept a native confirm, prompt, or beforeunload this click opens (default is dismiss; Kind: native-dialog)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
-                                    name: button, link, tab, radio, or label by exact visible text or aria-label; pointer click that moves focus, skinny URL receipt. jsclick keeps the in-page click
+                                    name: button, link, tab, radio, or a radio/checkbox label (only when none of those match) by exact visible text or aria-label; pointer click that moves focus, skinny URL receipt. jsclick keeps the in-page click
                                     text=Name / text="Name": same match. A single word that parses as CSS (button, label) is a CSS selector, so use text=button. Logout is not a tag, so click Logout is already that name
 {{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
-                                    name: button, link, tab, radio, or label; scrollIntoView if off-screen, no perceive dump
+                                    name: button, link, tab, radio, or a radio/checkbox label (only when none of those match); scrollIntoView if off-screen, no perceive dump
 {{command:clickxy}}
 {{command:type}}
                                     Works in cross-origin iframes unlike eval-based approaches

@@ -746,6 +746,48 @@ describe('named click matches radios, tabs and labels (#747)', () => {
     expect(page.mouse).toEqual([]);
   });
 
+  it('clicks the same-name button when a field label comes first', async () => {
+    const search = pointerNamedPage([
+      { tag: 'LABEL', text: 'Search', className: 'sr-only', forId: 'q', rect: { x: 0, y: 0, width: 1, height: 1 } },
+      { tag: 'INPUT', id: 'q', type: 'text', text: '', rect: { x: 8, y: 8, width: 160, height: 32 } },
+      { tag: 'BUTTON', text: 'Search', rect: { x: 180, y: 8, width: 80, height: 32 } },
+    ]);
+    const searchOut = await T.clickStr(search.cdp, 'sid', 'text=Search');
+    expect(searchOut).toBe('Clicked <BUTTON> "Search"');
+    expect(search.mouse.some(event => event.type === 'mousePressed')).toBe(true);
+
+    const email = pointerNamedPage([
+      { tag: 'LABEL', text: 'Email', forId: 'e', rect: { x: 8, y: 8, width: 80, height: 24 } },
+      { tag: 'INPUT', id: 'e', type: 'email', text: '', rect: { x: 96, y: 8, width: 180, height: 32 } },
+      { tag: 'BUTTON', text: 'Email', rect: { x: 284, y: 8, width: 80, height: 32 } },
+    ]);
+    const emailOut = await T.clickStr(email.cdp, 'sid', 'Email');
+    expect(emailOut).toBe('Clicked <BUTTON> "Email"');
+    expect(email.mouse.some(event => event.type === 'mousePressed')).toBe(true);
+  });
+
+  it('does not match a label whose control is a text input', async () => {
+    const pointed = pointerNamedPage([
+      { tag: 'LABEL', text: 'Email', forId: 'e', rect: { x: 8, y: 8, width: 80, height: 24 } },
+      { tag: 'INPUT', id: 'e', type: 'email', text: '', rect: { x: 96, y: 8, width: 180, height: 32 } },
+    ]);
+    const pointedErr = await T.clickStr(pointed.cdp, 'sid', 'Email').catch(error => error);
+    expect(pointedErr.message).toMatch(/^Named control not found: "Email"/);
+    expect(pointed.mouse).toEqual([]);
+    expect(pointed.clicks).toEqual([]);
+
+    const wrapped = pointerNamedPage([{
+      tag: 'LABEL',
+      text: 'Notes',
+      rect: { x: 8, y: 8, width: 200, height: 40 },
+      children: [{ tag: 'INPUT', type: 'text', text: '', rect: { x: 64, y: 12, width: 140, height: 28 } }],
+    }]);
+    const wrappedErr = await T.clickStr(wrapped.cdp, 'sid', 'Notes').catch(error => error);
+    expect(wrappedErr.message).toMatch(/^Named control not found: "Notes"/);
+    expect(wrapped.mouse).toEqual([]);
+    expect(wrapped.clicks).toEqual([]);
+  });
+
   it('treats a label that wraps or points at a disabled input as disabled', async () => {
     const wrapped = pointerNamedPage([antdSegmented('Form Wizard', { disabled: true })]);
     const wrappedErr = await T.clickStr(wrapped.cdp, 'sid', 'text=Form Wizard').catch(error => error);
