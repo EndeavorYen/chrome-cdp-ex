@@ -1,5 +1,5 @@
 {
-  "name": "pi-chrome-cdp",
+  "name": "chrome-cdp-ex",
   "version": "2.22.0",
   "description": "Give your AI agent access to your live Chrome session — works out of the box, connects to tabs you already have open",
   "keywords": [
@@ -15,8 +15,20 @@
   ],
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EndeavorYen/chrome-cdp-ex.git"
+  },
+  "homepage": "https://github.com/EndeavorYen/chrome-cdp-ex#readme",
+  "bugs": {
+    "url": "https://github.com/EndeavorYen/chrome-cdp-ex/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
-    "chrome-cdp": "bin/chrome-cdp"
+    "chrome-cdp": "bin/chrome-cdp",
+    "chrome-cdp-ex": "bin/chrome-cdp"
   },
   "scripts": {
     "test": "node scripts/run-vitest.mjs",
