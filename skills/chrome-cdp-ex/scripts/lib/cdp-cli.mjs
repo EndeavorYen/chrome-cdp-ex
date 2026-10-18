@@ -18,7 +18,7 @@ import { fdLimitRecovery, isolatedSpawnProfileDir, spawnDebugBrowserHelpDetails 
 import { classifyCommandResultSemantics, commandCatalogName, commandMeta, flowStepHelpLines, maybeParseJson, splitFlowSegmentsRaw } from './cdp-flow.mjs';
 import { absolutizeArtifactFileArgs, absolutizeElshotFileArg, absolutizeFullshotArgs, absolutizeResponsiveAuditArgs, absolutizeShotArgs, absolutizeUploadArgs, assertClosedClickTarget, callerPayloadIndexes, canonicalCallerCommand, clickFeedbackPolicy, namedClickActionTarget, parseActionabilityWaitArgs, pressHelpLines, rejoinRewrittenCommand, replaceCallerPayload, sameArgList } from './cdp-input.mjs';
 import { cdpDomains, evalScopeHelpLines, isHiddenTabCaptureError, runtimeExceptionMessage } from './cdp-page.mjs';
-import { absolutizeNetlogOutArg } from './cdp-page-commands.mjs';
+import { absolutizeNetlogOutArg, fullshotHelpLines } from './cdp-page-commands.mjs';
 import { perceiveReadinessRecovery } from './cdp-perceive.mjs';
 
 export function rewriteFlowInput(input, cwd, depth) {
@@ -216,6 +216,7 @@ export function helpTopicStr(topic) {
   if (record.name === 'eval' || record.name === 'eval64') lines.push(...evalScopeHelpLines());
   if (record.name === 'press') lines.push(...pressHelpLines());
   if (record.name === 'flow') lines.push(...flowStepHelpLines());
+  if (record.name === 'fullshot') lines.push(...fullshotHelpLines());
   if (record.name === 'record-actions') lines.push(...recordActionsHelpLines());
   lines.push('Run `cdp help` for the survivor card; leftover verbs: `cdp help <command>`.');
   return `${lines.join('\n')}\n`;
@@ -1340,6 +1341,30 @@ function buildCliErrorRecoveryBody(message, { cmd = '', targetPrefix = '', platf
       strategy: 'refresh-perception',
       run: `cdp perceive ${target} -C -d 8`,
       reason: 'No current element matched the selector. Refresh perception and choose the control again.',
+    };
+  }
+  if (cmd === 'fullshot' && /does not scroll/i.test(String(message || ''))) {
+    return {
+      kind: 'usage',
+      strategy: 'name-scrolling-container',
+      run: targetPrefix ? `cdp fullshot ${target}` : 'cdp help fullshot',
+      reason: 'That element does not scroll. Omit --scroll-container to capture the document, or name an element whose content is taller than its box.',
+    };
+  }
+  if (cmd === 'fullshot' && /is a frame ref/i.test(String(message || '')) && (err?.usage === true || err?.code === 'usage')) {
+    return {
+      kind: 'usage',
+      strategy: 'use-main-document-container',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'fullshot --scroll-container looks the element up in the main document. Use a main-document @ref or a CSS selector.',
+    };
+  }
+  if (cmd === 'fullshot' && /^fullshot:/i.test(String(message || '').trim()) && (err?.usage === true || err?.code === 'usage')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help fullshot',
+      reason: 'fullshot --scroll-container needs one CSS selector or @ref. --format is text or json.',
     };
   }
   if (cmd && (err?.usage === true || err?.code === 'usage' || toolMissingArgumentMessage(message))) {

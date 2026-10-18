@@ -232,7 +232,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `wait` | `wait <target> <ms>` | `read / standard` |
 | `fill` | `fill <target> <sel\|@ref> <txt\|--secret NAME> [--format json]` | `mutation / mutation` |
 | `select` | `select <target> <sel\|@ref> <val> [--format json]` | `mutation / mutation` |
-| `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
+| `fullshot` | `fullshot <target> [file] [--scroll-container <sel\|@ref>] [--format json]` | `conditional-mutation / conditional` |
 | `scanshot` | `scanshot <target>` | `read / standard` |
 | `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
 | `components` | `components <target> [--depth N] [@ref\|selector] [--max-chars N] [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
@@ -389,7 +389,7 @@ Overlays red bounding boxes and `@ref` labels on every interactive element. Requ
 scripts/cdp.mjs shot     <target> [file]  # viewport screenshot
 scripts/cdp.mjs diff-shot <target> [--reset] [--threshold pct]  # viewport pixel diff against last baseline
 scripts/cdp.mjs scanshot <target>         # segmented full-page (multiple viewport-sized images)
-scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny on long pages)
+scripts/cdp.mjs fullshot <target> [file] [--scroll-container <sel|@ref>] [--format json]  # single full-page image (may be tiny on long pages)
 ```
 
 - **`shot`** — viewport only. Use when you need the currently visible area as pixels.
@@ -405,7 +405,7 @@ scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny 
   - Screenshot timeouts fail closed (no fake 0% match) with a short capture budget.
   - Use it to compare two states of a page. It is a pixel diff: the regions say where pixels changed, not why.
 - **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page. A segment the page did not let it scroll to is marked `(landed at y=…, expected y=…)` with a `Warning:` line; use `fullshot` there.
-- **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption. A relative `[file]` uses the same caller-directory rule as `shot`.
+- **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption. A relative `[file]` uses the same caller-directory rule as `shot`. `--scroll-container <sel|@ref>` captures that element's full scroll height (a fixed shell whose content scrolls inside `overflow: auto`) and then restores its scroll position and any styles the capture changed. With no flag, a document that does not scroll (`scrollHeight <= clientHeight + 1`) uses the largest visible `overflow: auto` / `scroll` / `overlay` box, the same container `scroll` picks; when none exists the document is captured as before. Height is capped at 16384 CSS px, the same ceiling as a document fullshot, and the receipt says so. Fixed and sticky headers are painted once, at their position when the page is at scroll 0, so they are not repeated down the image. A fixed bar can still cover the top of the content; fullshot does not hide it. A selector that matches nothing is `Kind: selector` (Next: `cdp perceive <target> -C -d 8`). An element that does not scroll is `Kind: usage` (Next: `cdp fullshot <target>`). A frame ref such as `@f1:3` is `Kind: usage` (Next: `cdp perceive <target> -C -d 8`): the container is looked up in the main document, so use a main-document `@ref` or a CSS selector. `--format json` adds optional `scrollContainer` (the caller's selector or `@ref`, or the tag when fullshot picked the container) when an inner container was captured. The document-scroll text receipt is unchanged.
 - Screenshot captures report method/retry metadata. A light page with an anomalous near-black frame gets one alternate-surface retry; a legitimately dark page does not.
 
 ### Evaluate JavaScript

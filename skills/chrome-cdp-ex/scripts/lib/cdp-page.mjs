@@ -18,8 +18,8 @@ import { targetPrefixForDisplay } from './cdp-cli.mjs';
 import { displayUrl } from './cdp-core.mjs';
 import { enableDaemonDomains } from './cdp-daemon.mjs';
 import { assertScreenshotOutputDirectory, documentScrollToJs, getDpr, probePageVisibility, rememberSessionTarget, writeScreenshotFile } from './cdp-input.mjs';
-import { fullshotFitsViewport, parseTextArgs } from './cdp-page-commands.mjs';
-import { axNodeAccessibleName, axPropertyValue, elementScreenshotClip, elshotReceiptLabel, elshotRefLabel, formatElshotReceipt, isRef, resolveRef, validateUrl } from './cdp-perceive.mjs';
+import { capFullshotHeight, formatFullshotOutput, fullshotFitsViewport, fullshotFrameRefError, fullshotHideScrollbarsExpression, fullshotPlanError, fullshotRestoreExpression, fullshotScrollPlanExpression, parseFullshotArgs, parseTextArgs } from './cdp-page-commands.mjs';
+import { axNodeAccessibleName, axPropertyValue, elementScreenshotClip, elshotReceiptLabel, elshotRefLabel, formatElshotReceipt, isRef, parseFrameRef, resolveRef, resolveRefNode, resolvedNodeSession, validateUrl } from './cdp-perceive.mjs';
 import { appendSessionScreenshot, diffShotScreenshotCaptureOptions, ensureSessionScreenshotDir, isScreenshotTimeoutError, sessionScreenshotDir } from './cdp-session-report.mjs';
 
 export function cdpDomains(cdp) {
@@ -2181,57 +2181,127 @@ export async function elshotStr(cdp, sid, selector, targetId, refMap, refState, 
   const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${elshotReceiptLabel(r.text)}"`;
   return formatElshotReceipt(desc, { w: r.w, h: r.h, clip, fallback, path: out });
 }
-export async function fullshotStr(cdp, sid, filePath, targetId) {
-  if (filePath) assertScreenshotOutputDirectory(filePath, 'fullshot');
+async function pinFullshotRef(cdp, sid, refMap, ref, refState) {
+  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const nodeSid = resolvedNodeSession(cdp, sid, objectId);
+  const token = `fs${Date.now().toString(36)}`;
+  await cdpDomains(cdp).Runtime.callFunctionOn( {
+    objectId,
+    functionDeclaration: 'function(token) { this.setAttribute("data-cdp-fullshot-target", token); return true; }',
+    arguments: [{ value: token }],
+    returnByValue: true,
+  }, nodeSid);
+  return `[data-cdp-fullshot-target="${token}"]`;
+}
+
+export async function fullshotStr(cdp, sid, filePathOrArgs, targetId, extra = {}) {
+  const parsed = Array.isArray(filePathOrArgs)
+    ? parseFullshotArgs(filePathOrArgs)
+    : {
+        filePath: typeof filePathOrArgs === 'string' && filePathOrArgs ? filePathOrArgs : null,
+        scrollContainer: extra.scrollContainer || null,
+        format: extra.format || 'text',
+      };
+  if (parsed.filePath) assertScreenshotOutputDirectory(parsed.filePath, 'fullshot');
+  const requestedContainer = parsed.scrollContainer;
+  // A frame ref resolves in the iframe document. The plan then looks the marker
+  // up in the main document, misses, and restore never clears the attribute.
+  if (requestedContainer && parseFrameRef(requestedContainer)) {
+    throw fullshotFrameRefError(requestedContainer);
+  }
   const targetPrefix = targetPrefixForDisplay(targetId);
   await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
-  const dpr = await getDpr(cdp, sid);
-  const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
-  const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
-  const height = metrics.cssContentSize?.height || metrics.contentSize?.height || 800;
-  let viewport = null;
-  try {
-    viewport = JSON.parse(await evalStr(
-      cdp,
-      sid,
-      'JSON.stringify({w:window.innerWidth,h:window.innerHeight})',
-    ));
-  } catch {}
-  const fitsViewport = fullshotFitsViewport({ width, height }, viewport);
-  const params = fitsViewport
-    ? { format: 'png' }
-    : {
-        format: 'png',
-        captureBeyondViewport: true,
-        clip: { x: 0, y: 0, width, height, scale: 1 },
-      };
-  const hooks = fitsViewport
-    ? {}
-    : {
-        timeoutMs: FULLSHOT_TIMEOUT_MS,
-        skipSanityRetry: true,
-        failFastOnTimeout: true,
-      };
 
-  let capture;
+  let selector = requestedContainer;
+  let pinned = false;
+  if (selector && isRef(selector)) {
+    selector = await pinFullshotRef(cdp, sid, extra.refMap, selector, extra.refState);
+    pinned = true;
+  }
+
+  let prepared = { ok: true, mode: 'document' };
+  let containerMode = false;
   try {
-    capture = await captureScreenshot(cdp, sid, params, hooks);
-  } catch (error) {
-    if (isScreenshotTimeoutError(error)) {
-      throw new Error('fullshot: full-page capture timed out; screenshot is untrusted');
+    try {
+      const raw = await evalStr(cdp, sid, fullshotScrollPlanExpression({
+        selector,
+        label: requestedContainer,
+      }));
+      const plan = JSON.parse(raw);
+      if (plan && typeof plan === 'object') prepared = plan;
+    } catch (error) {
+      if (error?.selectorMiss === true || error?.usage === true || error?.code === 'pdf_viewer') throw error;
+      prepared = { ok: true, mode: 'document' };
     }
-    throw error;
-  }
-  if (!fitsViewport && capture.fallback === true) {
-    throw new Error(`fullshot: full-page capture ${screenshotFallbackReason(capture)}; screenshot is untrusted`);
-  }
+    if (prepared.ok === false) throw fullshotPlanError(prepared);
+    containerMode = prepared.mode === 'container';
+    if (containerMode) {
+      // Expanding html/body to overflow:visible makes the document scroll, which
+      // reserves a scrollbar and shrinks layout width. The sheet takes effect on
+      // the next frame, so measure only after that frame.
+      await evalStr(cdp, sid, fullshotHideScrollbarsExpression());
+    }
+    const dpr = await getDpr(cdp, sid);
+    const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
+    const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
+    const layoutHeight = metrics.cssContentSize?.height || metrics.contentSize?.height || 800;
+    const contentHeight = Number(prepared.contentHeight) || 0;
+    const height = containerMode ? Math.max(layoutHeight, contentHeight) : layoutHeight;
+    let viewport = null;
+    try {
+      viewport = JSON.parse(await evalStr(
+        cdp,
+        sid,
+        'JSON.stringify({w:window.innerWidth,h:window.innerHeight})',
+      ));
+    } catch {}
+    const limited = capFullshotHeight(height);
+    const fitsViewport = fullshotFitsViewport({ width, height: limited.height }, viewport);
+    const params = fitsViewport
+      ? { format: 'png' }
+      : {
+          format: 'png',
+          captureBeyondViewport: true,
+          clip: { x: 0, y: 0, width, height: limited.height, scale: 1 },
+        };
+    const hooks = fitsViewport
+      ? {}
+      : {
+          timeoutMs: FULLSHOT_TIMEOUT_MS,
+          skipSanityRetry: true,
+          failFastOnTimeout: true,
+        };
 
-  const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
-  writeScreenshotFile(out, capture.data, 'fullshot');
+    let capture;
+    try {
+      capture = await captureScreenshot(cdp, sid, params, hooks);
+    } catch (error) {
+      if (isScreenshotTimeoutError(error)) {
+        throw new Error('fullshot: full-page capture timed out; screenshot is untrusted');
+      }
+      throw error;
+    }
+    if (!fitsViewport && capture.fallback === true) {
+      throw new Error(`fullshot: full-page capture ${screenshotFallbackReason(capture)}; screenshot is untrusted`);
+    }
 
-  const diagnostics = formatScreenshotCaptureDiagnostics(capture);
-  const fb = diagnostics ? ` ${diagnostics}` : '';
-  return `${out}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}${fb}\nNote: large pages produce tiny text. Use 'scanshot' for readable segmented capture.`;
+    const out = parsed.filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
+    writeScreenshotFile(out, capture.data, 'fullshot');
+    const diagnostics = formatScreenshotCaptureDiagnostics(capture);
+    return formatFullshotOutput({
+      path: out,
+      width,
+      height: limited.height,
+      dpr,
+      diagnostics,
+      container: containerMode ? (requestedContainer || prepared.label || 'container') : null,
+      capped: limited,
+    }, parsed.format);
+  } finally {
+    if (containerMode || pinned) {
+      await evalStr(cdp, sid, fullshotRestoreExpression()).catch(() => {});
+    }
+  }
 }
 export async function scanshotStr(cdp, sid, targetId) {
   // Get viewport and page dimensions

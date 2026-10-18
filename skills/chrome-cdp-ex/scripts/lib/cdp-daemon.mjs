@@ -844,7 +844,7 @@ export async function runDaemon(targetId, applicationPreflight = preflightDaemon
     },
     'export-playwright': args => formatExportPlaywright(session, parseExportPlaywrightArgs(args)),
     frame: async args => framesStr(cdp, sessionId, parseFrameArgs(args)),
-    fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
+    fullshot: args => fullshotStr(cdp, sessionId, args, targetId, { refMap, refState }),
     html: args => htmlStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     text: args => textStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     table: async (request, execution) => request.mode === 'continue'
