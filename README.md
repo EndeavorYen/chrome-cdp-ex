@@ -29,9 +29,20 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 ## Quick start
 
-Needs Node.js 22 (built-in WebSocket). This project does **not** publish to the npm registry.
+Needs Node.js 22 (built-in WebSocket). npm install starts with the first npm release. `pi-chrome-cdp` on npm is the upstream package.
 
-From a checkout or unpacked release:
+From npm, the command is `chrome-cdp` after a global install, or `npx chrome-cdp-ex` without one:
+
+```bash
+npm i -g chrome-cdp-ex
+chrome-cdp doctor
+```
+
+```bash
+npx chrome-cdp-ex doctor
+```
+
+From a checkout or an unpacked release tarball, the same command is `./bin/chrome-cdp`:
 
 ```bash
 ./bin/chrome-cdp doctor
@@ -55,12 +66,12 @@ If `node -v` is older than 22, doctor prints a Node 22 path that `./bin/chrome-c
 <details>
 <summary>Get the files (tarball or git clone)</summary>
 
-Pinned [v2.22.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.22.0) tarball:
+Pinned [v2.22.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.22.0) tarball. That GitHub asset is `pi-chrome-cdp-2.22.0.tgz`. Later releases attach `chrome-cdp-ex-<version>.tgz`.
 
 ```bash
-curl -L -o pi-chrome-cdp-2.22.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.22.0/pi-chrome-cdp-2.22.0.tgz
+curl -L -o chrome-cdp-ex-2.22.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.22.0/pi-chrome-cdp-2.22.0.tgz
 mkdir -p chrome-cdp-ex-v2.22.0
-tar -xzf pi-chrome-cdp-2.22.0.tgz -C chrome-cdp-ex-v2.22.0 --strip-components=1
+tar -xzf chrome-cdp-ex-2.22.0.tgz -C chrome-cdp-ex-v2.22.0 --strip-components=1
 cd chrome-cdp-ex-v2.22.0
 ```
 

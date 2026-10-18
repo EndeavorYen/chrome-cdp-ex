@@ -384,7 +384,7 @@ describe('v2.11.0 review regressions', () => {
     const scriptPath = path.join(skillScripts, 'cdp.mjs');
     fs.writeFileSync(scriptPath, '// fixture\n');
     const packageJsonPath = path.join(tmp, 'package.json');
-    fs.writeFileSync(packageJsonPath, JSON.stringify({ name: 'pi-chrome-cdp', version: '9.9.9' }));
+    fs.writeFileSync(packageJsonPath, JSON.stringify({ name: 'chrome-cdp-ex', version: '9.9.9' }));
     const linkDir = path.join(tmp, 'skill-link');
     fs.mkdirSync(linkDir, { recursive: true });
     const linkedScript = path.join(linkDir, 'cdp.mjs');

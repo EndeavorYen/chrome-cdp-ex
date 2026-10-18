@@ -2,10 +2,16 @@
 
 This repository is packaged as a Pi skills package via `package.json` metadata.
 
+```bash
+pi install npm:chrome-cdp-ex
+```
+
+npm install starts with the first npm release.
+
 ```json
 {
-  "name": "pi-chrome-cdp",
-  "version": "2.21.0",
+  "name": "chrome-cdp-ex",
+  "version": "2.22.0",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "skills", "chrome", "cdp", "browser", "devtools"],
   "pi": {
     "skills": ["./skills"]
