@@ -766,6 +766,17 @@ describe('named click matches radios, tabs and labels (#747)', () => {
     expect(email.mouse.some(event => event.type === 'mousePressed')).toBe(true);
   });
 
+  it('clicks a label that carries role=button, including one for a file input', async () => {
+    const page = pointerNamedPage([
+      { tag: 'LABEL', role: 'button', text: 'Upload file', forId: 'f', rect: { x: 8, y: 8, width: 120, height: 32 } },
+      { tag: 'INPUT', id: 'f', type: 'file', text: '', rect: { x: 0, y: 0, width: 0, height: 0 } },
+    ]);
+    const out = await T.clickStr(page.cdp, 'sid', 'text=Upload file');
+    expect(out).toBe('Clicked <LABEL> "Upload file"');
+    expect(page.mouse.some(event => event.type === 'mousePressed')).toBe(true);
+    expect(page.clicks).toEqual([]);
+  });
+
   it('does not match a label whose control is a text input', async () => {
     const pointed = pointerNamedPage([
       { tag: 'LABEL', text: 'Email', forId: 'e', rect: { x: 8, y: 8, width: 80, height: 24 } },

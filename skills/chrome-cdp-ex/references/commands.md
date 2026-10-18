@@ -642,8 +642,8 @@ scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
 scripts/cdp.mjs nav     <target> <url> [--compact] [--format json] # URL+title; --compact is one line
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
-scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control (button, link, tab, radio, or a radio/checkbox label when none of those match); pointer click that moves focus, skinny URL
-scripts/cdp.mjs click   <target> "text=Save" [--format json]  # alias for the named form: exact visible text or aria-label on a button, link, tab, radio, or a radio/checkbox label (only when none of those match). A single word that parses as CSS (button, label) is a CSS selector, so use text=button. Logout is not a tag, so click Logout is already that name; text=Logout is the same match
+scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control (button, link, tab, radio, including a label with that role, or a role-less radio/checkbox label when none of those match); pointer click that moves focus, skinny URL
+scripts/cdp.mjs click   <target> "text=Save" [--format json]  # alias for the named form: exact visible text or aria-label on a button, link, tab, radio (a label with that role counts), or a role-less radio/checkbox label (only when none of those match). A single word that parses as CSS (button, label) is a CSS selector, so use text=button. Logout is not a tag, so click Logout is already that name; text=Logout is the same match
 scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path (button, link, tab, radio, or a radio/checkbox label when none of those match); scrollIntoView if off-screen
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
@@ -1342,7 +1342,7 @@ classified `Unknown ref` error. Switch to a stable selector
 ```bash
 cdp jsclick <t> @17                                       # @ref form
 cdp click   <t> --js "button[data-action='confirm']"     # CSS form
-cdp jsclick <t> "Browse 1M+ applications"                # named control (button, link, tab, radio, or a radio/checkbox label when none of those match); scrollIntoView if off-screen
+cdp jsclick <t> "Browse 1M+ applications"                # named control (button, link, tab, radio, including a label with that role, or a role-less radio/checkbox label when none of those match); scrollIntoView if off-screen
 ```
 
 Use this when the realistic mouse path (CDP `Input.dispatchMouseEvent`) is blocked:
@@ -1412,7 +1412,7 @@ including `text=`, sends nothing and exits 1 with `Kind: covered`. `jsclick` and
 keep the in-page click and skip that hit test.
 
 `text=button`, `text="Save changes"`, and `text='Save'` are aliases for that named
-form. The match is a button, a link (`a` or `role=link`), a tab (`role=tab`), a radio (`role=radio`), or a `label` whose control is a radio or checkbox. That label is used only when no button, link, tab, or radio has the name, so a field label does not take a same-name button. It prefers the exact visible text or `aria-label`, then a whitespace-normalised
+form. The match is a button, a link (`a` or `role=link`), a tab (`role=tab`), a radio (`role=radio`), or a `label` with one of those roles, which counts as that control. A `label` with no role is used only when its control is a radio or checkbox and no button, link, tab, or radio has the name, so a field label does not take a same-name button. It prefers the exact visible text or `aria-label`, then a whitespace-normalised
 fallback; unquoted `text=` is not Playwright's case-insensitive substring match. Use `text=`
 to force a name when the word is an HTML tag (`text=button` vs `button`). A word that is not
 a tag, such as `Save` or `Logout`, is already a name. A single word that parses as CSS (`button`, `label`) is read as a CSS selector, so use `text=button`. `click Logout` is already the named form; `text=Logout` is that same match, and a CSS miss is not retried as `text=`. A real selector (`#form #delete`, `div span`, `nav a`)

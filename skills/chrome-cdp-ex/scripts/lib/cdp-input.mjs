@@ -1980,8 +1980,10 @@ export function namedInViewportClickExpression(name, { checkCover = false, resol
     const innermost = (list) => list.filter(el => !list.some(other => other !== el && containsMatch(el, other)));
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(NAMED_IN_VIEWPORT_CLICK_SELECTOR)}));
     const tagOf = (el) => String(el && el.tagName || '').toUpperCase();
-    // A field label usually precedes the button it names. Use a label only when no
-    // button, link, tab, or radio matches, and only when its control is a radio or
+    // A field label usually precedes the button it names. A label with role=button,
+    // role=link, role=tab, or role=radio is that control and stays in the primary
+    // list, ranked with any other element of that role. A label with no role is used
+    // only when no primary match exists, and only when its control is a radio or
     // checkbox (an antd Segmented item is that label). Prefer HTMLLabelElement.control;
     // otherwise resolve for= or the first labelable descendant.
     const labelControl = (el) => {
@@ -2003,12 +2005,22 @@ export function namedInViewportClickExpression(name, { checkCover = false, resol
       const type = String(control.type || '').toLowerCase();
       return type === 'radio' || type === 'checkbox';
     };
+    const roleOf = (el) => {
+      const role = typeof el.getAttribute === 'function' ? el.getAttribute('role') : '';
+      return role || '';
+    };
+    const explicitControlRole = (el) => {
+      const role = roleOf(el);
+      return role === 'button' || role === 'link' || role === 'tab' || role === 'radio';
+    };
     const rank = (list) => {
       const exact = innermost(list.filter(el => exactField(el) != null));
       return exact.length ? exact : innermost(list.filter(el => normalizedField(el) != null));
     };
-    const primaryNamed = rank(nodes.filter(el => tagOf(el) !== 'LABEL'));
-    const named = primaryNamed.length ? primaryNamed : rank(nodes.filter(checkableLabel));
+    const primaryNamed = rank(nodes.filter(el => tagOf(el) !== 'LABEL' || explicitControlRole(el)));
+    const named = primaryNamed.length
+      ? primaryNamed
+      : rank(nodes.filter(el => tagOf(el) === 'LABEL' && roleOf(el) === '' && checkableLabel(el)));
     const visible = named.filter(inViewport);
     const scrollYBefore = Math.round(window.scrollY || 0);
     let el = visible[0] || null;
