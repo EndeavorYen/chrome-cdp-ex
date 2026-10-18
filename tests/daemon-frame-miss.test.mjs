@@ -8,7 +8,7 @@ const PREFIX = '71DF370F';
 const MARKER = 'chrome-cdp-ex.frame-inventory.v1';
 const SAME = 'http://127.0.0.1:9/inner.html';
 const CSS = 'Element not found: #pay. No element matches this CSS selector; pass the control\'s visible text or an @ref from perceive.';
-const NAMED = 'Named control not found: "Pay now" (from text=Pay now). No button or link has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.';
+const NAMED = 'Named control not found: "Pay now" (from text=Pay now). No button, link, tab, radio or label has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.';
 const OTHER = 'http://127.0.0.1:9/other.html';
 
 function frameTree(children = []) {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { runInNewContext } from 'node:vm';
 
+import { NAMED_IN_VIEWPORT_CLICK_SELECTOR } from '../skills/chrome-cdp-ex/scripts/lib/cdp-base.mjs';
+
 process.env.NODE_ENV = 'test';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -322,7 +324,7 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
 });
 
 describe('#742 a JS click refuses a natively disabled control', () => {
-  const NAMED = 'a, button, [role="link"], [role="button"]';
+  const NAMED = NAMED_IN_VIEWPORT_CLICK_SELECTOR;
   const target = (input) => ({ input, targetId: TARGET_ID });
 
   it('fails click and jsclick by name on a disabled button or inside a disabled fieldset, and sends no click', async () => {

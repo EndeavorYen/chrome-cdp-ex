@@ -1866,7 +1866,7 @@ export function namedClickMissMessage(input, error) {
   const name = namedClickQueryName(input);
   const from = textSelectorName(input) == null ? '' : ` (from ${String(input).trim()})`;
   if (text.startsWith('Named control not found')) {
-    return `Named control not found: ${JSON.stringify(name)}${from}. No button or link has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.`;
+    return `Named control not found: ${JSON.stringify(name)}${from}. No button, link, tab, radio or label has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.`;
   }
   if (text.startsWith('Named control is not unique')) {
     return `Named control is not unique and none are in the viewport: ${JSON.stringify(name)}${from}. Pick one by @ref from perceive.`;
@@ -1967,9 +1967,60 @@ export function namedInViewportClickExpression(name, { checkCover = false, resol
       const fuzzy = normalizedField(el);
       return fuzzy == null ? '' : normalize(fuzzy);
     };
+    const containsMatch = (ancestor, node) => {
+      let parent = node && node.parentNode;
+      while (parent) {
+        if (parent === ancestor) return true;
+        parent = parent.parentNode;
+      }
+      return false;
+    };
+    // One visual control can match twice (a tab wrapping a button, a label wrapping a radio).
+    // Keep the innermost so that pair is one target.
+    const innermost = (list) => list.filter(el => !list.some(other => other !== el && containsMatch(el, other)));
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(NAMED_IN_VIEWPORT_CLICK_SELECTOR)}));
-    const exactNodes = nodes.filter(el => exactField(el) != null);
-    const named = exactNodes.length ? exactNodes : nodes.filter(el => normalizedField(el) != null);
+    const tagOf = (el) => String(el && el.tagName || '').toUpperCase();
+    // A field label usually precedes the button it names. A label with role=button,
+    // role=link, role=tab, or role=radio is that control and stays in the primary
+    // list, ranked with any other element of that role. A label with no role is used
+    // only when no primary match exists, and only when its control is a radio or
+    // checkbox (an antd Segmented item is that label). Prefer HTMLLabelElement.control;
+    // otherwise resolve for= or the first labelable descendant.
+    const labelControl = (el) => {
+      if (!el || tagOf(el) !== 'LABEL') return null;
+      if ('control' in el) return el.control && el.control.nodeType === 1 ? el.control : null;
+      const forId = typeof el.getAttribute === 'function' ? el.getAttribute('for') : '';
+      if (forId) {
+        const doc = el.ownerDocument;
+        const found = doc && typeof doc.getElementById === 'function' ? doc.getElementById(forId) : null;
+        return found && found.nodeType === 1 ? found : null;
+      }
+      return typeof el.querySelector === 'function'
+        ? el.querySelector('input, select, textarea, button, meter, output, progress')
+        : null;
+    };
+    const checkableLabel = (el) => {
+      const control = labelControl(el);
+      if (!control || tagOf(control) !== 'INPUT') return false;
+      const type = String(control.type || '').toLowerCase();
+      return type === 'radio' || type === 'checkbox';
+    };
+    const roleOf = (el) => {
+      const role = typeof el.getAttribute === 'function' ? el.getAttribute('role') : '';
+      return role || '';
+    };
+    const explicitControlRole = (el) => {
+      const role = roleOf(el);
+      return role === 'button' || role === 'link' || role === 'tab' || role === 'radio';
+    };
+    const rank = (list) => {
+      const exact = innermost(list.filter(el => exactField(el) != null));
+      return exact.length ? exact : innermost(list.filter(el => normalizedField(el) != null));
+    };
+    const primaryNamed = rank(nodes.filter(el => tagOf(el) !== 'LABEL' || explicitControlRole(el)));
+    const named = primaryNamed.length
+      ? primaryNamed
+      : rank(nodes.filter(el => tagOf(el) === 'LABEL' && roleOf(el) === '' && checkableLabel(el)));
     const visible = named.filter(inViewport);
     const scrollYBefore = Math.round(window.scrollY || 0);
     let el = visible[0] || null;
@@ -2245,12 +2296,29 @@ export function actionabilityFunctionSource() {
   return `
     const actionDisabledReason = (el, aria = true) => {
       if (!el || el.nodeType !== 1) return '';
-      let native = false;
-      try { native = typeof el.matches === 'function' && el.matches(':disabled'); } catch (e) { native = false; }
-      if (native) {
-        if (typeof el.hasAttribute === 'function' && el.hasAttribute('disabled')) return 'disabled attribute';
-        const fieldset = typeof el.closest === 'function' ? el.closest('fieldset[disabled]') : null;
-        return fieldset && fieldset !== el ? 'inside a disabled <fieldset>' : 'disabled';
+      const nativeReason = (node) => {
+        if (!node || node.nodeType !== 1) return '';
+        let native = false;
+        try { native = typeof node.matches === 'function' && node.matches(':disabled'); } catch (e) { native = false; }
+        if (!native) return '';
+        if (typeof node.hasAttribute === 'function' && node.hasAttribute('disabled')) return 'disabled attribute';
+        const fieldset = typeof node.closest === 'function' ? node.closest('fieldset[disabled]') : null;
+        return fieldset && fieldset !== node ? 'inside a disabled <fieldset>' : 'disabled';
+      };
+      const own = nativeReason(el);
+      if (own) return own;
+      // A label is not :disabled. The control it wraps, or the one its for= points at, is.
+      if (String(el.tagName || '').toUpperCase() === 'LABEL') {
+        let control = null;
+        const forId = typeof el.getAttribute === 'function' ? el.getAttribute('for') : '';
+        if (forId) {
+          const doc = el.ownerDocument;
+          control = doc && typeof doc.getElementById === 'function' ? doc.getElementById(forId) : null;
+        } else if (typeof el.querySelector === 'function') {
+          control = el.querySelector('input, select, textarea, button');
+        }
+        const via = control && control !== el ? nativeReason(control) : '';
+        if (via) return via;
       }
       if (aria && typeof el.getAttribute === 'function' && el.getAttribute('aria-disabled') === 'true') return 'aria-disabled="true"';
       return '';

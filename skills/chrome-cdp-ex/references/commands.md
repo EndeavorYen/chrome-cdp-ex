@@ -642,9 +642,9 @@ scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
 scripts/cdp.mjs nav     <target> <url> [--compact] [--format json] # URL+title; --compact is one line
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
-scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; pointer click that moves focus, skinny URL
-scripts/cdp.mjs click   <target> "text=Save" [--format json]  # alias for the named form (exact visible text)
-scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path; scrollIntoView if off-screen
+scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control (button, link, tab, radio, including a label with that role, or a role-less radio/checkbox label when none of those match); pointer click that moves focus, skinny URL
+scripts/cdp.mjs click   <target> "text=Save" [--format json]  # alias for the named form: exact visible text or aria-label on a button, link, tab, radio (a label with that role counts), or a role-less radio/checkbox label (only when none of those match). A single word that parses as CSS (button, label) is a CSS selector, so use text=button. Logout is not a tag, so click Logout is already that name; text=Logout is the same match
+scripts/cdp.mjs jsclick <target> "Browse 1M+ applications" [--format json] # same named path (button, link, tab, radio, or a radio/checkbox label when none of those match); scrollIntoView if off-screen
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
 scripts/cdp.mjs press   <target> <key> [--search-submit] [--format json] # press key (alias: key; Enter dispatches keyDown with a carriage return to the focused element; --search-submit opts into a results-link submit and the receipt names that link). Pressed is printed only after a keydown is observed; otherwise Kind: press-not-delivered
@@ -1342,7 +1342,7 @@ classified `Unknown ref` error. Switch to a stable selector
 ```bash
 cdp jsclick <t> @17                                       # @ref form
 cdp click   <t> --js "button[data-action='confirm']"     # CSS form
-cdp jsclick <t> "Browse 1M+ applications"                # named control; scrollIntoView if off-screen
+cdp jsclick <t> "Browse 1M+ applications"                # named control (button, link, tab, radio, including a label with that role, or a role-less radio/checkbox label when none of those match); scrollIntoView if off-screen
 ```
 
 Use this when the realistic mouse path (CDP `Input.dispatchMouseEvent`) is blocked:
@@ -1412,10 +1412,10 @@ including `text=`, sends nothing and exits 1 with `Kind: covered`. `jsclick` and
 keep the in-page click and skip that hit test.
 
 `text=button`, `text="Save changes"`, and `text='Save'` are aliases for that named
-form. The match prefers the exact visible text or `aria-label`, then a whitespace-normalised
+form. The match is a button, a link (`a` or `role=link`), a tab (`role=tab`), a radio (`role=radio`), or a `label` with one of those roles, which counts as that control. A `label` with no role is used only when its control is a radio or checkbox and no button, link, tab, or radio has the name, so a field label does not take a same-name button. It prefers the exact visible text or `aria-label`, then a whitespace-normalised
 fallback; unquoted `text=` is not Playwright's case-insensitive substring match. Use `text=`
 to force a name when the word is an HTML tag (`text=button` vs `button`). A word that is not
-a tag, such as `Save`, is already a label. A real selector (`#form #delete`, `div span`, `nav a`)
+a tag, such as `Save` or `Logout`, is already a name. A single word that parses as CSS (`button`, `label`) is read as a CSS selector, so use `text=button`. `click Logout` is already the named form; `text=Logout` is that same match, and a CSS miss is not retried as `text=`. A real selector (`#form #delete`, `div span`, `nav a`)
 stays a selector. A miss exits 1 with `Error: Named control not found: "Save" (from text=Save)…`,
 `Kind: selector`, and Next `perceive -C -d 8` for an `@ref`. On a page with child frames, `Named control not found` and `Element not found` say the page has N frames and the control may be inside one; Next is `perceive <target> --frame @fN` when exactly one same-origin child frame exists, and `frame <target>` when more do. On a named click, exactly one frame whose accessible name matches points Next at `perceive <target> --frame @fN`, or at `click <target> @fN:M` when that frame-local ref is already known; zero or several matches keep the Next above, a cross-site frame is searched only when it is already attached, and that read stays out of `text` and `summary`. A cross-site frame that is not already attached is not reachable yet, and Next does not point at it. That includes a depth-1 frame still at `about:blank` or an empty URL with an opaque origin whose iframe `src` is another site. A page with no frames keeps that message and Next. An unclosed quote in the target
 is an error.

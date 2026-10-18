@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { runInNewContext } from 'node:vm';
 
+import { NAMED_IN_VIEWPORT_CLICK_SELECTOR } from '../skills/chrome-cdp-ex/scripts/lib/cdp-base.mjs';
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const { COMMAND_SURFACE } = await import('../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs');
 
@@ -171,7 +172,7 @@ function createHfHomePage({
       }
     },
     querySelectorAll(selector) {
-      if (selector === 'a, button, [role="link"], [role="button"]') return links;
+      if (selector === NAMED_IN_VIEWPORT_CLICK_SELECTOR) return links;
       return [];
     },
   };

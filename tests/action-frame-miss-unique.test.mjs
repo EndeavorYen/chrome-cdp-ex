@@ -7,7 +7,7 @@ const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
 const TARGET = '71DF370F9D36D5A232B424FDC696BE1A';
 const PREFIX = '71DF370F';
-const NAMED = 'Named control not found: "Pay now" (from text=Pay now). No button or link has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.';
+const NAMED = 'Named control not found: "Pay now" (from text=Pay now). No button, link, tab, radio or label has that exact visible text or aria-label; pass the exact visible text or an @ref from perceive.';
 const CSS = 'Element not found: #pay. No element matches this CSS selector; pass the control\'s visible text or an @ref from perceive.';
 const MARKER = 'chrome-cdp-ex.frame-inventory.v1';
 const SAME = 'http://127.0.0.1:9/inner.html';
@@ -144,6 +144,17 @@ describe('named click miss with one frame name', () => {
     expect(axCalls(cdp).length).toBeGreaterThan(0);
     expect(axCalls(cdp).every(call => call.params?.frameId && call.sessionId === 'sid')).toBe(true);
     expect(cdp.calls.some(call => call.method === 'Target.setAutoAttach')).toBe(false);
+    expectRunnableNext(text);
+  });
+
+  it('points Next at a same-origin frame whose tab has that name', async () => {
+    const cdp = twoFrames((params) => {
+      if (params?.frameId === 'inner') return { nodes: [axNode('Settings', 21, { role: 'tab' })] };
+      return { nodes: [] };
+    });
+    const text = await miss(cdp, NAMED, { input: 'text=Settings' });
+    expect(text).toContain(`Next: cdp perceive ${PREFIX} --frame @f2`);
+    expect(text).not.toContain(`Next: cdp frame ${PREFIX}`);
     expectRunnableNext(text);
   });
 
