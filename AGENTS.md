@@ -83,4 +83,4 @@ CI also runs Windows and `smoke:live` on pinned Chrome stable. Run `npm run smok
 
 Policy: [RELEASING.md](RELEASING.md).
 
-Bump `package.json` and `.claude-plugin/plugin.json` together, run `npm run changelog:fold`, move the folded notes under the new version heading in `CHANGELOG.md`, update the release link in `README.md`, and open the release-prep pull request. Merging it lets `.github/workflows/release.yml` create the tag and GitHub Release. Releases go to GitHub Releases, not npm.
+Bump `package.json` and `.claude-plugin/plugin.json` together, run `npm run changelog:fold`, move the folded notes under the new version heading in `CHANGELOG.md`, update the release link in `README.md`, and open the release-prep pull request. Merging it lets `.github/workflows/release.yml` create the tag, the GitHub Release, and the npm publish. The first npm publish is manual, once. If only the npm step fails, re-run that workflow with the existing tag (`workflow_dispatch` input `version`); merging again does nothing because the tag exists.

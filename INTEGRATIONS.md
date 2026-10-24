@@ -1,6 +1,6 @@
 # Integrations (one-pager)
 
-Cross-host install for **chrome-cdp-ex**. One CLI runtime + optional stdio MCP. Official publish surface: GitHub Releases (not npm registry).
+Cross-host install for **chrome-cdp-ex**. One CLI runtime + optional stdio MCP. Official publish surface: GitHub Releases, and npm after one manual first publish.
 
 ## Bootstrap
 
