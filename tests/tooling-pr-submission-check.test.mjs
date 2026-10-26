@@ -309,11 +309,14 @@ describe('PR submission check workflow and docs', () => {
     expect(workflow).not.toContain('cache:');
     expect(workflow).toContain('types: [opened, edited, synchronize, reopened, ready_for_review]');
     expect(workflow).toContain('branches: [main, dev]');
-    expect(workflow).toContain('PR_BODY: ${{ github.event.pull_request.body }}');
+    expect(workflow).not.toContain('github.event.pull_request.body');
+    expect(workflow).toContain('pull-requests: read');
+    expect(workflow).toContain('gh api "repos/$REPO/pulls/$PR_NUMBER"');
+    expect(workflow).toContain('> body.md');
+    expect(workflow).toContain('PR_NUMBER: ${{ github.event.pull_request.number }}');
     expect(workflow).toContain('PR_FORBIDDEN_TERMS: ${{ vars.PR_FORBIDDEN_TERMS }}');
     expect(workflow).toContain('BASE: ${{ github.event.pull_request.base.sha }}');
     expect(workflow).toContain('HEAD: ${{ github.event.pull_request.head.sha }}');
-    expect(workflow).toContain("printf '%s' \"$PR_BODY\" > body.md");
     expect(workflow).toContain("git log --format='%B%n---commit---' \"$BASE..$HEAD\" > commits.txt");
     expect(workflow).toContain('--body-file body.md --head "$HEAD" --commits-file commits.txt');
   });

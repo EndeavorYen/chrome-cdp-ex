@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   pr-submission-check:
@@ -22,11 +23,13 @@ jobs:
 
       - name: Check pull request submission
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           PR_FORBIDDEN_TERMS: ${{ vars.PR_FORBIDDEN_TERMS }}
         run: |
-          printf '%s' "$PR_BODY" > body.md
+          gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.body // ""' > body.md
           git log --format='%B%n---commit---' "$BASE..$HEAD" > commits.txt
           node scripts/check-pr-submission.mjs --body-file body.md --head "$HEAD" --commits-file commits.txt
